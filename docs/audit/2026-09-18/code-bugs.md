@@ -50,7 +50,48 @@ work (`6bc4f6d lsp/edit/core: asynchronous diagnostics, and work outside the
 workspace`, committed minutes before this pass). They are worth a look before
 the next `make test` gate.
 
-## Surfaced by the open-row consolidation (NOT applied — decisions for the code owner)
+## Surfaced by round two (`batch-open2`, NOT applied — decisions for the code owner)
+
+28 rows were decided `code`: the documentation is now right, the defect is in the
+component. Grouped by area, worst first.
+
+**Data loss / crash**
+
+| id | where | what is wrong | suggested fix |
+|---|---|---|---|
+| A752 | `tools/store_migrate.nim:260-268` | `kindProbes()` is a fixed 18-name list with neither `spill` nor `contextreceipt`, and verification only re-counts the kinds it discovered — measured: 5 kinds seeded, "3 documents read … every kind matches … done", exit 0, two kinds silently dropped | probe the kinds that exist (or fail closed on an unknown kind) before declaring success |
+| A767 | `components/store/main.nim:110-111` | barrel `put` without `value` does `$value` with no nil check: SIGSEGV (exit 139) inside the store process, the caller only times out, the supervisor hides it as a restart | guard nil like both Go engines (`put needs kind, id and value`) |
+| A637 | `core/conversation.nim` (trimThrough reload) | the omission notice is not re-inserted on the reload path, so a restarted conversation silently loses the record that history was trimmed | re-insert the notice when a trimmed projection is reloaded |
+| A751 | `tools/store_migrate.nim:444-445` | `--force` is parsed and read nowhere (the header promises it) | honour it or delete it |
+
+**Security / correctness**
+
+| id | where | what is wrong | suggested fix |
+|---|---|---|---|
+| A640 | `components/recall` | `context_recall {mode: "search", session: <any id>}` reads any conversation's canonical history with no ownership check — a session the caller does not own is readable | bind the search to the caller's own conversation (the runner already injects it) |
+| A632 | `core/dispatch.nim` (`invokeTool`) | a dotted `component.tool` spelling is resolved for the lookup but the raw string is dispatched, so the tolerant spelling is accepted and then dispatched wrongly | dispatch the resolved name |
+| A664 | `components/hooks` | one NATS subscription per configured spec outside `ev.session.*`, and the SDK dispatches per subscription — a hook can fire once per matching spec | deduplicate subscriptions (or dispatch per event) |
+| A567, A568 | `components/cli` | Nim's parseopt leaves `p.val` empty for the space-separated form, so the documented `cli [--timeout <secs>]` spelling silently does nothing; `wait`'s positional `secs` is parsed unguarded, so `cli wait bash abc` dies with an uncaught ValueError and a Nim stack trace | read `p.key`/`p.val` correctly; validate the positional |
+
+**Schema / contract drift**
+
+| id | where | what is wrong | suggested fix |
+|---|---|---|---|
+| A539, A521 | `components/builder/main.nim:51` | `defines` is declared `JsonNode`, which the SDK maps to `{"type": "object"}` — the published schema says object, the code expects an array of `-d:NAME` strings | declare a `seq[string]` |
+| A522 | builder doc comment | the `- defines:` line breaks after the colon, so the continuation does not join the parameter doc the LLM reads | join the line |
+| A614 | `core/compaction.nim:61` vs `components/compaction/main.nim:216` | `NIF_COMPACTION_TIMEOUT_MS` is clamped to 5000-600000 (documented as a whole-call deadline) while the tool's `x-harness.timeoutMs` is 120000 and the schema value replaces the caller's default — 121-600 s configurations are inert | raise the schema timeout or clamp the env at 120000 |
+| A659, A678, A698, A729 | core selftest contract | the wording wave 2 proposed is not true of the current core: a component registering no `selftest` is not treated as the report assumed | decide the contract, then document it (the rows are `code` until that is settled) |
+| A798 | `components/systemprompt/main.nim:210` | dead `let f = loadContextFileFromDir(dir)` — the same directory is re-read on the next line | delete the dead call |
+| A801 | `core/niffler.nim` (boot restore) | a stored `component` record whose name is already supervised is silently skipped (`continue`) — a stale record keeps a component that was never spawned | report the skip |
+| A582, A583 | `components/console` | bare `reg.publish`/`reg.depart` payloads render as empty-bodied `event <subject>` lines; results carry no `tool` and the envelope id is not echoed, so replies are unattributable on a busy bus | render the payload; echo the call id |
+
+**Doc-side leftovers in the `code` bucket (not actually code)**
+
+- **A676** — its own reason says "the MANUAL is right today": the earlier pass rewrote that sentence. Belongs in `already`, not `code`.
+- **A558** — anchored to the MCP chapter's Cancellation bullet while the finding is about `builder`: mis-anchored, needs re-anchoring or `skip`.
+- **A669, A675** — the defect is in the component's README, not the MANUAL (the MANUAL sentences next to them are correct).
+
+## Surfaced by the open-row consolidation (round one — NOT applied)
 
 The 145 open rows were decided row by row against the code; these four findings
 belong in code, not prose. The documentation side of each is applied (row id in

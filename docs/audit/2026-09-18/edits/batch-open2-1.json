@@ -1,0 +1,497 @@
+[
+ {
+  "id": "A529",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the `var/bin/` row describes only the shipped build, but every `builder.build` result is a binary in `<root>/var/bin/<name>` (components/builder/main.nim:75, 86/136/187) — that is where an agent-built component appears, and the row is the only place a reader would look for it. One clause, no table churn.",
+  "evidence": "docs/MANUAL.md:43; components/builder/main.nim:74-75 (srcDir `var/build`, binDir `var/bin`), 86, 136, 187 (the three build paths return `binDir/name`)",
+  "old_string": "| `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |",
+  "new_string": "| `var/bin/` | built binaries (system core + session runner + components), plus everything `builder.build` compiles — agent-built components land here too, beside the system ones. Rebuilt by `make build` |"
+ },
+ {
+  "id": "A530",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row sells `var/build/` short: Nim is one `<name>.nim`, Go and TypeScript are whole project directories the builder generates (go.mod, package.json/tsconfig.json, node_modules, dist), and it is the only copy of that source — the store record carries none, so `make clean` (which removes `var/`) orphans the component. Operator knowledge, before someone deletes something.",
+  "evidence": "docs/MANUAL.md:52; components/builder/main.nim:74-75, 84-85 (Nim single file), 105-118 (Go dir + generated go.mod), 155-168 (TS dir + package.json/tsconfig), 187 (wrapper binary); core/niffler.nim:505-507 (`missing binary for <name>` on the next boot)",
+  "old_string": "| `var/build/` | source files of agent-built components (builder's scratch dir) |",
+  "new_string": "| `var/build/` | source files of agent-built components (builder's scratch dir): one `<name>.nim` for Nim, a whole project directory for Go and TypeScript (`go.mod`, `package.json`/`tsconfig.json`, `node_modules/`, `dist/`). It is the **only** copy of an agent-built component's source — the persisted `component` record carries none, so `make clean` orphans it |"
+ },
+ {
+  "id": "A533",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified against the current tree, nothing to change: `build` and `info` are the component's only two tools, both `onDemand`, `build` carries `approval: always` + `timeoutMs: 300000`, and the row's five arguments match the schema (required: lang, name, source). The depth the auditor wants lands in A534/A535 here and in the builder slice (A516-A528).",
+  "evidence": "docs/MANUAL.md:63; components/builder/main.nim:48-49 (approval always, timeoutMs 300000, onDemand), 66-72 (`required: [lang, name, source]`), 227-228 (`info`, onDemand only); manifest.yaml builder entry",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A534",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "`info` is the tool an agent (or a human writing a component) calls first, and the row does not say what comes back. The keys are `langs`, `sdk`, `sdkGo`, `sdkTs`, `naming`, `flow`, and one complete compiling skeleton per language (`nim`/`go`/`ts`) — tests/t_builder.nim compiles the Go one verbatim, so the skeleton is the contract, not a sketch.",
+  "evidence": "docs/MANUAL.md:63; components/builder/main.nim:227-237 (the nine keys); tests/t_builder.nim:49-52 (the returned Go skeleton compiles as-is)",
+  "old_string": "and `info` (on demand: the per-language source skeleton and SDK locations) |",
+  "new_string": "and `info` (on demand) returns the SDK paths (`sdk`/`sdkGo`/`sdkTs`), the global tool-naming rule, the build → spawn → discover `flow`, and a complete compiling skeleton per language — the fastest way to a component that builds on the first try |"
+ },
+ {
+  "id": "A535",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row lists the arguments a model must satisfy but none of their rules, and every rule has a visible failure: `name` is validated as 1-64 chars of `a-z0-9` and single hyphens (the traversal guard that refuses `../escape`), `files` is read only in the Go branch (≤64 flat `*.go` sources, ≤2 MB, no `main.go`, no `*_test.go`, no directories) so Nim/TS silently ignore it, and `defines` is read only in the Nim branch (validated `-d:NAME`, identifier characters), silently ignored when it is not an array. One parenthetical, in the row that names the arguments.",
+  "evidence": "docs/MANUAL.md:63; components/builder/main.nim:14-21, 25-34, 36-45 (the three validators), 77-78 (the name error text), 89 (defines must be a JArray), 111-130 and 138-140 (Go-only files), 96-99 (Nim-only defines)",
+  "old_string": "`build {lang, name, source, files?, defines?}` (approval-gated, on demand)",
+  "new_string": "`build {lang, name, source, files?, defines?}` (approval-gated, on demand; `name` is 1–64 lowercase letters, digits and single hyphens — the traversal guard that refuses `../escape`; `files` is Go-only: ≤64 flat `*.go` sources, ≤2 MB, no `main.go`/`*_test.go`; `defines` is Nim-only, `-d:NAME` with identifier characters, and a non-array value is ignored)"
+ },
+ {
+  "id": "A538",
+  "slice": "Layout of a running system",
+  "status": "code",
+  "reason": "the fix belongs in the component, not in prose. `build` advertises `x-harness.timeoutMs: 300000`, but the Nim branch calls `runCmd(...)` without a timeout argument, so an agent-written Nim component is actually killed at procutil's 120 000 ms default while core keeps waiting 300 s and returns a dispatch timeout with no compiler output (`bash`-style partial replies do not exist here). Fix in code: pass `300_000` to that `runCmd` (or lower the schema to what is true) and return the tail of the partial output. The doc half of the same finding — the advertised five minutes against the internal two-minute Nim budget — is batch-open2-4's A553 in the Self-extension chapter, so nothing is added to the MANUAL here.",
+  "evidence": "components/builder/main.nim:49 (schema timeoutMs 300000), :96-99 (Nim `runCmd` with no timeout), :138-139 (Go `runCmd(..., 300000)`), :172-180 (TS `npm install` 300000 / `tsc` 120000); sdk/niffler/procutil.nim:70 (default 120_000); core/dispatch.nim:1627-1630 (the schema timeout is enforced)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A559",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: `cli` registers nothing at all (no `reg.publish`/`reg.depart` in the file), has no manifest entry, and its four subcommands are what its own dispatcher handles. The empty Manifest cell is correct — it is built by `make build` and started by hand.",
+  "evidence": "docs/MANUAL.md:80; components/cli/main.nim:1-15 (header: catalog/wait/call/install), 76-95 (the dispatch); Makefile:256 (build rule), 309 (in components-inner); manifest.yaml has no `cli` entry",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A560",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row calls `cli` an on-demand bus driver, which reads as if it were a bus citizen. It is a pure client: no SDK, no `reg.publish` anywhere in the file, so it never shows up in `catalog` and `cli wait cli` cannot succeed — the trap a script author walks into first.",
+  "evidence": "docs/MANUAL.md:80; components/cli/main.nim:1-15, 76-95, and `grep -c 'reg.publish\\|reg.depart' components/cli/main.nim` = 0; Makefile:256, 309 (built, not spawned)",
+  "old_string": "| `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |",
+  "new_string": "| `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |"
+ },
+ {
+  "id": "A561",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: manifest.yaml carries 25 `- name:` entries and none of them is `cli`, `console` or `dialog`, while Makefile:305-313 builds all three into `var/bin` — so the `—` Manifest cells and the sentence declaring the table the inventory are both right.",
+  "evidence": "docs/MANUAL.md:38 (the sentence), 80-81, 86 (the `—` cells); manifest.yaml (25 entries, no cli/console/dialog); Makefile:253, 256, 299 (build rules), 308-312 (components-inner list)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A577",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: `console` registers zero tools, publishes its own `reg.publish` and subscribes `>`; it has no manifest entry and is built by `make build`. The row's `—` Manifest cell and its one-line description are both accurate.",
+  "evidence": "docs/MANUAL.md:81; components/console/main.nim:74 (`reg.publish`), 77 (subscribe `>`), 35-56 (the renderer), no tool registration at all; Makefile:253 (build), 308 (components-inner); no manifest entry",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A578",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "belongs to the chapter, not to the one-line catalogue row: the console's rendering limits are A579/A580 in the console slice (batch-open2-5), which add exactly these two facts to the `## The bus in one screen` text (`reg.publish`/`reg.depart` print as a bare `event <subject>` line; every SDK result prints with an empty tool name). Repeating them in the shipped-components row would state the same caveat twice.",
+  "evidence": "docs/MANUAL.md:81 (the row) vs the console passage under `## The bus in one screen`; sections/component-console.md A579/A580 (assigned to batch-open2-5)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A591",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: the dialog component is a single bash script (nats CLI + jq, no SDK, no compile step — its own header says so), copied into `var/bin` with `cp $< $@ && chmod +x $@`; no manifest entry.",
+  "evidence": "docs/MANUAL.md:86; components/dialog/dialog.sh:1-19 (header), :37-45 (nats CLI resolution), :152-163 (jq); Makefile:297-299 (the copy rule); manifest.yaml has no `dialog` entry",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A592",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row says what the tools do but not what they cost: neither schema carries `approval` or `onDemand`, so once `dialog` is up both tools sit in the frozen direct toolset of every conversation started afterwards — unlike the tools of every other optional component. And a `dialog_ask` without a display answers `timeout` without asking anybody, so a yes/no question silently becomes an unanswered timeout.",
+  "evidence": "docs/MANUAL.md:86; components/dialog/dialog.sh:82 (dialog_show: only `x-harness.timeoutMs`), :95 (dialog_ask: only `x-harness.timeoutMs`), :108-113 (DISPLAY + zenity gate), :139-145 (headless → `timeout` at once), :169-171 (the two result shapes)",
+  "old_string": "`dialog_ask` asks the user a yes/no question and returns the answer. Ships in",
+  "new_string": "`dialog_ask` asks the user a yes/no question and returns the answer (`dialog_show` → `{ok, shown, via: zenity|notify|log, kind}`, `dialog_ask` → `{ok, answer: yes|no|timeout}`). Neither tool is approval-gated or on demand, so both land in the direct toolset of every conversation started while `dialog` is up, and without a display (`DISPLAY` unset or zenity missing) `dialog_ask` answers `timeout` immediately without asking anyone. Ships in"
+ },
+ {
+  "id": "A593",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "core's `spawn` is approval-gated for every component alike, and the MANUAL documents that gate once, where `spawn` is introduced. Naming the gate only on the dialog row would make the demo look special; the row's job is the invocation, which it gives.",
+  "evidence": "core/catalog.nim:79-95 (`spawn`/`kill`/`remove` carry `approval: always` and are on demand), core/dispatch.nim:1630-1633; docs/MANUAL.md:86 and the Self-extension chapter's `spawn` step",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A594",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row's prereq line is wrong in the way that matters: without the nats CLI or `jq` the component cannot answer a single call, while `zenity` is only the visible backend and only with a display (`notify-send` is the fallback). `make setup` installing all three says nothing about which are hard.",
+  "evidence": "docs/MANUAL.md:86; components/dialog/dialog.sh:37-45 (nats CLI, `${HOME}/go/bin/nats` fallback, `NIF_NATS_CLI` override), :152-163 (`jq` parses the envelope), :108-124 (`zenity` needs `DISPLAY`; `notify-send` otherwise); Makefile:589-593 (`make setup` installs all three), :628-640 (`make doctor` checks them)",
+  "old_string": "Prereqs: natscli, jq, zenity — `make setup` installs all three |",
+  "new_string": "Prereqs: the nats CLI and `jq` are hard — without either the component cannot answer at all; `zenity` (or `notify-send`) only for the visible part, and only with `DISPLAY` set. `make setup` installs all three, `make doctor` checks them |"
+ },
+ {
+  "id": "A595",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "too minor for the catalogue row: the `$NIF_ROOT/var/logs/dialog.log` line is a detail of the demo's own script, the Observation chapter owns log locations, and the row already points the reader at the component.",
+  "evidence": "components/dialog/dialog.sh:51 (`LOG=\"${NIF_ROOT:-$HOME}/var/logs/dialog.log\"`), :174, :187 (both handlers log); core/supervisor.nim:131-148 (the same file receives the child's stdout)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A596",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "the row documents the supported path only, and that path works: the script resolves the bus as `NIF_NATS_URL` → `./var/nats-url` → 4222 while core starts children with `workingDir = NIF_ROOT`, so a spawned copy finds the harness's URL file. The cwd-sensitivity only bites a hand-started copy from some other directory — something the row never tells anyone to do.",
+  "evidence": "components/dialog/dialog.sh:24-34 (bus discovery; `NIF_ROOT` is not consulted), core/supervisor.nim:160 (`workingDir = sup.root`)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A597",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "too minor for the row, and covered where it belongs: a hand-started copy stays in the catalog until core restarts — the same caveat the console slice (A579/A580) adds to the console passage. The dialog row's `not autostarted` already tells the operator it is not a supervised child.",
+  "evidence": "components/dialog/dialog.sh:212 (the only trap kills the reply child; no `reg.depart`), core/supervisor.nim:193-204 (core drops a *child's* registration on death)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A598",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "the MANUAL states this rule once and generally, in the Fabric chapter: every tool is classified by `x-harness.effect` and anything undeclared counts as a write. Restating it for the demo's two tools would lengthen the already-longest table cell in the MANUAL without adding a fact the reader cannot reach.",
+  "evidence": "docs/MANUAL.md:2748; components/dialog/dialog.sh:82, :95 (no `x-harness.effect` declared)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A599",
+  "slice": "Layout of a running system",
+  "status": "code",
+  "reason": "the fix is in the component, not in prose. Three things it reports are not true: (1) a headless `dialog_ask` prints the same `answer: timeout` as a human who let the dialog expire, so the caller cannot tell 'nobody could answer' from 'nobody answered'; (2) the result echoes the raw `kind` argument although `show_dialog` normalizes it to info/warning/error; (3) `dialog_show` returns `shown: true` with `via: log` — and after a failed `zenity`/`notify-send`, since `|| true` swallows the exit code — although nothing was shown. Fix in code: add a distinct headless answer (for example `answer: no-display`), echo the kind actually used, and set `shown` from the backend's exit status.",
+  "evidence": "components/dialog/dialog.sh:139-142 (zenity rc 0/1/other → yes/no/timeout), :143-145 (headless → `timeout`), :174-175 (the raw `kind` is echoed), :112-124 (`|| true`; `via: log` still reports `shown: true`), :167-171 (the result objects)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A603",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified against the current tree: the component verifies the runner's paged snapshot (attemptId/digest/generation, contract version), picks a permitted cut or declines, and returns one structured candidate; every write of the projection happens in the runner, not here — `grep -c 'storePut\\|storeDel' components/compaction` = 0. The row is accurate as written.",
+  "evidence": "docs/MANUAL.md:78; components/compaction/main.nim:64-105 (verification), 107-121 (cut choice), 296-303 (candidate); core/conversation.nim:1591-1593 and core/compaction.nim:201-330 (the runner alone validates and commits)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A604",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row (and the Context window chapter) describe the seam but never say that nobody can be reached through it: the tool is `hidden` + `x-harness.runner: true` and never appears in a model's toolset or in `discover`, so an operator should not expect to call it. One clause, and the degraded case (component missing = no summarization, the deterministic ladder intact) belongs next to it.",
+  "evidence": "docs/MANUAL.md:78; components/compaction/main.nim:216-219 (`x-harness` = hidden + runner, timeoutMs 120_000, effect read); docs/MANUAL.md:440 (`NIF_COMPACTION_TOOL` empty disables summarization but not prune/trim/error admission), 848-858 (the replaceable-propose bullet)",
+  "old_string": "the runner alone validates and commits projections |",
+  "new_string": "the runner alone validates and commits projections — the tool itself is `hidden` + `x-harness.runner: true` (read-effect, 120 s), so no model ever sees it and only a runner or another component calls it; with the component absent or killed, summarization is off and the deterministic ladder (lossless prune, then the lossy fallback rung) still runs |"
+ },
+ {
+  "id": "A628",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: the row names the three ref sources (canonical message, spill document, current durable checkpoint) and on-demand exposure, matching the component exactly; it already carries `mode: search` as well. The parameter depth the auditor wants is added as A629's bullet in the Context window section.",
+  "evidence": "docs/MANUAL.md:79; components/recall/main.nim:143-217 (the three ref sources), 238-239 (`onDemand` + `runner`), 28-31 (the caps)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A629",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "nothing in the MANUAL lists `context_recall`'s parameters, so a reader who follows a prune/spill notice has to guess at `mode`, `offset`/`limit` and the search defaults — and the search mode is the only way back into a span no notice names. One bullet at the end of the Context window list, right after the canonical-history bullet that already mentions the resolver.",
+  "evidence": "components/recall/main.nim:222-239 (schema: ref oneOf object/array, mode enum, query, session, role, offset, limit; x-harness onDemand + runner + effect read + 15 s), 28-31 (256 KB / 2000 / 50 / 20), 150-217 (the three ref sources and their refusals)",
+  "old_string": "corrupt projection refs fail explicitly instead of silently replaying an\n  oversized span.",
+  "new_string": "corrupt projection refs fail explicitly instead of silently replaying an\n  oversized span.\n- `context_recall {ref?, mode?, query?, session?, role?, offset?, limit?}` is\n  the resolver behind those notices: `ref` is one `{source, id}` object or an\n  array of them (`source` is `canonical`, `spill` or `checkpoint`), `mode: full`\n  (the default) pages one document with `offset`/`limit` under a 256 KB\n  per-document ceiling, `mode: match` greps one document's lines, and\n  `mode: search` greps the conversation for messages mentioning `query`\n  (`role` filters them, `session` picks another conversation) and returns\n  bounded one-line hits whose `id` can then be read back as a `canonical`\n  ref. Defaults: 2000 lines, 50 matches, 20 hits; the tool is on demand and\n  read-effect, and it is `runner`-exempt so subagents can always reach it."
+ },
+ {
+  "id": "A648",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row already gets the two exposure facts right (`grep` direct, `files` on demand) but nothing in the MANUAL carries the parameters, caps, exit codes or the effect classification, and the new `grep` in detail subsection (A649) is where they now live — the row needs the pointer so the summary and the detail stay connected.",
+  "evidence": "docs/MANUAL.md:76; components/grep/main.nim:52-53 (`parallel: true`, schema timeoutMs 60000), :100 (files: onDemand, no parallel), :20 (32 KB cap), :34-50 (exit codes), :226-228 in components/fabric (undeclared effect = write)",
+  "old_string": "stateless queue-group replicas overlap same-component searches |",
+  "new_string": "stateless queue-group replicas overlap same-component searches — parameters, caps, exit codes and the effect classification are in [`grep` in detail](#grep-in-detail) |"
+ },
+ {
+  "id": "A649",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "`grep` is the only frequently used tool with no detail subsection (bash and repomap have one) and the MANUAL documents none of its contract: the parameters and clamps, the 32 KB head+tail cap, the `[Omitted long matching line]` behaviour of `--max-columns 300`, the exit-code table with its `[no matches]`/`[no files]` markers, the rg-missing hint, and the undeclared `x-harness.effect` that makes both tools writes to the fabric batch host. A subsection beside the existing two, not a new top-level chapter — the outline (Contents) stays untouched.",
+  "evidence": "components/grep/main.nim:18 (32 KB), 26-31 (rg missing → exit 127 + the `bash grep -rn` hint), 32-50 (exit codes and markers), 52-56 (schema timeoutMs 60000, parallel, workspace pathFields), 55-96 (grep args: --max-columns 300, context cap 50, glob never un-hides, absolute paths, max_results clamp 10000), 98-128 (files: onDemand, max_results default 500); docs/MANUAL.md:2748 (undeclared effect = write)",
+  "old_string": "### Minimal boot profile (`--minimal`)",
+  "new_string": "### `grep` in detail\n\nThe `grep` row above is the summary. Both tools run ripgrep as a fixed argv —\nthe pattern travels as an argument after `--`, never through a shell — so\nquotes, backslashes and spaces need no escaping, which is the reliability win\nover `bash grep`. `rg` resolves through `PATH`; when it is missing both tools\nanswer exit 127 with an install hint that points at `bash grep -rn`.\n`.gitignore` and hidden/binary files are skipped by default, `hidden: true`\nadds hidden files while `.gitignore` still applies, and a `glob` narrows\nwithout un-hiding. `path` is workspace-relative at dispatch, and results come\nback as absolute paths.\n\n`grep {pattern, path?, glob?, context? (≤50), case_insensitive?, hidden?,\nmax_results? (default 200), timeoutMs? (default 30000)}` returns `path:line:match`\nlines; `files {path?, glob?, hidden?, max_results? (default 500), timeoutMs?}`\nreturns sorted paths. `max_results` is capped at 10000 lines and the text at\n32 KB (head and tail kept, with a marker saying how much was cut), and a line\nlonger than 300 columns is omitted as `[Omitted long matching line]` (rg's\n`--max-columns 300`). `exit_code` is the contract: 0 match, 1 none (`[no\nmatches]`/`[no files]`), 2 bad regex, 124 timeout, 127 rg missing. `grep`\ndeclares `parallel: true` and `files` does not, and neither declares\n`x-harness.effect` — the fabric batch host schedules both as writes. Four\nstateless manifest replicas serve them through one queue group.\n\n### Minimal boot profile (`--minimal`)"
+ },
+ {
+  "id": "A650",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "merged into A649's edit: the rg-missing fact is the opening paragraph of the new `grep` in detail subsection (exit 127 plus the `bash grep -rn` hint), so a second edit would need the same anchor.",
+  "evidence": "components/grep/main.nim:26-31 (the hint text); Makefile (ripgrep is installed by `make setup`, reported by `make doctor`)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A673",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: `hooks` is `autostart: false`, `restart: on-failure`, no replicas, and registers no tools at all — the row's `off by default`, its observe-only description and its pointer to the Hooks chapter are all correct. (The chapter owns the 'registers no tools' clause; that is the hooks slice, not this row.)",
+  "evidence": "docs/MANUAL.md:84; manifest.yaml:216-221 (`autostart: false`, `required: false`, `restart: on-failure`, no replicas); components/hooks/main.nim:1-138 and no tool registration",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A694",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "logfile's two tools are on demand, so a reader assumes they are cheap reads — but neither declares `x-harness.effect`, and the fabric batch host classifies an undeclared tool as a write, so even `logfile_search` runs exclusively. That is the convention the MANUAL already states for `bash` and `fetch`; one clause here keeps it consistent.",
+  "evidence": "docs/MANUAL.md:83; components/logfile/main.nim:292-293 (`logfile_search`, onDemand), 448-449 (`logfile_paths`, onDemand), no `x-harness.effect`; manifest.yaml:205-210 (autostart, required false, restart on-failure, no replicas); docs/MANUAL.md:2748 (undeclared = write)",
+  "old_string": "rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) |",
+  "new_string": "rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) — both tools are on demand and neither declares `x-harness.effect`, so the fabric batch host schedules even `logfile_search` as a write |"
+ },
+ {
+  "id": "A726",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "same convention as A694, for the diagnostic component whose tools look most read-only: all twelve tools are on demand and none declares `x-harness.effect`, so `observe_events`/`observe_logs` are writes to the fabric batch host. The rest of the row is verified (twelve tools, autostart, restart on-failure, and no `replicas` — ring and probes are process-local).",
+  "evidence": "docs/MANUAL.md:82; components/observe/main.nim:297-769 (twelve `comp.tool` blocks, all `onDemand`, no `x-harness.effect`); manifest.yaml:198-203 (autostart, required false, restart on-failure, no replicas); docs/MANUAL.md:2748",
+  "old_string": "and NATS monitoring (see [Observation and logs](#observation-and-logs)) |",
+  "new_string": "and NATS monitoring (see [Observation and logs](#observation-and-logs)) — all twelve tools are on demand and none declares `x-harness.effect`, so the fabric batch host schedules even `observe_events`/`observe_logs` as writes |"
+ },
+ {
+  "id": "A733",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row implies a root uses one engine or the other, but a migrated root keeps both files (the migration never edits the source), and core's own un-migrated guard keys off exactly that: it refuses to boot only while `var/store.db` is absent. The lock file names are the other half an operator needs when a store refuses to start (`make down` mentions them).",
+  "evidence": "docs/MANUAL.md:44; core/niffler.nim:444-470 (the guard requires `store.db` to be absent while `barrel-db` exists), tools/store_migrate.nim:283-299 (a migrated root holds both files; `--force`/overlay language is in the tool's docstring only); components/store/main.nim:48 (`path & \".lock\"`), components/store-sqlite/main.go:14, 136 (`dbPath + \".lock\"`)",
+  "old_string": "Older harnesses/migrated roots use `var/barrel-db` instead |",
+  "new_string": "Older, un-migrated harnesses still use `var/barrel-db`; a migrated root keeps that file untouched beside `var/store.db`. Each engine locks its own file — `var/store.db.lock`, `var/barrel-db.lock` |"
+ },
+ {
+  "id": "A734",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: the flock is real and non-blocking, and a second writer is refused with an explicit message instead of corrupting the file.",
+  "evidence": "docs/MANUAL.md:44; components/store-sqlite/main.go:136-146 (`acquireLock`: `LOCK_EX|LOCK_NB`, error text naming `make down`), components/store/main.nim:39-51, tests/t_store.nim:44-51 (the second-writer rejection)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A735",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the row (and the chapter) says the engines register 'identical tools', which the barrel engine does not: it registers the hidden `selftest` (a full put/get/rev-CAS/list/del roundtrip) and the Go engines do not. Nothing a client sees, but `/doctor` and anyone reading the catalog will notice the difference.",
+  "evidence": "docs/MANUAL.md:59; components/store/main.nim:181-232 (`comp.selfTest`, kind `selftest`); components/store-sqlite/main.go:106-117 and components/store-tidb/main.go:79-90 (four tools, no self-test)",
+  "old_string": "Engines register under the same name with identical tools:",
+  "new_string": "Engines register under the same name with the same four tools (`put`/`get`/`list`/`del`; the barrel engine additionally registers a hidden `selftest` — the one `/doctor` fans out to — that the Go engines do not implement):"
+ },
+ {
+  "id": "A736",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: the manifest's `store` entry is `required: true`, `restart: on-failure`, and the default really is sqlite (core's `NIF_STORE_BACKEND` resolution maps an unset/`sqlite` value to `var/bin/store-sqlite`, `barrel`/`tidb` to their own binaries).",
+  "evidence": "docs/MANUAL.md:59; core/niffler.nim:485-501 (the resolution), manifest.yaml:14-18 (store entry)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A737",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the chapter states that the selection 'refuses to boot on an unknown value' but not what happens when the binary behind a *valid* value is missing — the one case where an operator's data ends up in a different engine's file. Core treats the two cases differently (unset = default, falls back to the manifest binary with a warning; explicit = demand, warns and boots without a store). Two sentences, same paragraph.",
+  "evidence": "docs/MANUAL.md:273-275; core/niffler.nim:486-506 (the `requested.len == 0` fallback warning and the explicit-value path), :503-507 (the missing-binary warning)",
+  "old_string": "core resolves the manifest entry's binary accordingly and\nrefuses to boot on an unknown value.",
+  "new_string": "core resolves the manifest entry's binary accordingly and\nrefuses to boot on an unknown value. An unset `NIF_STORE_BACKEND` is a default,\nnot a demand: when `var/bin/store-sqlite` was never built, core warns and boots\nthe manifest binary (`var/bin/store`, barrel) instead. An explicit value is a\ndemand — a missing binary is only warned about, never silently swapped for\nanother engine's database."
+ },
+ {
+  "id": "A738",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the bullet warns about a crash *between* the two writes, but a fresh barrel `put` writes the doc key first and the rev key after, so the same window also covers a document that never gets a rev at all — and both readers treat `rev == 0` as absent, making it invisible rather than stale. One clause, no new sentence.",
+  "evidence": "docs/MANUAL.md:289-291; components/store/main.nim:107-112 (doc key, then rev key), 121-123 (`get`: `rev == 0` → not found), 155 (`list` skips `rev == 0` keys)",
+  "old_string": "its `put` is a two-key sequence\n  (doc, then rev), so a crash between them can update content without its\n  revision.",
+  "new_string": "its `put` is a two-key sequence\n  (doc, then rev): a crash between them can update content without its\n  revision, and for a *new* document the doc key is written with no rev key at\n  all, which `get` and `list` read as absent (`rev == 0`) — the document is\n  unreachable until it is written again."
+ },
+ {
+  "id": "A739",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the sqlite bullet ends at 'one atomic statement', leaving the pragmas that define its behaviour (immediate write transactions, WAL, synchronous NORMAL, a 10 s busy timeout, exactly one pooled connection) and the fact that migrations run by themselves at startup unstated. One sentence, in the bullet that already lists what the engine is.",
+  "evidence": "docs/MANUAL.md:277-286; components/store-sqlite/main.go:139-155 (the DSN pragmas and `SetMaxOpenConns(1)`), :176-190 (`migrate` runs at open; the provider prints one line per applied migration), migrations/00001_init.sql",
+  "old_string": "  (docs/research/COMPACTION.md §2).",
+  "new_string": "  (docs/research/COMPACTION.md §2). The SQLite pragmas are code-resident, not\n  configurable (`_txlock=immediate`, WAL, `synchronous(NORMAL)`, a 10 s\n  `busy_timeout`, one pooled connection), and the goose migration is applied\n  automatically at startup."
+ },
+ {
+  "id": "A740",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the tidb bullet describes the schema but not the deployment constraints a reader hits first: goose needs DDL rights to create its version table and apply migrations, the three timeouts are hardcoded, and the single pooled connection is deliberate (one session keeps a `FOR UPDATE` transaction's statements together) — which also means the harness count equals the connection count.",
+  "evidence": "docs/MANUAL.md:292-305; components/store-tidb/main.go:99-107 (DSN required, example, ClientFoundRows), :123-129 (Timeout 5 s, ReadTimeout 60 s, WriteTimeout 30 s, one pooled connection), :143-163 (goose `Up` applies migrations at startup)",
+  "old_string": "  Works against plain MySQL 8 too.",
+  "new_string": "  Works against plain MySQL 8 too. The DSN user needs the rights goose\n  requires to create its version table and apply migrations; connect/read/\n  write timeouts are hardcoded (5 s / 60 s / 30 s), and the engine holds a\n  single pooled connection (one session, so a `FOR UPDATE` transaction's\n  statements stay together) — N harnesses on one cluster hold N connections\n  and share no pool."
+ },
+ {
+  "id": "A741",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: no flock on the tidb path, row locks plus pessimistic transactions arbitrate writers, and the rev counter stays the optimistic check — with `ClientFoundRows` set so a same-value conflict cannot hide behind MySQL's changed-rows default.",
+  "evidence": "docs/MANUAL.md:302-305; components/store-tidb/main.go:112-116 (`cfg.ClientFoundRows = true`), :258-327 (the `SELECT … FOR UPDATE` compare-and-set)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A742",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: the DSN has no local default — an empty `NIF_STORE_TIDB_DSN` refuses to boot with exactly the documented example (`root@tcp(127.0.0.1:4000)/niffler`) and the docker line.",
+  "evidence": "docs/MANUAL.md:294-296; components/store-tidb/main.go:99-107 (the `not set (e.g. …)` error), core/niffler.nim:487-501 (the selection)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A743",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified (and measured by the store slice): `limit` defaults to 100 and clamps to 1000, `after` is exclusive, `hasMore` means the page was full, and `nextAfter` is absent when `hasMore` is false.",
+  "evidence": "docs/MANUAL.md:312-317; components/store/main.nim:151-168 (barrel), components/store-sqlite/main.go:428-478, components/store-tidb/main.go:417-467; tests/t_store_paging.nim",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A744",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the sentence promises 'every document', which is false and is the one finding here that destroys data quietly: the tool probes a hardcoded 18-name kind list (core's own `spill` and `contextreceipt` kinds are not in it), copies only the kinds it found, and then 'verifies' by re-counting the same list — so the run exits 0 announcing that every kind matches. The same sentence also claims any engine pair works, which the code contradicts. This one replacement carries A744, A745 and A772, whose only anchor is this sentence. The store slice's duplicate rows A730/A731/A732 (batch-open2-5) were decided as skip there and defer explicitly to this edit, so this is the only replacement of the sentence.",
+  "evidence": "docs/MANUAL.md:337-339; tools/store_migrate.nim:398-407 (`kindProbes`: 18 names, no `spill`/`contextreceipt`), :409-422 (`discoverKinds` probes that list only; its own comment says a kind absent from the list 'simply is not migrated'), :283-299 (the source is always `engineFor(root, \"barrel\")`; a sqlite-only root dies 'root already uses sqlite — nothing to migrate'), :364-386 (verification re-counts discovered kinds and prints 'verified: every kind matches the source count'); core/conversation.nim:304-310 (`contextreceipt`), :1304-1311 (`spill`)",
+  "old_string": "It reads every document from the source\nengine over the bus contract (so any engine pair works, including TiDB),\nreplays each into the fresh target, then verifies per-kind counts.",
+  "new_string": "It reads every document **of the kinds it probes** — a hardcoded\ncandidate list (core's own `spill` and `contextreceipt` kinds are missing\nfrom it today), so a kind added later is silently skipped and the count\ncheck cannot notice: the run still exits 0 reporting that every kind\nmatches the source. The direction wired up today is barrel → `sqlite` (the\ndefault) or barrel → `tidb` with `--to tidb`; a SQLite-only root is refused\nwith \"root already uses sqlite — nothing to migrate\". Each document is\nreplayed into the fresh target, then verified per kind."
+ },
+ {
+  "id": "A745",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "merged into A744's edit: same anchor sentence, and its replacement states the direction that is actually wired up (barrel → sqlite, or barrel → tidb with `--to tidb`) plus the refusal a SQLite root gets. A second edit would have to target the identical string. The store slice's A730 defers the direction half of the finding to this row and A744.",
+  "evidence": "tools/store_migrate.nim:283-294 (the source engine is always barrel; 'root already uses sqlite … nothing to migrate'), :396-420 (`--to` accepts sqlite|barrel|tidb, and `--to barrel` dies as the source engine)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A746",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the reachable refusal is not the overlay check the text claims (that one tests `var/store-tidb.db`, a marker file nothing creates, and is unreachable for a sqlite target because the source check fires first) — it is the ambiguous-source check for a root holding both files, which is exactly what a finished migration leaves. This paragraph replacement also carries A747 (the false 'either direction' claim) and A749's operator trap, since all three live in the same two sentences. The store slice's duplicate rows A730/A731/A732 (batch-open2-5) were decided as skip there and defer explicitly to this edit, so this is the only replacement of the sentence.",
+  "evidence": "docs/MANUAL.md:344-348; tools/store_migrate.nim:290-299 (the three reachable refusals: no data, sqlite-only, both files → 'ambiguous source; move one aside first'), :300-306 (the overlay check against `store-tidb.db`, a marker nothing writes), :78-80 (the tidb engine's `dbName` is that marker)",
+  "old_string": "Migration refuses to overlay an existing\ntarget database; rollback is simply `NIF_STORE_BACKEND=barrel`, since the\nbarrel file is untouched. The same export/replay path moves data in either\ndirection.",
+  "new_string": "Migration refuses to run on a root that holds both\n`var/barrel-db` and `var/store.db` — the state a finished migration leaves,\nwhere a re-run fails with \"ambiguous source; move one aside first\" (move the\nstale `var/store.db` aside to repeat it). Rollback is simply\n`NIF_STORE_BACKEND=barrel`, since the barrel file is untouched; moving data in\nthe other direction — out of SQLite or TiDB — is not wired up."
+ },
+ {
+  "id": "A747",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "merged into A746's edit of the same paragraph (the store slice's A732, batch-open2-5, was decided as skip and defers to this row and A746): 'the same export/replay path moves data in either direction' is refuted by the code (a SQLite-only root dies with 'nothing to migrate'), and A746's replacement ends by stating that moving out of SQLite or TiDB is not wired up.",
+  "evidence": "tools/store_migrate.nim:283-299 (the source is always barrel)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A748",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: the tool starts its own NATS server on an ephemeral port and its own store processes, opens the source read-only, and its docstring promise matches the code on that point.",
+  "evidence": "docs/MANUAL.md:335-337; tools/store_migrate.nim:152-200 (private bus), :237-260 and :321-345 (engines started one at a time), :325-345 (the source is only `list`ed)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A749",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "resolved the other way by two edits: the flag list now delegates to the tool's own `--help` (the trim pass in A018), which already documents `--quiet`/`--version` and does not advertise `--force`, so only the re-run trap was new — and that is carried by A746's replacement. Separately, `--force` is parsed and never honoured (the docstring promises a live-store refusal that no code implements): a tool-doc/code finding, reported as `code`, not something the MANUAL can fix.",
+  "evidence": "tools/store_migrate.nim:11 (the docstring's `--force` promise), :444-445 (parsed into `opts.force`), no further use of `opts.force` in the file; :404-425 (usage: the real flag list, including --quiet/--version), docs/MANUAL.md:340-342 (the delegation)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A750",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: `--scan` covers the top directory, immediate sibling clones and a recursive walk that recognises `niffler-root` or `manifest.yaml`, prunes `.git`/`node_modules`/`nimcache`, and counts a root as un-migrated only when `barrel-db` exists and `store.db` does not.",
+  "evidence": "docs/MANUAL.md:344-345; tools/store_migrate.nim:90-106 (`needsMigration = hasBarrel and not hasSqlite`), :108-147 (the walk and its pruning)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A772",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "merged into A744's edit: same anchor sentence ('It reads every document from the source engine …'), and A744's replacement states the hardcoded kind list, that a kind added later is silently skipped, that the count check cannot notice, and that the run still exits 0 reporting a full match. The measured loss (2 of 5 documents dropped, 'verified: every kind matches the source count', exit 0) is exactly what that text now warns about.",
+  "evidence": "tools/store_migrate.nim:398-422 and :364-386 (probe list, verification); core/conversation.nim:309 (`contextreceipt`), :1310 (`spill`)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A777",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the table is declared the inventory of `components/`, and `components/nats` is the one directory in it that is built by `make build` (it is in the components-inner list) yet absent from both the table and `manifest.yaml`. A row that says what it is and that it is deliberately not a bus component closes the gap the `components/` row opens by naming it.",
+  "evidence": "docs/MANUAL.md:38 (the sentence naming `components/nats`), 59-86 (the table); components/nats/main.go:1-22 (a faithful rebuild of the official main, absent from the manifest by design, PR_SET_PDEATHSIG on Linux), components/nats/go.mod:1-5 (nats-server v2.14.6), Makefile:262-266 (`var/bin/nats-server`), 312 (components-inner); core/niffler.nim:46,92 (core passes `--max_payload 8388608`), :56 (core prefers the bundled build over PATH)",
+  "old_string": "| `dialog` | bash | — |",
+  "new_string": "| `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and preferred by core over a PATH install, so no NATS prerequisite is needed. Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it: `make install-nats` only says so, and `make doctor` reports `nats-server: OK` or explains that it is built from source |\n| `dialog` | bash | — |"
+ },
+ {
+  "id": "A780",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "merged into A777's table row in this same batch, which states the fact the bullet lacks (the bus binary is built by `make build` from `components/nats`, core prefers it over a PATH install, no prerequisite is needed) and now also carries the `make install-nats`/`make doctor` note. Separately, the bullet itself is being rewritten by A781 in the common-tasks slice (batch-open2-3): an edit anchored inside that sentence would be order-dependent — if A781 lands first, the `(the built `var/bin/nats-server` component) when none answers` tail this row would anchor on no longer exists. The row carried an anchor on the bullet's `…component) when none answers.` tail while it was an apply; it is cleared here because the status is skip.",
+  "evidence": "docs/MANUAL.md:3048-3051; Makefile:262-266 (the build rule), :620-623 (`make doctor`: `nats-server: OK` or `built from source by 'make build' (components/nats)`), :698-699 (`install-nats` prints 'nothing to install')",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A786",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "the `components/` row already names `components/ctxtest` as a non-citizen, but the table it points at as the inventory does not mention it, and the sentence there names two of the twelve tests that compile it while saying nothing about what it is. One sentence under the table (where the `bash`/`repomap` detail subsections begin) closes the loop.",
+  "evidence": "docs/MANUAL.md:38 (the sentence), 86 (last table row); components/ctxtest/main.nim:1-8 (its own header: not in the manifest, compiled by the test), :16 (`newComponent(\"ctxtest\")`), :841 (`ctxecho`); components/ctxtest/sink.nim (registers `ctxsink`, compiled by tests/t_nested.nim:38-47); 12 tests reference `components/ctxtest`; no manifest entry and not in Makefile:305-315",
+  "old_string": "### `bash` in detail",
+  "new_string": "\n`components/ctxtest/` is the exception to one directory per component = one\nshipped component: it is the contract tests' own fixture — a stub `chat` LLM\nplus the nested-call probes — which the tests compile themselves into binaries\nregistering as `ctxtest` and `ctxsink`. It is not in this table, not in\n`manifest.yaml`, and never built by `make build`.\n\n### `bash` in detail"
+ },
+ {
+  "id": "A802",
+  "slice": "Layout of a running system",
+  "status": "apply",
+  "reason": "'swap it in via `manifest.yaml`' leaves out the step that makes it work: `chat` is a globally unique tool name and core refuses a whole registration on a duplicate, so `llm` must be commented out in the same edit (which is what the manifest comment says). It also leaves the reader to discover that the example is minimal on purpose — worth one clause where the swap is described.",
+  "evidence": "docs/MANUAL.md:64; manifest.yaml:250-254 (the comment: comment out `llm`, uncomment `llm-openai`), Makefile:258-259 (`var/bin/llm-openai` is built either way); core/catalog.nim:665-673 (a duplicate tool name refuses the registration); components/llm-openai/main.go:200-215 (one `chat` tool, `hidden`), :170-189 (no `finish_reason`), components/llm/main.go:1140 (`llm_resolve`, absent from the example), core/conversation.nim:1783-1785 (core tolerates its absence), :2220-2221 (the window comes from the reply's `context`)",
+  "old_string": "swap it in via `manifest.yaml` |",
+  "new_string": "swap it in via `manifest.yaml` — comment `llm` out in the same edit, since `chat` is a globally unique tool name and a duplicate registration is refused; `make build` builds `var/bin/llm-openai` either way. Expect nothing beyond the chat contract: no `ev.llm.token` streaming, no cancel, no `finish_reason`, no `llm_resolve` (core degrades gracefully on the last one) |"
+ },
+ {
+  "id": "A803",
+  "slice": "Layout of a running system",
+  "status": "skip",
+  "reason": "merged into A802's edit of the same row (which now names the four things the example does not do) — the long 'what the example does and does not do' paragraph the auditor proposes would be a second rewrite of the same clause. The row's own wording, 'minimal non-streaming example', is not false; the rest of the finding is a property of the example's code (missing `finish_reason` passthrough, no `llm_resolve`, a hardcoded `max_tokens: 32768` and a two-entry context table) and belongs to `components/llm-openai`, reported as a `code` finding here.",
+  "evidence": "components/llm-openai/main.go:170-215 (result shape, one tool, hardcoded max_tokens/context table); components/llm/main.go:1140 (`llm_resolve`); core/conversation.nim:1783-1785 (core tolerates a replaced llm without it)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A820",
+  "slice": "Layout of a running system",
+  "status": "already",
+  "reason": "verified: the `var/approval-sources/`, `var/mcp-results/`, `var/review-receipts/`, `var/fabric-cache/`, `var/plugins/` row matches what the components write — mcp-bridge creates `$NIF_ROOT/var/mcp-results` (0700) for `result-*.json`, git writes the review receipts, fabric its compiled programs, plugins its clones. The auditor's optional '(nothing prunes them)' note is not added: the row already calls them disposable, and the fetch-spool note it would mirror is about a swept directory, not an unswept one.",
+  "evidence": "docs/MANUAL.md:49; components/mcp-bridge/operations.go:148-156 (root = `NIF_ROOT`, else `.`; `$NIF_ROOT/var/mcp-results` created 0700 for `result-*.json`), components/git/main.nim:355 (review receipts), components/fabric/fabric.nim:117 (fabric cache), components/plugins/main.nim:337 (plugin clones), core/approval.nim:97-121 (approval sources written 0600)",
+  "old_string": "",
+  "new_string": ""
+ }
+]

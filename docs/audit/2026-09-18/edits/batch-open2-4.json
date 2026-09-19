@@ -1,0 +1,326 @@
+[
+ {
+  "id": "A537",
+  "slice": "component: builder",
+  "status": "apply",
+  "reason": "The MANUAL names `build`'s three arguments and never says what it returns; the component's own contract is `{ok, lang, name, binary, log}` on success (components/builder/main.nim:104-105,146-147,196-198) and `{ok: false, lang, error}` with the compiler output tail on failure (:100-102,142-144,176-182), and the whole point of the sentence is that a self-extending agent must check that return instead of assuming `var/bin/<name>` exists. The same edit carries the payload facts of the three duplicate rows about this gap (A523 result shape, A553/A557 the real per-command budgets).",
+  "evidence": "docs/MANUAL.md:894-896 (anchor); components/builder/main.nim:96-105,138-147,172-198; sdk/niffler/procutil.nim:70 (runCmd default 120000 ms), 181-189 (UTF-8-safe tail)",
+  "old_string": "2. `build {lang, name, source, files?, defines?}` (the `builder` component)\n   compiles it into `var/bin/` (`files` adds further Go sources, `defines`\n   passes compiler defines)\n",
+  "new_string": "2. `build {lang, name, source, files?, defines?}` (the `builder` component)\n   compiles it into `var/bin/` (`files` adds further Go sources, `defines`\n   passes compiler defines). Check its result instead of assuming the binary\n   exists: `{ok, lang, name, binary, log}` on success, `{ok: false, lang,\n   error}` on failure, where `error` is the compiler's own output tail (2000\n   bytes). No exit code is reported, so a build killed at its internal budget\n   (Nim 120 s, Go and `npm install` 300 s, `tsc` 120 s) reads exactly like a\n   compile error with whatever output it had produced\n"
+ },
+ {
+  "id": "A525",
+  "slice": "component: builder",
+  "status": "apply",
+  "reason": "The TypeScript half of the builder is one env row and one test note: nothing says a ts build needs `node`/`npm` on PATH (refused with `node and npm are required on PATH for ts components`, components/builder/main.nim:149-151), that `package.json`/`tsconfig.json` are generated around a `file:` dependency on `<root>/sdk/ts` (:155-166), or that `var/bin/<name>` is a two-line node wrapper `require`-ing `var/build/<name>/dist/main.js` by absolute path (:186-195). The same edit carries A552 (copying that \"binary\" or wiping `var/` breaks it silently).",
+  "evidence": "docs/MANUAL.md:890-892 (anchor); components/builder/main.nim:148-196; sdk/ts/package.json (the `prepare` build the `file:` dependency triggers); docs/MANUAL.md:401 (NIF_NPM_REGISTRY), 2953-2955 (the test opt-in)",
+  "old_string": "1. writes a component source (Nim: `import niffler/sdk`, typed tool\n   pattern; Go: `import sdk \"niffler.dev/sdk\"`; TypeScript: the `sdk/ts`\n   package — see the system prompt)\n",
+  "new_string": "1. writes a component source (Nim: `import niffler/sdk`, typed tool\n   pattern; Go: `import sdk \"niffler.dev/sdk\"`; TypeScript: the `sdk/ts`\n   package — see the system prompt). A TypeScript build needs `node` and `npm`\n   on PATH (a missing one refuses with `node and npm are required on PATH for\n   ts components`), generates `package.json`/`tsconfig.json` around a `file:`\n   dependency on `<root>/sdk/ts`, and its `var/bin/<name>` is a node wrapper\n   that `require`s `var/build/<name>/dist/main.js` by absolute path — copying\n   that \"binary\" elsewhere, or deleting `var/build/`, breaks the component with\n   no error message explaining why\n"
+ },
+ {
+  "id": "A550",
+  "slice": "component: builder",
+  "status": "apply",
+  "reason": "Nothing in the MANUAL explains how to pick up new code for a component that is already running. `kill` keeps the record (core/dispatch.nim:347-356) while `spawn` refuses a name that is still supervised (`component already supervised: <name>`, core/dispatch.nim:331), and the rebuild only renames a fresh binary over `var/bin/<name>` — so the running process keeps executing the old inode until it is killed. Step 4 is the kill/remove step, the natural home for the pairing.",
+  "evidence": "docs/MANUAL.md:900-903 (anchor); core/dispatch.nim:331 (spawn refusal), 347-356 (kill drops the child, keeps the record); components/builder/main.nim:103,145,195 (fresh binary moved over `var/bin/<name>`)",
+  "old_string": "4. `kill {name}` stops every replica temporarily (restored on next boot);\n   `remove {name}` stops the group and deletes its persisted record. A runner\n   is killed the same way (`kill {name: \"session-<id>\"}`) but comes back on\n   the next session call, not on the next boot\n",
+  "new_string": "4. `kill {name}` stops every replica temporarily (restored on next boot);\n   `remove {name}` stops the group and deletes its persisted record. A runner\n   is killed the same way (`kill {name: \"session-<id>\"}`) but comes back on\n   the next session call, not on the next boot. A rebuild does not reach a\n   running process — the old binary keeps executing — so picking up new code\n   is `kill` then `spawn`; before that, `spawn` answers `component already\n   supervised: <name>`\n"
+ },
+ {
+  "id": "A549",
+  "slice": "component: builder",
+  "status": "apply",
+  "reason": "The one self-extension failure an agent cannot diagnose from its own tool output: core refuses the *entire* registration when a tool name already exists (core/catalog.nim:665-673, printing `catalog: rejecting <name> — tool '<t>' already provided by <owner>`), the SDK's announce is a fire-and-forget publish (sdk/niffler/sdk.nim:541-542) so the child keeps running and logs `<name> v<ver> online on <url>` (:846-848), and `spawn` still returns `ok`. The handler's own advice is to prefix tools with the component name (components/builder/main.nim:62-65), which is what the entry says. Same finding as A520/A527/A551/A556; this row carries it.",
+  "evidence": "docs/MANUAL.md:3081 (anchor, last Troubleshooting row); core/catalog.nim:665-673; sdk/niffler/sdk.nim:541-542,846-848; components/builder/main.nim:62-65",
+  "old_string": "| session call fails: \"session runner binary missing\" | `var/bin/session` was never built — `make build` |\n",
+  "new_string": "| session call fails: \"session runner binary missing\" | `var/bin/session` was never built — `make build` |\n| `spawn` returned ok, but the component never appears in the catalog | its registration was refused — almost always a tool name that already exists (names are globally unique; prefix yours with the component name). The process stays alive and logs `<name> v<ver> online on <url>`, and core's stdout carries the reason (`catalog: rejecting <name> — tool '<t>' already provided by <owner>`); nothing about it reaches your tool output. Fix the name, rebuild, `core.kill {name}`, then `core.spawn` again |\n"
+ },
+ {
+  "id": "A540",
+  "slice": "component: builder",
+  "status": "apply",
+  "reason": "A cancelled turn does not stop a compile: `build` declares no `x-harness.sessionId` (components/builder/main.nim:49) and `builder` subscribes no `cancel.<component>`, so core's cancel (docs/WIRE.md \"Cancellation\") is dropped and the compiler runs to its own deadline while only the reply is abandoned — the reference implementation that does opt in is `bash` (components/bash/main.nim:55-94). The Troubleshooting table is where the operator meets this.",
+  "evidence": "docs/MANUAL.md:3080 (anchor, the `agent-modified sources` row); components/builder/main.nim:49; docs/WIRE.md \"Cancellation\"; core/dispatch.nim:1403-1421; components/bash/main.nim:55-94",
+  "old_string": "| agent-modified sources | `git restore components/ core/ sdk/ manifest.yaml Makefile` then `make build` (see Recovery) |\n",
+  "new_string": "| agent-modified sources | `git restore components/ core/ sdk/ manifest.yaml Makefile` then `make build` (see Recovery) |\n| a turn was cancelled but a compile keeps running | `build` declares no `x-harness.sessionId` and `builder` subscribes no `cancel.build`, so the cancel is dropped: the compiler runs to its own deadline and only the reply is abandoned. Wait for the tool result before cancelling, or `core.kill {name: \"builder\"}` |\n"
+ },
+ {
+  "id": "A547",
+  "slice": "component: builder",
+  "status": "apply",
+  "reason": "The sentence is true about the repository's own build writes but reads as if it covered a runtime build: the lock (`scripts/with-build-lock.sh`, Makefile:67-68) is taken by `make build`/`make clean` only, `components/builder` has no lock call at all, and `make clean` is `rm -rf var` under it (Makefile:581-582) — so a second terminal can delete `var/bin` and `var/build` underneath a running `builder.build`. Scoping the claim fixes it; the audit's complementary row (A543, NIF_BUILD_LOCK, another batch) keeps the env-var side.",
+  "evidence": "docs/MANUAL.md:2944-2945 (anchor); Makefile:67-68, 581-582; scripts/with-build-lock.sh; `grep -rn with-build-lock components/` empty; tests/t_builder.nim:28-34 (sandbox-local config.nims/nimcache behind the second half of the sentence)",
+  "old_string": "Repository build writes are\nserialized, while agent-built test components use sandbox-local Nim caches.\n",
+  "new_string": "Repository build writes\n(`make build`, `make clean`) are serialized by `scripts/with-build-lock.sh`;\na runtime `builder.build` does not take that lock, so a `make clean` in a\nsecond terminal deletes `var/bin` and `var/build` under a running build.\nAgent-built test components use sandbox-local Nim caches.\n"
+ },
+ {
+  "id": "A536",
+  "slice": "component: builder",
+  "status": "already",
+  "reason": "No pass had to fix this — the auditor's own check passed, and the claim is still exact: the quote is present verbatim at docs/MANUAL.md:184-185, and `--minimal` still filters the manifest to `minimalComponents = [\"store\", \"bash\", \"llm\"]` (core/niffler.nim:25) with every other entry skipped (core/niffler.nim:473). Persisted `component` records really are left in the store (the next paragraph of the MANUAL says so).",
+  "evidence": "docs/MANUAL.md:184-185; core/niffler.nim:25,473",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A548",
+  "slice": "component: builder",
+  "status": "already",
+  "reason": "The claim is present and accurate — nothing to change. `NIF_TEST_NETWORK=1` gates the real `plugin_search` (GitHub) and `skill_search` (skills.sh) cases and the TypeScript builder build, whose npm path is exactly what `t_builder` skips without it (tests/t_builder.nim:136-154); the builder refuses a ts build without `node`/`npm` (components/builder/main.nim:149-151) and installs through `NIF_NPM_REGISTRY` when set (:170-175). No earlier pass had to fix it.",
+  "evidence": "docs/MANUAL.md:2951-2955 (anchor, wrapped across lines); tests/t_builder.nim:136-154; components/builder/main.nim:149-151,170-180",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A539",
+  "slice": "component: builder",
+  "status": "code",
+  "reason": "Code fix, not prose: `defines` is declared `JsonNode` (components/builder/main.nim:51), the SDK maps every `JsonNode` parameter to `{\"type\": \"object\"}` (sdk/niffler/sdk.nim:920-921) while the handler only honours a JArray (main.nim:89) — so the schema the model plans against contradicts the only shape that works, and nothing validates arguments against the schema in core (the failure is silent). Declaring `defines: seq[string]` publishes `{\"type\":\"array\",\"items\":{\"type\":\"string\"}}` (sdk/niffler/sdk.nim:924-926) and the macro already unwraps `seq` into `argStrSeq`/`argStrSeqD` (:1109-1113). Writing the wrong type into the MANUAL would enshrine the bug; the duplicate rows A521/A522/A555 describe this same fix.",
+  "evidence": "components/builder/main.nim:50-51,89,70-72; sdk/niffler/sdk.nim:920-926,939-958,1109-1113",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A516",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Not a MANUAL quote: the row is the builder report's own narration of the build flow ('Source → catalog registration'), and the reader-facing half of it is carried by other rows — the returned result and where the artifact lands (A537, applied here; A529/A530 the layout rows, another batch), the fact that the source exists only under `var/build/` (A531/A554), and the rebuild story (A550, applied here). The mechanics it names (`var/bin/<name>.tmp-<pid>`, `moveFile`) are internal, and nothing a reader can act on is missing from the MANUAL without them.",
+  "evidence": "docs/audit/2026-09-18/components/builder.md §1 steps 1-5; components/builder/main.nim:74-75,86-87,103; docs/MANUAL.md:894-896, 52, 355-356",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A517",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "The row describes core's `spawn` contract, which the MANUAL already summarises where a caller meets it (self-extension step 3, plus the `replicas` 1-16 paragraph and the Approvals list naming `spawn`); the precise refusals are the tool schema's own text. Its one load-bearing clause — the persisted `component` record carries no source, so `var/build/` is the only copy — is the subject of A531 (State and configuration, another batch, which owns the 355-356 anchor) and of A554 here, and the `component already supervised` refusal is delivered by A550's applied edit.",
+  "evidence": "core/dispatch.nim:308-346,331,347-356; docs/MANUAL.md:896-909, 932-936; docs/audit/2026-09-18/components/builder.md §1 step 2",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A518",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Internal plumbing already stated at the level the MANUAL promises: a spawned component 'registers itself' (docs/MANUAL.md:896-897) and §Progressive tool discovery's 'Existence is global' says `reg.publish` inserts all its tools into core's catalog while `reg.depart` removes them (docs/MANUAL.md:1862-1867). The SDK/NATS subject names and payload struct (`regPayload`) belong to docs/WIRE.md, not to the operator manual.",
+  "evidence": "docs/MANUAL.md:896-897,1862-1867; sdk/niffler/sdk.nim:530-540,846; core/catalog.nim:640-680",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A519",
+  "slice": "component: builder",
+  "status": "already",
+  "reason": "The MANUAL already says exactly this and no pass had to fix it: self-extension step 3 promises that a new component's tools are direct in a new conversation and reach existing ones through `discover` + `invoke`, §Progressive tool discovery defines the three exposure levels, and both builder tools really are `onDemand` (components/builder/main.nim:49,203 — the shipped-components row says so). The row was the auditor's confirmation of the MANUAL's text, not a gap.",
+  "evidence": "docs/MANUAL.md:894-899, 1866-1874, 63; components/builder/main.nim:49,203",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A520",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Folded into A549 (applied here), which is the same finding in its actionable form: the Troubleshooting entry states the refusal, the `online` line the process keeps printing, the `catalog: rejecting …` trace on core's stdout and the fact that `spawn` said ok. The SDK internals the row quotes (`announce` publishes and checks no reply; `regPayload` shape) are wire-spec material.",
+  "evidence": "sdk/niffler/sdk.nim:541-542,846-848; core/catalog.nim:665-673; docs/MANUAL.md:3082 (the row A549 adds)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A521",
+  "slice": "component: builder",
+  "status": "code",
+  "reason": "Same code fix as A539 (see there): the published schema type for `defines` is wrong in components/builder/main.nim, not in the MANUAL. `JsonNode` → `object` (sdk/niffler/sdk.nim:920-921) versus a handler that only reads a JArray (main.nim:89); `defines: seq[string]` is the two-word repair the SDK already supports. No prose can make the schema the model sees agree with the handler, so documenting it would only record the defect.",
+  "evidence": "components/builder/main.nim:51,89; sdk/niffler/sdk.nim:920-926; live `catalog {op:\"schemas\",tools:[\"build\"]}` returns `\"defines\": {\"type\": \"object\", ...}`",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A522",
+  "slice": "component: builder",
+  "status": "code",
+  "reason": "Code fix (a doc comment in the component, which is the tool schema's source of truth): the `- defines:` line breaks after the colon and its continuation is indented two extra spaces (components/builder/main.nim:70-72), so the SDK's doc extractor takes `Optional array of Nim compile defines, e.g. \\[\\\"ssl\\\"] for` as the parameter doc and appends the sentence's tail to the end of the *tool* description (sdk/niffler/sdk.nim:939-958). Unwrapping that one comment line is the whole repair; the MANUAL is not the schema's source.",
+  "evidence": "components/builder/main.nim:70-72; sdk/niffler/sdk.nim:939-958; live `catalog {op:\"schemas\"}` shows the truncated parameter description",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A523",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Folded into A537 (applied here): this row is the shorter statement of the same missing content (the result shape of `build`), and A537's edit is where the MANUAL gains it — one anchor, one sentence, no second edit of the same absence.",
+  "evidence": "docs/MANUAL.md:894-896 (A537's anchor); components/builder/main.nim:104-105,146-147,196-198",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A524",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Same finding as A535 (another batch), which owns the anchor that can carry it — the shipped-components `builder` row (docs/MANUAL.md:63) — and whose fix lists exactly these rules (`files` is Go-only, ≤64 flat `*.go` files, ≤2 MB, silently ignored by Nim/TS builds). A second edit of the same paragraph would collide; my A537 edit documents the budgets, and A525's carries the ts side.",
+  "evidence": "components/builder/main.nim:111-130 (Go-only, 64 files, 2 MB), 82-105,148-198 (Nim/TS never read `files`); docs/MANUAL.md:63 (A535's anchor)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A526",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Split across rows that own their anchors and are decided elsewhere: the lock's scope is A543 (Environment variables, another batch) and the changed half of the Testing sentence is A547 (applied here), while 'make clean orphans agent-built components' is A531 (State and configuration, another batch — the MANUAL.md:355-356 anchor that must change). This row named both, so it adds no separate location.",
+  "evidence": "Makefile:67-68,581-582; scripts/with-build-lock.sh; core/niffler.nim:505-507; core/dispatch.nim:340-343; docs/MANUAL.md:355-356 (A531's anchor), 482 (A543's anchor), 2944-2945 (A547, applied)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A527",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "A summary row whose two failure modes are delivered by A549 and A550 (both applied here): the silently refused registration and the rebuild that needs `kill` before `spawn`. Nothing in it asks for MANUAL text that those two Troubleshooting/step-4 edits do not add.",
+  "evidence": "core/catalog.nim:665-673; core/dispatch.nim:331; docs/MANUAL.md:3082 (A549) and 903 (A550)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A528",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "A four-part aggregate whose parts are owned by rows that already have their anchors: the `name` rules and the `files`/`defines` shapes are A535 (Layout, another batch — the shipped-components row); the advertised-5-minutes-versus-real-2-minute budget is A538 (code fix, another batch) and is documented as a fact by A537 (applied here); the cancelled-turn behaviour is A540 (applied here). The `config.nims` dependency of a Nim build is repository mechanics, not MANUAL material.",
+  "evidence": "components/builder/main.nim:12-45 (name/define/Go-name validators), 89; core/niffler.nim (minimal); config.nims:12-23,62-68; docs/MANUAL.md:63, 3080-3082",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A551",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Folded into A549 (applied here): this is the 'three behaviours' list item for the refused-registration failure, and A549's Troubleshooting row is the MANUAL text that answers it.",
+  "evidence": "docs/MANUAL.md:3082; core/catalog.nim:665-673; sdk/niffler/sdk.nim:541-542,846-848",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A552",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Folded into A525 (applied here): the ts wrapper's absolute-path `require` into `var/build/` is written into self-extension step 1 by A525's edit, including the consequence this row states (copying `var/bin/<name>` elsewhere or wiping `var/` breaks it with no error message).",
+  "evidence": "components/builder/main.nim:186-195; docs/MANUAL.md:890-892 (A525's anchor)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A553",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Fold of the same fact twice: the real Nim budget (120 s, `sdk/niffler/procutil.nim:70`) against the advertised 300 s is documented by A537's applied edit, and the mismatch itself is the code fix in A538 (Layout, another batch). This row is the bullet-list duplicate of A557.",
+  "evidence": "components/builder/main.nim:49,96-99; sdk/niffler/procutil.nim:70; core/dispatch.nim:1638-1641; docs/MANUAL.md:897-902 (A537's new text)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A554",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Same finding as A531 (State and configuration, another batch), and A531 owns the anchor that has to change — the false sentence at docs/MANUAL.md:355-356 ('everything derived is `var/` ... a boot rebuilds the world'). Its fix text is this row's content almost verbatim (the source lives only in `var/build/`, the `component` record carries no source, the next boot warns `missing binary for <name>`). Applying a second edit to that sentence would break the parent's all-or-nothing apply.",
+  "evidence": "docs/MANUAL.md:355-356 (A531's anchor); core/dispatch.nim:340-343; core/niffler.nim:505-507; components/builder/main.nim:74-75",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A555",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Folded into A539 (code, this batch): the broken-on-the-wire `defines` parameter is a component defect (wrong declared type plus a wrapped doc line), and A539 is the row that describes the repair; the MANUAL should not describe the schema as it is today when the fix is two words in components/builder/main.nim.",
+  "evidence": "components/builder/main.nim:51,70-72,89; sdk/niffler/sdk.nim:920-926,939-958",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A556",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Folded into A549 (applied here): this is the 'five findings that matter most' wording of the refused-registration story, and A549's Troubleshooting entry carries both the symptom and the diagnosis (`catalog: rejecting …` on core's stdout, `spawn` returning ok).",
+  "evidence": "core/catalog.nim:665-673; sdk/niffler/sdk.nim:541-542; docs/MANUAL.md:3082",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A557",
+  "slice": "component: builder",
+  "status": "skip",
+  "reason": "Folded into A537 (applied here), which states the real per-command budgets (Nim 120 s, Go and `npm install` 300 s, `tsc` 120 s) and that no exit code reaches the result; the advertisement itself is A538's code fix (another batch). Nothing is left for a third edit — and A553 is the same row in bullet form.",
+  "evidence": "components/builder/main.nim:49,96-99,138-141,170-180; sdk/niffler/procutil.nim:70; docs/MANUAL.md:897-902",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A638",
+  "slice": "component: recall",
+  "status": "apply",
+  "reason": "The MANUAL never says what a prune notice looks like, yet that marker is the only thing that tells a model (or an operator reading a transcript) that content was replaced and how to get it back. Verified in core/conversation.nim: prune thresholds/kept spans are the constants `pruneThreshold = 8192`, `pruneHead = 4096`, `pruneTail = 1024` (:603-605), the marker is built as `[tool result middle pruned: N bytes omitted — recall the original with context_recall {\"ref\": {\"source\": …, \"id\": <canonical seqNo>}}]` (:739-742), `source` is `spill` exactly when the result was spill-backed and its promoted document re-verified (:719-735), the edit is skipped for an already-pruned body or one that would not shrink (:717-718,744), and the notice's `id` is what `recall` resolves (`components/recall/main.nim:222-224`). The same edit carries A633's residual fact (the resolver is on demand, not hidden, so a `tools`-allowlisted conversation refuses it) — see the dispatch gate in core/dispatch.nim:1513-1536, which exempts a tool only when it is both hidden and `runner`-flagged, while `context_recall` is `onDemand` + `runner` (components/recall/main.nim:249-250).",
+  "evidence": "docs/MANUAL.md:887 (`## Self-extension and component lifecycle`, the anchor) — the bullet lands as the last item of §Context window; core/conversation.nim:603-605,717-744; core/dispatch.nim:1513-1536; components/recall/main.nim:222-224,249-250",
+  "old_string": "## Self-extension and component lifecycle\n",
+  "new_string": "- The prune step is byte-exact and model-free: a tool result over 8192 bytes is\n  rewritten as its first 4096 bytes, an `[tool result middle pruned: N bytes\n  omitted — recall the original with context_recall {\"ref\": {\"source\": \"spill\",\n  \"id\": \"<convId>:<seq>\"}}]` marker, and its last 1024 bytes — never twice,\n  and never when the result would not shrink. The marker's `source` is `spill`\n  exactly when the result was spill-backed and the promoted document\n  re-verified, else `canonical`, and its `id` is the canonical seqNo the notice\n  quotes, so it can be passed straight back to `context_recall`. Those three\n  numbers are constants, not configuration. `context_recall` itself is on\n  demand, not hidden: `discover` lists it, `invoke` accepts it and a bare name\n  still dispatches, but a conversation frozen with a `tools` allowlist refuses\n  it like any tool outside that list — the one case where a prune or spill\n  notice's instruction cannot be followed.\n\n## Self-extension and component lifecycle\n"
+ },
+ {
+  "id": "A633",
+  "slice": "component: recall",
+  "status": "skip",
+  "reason": "Folded into A638's applied edit, which carries this row's one non-duplicated fact: in a conversation frozen with a `tools` allowlist the resolver is refused at the gate, so a prune notice's instruction cannot be followed (core/dispatch.nim:1513-1536; `context_recall` is `onDemand`, not `hidden`, so it is not runner-exempt). The other half — 'exposure is not a dispatch ACL', discover lists it, invoke accepts it, a bare call by name still dispatches — is already MANUAL text at docs/MANUAL.md:1877-1879, is finished by A631's row (the on-demand row gains 'or a direct call by name') and named by A646, which adds `context_recall` to the on-demand inventory.",
+  "evidence": "docs/MANUAL.md:1877-1879 (already states it), 3087 (A638's new bullet); core/dispatch.nim:1513-1536; core/catalog.nim:441-446,465-475; A631/A646 (another batch)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A639",
+  "slice": "component: recall",
+  "status": "skip",
+  "reason": "Too minor for the MANUAL and owned by the tool schema the model reads: `mode: match` is documented in `context_recall`'s own schema ('match/search mode: max results (default 50 / 20)'), the resolver's doc comment states it greps one document's lines, and the MANUAL has no per-argument reference for this component. The byte behaviour is real (components/recall/main.nim:52-66 caps only the line count, unlike `full`'s 262 144-byte ceiling at :36-44,66) but it is a schema-level nuance, not operator material — and the section that would carry it is being rewritten by other open rows (A634-A637).",
+  "evidence": "components/recall/main.nim:36-44,52-66,215-246; docs/MANUAL.md:864-885 (A634-A637's anchors), 864-866",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A640",
+  "slice": "component: recall",
+  "status": "code",
+  "reason": "Code fix, not prose: `context_recall {mode: \"search\", session: \"<any conversation id>\"}` reads that conversation's canonical history with no ownership check — `searchConversation` takes the explicit `session` argument and greps `storeListAll(\"message\", conv & \":\")` (components/recall/main.nim:84-124), and the handler prefers an explicit `session` over the injected `__session.session` (:255-262). The repair is a lineage check (this conversation or one of its descendants) before the search, the durable `sessionmeta.parent` authorization the `agent` component already uses (components/agent/main.nim:493-585, walk at :1590-1592); the alternative — documenting it — would advertise a wider cross-conversation read than any other surface in the harness. Duplicate row A637's sibling, A640 is the only owner of this finding.",
+  "evidence": "components/recall/main.nim:84-99 (the search), 249-262 (sessionId + explicit session, no check); components/agent/main.nim:493-585,1590-1592; docs/WIRE.md \"Subagent continuation\" (the lineage rule stated for agent runs)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A641",
+  "slice": "component: recall",
+  "status": "skip",
+  "reason": "Two reasons, both fold-related: the array form and its independent degradation are already written into the schema the model reads — `\"ref\": {\"description\": \"One reference ({source, id}) or an array of them …\", \"oneOf\": [{object},{array}]}` (components/recall/main.nim:222-224) with the per-item error entry built at :340-348 — and the MANUAL anchor where a reader would meet the ref shape (the store kind table's `spill` row, docs/MANUAL.md:2905) belongs to A642/A643 (The store, another batch). No separate MANUAL sentence is warranted for the degradation rule.",
+  "evidence": "components/recall/main.nim:222-224,340-348; docs/MANUAL.md:2905 (A642/A643's anchor)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A645",
+  "slice": "component: recall",
+  "status": "skip",
+  "reason": "A trim row whose fix is an addition of test-inventory detail the MANUAL deliberately does not carry: §Testing points at `make help`/`make test-<component>` instead of enumerating per-component coverage (docs/MANUAL.md:2921-2932), and the fact that `tests/t_recall.nim` pins the registration flags (`onDemand` set, `hidden` absent, `sessionId` declared — tests/t_recall.nim:84-99) with `make test-recall` (Makefile:515) and the round-trips in `tests/t_ctxcompact.nim:682-731`/`tests/t_compaction.nim:266-273` belongs in those files, not in the operator manual.",
+  "evidence": "tests/t_recall.nim:84-99; Makefile:447,515; tests/t_ctxcompact.nim:682-731; tests/t_compaction.nim:266-273; docs/MANUAL.md:2921-2932 (the Testing preamble)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A806",
+  "slice": "Provider registry (provider)",
+  "status": "apply",
+  "reason": "The paragraph's claim is protocol-wide but not adapter-wide: `components/llm-openai/main.go` neither decodes `choices[0].finish_reason` (the response struct at :118-140 has no such field) nor returns one (the result map at :155-190 carries content/model/context/usage/tool_calls only), so with that adapter swapped in both consumers of the field go quiet — core's empty-reply diagnosis, which ends the turn with `the provider cut the reply at the output cap before any content` when `content.len == 0 and finish_reason == \"length\"` (core/conversation.nim:2315-2338) and would otherwise re-ask it as an ordinary empty reply, and the `llm` component's truncation warning (`WARN chat truncated at the output cap finish_reason=…`, components/llm/main.go:1050). One clause fixes the MANUAL. Note for code-bugs.md (the auditor's preferred repair, out of scope here): decode `finish_reason` in components/llm-openai/main.go and return it, so every adapter feeds the same vocabulary.",
+  "evidence": "docs/MANUAL.md:1176-1178 (anchor); components/llm-openai/main.go:118-140,155-190; core/conversation.nim:2315-2338; components/llm/main.go:1050; docs/MANUAL.md:66 (the example's swap-in note)",
+  "old_string": "are surfaced as a retryable stream error, not as a reply.\n",
+  "new_string": "are surfaced as a retryable stream error, not as a reply. An adapter that never\nreports `finish_reason` loses both signals — no truncation warning, and an empty\ncompletion cut at the cap retried as an ordinary empty reply instead of ending\nthe turn with `the provider cut the reply at the output cap before any\ncontent`; the `llm-openai` example returns none.\n"
+ },
+ {
+  "id": "A807",
+  "slice": "Provider registry (provider)",
+  "status": "already",
+  "reason": "No pass had to fix this; the wording is present and the auditor's own check passed. The warning sits at docs/MANUAL.md:1165-1168 ('Niffler's default spelling is `max_completion_tokens`; DeepSeek honors only `max_tokens` … send `max_tokens` for DeepSeek endpoints'), and the example adapter is on the correct side of it (`components/llm-openai/main.go:84-91` sends `max_tokens: 32768`), so nothing is wrong or missing. The optional half of the fix — citing the example as the reference — is cosmetic and would duplicate the shipped-components row's `llm-openai` mention (docs/MANUAL.md:66).",
+  "evidence": "docs/MANUAL.md:1165-1168; components/llm-openai/main.go:84-91",
+  "old_string": "",
+  "new_string": ""
+ }
+]

@@ -1,0 +1,326 @@
+[
+  {
+    "id": "A605",
+    "slice": "Context window",
+    "status": "already",
+    "reason": "The bullet is accurate today: admission runs the lossless tool-result prune, the configured compactor gets the next chance at pressure, only a decline/invalid/timeout/still-oversized candidate falls through to the oldest-complete-turn trim, and an unfittable candidate ends with the explicit `context-recovery-required` error. No wording change needed.",
+    "evidence": "core/conversation.nim:884-896 (`checkContext` doc comment: 'prune -> configured compactor -> trim -> explicit context-recovery-required'), :920-925 (reset:prune from admission), :1983-2002 (pressure -> attemptCompaction, then runTrimRung), :2008-2018 (context-recovery-required error record); docs/MANUAL.md:830-834.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A606",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "Adds the selection mechanics the MANUAL lacks: the value is a tool name resolved in the catalog (not a component name), and an empty or unregistered value skips the rung and is reported by `/compact`.",
+    "evidence": "core/compaction.nim:47 (`getEnv(\"NIF_COMPACTION_TOOL\", \"compaction_propose\")`), core/conversation.nim:1451-1453 (`cfg.tool.len == 0 or ct.cat.toolSchema(cfg.tool) == nil` -> no attempt), :1989-1991 (the automatic ladder requires a non-empty tool name and a catalog schema), :2971-2982 (`compacted: false, reason: \"no compaction component available (NIF_COMPACTION_TOOL=<value>)\"`); docs/MANUAL.md:718-726 already describes `/compact` as the manual trigger.",
+    "old_string": "- The shipped `compaction_propose` is replaceable: set\n  `NIF_COMPACTION_TOOL=<tool>` to select another contract-v1 implementation,\n  or set it to empty to disable summarization while keeping the deterministic\n  guard.",
+    "new_string": "- The shipped `compaction_propose` is replaceable: set\n  `NIF_COMPACTION_TOOL=<tool>` to select another contract-v1 implementation,\n  or set it to empty to disable summarization while keeping the deterministic\n  guard. The value is a **tool name**, not a component name: the runner resolves\n  it in the catalog and dispatches to whichever component registered it, so a\n  replacement can live in any component. An empty or unregistered value skips\n  the rung in the automatic ladder and makes `/compact` answer `compacted:\n  false` with `reason: \"no compaction component available\n  (NIF_COMPACTION_TOOL=<value>)\"`."
+  },
+  {
+    "id": "A607",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "The MANUAL calls this seam 'contract-v1' without stating the contract. The row is classed code-bug?, but the code is right — what is missing is the documented contract a replacement tool must satisfy, so the fix is prose. Its closing clause also folds in A624 (no separate honest anchor exists for that row, which is why A624 is decided skip below).",
+    "evidence": "core/conversation.nim:1541-1562 (the request object: version 1, sessionId, attemptId, trigger, snapshot{ref,generation,canonicalHigh,digest}, budget), :1620-1624 (provenance.llmCalls above the grant -> compact:invalid), :1628-1634 (covered nodes re-hashed against the snapshot -> compact:stale); components/compaction/main.nim:207-224 (schema: required version/sessionId/attemptId/snapshot/budget), :227-232 (attemptId/digest/generation mismatch -> `stale-snapshot`), :233-237 and :277-282 (declines `no-useful-cut`, `indivisible`, `input-budget-exceeded`), :296-303 (candidate shape and provenance {model, llmCalls}); core/compaction.nim:197-199 (the stable decline reasons and the six checkpoint fields), :282-325 (checkpoint validation: missing field, unknown field, per-field bounds, encoded-size bound).",
+    "old_string": "  `NIF_COMPACTION_MAX_SUMMARY_TOKENS` bound each attempt.",
+    "new_string": "  `NIF_COMPACTION_MAX_SUMMARY_TOKENS` bound each attempt. The seam is a\n  versioned contract: a candidate tool is called with `{version: 1, sessionId,\n  attemptId, trigger, snapshot: {ref, generation, canonicalHigh, digest},\n  budget: {…}}` and answers either `{version: 1, status: \"declined\", attemptId,\n  reason}` with one of the three stable reasons (`no-useful-cut`,\n  `input-budget-exceeded`, `indivisible`), or `{version: 1, status:\n  \"candidate\", attemptId, baseGeneration, snapshotDigest, cutBefore, covered,\n  checkpoint, provenance: {model, llmCalls}}`, where `checkpoint` carries\n  exactly `objective`, `constraints`, `decisions`, `completedWork`,\n  `currentBlocker`, `nextSteps` and optional `files`. Anything else is rejected\n  as invalid and falls through to trim — as is a `provenance.llmCalls` above the\n  granted `NIF_COMPACTION_MAX_LLM_CALLS`, and a component that finds the\n  request's `attemptId`, `digest` or `generation` disagreeing with the snapshot\n  it reads refuses the call with `stale-snapshot`."
+  },
+  {
+    "id": "A608",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "Adds the snapshot/checkpoint bounds and the runner-owned render template the bullet alludes to but never states.",
+    "evidence": "core/compaction.nim:22 (`compactionSnapshotPageBytes = 512_000`), :29-32 (`ckMaxFieldLen = 4000`, `ckMaxListLen = 32`, `ckMaxFiles = 64`, `ckMaxTotalBytes = 65_536`), :33-34 (`rendererId = \"checkpoint-v1\"` — 'a candidate stored by one implementation reloads under another'), :150-183 (`renderCheckpoint`); core/conversation.nim:1650-1652 (the rendered checkpoint is what the provider sees) and :2707 (reload rejects any other renderer).",
+    "old_string": "  `context_projection` document with optimistic `expectRev`.",
+    "new_string": "  `context_projection` document with optimistic `expectRev`. Snapshot pages are\n  512000 bytes, so one huge message cannot oversize a bus message; the\n  checkpoint is bounded (objective and list items ≤ 4000 characters, ≤ 32 items\n  per list, ≤ 64 files, ≤ 65536 bytes encoded) and is rendered by the\n  runner-owned `checkpoint-v1` template, so a checkpoint stored by one compactor\n  reloads identically under another."
+  },
+  {
+    "id": "A609",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "States who measures strict reduction (the runner, never the candidate's claim) and the covered-node re-hash that precedes the commit.",
+    "evidence": "core/compaction.nim:143-146 (`strictlyReduces` — 'Candidate acceptance is based on the runner's own measurement, never a component's claimed savings'); core/conversation.nim:1628-1634 (covered nodes re-hashed against the persisted manifest digest -> compact:stale), :1650-1659 (renderCheckpoint + estimateTokens + strictlyReduces -> compact:invalid), :1678-1687 (commit with expectRev).",
+    "old_string": "  generation/digest/cut/schema/size and strict reduction, then commits one",
+    "new_string": "  generation/digest/cut/schema/size, re-hashes the covered nodes against the\n  snapshot, and measures strict reduction itself (the rendered checkpoint's\n  estimated tokens must be below the covered span's), then commits one"
+  },
+  {
+    "id": "A610",
+    "slice": "Context window",
+    "status": "already",
+    "reason": "Verified accurate: the shipped `compaction_propose` only reads the snapshot and calls the LLM; it has no store-write path at all, while the projection record is written by the runner.",
+    "evidence": "components/compaction/main.nim:64-90 (the only store calls are `storeGet` of the `compaction_input` meta and one per page) and :207-303 (the whole handler — no `storePut`); core/conversation.nim:1678-1687 (`context_projection` put with `expectRev` lives in the runner).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A612",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "Names the non-reset `ev.session.context` reasons the compaction rung emits and the payload of the successful one, so 'these are the only intentional prompt-prefix rebuilds' reads as a complete statement.",
+    "evidence": "core/conversation.nim:1578-1581 (compact:failed + error), :1600-1609 (compact:declined with `detail` = stable reason; compact:invalid with detail), :1620-1624 (claimed-call-budget -> compact:invalid), :1652-1659 (strict-reduction -> compact:invalid), :1630-1634 (compact:stale), :1725-1731 (reset:compact carries generation, covered, beforeTokens, afterTokens); docs/MANUAL.md:857-860 (the sentence being amended).",
+    "old_string": "  intentional prompt-prefix rebuilds and make cache misses attributable.",
+    "new_string": "  intentional prompt-prefix rebuilds and make cache misses attributable. The\n  compaction rung also reports non-reset reasons, which never rebuild the prefix:\n  `compact:failed` (dispatch error or timeout), `compact:declined` (with\n  `detail` = the stable decline reason), `compact:invalid` (schema, bounds,\n  claimed-call-budget or strict-reduction failure) and `compact:stale` (the\n  covered span changed under the attempt); the successful `reset:compact` event\n  carries `generation`, `covered`, `beforeTokens` and `afterTokens`."
+  },
+  {
+    "id": "A627",
+    "slice": "Context window",
+    "status": "already",
+    "reason": "Verified accurate: an empty `NIF_COMPACTION_TOOL` disables summarization while the deterministic prune/trim guard keeps running — the wording is exactly what the code does.",
+    "evidence": "core/compaction.nim:33-34 (`tool*: string  ## \"\" = summarization disabled; the guard still runs`), core/conversation.nim:1451-1453 (attemptCompaction returns immediately on an empty tool name), :1989-1991 (the ladder skips the rung), :2971-2982 (`/compact` answers `compacted: false`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A634",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "Documents what a `checkpoint` ref returns and that it refuses a superseded generation — the ref every rendered checkpoint hands the model.",
+    "evidence": "components/recall/main.nim:187-217 (`of \"checkpoint\"`: returns `{ref, checkpoint, generation}` from the `context_projection` record, uses neither mode/query/offset/limit, and raises 'is superseded (current generation N; its state has been absorbed into the current checkpoint)'); core/compaction.nim:175-179 (the render frame emits exactly that ref); core/conversation.nim:1600-1652 (an absorbed previous checkpoint is merged into the new generation).",
+    "old_string": "  `context_recall` resolves canonical/spill/current-checkpoint refs, and its",
+    "new_string": "  `context_recall` resolves canonical/spill/current-checkpoint refs; a\n  `checkpoint` ref returns the projection's structured checkpoint plus its\n  `generation` (not paged text), ignores `mode`/`offset`/`limit`, and is refused\n  when it names a superseded generation — that state has been absorbed into the\n  current checkpoint, which is the one to read — and its"
+  },
+  {
+    "id": "A635",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "Tightens 'the whole canonical history' to the `message` documents the search really reads and says explicitly that spill bodies and checkpoints are not searched, which the old wording invited readers to assume.",
+    "evidence": "components/recall/main.nim:86-120 (`mode == \"search\"` -> `searchConversation`), :103 (`c.storeListAll(\"message\", conv & \":\")` — canonical message records only), :237 (the tool description says the same), :142-217 (canonical/spill/checkpoint bodies are reached only through `ref`); docs/MANUAL.md:862-867 (the sentence being amended).",
+    "old_string": "  `mode: search` greps the whole canonical history — including the span a trim\n  dropped, where no notice names individual refs.",
+    "new_string": "  `mode: search` greps the conversation's whole canonical `message` history —\n  every message, including the span a trim or compaction dropped, where no notice\n  names individual refs (search reads `message` documents only; spill bodies and\n  checkpoints are never searched, their refs resolve them)."
+  },
+  {
+    "id": "A636",
+    "slice": "Context window",
+    "status": "apply",
+    "reason": "Adds the durability caveat the bullet lacks: the omission notice is projection-only, so a restarted runner rebuilds the trim silently and `mode: search` is the only way back into the dropped span.",
+    "evidence": "core/conversation.nim:801-809 (the trim inserts a `role: system` notice node with source `nsNotice`, naming no recall ref), :2767-2800 (the `trimThrough` reload path filters `canonicalSeq <= trimThrough` and re-adds nothing), components/recall/main.nim:103 (search walks `message` documents, projection or not); docs/MANUAL.md:882-885 (the sentence being amended).",
+    "old_string": "  post-trim usage. Dropped turns remain in canonical history for\n  `context_recall`.",
+    "new_string": "  post-trim usage. Dropped turns remain in canonical history for\n  `context_recall`, but today the omission notice is projection-only: a resumed\n  runner rebuilds the trimmed projection from `trimThrough` and does not\n  re-create it, so after a restart nothing tells the model the dropped span\n  exists. `mode: search` is the only way back into trimmed history — the notice\n  carries no recall ref, because a whole-turn drop covers many messages."
+  },
+  {
+    "id": "A637",
+    "slice": "Context window",
+    "status": "code",
+    "reason": "Real gap, code-side, and the row's own preferred fix: re-insert the omission notice on the `trimThrough` reload path so a restarted conversation keeps a durable pointer to the dropped span. Not a MANUAL edit — the MANUAL now documents the current behavior (A636, applied by this batch), and 'the originals remain in canonical history' is only discoverable while the trimming run is alive.",
+    "evidence": "core/conversation.nim:801-809 (the notice node is created only by `trimTurns`), :2767-2800 (resume filters the dropped span out of the projection with nothing re-inserted; `nsNotice` nodes are projection-only and never persisted as messages), components/recall/main.nim:103 (search still reaches the messages, so the loss is awareness, not data).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A652",
+    "slice": "Context window",
+    "status": "already",
+    "reason": "Verified accurate: grep/files declare exactly the workspace policy the bullet describes, so `.`/empty/relative `path` resolves at the conversation workspace for session-driven calls. The auditor's only nuance (a direct `cli call grep grep` resolves at the component's cwd) lies outside the bullet's claim.",
+    "evidence": "components/grep/main.nim:52-54 (grep) and :100-102 (files): `\"workspace\": {\"pathFields\": [\"path\"], \"defaultPathFields\": [\"path\"]}`; core/dispatch.nim:1415-1435 (workspace roots per conversation), :1476-1489 (path substitution at dispatch); docs/MANUAL.md:795-797.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A676",
+    "slice": "Context window",
+    "status": "code",
+    "reason": "The MANUAL is right today — the earlier pass rewrote the status-event cache sentence to the real shape (`cache {prompt, read, hitRate}` plus the header's `cachePrompt`/`cacheRead`/`cacheHitRate`, docs/MANUAL.md:809-813). The stale field names live in a component README, which this flow does not edit: the fix belongs in components/hooks/README.md, not docs/MANUAL.md.",
+    "evidence": "components/hooks/README.md:41 still lists `cacheHitTokens`, `cacheHitRatio` and `usage` under `ev.session.>.status`; core publishes `sessionId, turnId, provider, model, context, promptTokens, usedTokens, thinkingEffort`, an optional `usage` and a nested `cache {prompt, read, hitRate}` (core/conversation.nim:2232-2249), and keeps `cachePrompt`/`cacheRead`/`cacheHitRate` in the conversation header (:465-477).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A563",
+    "slice": "The bus in one screen",
+    "status": "apply",
+    "reason": "The cli's exit codes are part of the CI story the sentence tells, and the MANUAL states only the success case.",
+    "evidence": "components/cli/main.nim:119-138 (catalog: 1 when core is unreachable or the catalog is empty), :141-160 (call: 1 on failure), :162-211 (install: 1 on any failed component), :214-218 (`usage()`), :232-236 (bad `--timeout` -> 2), :238-239 (unknown option -> 2), :240-242 (no command -> 2), :273-276 (unknown command -> 2), :146-148 (bad JSON args -> 2), :267 (wait timeout -> 1).",
+    "old_string": "script or pipeline — non-interactive, CI-friendly (exit 0 on success);",
+    "new_string": "script or pipeline — non-interactive, CI-friendly (exit 0 on success, 1 on\nfailure, 2 on a usage error or bad JSON);"
+  },
+  {
+    "id": "A564",
+    "slice": "The bus in one screen",
+    "status": "apply",
+    "reason": "Documents what `catalog` actually prints (the harness identity line that tells you which clone answered) and its failure exit.",
+    "evidence": "components/cli/main.nim:119-138 (`cmdCatalog`: a leading `# harness: <root> @ <hash>` line when the serving core reported them, then `comp: t, t` per component, `return 1` when core does not answer or the catalog is empty); the component map is a `Table`, so the order is arbitrary.",
+    "old_string": "`cli install` clones, builds via the builder, spawns every component and",
+    "new_string": "`catalog` prints a leading `# harness: <root> @ <gitHash>` line naming which\nclone's core answered, then one `component: tool, tool` line per component\n(unordered); it exits 1 when core does not answer or the catalog is empty.\n`cli install` clones, builds via the builder, spawns every component and"
+  },
+  {
+    "id": "A565",
+    "slice": "The bus in one screen",
+    "status": "apply",
+    "reason": "Adds `wait`'s default and the meaning of `0`, which the usage line alone does not say.",
+    "evidence": "components/cli/main.nim:263-267 (`let secs = if positional.len >= 3: parseInt(positional[2]) else: 60`, then the wait and its two exits), :74-95 (`waitForRegistration`: one bounded snapshot read when secs <= 0, otherwise polling core's accepted catalog).",
+    "old_string": "components are verified by their build. CLI catalog and tool lookup also use core's",
+    "new_string": "components are verified by their build. `wait <component> [secs]` polls core's\naccepted catalog (default 60 s; `0` performs a single read). CLI catalog and tool\nlookup also use core's"
+  },
+  {
+    "id": "A566",
+    "slice": "The bus in one screen",
+    "status": "apply",
+    "reason": "`call`'s two waits are the trap an automation author hits: the cli's own reply budget is not the tool's `x-harness.timeoutMs`.",
+    "evidence": "components/cli/main.nim:141-160 (`cmdCall`: `waitForTool(nc, tool, 60)` at :150, then `callTool(..., timeoutMs)` at :156), :222-223 (the default `timeoutMs = 30_000`), :103-125 (`callTool` -> `natsConnection_Request(..., timeoutMs)`; NATS_TIMEOUT -> 'timed out after Nms'), :232-236 (`--timeout`/`-t`, in seconds).",
+    "old_string": "install from local git repos (hermetic tests, mirrors). Name-based verification",
+    "new_string": "install from local git repos (hermetic tests, mirrors). `call` first waits up to\n60 s for core to accept the tool, then waits `--timeout=<secs>` (default 30 s)\nfor the reply — the cli's own budget, never the tool's `x-harness.timeoutMs`, so\nslow tools need an explicit extension (`cli --timeout=600 call build …`).\nName-based verification"
+  },
+  {
+    "id": "A567",
+    "slice": "The bus in one screen",
+    "status": "code",
+    "reason": "Code, not prose: Nim's parseopt leaves `p.val` empty for the space-separated form, so the `cli [--timeout <secs>]` spelling promised by the usage block always exits 2 with an empty value. Fix in components/cli/main.nim — either consume the next argument for `--timeout 5`, or refuse it with a message pointing at `--timeout=<secs>` — and correct the usage string. The MANUAL documents the working `=` form (A566).",
+    "evidence": "components/cli/main.nim:221 (`initOptParser()`), :232-236 (`of \"timeout\", \"t\": timeoutMs = p.val.parseInt() * 1000` / `echo \"cli: bad --timeout value: \" & p.val; quit(2)`), :214-218 (`usage: cli [--timeout <secs>] <catalog|call|wait|install> ...`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A568",
+    "slice": "The bus in one screen",
+    "status": "code",
+    "reason": "Code, not prose: the positional `secs` of `wait` is parsed unguarded, so `cli wait bash abc` dies with an uncaught ValueError (and a Nim stack trace) instead of the usage block, while the option path guards the same parse. Fix in components/cli/main.nim: wrap the parse, print `usage()` and `quit(2)`.",
+    "evidence": "components/cli/main.nim:263 (`let secs = if positional.len >= 3: parseInt(positional[2]) else: 60` — no try/except, no range check), contrast :232-236 (the `--timeout` parse is guarded and exits 2).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A581",
+    "slice": "The bus in one screen",
+    "status": "apply",
+    "reason": "Says what `console` is (fixed formatting, no flags) and points at the components that can filter and persist — the MANUAL currently shows the command without saying either.",
+    "evidence": "components/console/main.nim:25-30 (`styled`: colors only when `isatty(stdout)`), :31-36 (`chop`), :37-58 (call args 300, result 500, error 300, event payload 500, assistant text 2000), :65-100 (no option parsing at all: connect, subscribe `>`, render until the connection is lost), :102-107 (retry loop, 2 s sleep).",
+    "old_string": "**The cli component** (`./var/bin/cli`) drives the same bus from a",
+    "new_string": "It has no options: it renders every envelope on the bus, one line per message,\nwith call args and errors truncated to 300 characters, results and event\npayloads to 500 and assistant text to 2000 — colors only on a tty. For a\nbounded, filterable, persistent view use `observe`/`logfile`.\n\n**The cli component** (`./var/bin/cli`) drives the same bus from a"
+  },
+  {
+    "id": "A611",
+    "slice": "The bus in one screen",
+    "status": "already",
+    "reason": "Verified accurate: the streaming paragraph's compaction example is exactly what the shipped compactor sends.",
+    "evidence": "components/compaction/main.nim:279-288 (the auxiliary `chat` call carries `\"emitTokens\": false`, `\"purpose\": \"compaction\"` and its own `cancelId`), :200-215 (that call is streamed internally: `stream: true`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A558",
+    "slice": "External MCP servers (mcp)",
+    "status": "code",
+    "reason": "Anchored to the wrong section (the row's quote matched the MCP chapter's Cancellation bullet, but the finding is about the `builder` component, which has no MANUAL chapter) and the underlying gap is code: `build` is a long-running, approval-gated dispatch whose reply is abandoned on a cancelled turn while the compiler keeps running. Fix in the component — declare `\"sessionId\": true` in the build tool's `x-harness` block and subscribe `cancel.build` to kill the compiler's process group, the way `bash` does. No MANUAL sentence should record the wart.",
+    "evidence": "components/builder/main.nim:48-53 (the tool's `x-harness` block is `{\"approval\": \"always\", \"timeoutMs\": 300000, \"onDemand\": true}` — no `sessionId`, and no `cancel.` subscription anywhere in the file); components/bash/main.nim:55-94 (the pattern to follow: `x-harness.sessionId` plus a `cancel.bash` handler that kills the process group); docs/MANUAL.md:1702-1707 (the MCP Cancellation bullet the quote was matched to).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A812",
+    "slice": "External MCP servers (mcp)",
+    "status": "already",
+    "reason": "Verified accurate: the lazy-session bullet's defaults and clamps are exactly what the bridge applies.",
+    "evidence": "components/mcp-bridge/main.go:67-80 (`idle()` = 5 min when unset, `timeout()` = `defaultCallTimeout` (120 s) when unset), :156-200 (`ensure()` connects on demand and reuses a live session), :351-363 (the idle reap loop); components/mcp/validation.go:71-79 (both stored fields clamped to 0..86 400 000 ms = 24 h).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A813",
+    "slice": "External MCP servers (mcp)",
+    "status": "apply",
+    "reason": "'They cannot spoof a session' is stronger than the code: nothing validates `__session` on the direct bus path. The correction keeps the useful part (an unattributed call is cancellable never, and `timeoutMs` is its only bound) and states what the matching really does.",
+    "evidence": "components/mcp-bridge/main.go:96-125 (`begin()` reads `__session.session` straight out of the call's args, records it as the active call's session and never validates it), :134-149 (`cancelCalls` cancels every active call whose recorded session equals the event's `sessionId`), :507 (`Subscribe(\"cancel.\"+comp.Name, b.cancelCalls)`); components/mcp-bridge/operations.go:333 (`\"sessionId\": true` on every tool).",
+    "old_string": "  call immediately. Direct callers (CLI scripts) get `\"\"` — they cannot\n  spoof a session, and unattributed calls are only bounded by `timeoutMs`.",
+    "new_string": "  call immediately. Direct callers (CLI scripts) normally get `\"\"`, and an\n  unattributed call is never cancellable — only its `timeoutMs` bounds it.\n  Nothing validates the field on the direct bus path, so a caller that supplies\n  its own `__session` names the id its call is matched against, and any\n  `cancel.mcp-<server>` carrying that id cancels it."
+  },
+  {
+    "id": "A814",
+    "slice": "External MCP servers (mcp)",
+    "status": "apply",
+    "reason": "Completes the exit story the Shape paragraph starts: besides the disabled record (exit 0) there are two exit-1 paths, and `--probe` also requires `--server`.",
+    "evidence": "components/mcp-bridge/main.go:460-476 (`--server` is validated before the `--probe` branch; the probe's config arrives on stdin), :477-500 (`StoreGet` error -> 1, `json.Unmarshal` error -> 1, `!cfg.enabled()` -> 0 at :490, `cfg.Name != *server` -> 'stored server identity mismatch' + 1 at :497-500).",
+    "old_string": "and exits immediately if that record is disabled.",
+    "new_string": "and exits immediately if that record is disabled. It exits 1 when the record is unreadable or its stored name does not match `--server` (the supervisor then backs off and retries), and `--probe` requires `--server <name>` too — the probe's config arrives on stdin."
+  },
+  {
+    "id": "A816",
+    "slice": "External MCP servers (mcp)",
+    "status": "apply",
+    "reason": "Names a second, non-obvious meaning of the record's `timeoutMs`: it is baked into every tool schema at registration, so it cannot change without respawning the bridge.",
+    "evidence": "components/mcp-bridge/operations.go:333-348 (`xHarness()` puts `\"timeoutMs\": cfg.timeout().Milliseconds()` into every tool's schema), :348-383 (that schema is registered once, at announce, for the server's tools, its resources tool and its prompt tool); main.go:67-80 (`timeout()`, default 120 s).",
+    "old_string": "calls (default `parallel` via the SDK's bounded `ToolConcurrent`).",
+    "new_string": "calls (default `parallel` via the SDK's bounded `ToolConcurrent`). A record's\n`timeoutMs` is not only a runtime budget: the bridge writes it into every tool's\n`x-harness.timeoutMs` at registration, so it is fixed for that bridge process's\nlifetime."
+  },
+  {
+    "id": "A817",
+    "slice": "External MCP servers (mcp)",
+    "status": "apply",
+    "reason": "Makes the per-server approval gate precise: it covers not only the server's own MCP tools but also its generated resources and prompt tools, and it is asked per call (the bridge is a second approval surface beside the manager's).",
+    "evidence": "components/mcp-bridge/operations.go:333-348 (`if cfg.Approval == \"always\" { xh[\"approval\"] = \"always\" }` inside the single `xHarness` helper), :348-383 (that helper is applied to every `mcp_<server>_<tool>`, to the resources tool and to the generic prompt tool); the gate itself is per call (core/approval.nim; docs/WIRE.md \"x-harness schema extensions\").",
+    "old_string": "(`url`+`headers`). `approval: \"always\"` gates every tool of the server with\nthe human approval prompt;",
+    "new_string": "(`url`+`headers`). `approval: \"always\"` gates every one of the server's own\ntools — `mcp_<server>_<tool>`, its resources tool and its prompt tools — with the\nhuman approval prompt, per call;"
+  },
+  {
+    "id": "A531",
+    "slice": "State and configuration",
+    "status": "apply",
+    "reason": "The 'delete `var/` and a boot rebuilds the world' claim has one real exception the MANUAL never states: an agent-built component's source and binary exist only under `var/`, and the persisted `component` record stores neither, so a boot with the outputs gone can only warn and skip.",
+    "evidence": "components/builder/main.nim:73-75 and :83-85 (Nim source written to `var/build/<name_>.nim`, binary to `var/bin/<name>`; Go/TS write whole project directories under `var/build/<name>/`), core/dispatch.nim:339-345 (the stored record is `{name, binary, policy, replicas, args, addedAt}` — no source), core/niffler.nim:614-619 ('core: WARNING stored component <name> has missing binary: <binary>' and no restore).",
+    "old_string": "the browser, and everything derived is `var/` (regenerable — delete it and\n`make build` + a boot rebuilds the world).",
+    "new_string": "the browser, and everything derived is `var/` (regenerable — delete it and\n`make build` + a boot rebuilds the world) — **except agent-built components**:\n`builder.build` keeps their source only under `var/build/` and their binary only\nunder `var/bin/`, and the persisted `component` record stores neither, so when\nthose outputs are gone while the store survives, the next boot warns `stored\ncomponent <name> has missing binary` and skips it. Rebuild it with `builder.build`\n+ `core.spawn`, or drop the record with `core.remove`."
+  },
+  {
+    "id": "A695",
+    "slice": "State and configuration",
+    "status": "apply",
+    "reason": "The state table's `var/` row names only 'bus JSONL + child logs'; the sink's real shape is one JSONL per component plus numbered rotation generations, which is what an operator looks for when a log grew.",
+    "evidence": "components/logfile/main.nim:33-41 (log dir, `NIF_LOGFILE_MAX_BYTES`, `NIF_LOGFILE_KEEP`, `NIF_LOGFILE_MAX_FILES`), :94-99 (a valid component name gets `var/logs/<component>.jsonl`, anything else `bus.jsonl`), :107-121 (`rotate`: `<file>.1` … `.<keepN>`), :124-136 (rotations above `keepN` pruned); docs/MANUAL.md:2446-2456 (the logfile chapter already shows the `bash.jsonl.1` shape).",
+    "old_string": "`logs/` bus JSONL + child logs, `models/` catalog cache",
+    "new_string": "`logs/` bus JSONL and per-component JSONL (`.1`…`.N` rotations) plus child logs, `models/` catalog cache"
+  },
+  {
+    "id": "A753",
+    "slice": "State and configuration",
+    "status": "apply",
+    "reason": "The `var/` row names only `store.db`; the barrel engine's file and the single-owner lock are what an operator needs when a second store refuses to start, and `NIF_STORE_BACKEND` picks between them.",
+    "evidence": "components/store-sqlite/main.go:81 (`dbFileName = \"store.db\"`), :136 (`acquireLock(dbPath + \".lock\")`, the flock), components/store/main.nim:43-58 (`rootVarDir(\"barrel-db\")` and `path & \".lock\"`); docs/MANUAL.md:267-299 (`NIF_STORE_BACKEND` selects sqlite/barrel/tidb; the file-backed engines are single-writer by flock).",
+    "old_string": "`store.db` (the store engine's file — exactly one owner)",
+    "new_string": "`store.db` (the SQLite engine's file) or `barrel-db` (the barrel engine's) — whichever `NIF_STORE_BACKEND` selected — plus its `.lock`, which exactly one `store` process may hold at a time"
+  },
+  {
+    "id": "A754",
+    "slice": "State and configuration",
+    "status": "already",
+    "reason": "Verified accurate: the store row's summary ('conversation headers, messages, the `provider` registry (credentials included)') matches both the kind table and the engine — provider records are persisted verbatim and redaction happens only on the way out.",
+    "evidence": "components/provider/main.go:49-74 and :403 (records stored as given), :77-95 (list/get redact api keys and OAuth tokens in the response); docs/MANUAL.md:361 (the state row) and the MANUAL's 'The store' kind table.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A621",
+    "slice": "component: compaction",
+    "status": "skip",
+    "reason": "The target section does not exist in the MANUAL ('component: compaction'), and the block the row quotes — the `ev.session.*` inventory in 'The bus in one screen' — was deliberately reduced to an overview by the earlier pass (A029/A248/A250: 'the backbone you meet while operating, not the complete inventory', with docs/WIRE.md owning the normative tables). The field union and reason enum it asks for are stated where the reader meets the ladder — the Context window section, extended by A612 in this batch — so expanding one bus line would duplicate them in a block that is explicitly a summary.",
+    "evidence": "docs/MANUAL.md:516-521 (the block's own scoping sentence and the `ev.log.<component>`/`ev.lsp.warm`/`ev.agent.*`/`ev.fabric.*` pointer) and :548 (`ev.session.<id>.context {sessionId, turnId?, promptTokens, usedTokens, context, warning?|trimmed?}`); the reasons live in core/conversation.nim:841-861, :917-918, :1578-1634, :1725-1731, :2118-2120 and are documented at docs/MANUAL.md:830-834 and :857-860.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A624",
+    "slice": "component: compaction",
+    "status": "skip",
+    "reason": "The target section does not exist in the MANUAL, and there is no honest anchor for a separate sentence: the component-side stale-snapshot refusal is part of the same contract sentence this batch adds for A607 ('a component that finds the request's attemptId, digest or generation disagreeing with the snapshot it reads refuses the call with `stale-snapshot`'), so a second edit would duplicate it.",
+    "evidence": "components/compaction/main.nim:225-232 (attemptId / digest / generation mismatch -> `errResult(\"snapshot identity/generation/digest mismatch\", \"stale-snapshot\")`), :64-90 (the snapshot it compares against is read from `compaction_input`); core/conversation.nim:1583-1600 (validateCandidate then drops the attempt).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A626",
+    "slice": "component: compaction",
+    "status": "skip",
+    "reason": "The row asks for a coverage line 'in the new component section' — the MANUAL has no per-component chapter for compaction (or any other component; capabilities live in the section that owns the mechanism), and its Testing section deliberately names only a couple of examples per area, so a one-component test list has no home here.",
+    "evidence": "tests/t_compaction.nim, tests/t_ctxcompact.nim, tests/compaction_live_smoke.nim and tests/t_compaction_conformance.nim all exist and are wired in the Makefile (:544 `test-compaction`, :548 `test-conformance`, :552 `live-smoke`); docs/MANUAL.md:2921-2958 (Testing) mentions individual suites only as examples.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A800",
+    "slice": "Self-extension and component lifecycle",
+    "status": "apply",
+    "reason": "'Restored on normal boot' is not the whole story: the restore loop silently skips a stored record whose name the shipped manifest already declares, so a replacement under a shipped name only holds for the current boot.",
+    "evidence": "core/niffler.nim:596-604 (`for item in ct.storeListItems(\"component\")` … `if alreadyManifest: continue  # shipped manifest definition wins`, with no warning), :505-511 (the manifest's own binaries are started in the same boot), core/dispatch.nim:325-332 (`spawn` refuses an already-supervised name) and :347-357 (`kill` drops the children, so `kill` + `spawn` works for the current boot only).",
+    "old_string": "**Persistence of shape**: spawned components are recorded in the store\n(kind `component`) and restored on normal boot.",
+    "new_string": "**Persistence of shape**: spawned components are recorded in the store\n(kind `component`) and restored on normal boot. A stored record whose name is\nalso declared in `manifest.yaml` is skipped on restore — the shipped definition\nwins, silently — so replacing a shipped component means editing the manifest; a\n`kill` + `spawn` under the same name holds only for the current boot."
+  }
+]

@@ -1,0 +1,150 @@
+# applied batch-open2-1+batch-open2-2+batch-open2-3+batch-open2-4+batch-open2-5+batch-open2-6+batch-open2-7+batch-open2-8
+
+rows applied: 146 of 307 in the set(s)
+
+A525 component: builder  +469 bytes  The TypeScript half of the builder is one env row and one test note: nothing say
+A529 Layout of a running system  +105 bytes  the `var/bin/` row describes only the shipped build, but every `builder.build` r
+A530 Layout of a running system  +282 bytes  the row sells `var/build/` short: Nim is one `<name>.nim`, Go and TypeScript are
+A531 State and configuration  +411 bytes  The 'delete `var/` and a boot rebuilds the world' claim has one real exception t
+A534 Layout of a running system  +170 bytes  `info` is the tool an agent (or a human writing a component) calls first, and th
+A535 Layout of a running system  +281 bytes  the row lists the arguments a model must satisfy but none of their rules, and ev
+A537 component: builder  +409 bytes  The MANUAL names `build`'s three arguments and never says what it returns; the c
+A540 component: builder  +315 bytes  A cancelled turn does not stop a compile: `build` declares no `x-harness.session
+A543 Environment variables  +233 bytes  The paragraph is true about the scripts but hides the consequence the finding is
+A544 Component ecosystem (plugins)  +65 bytes  Confirmed: `components/plugins/main.nim` forwards `defines` to `builder.build` r
+A545 Component ecosystem (plugins)  +243 bytes  Confirmed and worth stating, because the current sentence suggests any same-pack
+A547 component: builder  +202 bytes  The sentence is true about the repository's own build writes but reads as if it 
+A549 component: builder  +503 bytes  The one self-extension failure an agent cannot diagnose from its own tool output
+A550 component: builder  +203 bytes  Nothing in the MANUAL explains how to pick up new code for a component that is a
+A560 Layout of a running system  +122 bytes  the row calls `cli` an on-demand bus driver, which reads as if it were a bus cit
+A562 component-cli  +410 bytes  the cli paragraph never says that `cli` is a plain bus client with no core gate:
+A563 The bus in one screen  +46 bytes  The cli's exit codes are part of the CI story the sentence tells, and the MANUAL
+A564 The bus in one screen  +227 bytes  Documents what `catalog` actually prints (the harness identity line that tells y
+A565 The bus in one screen  +100 bytes  Adds `wait`'s default and the meaning of `0`, which the usage line alone does no
+A566 The bus in one screen  +259 bytes  `call`'s two waits are the trap an automation author hits: the cli's own reply b
+A571 Approvals  +543 bytes  Real gap, and the sharper half of the A541/A571 pair: the chapter describes the 
+A572 Background processes (processes)  +155 bytes  The parenthetical is false. Core's approval gate lives in the dispatch path (`x-
+A579 component: console  +293 bytes  the promise 'renders the wire traffic readably' overstates what the stream shows
+A581 The bus in one screen  +288 bytes  Says what `console` is (fixed formatting, no flags) and points at the components
+A584 component: console  +297 bytes  the reconnect story is undocumented and user-visible: after the bus dies console
+A585 Starting and stopping  +262 bytes  The four-leg probe chain in this bullet is real — but only for the TUI, the clie
+A586 Starting and stopping  +216 bytes  Real gap: the marker is described as what interactive frontends do, but two ship
+A588 component: console  +194 bytes  the observe section claims a raw-node contract that its sibling does not share, 
+A592 Layout of a running system  +365 bytes  the row says what the tools do but not what they cost: neither schema carries `a
+A594 Layout of a running system  +173 bytes  the row's prereq line is wrong in the way that matters: without the nats CLI or 
+A601 Environment variables  +93 bytes  Confirmed, and the code contradicts the sentence: `NIF_NATS_CLI` is read by comp
+A602 Environment variables  +120 bytes  The parenthetical names the reader but not when it is consulted: the dialog shel
+A604 Layout of a running system  +298 bytes  the row (and the Context window chapter) describe the seam but never say that no
+A606 Context window  +396 bytes  Adds the selection mechanics the MANUAL lacks: the value is a tool name resolved
+A607 Context window  +966 bytes  The MANUAL calls this seam 'contract-v1' without stating the contract. The row i
+A608 Context window  +358 bytes  Adds the snapshot/checkpoint bounds and the runner-owned render template the bul
+A609 Context window  +149 bytes  States who measures strict reduction (the runner, never the candidate's claim) a
+A612 Context window  +460 bytes  Names the non-reset `ev.session.context` reasons the compaction rung emits and t
+A613 Environment variables  +252 bytes  The current cell ('minimum 5000 ms') tells half the truth. Core clamps the value
+A615 Environment variables  +255 bytes  The cell omits the clamp and the two things the granted count is actually used f
+A616 Environment variables  +66 bytes  Both layers are missing from the cell: core clamps the value to 128-32768 and th
+A618 Progressive tool discovery  +44 bytes  Real gap: the run's own compaction seam is a hidden tool and belongs in the MANU
+A620 Approvals  +162 bytes  The quoted reason is prose; the code returns exactly two string reasons, one of 
+A622 The store  +192 bytes  the `compaction_input` row describes only the happy path. The record is transien
+A623 The store  +412 bytes  the row names three headline fields and hides the record. The detail is load-bea
+A625 testing  +518 bytes  the Testing section never names the compaction verification lane: the end-to-end
+A629 Layout of a running system  +750 bytes  nothing in the MANUAL lists `context_recall`'s parameters, so a reader who follo
+A630 Progressive tool discovery  +200 bytes  The example list is wrong and misleading: `context_recall` is on demand, not hid
+A631 Progressive tool discovery  +82 bytes  Real gap worth one parenthetical: the table's Invocation column reads as if `inv
+A634 Context window  +287 bytes  Documents what a `checkpoint` ref returns and that it refuses a superseded gener
+A635 Context window  +172 bytes  Tightens 'the whole canonical history' to the `message` documents the search rea
+A636 Context window  +362 bytes  Adds the durability caveat the bullet lacks: the omission notice is projection-o
+A638 component: recall  +969 bytes  The MANUAL never says what a prune notice looks like, yet that marker is the onl
+A642 The store  +309 bytes  the `spill` row says what a spill is and nothing about how fragile the reference
+A644 System prompt (systemprompt)  +346 bytes  the item-1 line points at baseprompt.txt but never says what the product prompt 
+A646 Progressive tool discovery  +70 bytes  Real gap: `context_recall` is the one on-demand tool the runner's own notices te
+A648 Layout of a running system  +104 bytes  the row already gets the two exposure facts right (`grep` direct, `files` on dem
+A649 Layout of a running system  +1472 bytes  `grep` is the only frequently used tool with no detail subsection (bash and repo
+A651 Contents  +34 bytes  the contents list gains the new chapter the grep audit asked for (A649, batch-op
+A656 Progressive tool discovery  +229 bytes  Real delta: the MANUAL mentions the runner-facing `x-harness.parallel` hint once
+A658 Common tasks  +89 bytes  The `make install` comment reads as if a *host* grep/git binary were what PATH m
+A660 Hooks  +91 bytes  The row is right and the MANUAL is the outlier: `runHook` echoes the command's c
+A661 Hooks  +291 bytes  Real gap, and the row's own suggested idiom is backwards: `runHook` decodes the 
+A662 Hooks  +180 bytes  The row's finding (a `*` token never fires) was true of the revision it audited;
+A663 Hooks  +137 bytes  Verified by execution, and the sentence is also stale in its own right (it still
+A665 Hooks  +183 bytes  Real gap worth one sentence: the component is tool-less by design and its no-con
+A666 Hooks  +313 bytes  Real gap: the section names example kinds (notification, webhook, error tail) bu
+A670 Hooks  -1 bytes  The row itself is verified (the default is right, the list is comma-split and re
+A671 Hooks  +50 bytes  Same fact as A663, in the table row the report quotes: the mapping double-unders
+A679 Observation and logs  +500 bytes  The search paragraph documents the scan but not the tool contract. Added one par
+A680 Observation and logs  +92 bytes  The row named three of the fields the tool returns and said nothing about the di
+A681 Observation and logs  +283 bytes  The rotation paragraph never names the generations or the boot prune. Added both
+A682 Observation and logs  +262 bytes  The paragraph explains what is written but not that the pattern list is validate
+A683 Observation and logs  +163 bytes  "A valid component name" never said which names are valid or where the file land
+A687 Environment variables  +83 bytes  Path handling is missing: empty means `$NIF_ROOT/var/logs`, an absolute value is
+A688 Environment variables  +139 bytes  The cell omits that the list is validated at boot and that a bad one is fatal ra
+A689 Environment variables  +71 bytes  The accepted range is missing, and it is enforced by exit rather than clamped (s
+A690 Environment variables  +81 bytes  The range and the boot-time prune are missing: generations above the configured 
+A691 Environment variables  +80 bytes  Range plus the boot seeding are missing: JSONL files already in the log director
+A692 Environment variables  +74 bytes  Range and scope are missing: the byte budget is consumed across all files of one
+A693 Environment variables  +115 bytes  The range is missing, and so is the fact that the same bound drives `logfile_pat
+A694 Layout of a running system  +136 bytes  logfile's two tools are on demand, so a reader assumes they are cheap reads — bu
+A695 State and configuration  +49 bytes  The state table's `var/` row names only 'bus JSONL + child logs'; the sink's rea
+A696 Progressive tool discovery  +46 bytes  Real gap, and the smaller half of the A696/A727 pair: logfile's two tools are di
+A699 Observation and logs  +477 bytes  The paragraph states the ring and probe bounds qualitatively; no number for any 
+A700 Observation and logs  +96 bytes  "limited to 30 seconds" conflates two different bounds: the 100..30000 ms argume
+A701 Observation and logs  +213 bytes  The row names the filters without saying what they accept. Added the `kind` enum
+A702 Observation and logs  +117 bytes  The row omits the probe's own bounds and the shape of the id every later call ne
+A703 Observation and logs  +222 bytes  The row's "one component" hides the two subject shapes actually watched, and it 
+A704 Observation and logs  +436 bytes  Three things the row left out, all of them what the tool is read for: the `sessi
+A705 Observation and logs  +340 bytes  The row said "export of one probe" without the file it writes. Added the generat
+A706 Observation and logs  +197 bytes  One clause for the boundary that matters (`observe_logs` sees the in-memory ring
+A716 Observation and logs  +228 bytes  Boundary covers trust but not the single-instance requirement: manifest.yaml set
+A718 Environment variables  +65 bytes  The bound is missing, and it is enforced loudly: configInt raises for an out-of-
+A719 Environment variables  +32 bytes  The accepted range is missing; like the other observe bounds it is enforced by e
+A720 Environment variables  +108 bytes  Missing: the accepted range and what happens to an oversized message - it is rep
+A721 Environment variables  +115 bytes  Missing: the accepted range and the visible symptom at the bound - the next `obs
+A722 Environment variables  +122 bytes  Missing: the accepted range, the eviction order (oldest entry first, with its pe
+A724 Environment variables  +133 bytes  Missing: the accepted range and the explicit failure once pruning can no longer 
+A726 Layout of a running system  +153 bytes  same convention as A694, for the diagnostic component whose tools look most read
+A733 Layout of a running system  +137 bytes  the row implies a root uses one engine or the other, but a migrated root keeps b
+A735 Layout of a running system  +164 bytes  the row (and the chapter) says the engines register 'identical tools', which the
+A737 Layout of a running system  +303 bytes  the chapter states that the selection 'refuses to boot on an unknown value' but 
+A738 Layout of a running system  +181 bytes  the bullet warns about a crash *between* the two writes, but a fresh barrel `put
+A739 Layout of a running system  +219 bytes  the sqlite bullet ends at 'one atomic statement', leaving the pragmas that defin
+A740 Layout of a running system  +356 bytes  the tidb bullet describes the schema but not the deployment constraints a reader
+A744 Layout of a running system  +378 bytes  the sentence promises 'every document', which is false and is the one finding he
+A746 Layout of a running system  +206 bytes  the reachable refusal is not the overlay check the text claims (that one tests `
+A753 State and configuration  +132 bytes  The `var/` row names only `store.db`; the barrel engine's file and the single-ow
+A755 Environment variables  +214 bytes  Two behaviours the cell does not mention: the missing-sqlite-binary fallback (on
+A756 Environment variables  +249 bytes  Missing: what the DSN's account must be allowed to do (goose applies DDL migrati
+A758 The store  +241 bytes  the MANUAL documents root, engine and DSN but never says the engines carry no ot
+A760 The store  +101 bytes  §The store contradicts §Shipped policy: `put` is on demand too, and it is the to
+A761 The store  +175 bytes  one clause so the section stops implying the engines are tool-identical: the bar
+A762 The store  +186 bytes  the plaintext note is true for `provider` but reads as if the registry were the 
+A763 The store  +69 bytes  the id is zero-padded to six digits, which is what makes key order message order
+A768 The store  +322 bytes  the MANUAL describes three engines but never says the store contract is one test
+A777 Layout of a running system  +751 bytes  the table is declared the inventory of `components/`, and `components/nats` is t
+A778 component-infra-and-examples  +572 bytes  the bus payload budget is absent from the MANUAL: the spawned bus is raised to 8
+A779 component-infra-and-examples  +332 bytes  how the spawned bus picks its ports is undocumented: NATS' own `--ports_file_dir
+A781 Common tasks  +212 bytes  The bullet claimed core "reuses a live bus on 127.0.0.1:4222" and only spawns wh
+A784 component-infra-and-examples  +889 bytes  the test-only fixture components and stub LLMs are named nowhere in the MANUAL, 
+A786 Layout of a running system  +356 bytes  the `components/` row already names `components/ctxtest` as a non-citizen, but t
+A787 Environment variables  +237 bytes  Confirmed: the ctxtest fixture - a running component process, though test-only a
+A788 System prompt (systemprompt)  +43 bytes  the claim is false: the product prompt is used verbatim — `staticRead("basepromp
+A789 System prompt (systemprompt)  +254 bytes  two claims in this bullet are wrong and one is missing. The walk stops at the ha
+A790 component-infra-and-examples  +182 bytes  the per-directory candidate list omits `AGENTS.local.md`, which is additive (it 
+A791 component-infra-and-examples  +762 bytes  `prompt_hint` and the three prompt slots — the extension seam plugins contribute
+A792 component-infra-and-examples  +270 bytes  the two component-side caps (16 context files, 200 000 bytes) and the fact that 
+A793 component-infra-and-examples  +366 bytes  the replace-the-constitution recipe is incomplete in a way that breaks a real at
+A800 Self-extension and component lifecycle  +260 bytes  'Restored on normal boot' is not the whole story: the restore loop silently skip
+A802 Layout of a running system  +337 bytes  'swap it in via `manifest.yaml`' leaves out the step that makes it work: `chat` 
+A804 Environment variables  +178 bytes  Confirmed: `components/llm-openai`, the swap-in example the component table name
+A805 component-infra-and-examples  +204 bytes  the example adapter's own contract is unstated: which `NIF_OPENAI_*` variables i
+A806 Provider registry (provider)  +302 bytes  The paragraph's claim is protocol-wide but not adapter-wide: `components/llm-ope
+A808 component-infra-and-examples  +234 bytes  the stdio environment allowlist in the MANUAL is wrong in both directions: it li
+A809 component-infra-and-examples  +12 bytes  the sentence contradicts the `### Prompts` bullet and the code: the bridge rewri
+A810 component-infra-and-examples  +344 bytes  the bridge's hidden manager helper (`mcp_<server>_bridge_status`) is undocumente
+A811 component-infra-and-examples  +85 bytes  the Drift bullet is accurate; the one detail worth keeping is that the exit-3 re
+A813 External MCP servers (mcp)  +208 bytes  'They cannot spoof a session' is stronger than the code: nothing validates `__se
+A814 External MCP servers (mcp)  +215 bytes  Completes the exit story the Shape paragraph starts: besides the disabled record
+A815 component-infra-and-examples  +224 bytes  the spilled-result contract is described only loosely: the tool returns a struct
+A816 External MCP servers (mcp)  +182 bytes  Names a second, non-obvious meaning of the record's `timeoutMs`: it is baked int
+A817 External MCP servers (mcp)  +88 bytes  Makes the per-server approval gate precise: it covers not only the server's own 
+A819 Environment variables  +193 bytes  The shipped-components table - which the layout chapter calls the inventory of `
+A822 component-infra-and-examples  +79 bytes  the env row names only the manager as reader; the bridge's own `--probe` mode re

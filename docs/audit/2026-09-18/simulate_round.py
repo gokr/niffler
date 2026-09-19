@@ -33,10 +33,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MANUAL = os.path.abspath(os.path.join(HERE, "..", "..", "MANUAL.md"))
 
 # Phrases that belong to the audit's process, never to the manual's prose.
+# Deliberately NOT bare words: "superseded" and "overrode" are ordinary English
+# a manual about checkpoints legitimately uses (A634 was flagged for "a
+# superseded generation"), so only their process forms — next to a row, a batch
+# or a ledger id — count as leakage.
 META = [
     r"\bA\d{3}\b", r"\bthis row\b", r"\bthe row's\b", r"\bthat row\b",
-    r"\bthe auditor\b", r"\bbatch-open", r"\bsuperseded\b", r"\boverrode\b",
-    r"\bfirst draft\b", r"\bledger\b",
+    r"\bthe auditor\b", r"\bbatch-open", r"\bfirst draft\b", r"\bledger\b",
+    r"\bsuperseded by\b(?:\s+\w+){0,3}\s+(?:row|batch|A\d{3})",
 ]
 
 

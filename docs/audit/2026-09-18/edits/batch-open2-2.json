@@ -1,0 +1,326 @@
+[
+ {
+  "id": "A542",
+  "slice": "Environment variables",
+  "status": "already",
+  "reason": "Verified: the row says exactly what the builder does. The ts branch is the only reader - it appends `--registry <quoted url>` to `npm install` when the value is non-empty and passes nothing when it is empty - so the meaning ('npm registry for builder ts-component installs') and the default cell ('npm default') both hold; a name-by-name check found no stale reference. `.env.example:378` carries the commented entry.",
+  "evidence": "components/builder/main.nim:167-172 (getEnv(\"NIF_NPM_REGISTRY\"), --registry only when non-empty, ts branch), docs/MANUAL.md:401, .env.example:378",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A543",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The paragraph is true about the scripts but hides the consequence the finding is after: nothing in components/builder/main.nim takes the lock, so a runtime `builder.build` runs outside the exclusive `make` lock and can race a concurrent `make build` - and `make clean` deliberately deletes `var/bin` and `var/build`, the builder's own output and scratch directories, under the agent. One sentence appended to the same paragraph states it without rewriting the section.",
+  "evidence": "scripts/with-build-lock.sh:22 (lock file), Makefile:67-68 (BUILD_LOCK / TEST_LOCK wrappers), Makefile:581-582 (clean = rm -rf var under the exclusive lock), components/builder/main.nim:74-75 (srcDir = rootVarDir(\"build\"), binDir = var/bin) and no lock call anywhere in that component",
+  "old_string": "`NIF_LSP_BIN` and `NIF_LSP_BIN_DIRS` are runtime variables and stay in the table above.",
+  "new_string": "`NIF_LSP_BIN` and `NIF_LSP_BIN_DIRS` are runtime variables and stay in the table above. The lock only covers `make`: `builder.build` runs outside it, so a runtime component build can race `make build` — and `make clean` deletes `var/bin` and `var/build` under it. Stop the harness while an agent is building a component."
+ },
+ {
+  "id": "A601",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Confirmed, and the code contradicts the sentence: `NIF_NATS_CLI` is read by components/dialog/dialog.sh, a spawned bash component (shipped in `var/bin/dialog`, listed in the manual's own component table), not by a script around the harness. The three genuinely script-only names stay in the list and `NIF_NATS_CLI` is marked as the exception where the list is written. (A787 fixes the second half of the same sentence; the two anchors are disjoint so both edits apply.)",
+  "evidence": "components/dialog/dialog.sh:36-45 (PATH, then $HOME/go/bin/nats, then ${NIF_NATS_CLI:-nats}; NATS=\"$(nats_cli)\"), Makefile:297-299 and :312 (var/bin/dialog built and shipped), docs/MANUAL.md:86 (dialog is a shipped, spawnable component), docs/MANUAL.md:387",
+  "old_string": "`NIF_NATS_CLI`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs:",
+  "new_string": "`NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the spawned bash component `dialog` reads it as its last-resort nats CLI):"
+ },
+ {
+  "id": "A602",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The parenthetical names the reader but not when it is consulted: the dialog shell resolves `nats` on PATH first, then `$HOME/go/bin/nats`, and only then the variable. Appending the order is the whole fix (it also keeps the sentence honest under A601, which moves the name out of the 'scripts only' list).",
+  "evidence": "components/dialog/dialog.sh:36-45 (command -v nats, then $HOME/go/bin/nats, then ${NIF_NATS_CLI:-nats}), docs/MANUAL.md:482",
+  "old_string": "`NIF_NATS_CLI` (the nats CLI `components/dialog/dialog.sh` drives)",
+  "new_string": "`NIF_NATS_CLI` (the nats CLI `components/dialog/dialog.sh` drives — the one entry here a component does read: it is consulted only when `nats` is neither on `PATH` nor in `$HOME/go/bin`)"
+ },
+ {
+  "id": "A613",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The current cell ('minimum 5000 ms') tells half the truth. Core clamps the value to 5000-600000, but the call goes through dispatchToolCall and core/dispatch.nim lets the target tool's schema `x-harness.timeoutMs` (120000 for `compaction_propose`) win over the caller's default, so any configured value above 120 s never extends the runner's wait - it only reaches the component as `budget.timeoutMs` and lengthens its own auxiliary deadline. The row is rewritten to state the clamp, the effective cap and the consequence.",
+  "evidence": "core/compaction.nim:47-61 (defaults, parse, clamp 5_000..600_000), core/conversation.nim:1553-1576 (budget.timeoutMs = cfg.timeoutMs, then ct.dispatchToolCall(cfg.tool, request, cfg.timeoutMs)), core/dispatch.nim:1627-1630 (schema x-harness.timeoutMs replaces the caller default), components/compaction/main.nim:216-217 (\"timeoutMs\": 120_000) and :290 (the auxiliary chat uses budget.timeoutMs), core/compaction.nim:26 (snapshotSweepSecs = 600.0)",
+  "old_string": "| `NIF_COMPACTION_TIMEOUT_MS` | whole candidate-call deadline (minimum 5000 ms) | `90000` |",
+  "new_string": "| `NIF_COMPACTION_TIMEOUT_MS` | whole candidate-call deadline, clamped to 5000–600000 ms; the candidate tool's own `x-harness.timeoutMs` (120000) caps the wait the runner actually performs, so a larger value only extends the component's auxiliary-call deadline (the runner gives up first and the snapshot waits for the 600 s sweep) | `90000` |"
+ },
+ {
+  "id": "A614",
+  "slice": "Environment variables",
+  "status": "code",
+  "reason": "Not a prose fix (A613 documents today's behaviour): the contract's own bounds disagree. `NIF_COMPACTION_TIMEOUT_MS` is documented and clamped as a 'whole candidate-call deadline' up to 600 s, but `compaction_propose` declares `x-harness.timeoutMs` 120000 and core's dispatch lets the schema value replace the caller's, so 121-600 s configurations are inert. Fix in code: raise components/compaction/main.nim's `x-harness.timeoutMs` to match core's 600000 clamp, or clamp NIF_COMPACTION_TIMEOUT_MS at 120000 in core/compaction.nim:61. No test exercises a >120 s configuration.",
+  "evidence": "components/compaction/main.nim:216-217 (\"timeoutMs\": 120_000), core/compaction.nim:61 (clamp(..., 5_000, 600_000)), core/dispatch.nim:1628-1630 (the schema value wins over the caller's default), core/conversation.nim:1576 (dispatchToolCall(..., cfg.timeoutMs))",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A615",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The cell omits the clamp and the two things the granted count is actually used for: it scales `maxTotalInputTokens`/`maxTotalOutputTokens` in the request budget, and the shipped component always makes exactly one auxiliary call (`llmCalls: 1`) - the budget only exists for a summarizer that iterates. Appended to the same cell.",
+  "evidence": "core/compaction.nim:59 (clamp 1..16), core/conversation.nim:1565-1572 (maxTotalInputTokens = target * maxLlmCalls, maxTotalOutputTokens = maxSummaryTokens * maxLlmCalls), components/compaction/main.nim:280 (the single auxiliaryChat call) and :302 (\"llmCalls\": 1), core/conversation.nim:1613-1616 (a candidate claiming more is invalid)",
+  "old_string": "| `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt; a candidate reporting more calls than granted is rejected as invalid | `4` |",
+  "new_string": "| `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt, clamped to 1–16; a candidate reporting more calls than granted is rejected as invalid, and the granted count scales the request's `maxTotalInputTokens`/`maxTotalOutputTokens`. The shipped `compaction` component always makes exactly one auxiliary call and reports `llmCalls: 1` — the budget is for a summarizer that iterates | `4` |"
+ },
+ {
+  "id": "A616",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Both layers are missing from the cell: core clamps the value to 128-32768 and the shipped component floors what it sends to the model at 128 (`max(budget.maxSummaryTokens, 128)`), so the effective request cap never drops below 128.",
+  "evidence": "core/compaction.nim:61 (clamp 128..32_768), components/compaction/main.nim:277 (max(args{\"budget\"}{\"maxSummaryTokens\"}.getInt(2048), 128) feeds maxTokens)",
+  "old_string": "| `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap | `2048` |",
+  "new_string": "| `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap, clamped to 128–32768 and floored at 128 by the shipped component | `2048` |"
+ },
+ {
+  "id": "A653",
+  "slice": "Environment variables",
+  "status": "already",
+  "reason": "Verified: components/grep/main.nim contains no getEnv call of any kind (its only host dependency is `findExe(\"rg\")`), so there is nothing for the master table to list and the `.env` resolution sentence the finding quotes applies to it unchanged. No row owed.",
+  "evidence": "components/grep/main.nim:26 (findExe(\"rg\")), no getEnv or NIF_ match anywhere in the file",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A672",
+  "slice": "Environment variables",
+  "status": "already",
+  "reason": "Verified against the code and unchanged: `clamp(parseInt(getEnv(\"NIF_HOOKS_TIMEOUT_MS\", \"10000\")), 100, 60_000)`, a parse failure falls back to 10000, and a timed-out hook is killed with exit 124. The row already says all three.",
+  "evidence": "components/hooks/main.nim:107-111 (clamp 100..60_000, 10000 fallback), :85 (runCmd owns the timeout kill -> exit 124), docs/MANUAL.md:467",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A687",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Path handling is missing: empty means `$NIF_ROOT/var/logs`, an absolute value is used as-is, and a relative one is resolved against the harness root (the convention `NIF_OBSERVE_CAPTURE_DIR` documents explicitly).",
+  "evidence": "components/logfile/main.nim:32-36 (configuredDir/logDir resolution), :189 (createDir(logDir))",
+  "old_string": "| `NIF_LOGFILE_DIR` | JSONL output directory | `$NIF_ROOT/var/logs` |",
+  "new_string": "| `NIF_LOGFILE_DIR` | JSONL output directory — an absolute path is used as-is, a relative one resolves against the harness root | `$NIF_ROOT/var/logs` |"
+ },
+ {
+  "id": "A688",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The cell omits that the list is validated at boot and that a bad one is fatal rather than ignored: a malformed or over-512-byte pattern, more than 64 unique patterns, or a list that yields no pattern at all raises and the component exits non-zero (the default applies only while the variable is unset).",
+  "evidence": "components/logfile/main.nim:61-74 (validSubjectPattern, MaxPatternBytes 512), :24 (MaxPatterns = 64), :204-227 (split, validate, raise on oversize and on an empty result)",
+  "old_string": "| `NIF_LOGFILE_SUBJECTS` | comma-separated NATS patterns to persist | `ev.log.>` |",
+  "new_string": "| `NIF_LOGFILE_SUBJECTS` | comma-separated NATS patterns to persist, validated at boot: a malformed or over-512-byte pattern, more than 64 unique patterns, or an empty list makes the component exit non-zero | `ev.log.>` |"
+ },
+ {
+  "id": "A689",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The accepted range is missing, and it is enforced by exit rather than clamped (sdk configInt raises outside [minimum, maximum]).",
+  "evidence": "components/logfile/main.nim:24 (MaxConfiguredBytes = 104857600), :37-38 (configInt(\"NIF_LOGFILE_MAX_BYTES\", 10_485_760, 256, MaxConfiguredBytes)), sdk/niffler/sdk.nim:268-281 (out-of-range or unparsable raises)",
+  "old_string": "| `NIF_LOGFILE_MAX_BYTES` | active bytes per JSONL file before rotation | `10485760` |",
+  "new_string": "| `NIF_LOGFILE_MAX_BYTES` | active bytes per JSONL file before rotation; accepted range 256–104857600, outside it the component exits non-zero | `10485760` |"
+ },
+ {
+  "id": "A690",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The range and the boot-time prune are missing: generations above the configured keep count are deleted by `pruneRotations()` at startup, so lowering the value cleans up on the next boot.",
+  "evidence": "components/logfile/main.nim:39 (configInt(\"NIF_LOGFILE_KEEP\", 5, 0, 100)), :116-136 (pruneRotations), :101-114 (rotate honours keepN == 0), :189 (pruneRotations() runs at boot right after createDir(logDir))",
+  "old_string": "| `NIF_LOGFILE_KEEP` | retained rotated generations (`0` disables) | `5` |",
+  "new_string": "| `NIF_LOGFILE_KEEP` | retained rotated generations (`0` disables); accepted range 0–100, and generations above the value are deleted at every boot | `5` |"
+ },
+ {
+  "id": "A691",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Range plus the boot seeding are missing: JSONL files already in the log directory count toward the cap as soon as the component starts, so a lowered value applies to the next new component file immediately.",
+  "evidence": "components/logfile/main.nim:40-41 (configInt(\"NIF_LOGFILE_MAX_FILES\", 64, 1, 1024)), :190-197 (existing *.jsonl names seed componentFiles while len < maxComponentFiles), :195-201 (fallback to bus.jsonl)",
+  "old_string": "| `NIF_LOGFILE_MAX_FILES` | component-specific files before fallback to `bus.jsonl` | `64` |",
+  "new_string": "| `NIF_LOGFILE_MAX_FILES` | component-specific files before fallback to `bus.jsonl`; accepted range 1–1024, and JSONL files already present at boot count toward it | `64` |"
+ },
+ {
+  "id": "A692",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Range and scope are missing: the byte budget is consumed across all files of one search (newest first), not per file, and the reply reports `truncated` once it is exhausted.",
+  "evidence": "components/logfile/main.nim:42-43 (configInt(\"NIF_LOGFILE_SCAN_BYTES\", 16_777_216, 1024, 104_857_600)), :350-372 (remaining = maxScanBytes - scannedBytes, shared by the file loop; truncated flag)",
+  "old_string": "| `NIF_LOGFILE_SCAN_BYTES` | maximum bytes examined by one `logfile_search` | `16777216` |",
+  "new_string": "| `NIF_LOGFILE_SCAN_BYTES` | maximum bytes examined by one `logfile_search`, accepted range 1024–104857600 and shared across all files of that search | `16777216` |"
+ },
+ {
+  "id": "A693",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The range is missing, and so is the fact that the same bound drives `logfile_paths` too and is reported as `directoryTruncated` when it bites.",
+  "evidence": "components/logfile/main.nim:44-45 (configInt(\"NIF_LOGFILE_DIRECTORY_ENTRIES\", 10_000, 100, 100_000)), :330-335 (search enumeration sets directoryTruncated), :456-463 (logfile_paths uses the same bound and reports directoryTruncated)",
+  "old_string": "| `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query | `10000` |",
+  "new_string": "| `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query; accepted range 100–100000, applies to `logfile_paths` too, and the truncation is reported as `directoryTruncated` | `10000` |"
+ },
+ {
+  "id": "A718",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The bound is missing, and it is enforced loudly: configInt raises for an out-of-range value, so the component exits non-zero instead of clamping silently.",
+  "evidence": "components/observe/main.nim:71 (configInt(\"NIF_OBSERVE_RING\", DefaultRingMessages, 1, 10_000)), sdk/niffler/sdk.nim:268-281 (raises)",
+  "old_string": "| `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |",
+  "new_string": "| `NIF_OBSERVE_RING` | messages retained in observe's global ring; accepted range 1–10000, outside it the component exits non-zero | `2000` |"
+ },
+ {
+  "id": "A719",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The accepted range is missing; like the other observe bounds it is enforced by exit, not clamped.",
+  "evidence": "components/observe/main.nim:72-73 (configInt(\"NIF_OBSERVE_RING_BYTES\", DefaultRingBytes, 65_536, 104_857_600)), :156-162 (ring eviction by count and by bytes)",
+  "old_string": "| `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |",
+  "new_string": "| `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring; accepted range 65536–104857600 | `16777216` |"
+ },
+ {
+  "id": "A720",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Missing: the accepted range and what happens to an oversized message - it is replaced by a base64 preview of three quarters of the cap, with `truncated: true`, the original `bytes` and no `rawBase64`.",
+  "evidence": "components/observe/main.nim:74-75 (configInt(\"NIF_OBSERVE_ENTRY_BYTES\", DefaultEntryBytes, 1024, 1_048_576)), :140-147 (previewLen = min(len, entryByteCap * 3 div 4) -> previewBase64/truncated/bytes)",
+  "old_string": "| `NIF_OBSERVE_ENTRY_BYTES` | maximum retained bytes per observed message | `65536` |",
+  "new_string": "| `NIF_OBSERVE_ENTRY_BYTES` | maximum retained bytes per observed message; accepted range 1024–1048576, and a larger message is kept as a base64 preview of three quarters of the cap | `65536` |"
+ },
+ {
+  "id": "A721",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Missing: the accepted range and the visible symptom at the bound - the next `observe_listen`/`observe_trace` raises 'probe limit reached' instead of evicting an old probe.",
+  "evidence": "components/observe/main.nim:78 (configInt(\"NIF_OBSERVE_MAX_PROBES\", DefaultMaxProbes, 1, 256)), :409-413 (newProbe raises \"probe limit reached (...); stop and remove an old probe\")",
+  "old_string": "| `NIF_OBSERVE_MAX_PROBES` | active + stopped probes retained at once | `32` |",
+  "new_string": "| `NIF_OBSERVE_MAX_PROBES` | active + stopped probes retained at once; accepted range 1–256, and at the bound the next `observe_listen`/`observe_trace` fails with `probe limit reached` | `32` |"
+ },
+ {
+  "id": "A722",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Missing: the accepted range, the eviction order (oldest entry first, with its pending traces pruned alongside) and the fate of a single entry above the cap - counted in `dropped`, never retained.",
+  "evidence": "components/observe/main.nim:76-77 (configInt(\"NIF_OBSERVE_PROBE_BYTES\", DefaultProbeBytes, 65_536, 16_777_216)), :183-195 (appendProbe: entryBytes > probeByteCap -> inc pr.dropped; else evict from the front)",
+  "old_string": "| `NIF_OBSERVE_PROBE_BYTES` | retained bytes per probe | `2097152` |",
+  "new_string": "| `NIF_OBSERVE_PROBE_BYTES` | retained bytes per probe; accepted range 65536–16777216, entries are evicted oldest-first and a single entry above the cap is counted in `dropped` | `2097152` |"
+ },
+ {
+  "id": "A723",
+  "slice": "Environment variables",
+  "status": "already",
+  "reason": "Verified, no change: an empty value means `$NIF_ROOT/var/captures`, an absolute path is used as-is, and a relative one is resolved against the harness root - exactly what the 'confined directory' cell and the `observe_dump` contract say.",
+  "evidence": "components/observe/main.nim:81-85 (configuredCaptureDir / captureDir resolution), :676-690 (the generated filename is confined to that directory)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A724",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Missing: the accepted range and the explicit failure once pruning can no longer make room.",
+  "evidence": "components/observe/main.nim:79-80 (configInt(\"NIF_OBSERVE_CAPTURE_BYTES\", DefaultCaptureBytes, 65_536, 1_073_741_824)), :656-675 (oldest-first prune, then raise \"capture directory quota is exhausted\")",
+  "old_string": "| `NIF_OBSERVE_CAPTURE_BYTES` | aggregate generated-capture quota; oldest files are pruned | `67108864` |",
+  "new_string": "| `NIF_OBSERVE_CAPTURE_BYTES` | aggregate generated-capture quota; oldest files are pruned. Accepted range 65536–1073741824, and when even pruning cannot fit a dump the tool fails with `capture directory quota is exhausted` | `67108864` |"
+ },
+ {
+  "id": "A725",
+  "slice": "Environment variables",
+  "status": "already",
+  "reason": "Verified, no change: an empty value falls back to `<NIF_ROOT>/var/nats-monitor-url` (core writes it only for a bus it spawned) and then to a clear error telling the operator to set this variable or let core spawn the bus - the 'core discovery file' default cell covers it.",
+  "evidence": "components/observe/main.nim:715-725 (getEnv -> var/nats-monitor-url -> errResult \"no NATS monitoring endpoint; set NIF_OBSERVE_MONITOR_URL or let core spawn the bus\")",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A755",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Two behaviours the cell does not mention: the missing-sqlite-binary fallback (only for an *unset* value - an explicit request is a demand and never silently writes to another database), and the narrower condition of the barrel guard (it needs history in `var/barrel-db`, no `var/store.db` yet, and the sqlite binary actually present).",
+  "evidence": "core/niffler.nim:451-470 (guard: requested in [\"\", \"sqlite\"], fileExists(var/bin/store-sqlite), not fileExists(var/store.db), fileExists(var/barrel-db) -> quit with the niffler-store-migrate instructions), :493-501 (unset + missing store-sqlite + manifest binary present -> WARNING and fall back to var/bin/store)",
+  "old_string": "An un-migrated barrel makes core refuse to boot with the `niffler-store-migrate` instructions; `barrel` here is the escape hatch",
+  "new_string": "An un-migrated barrel (history in `var/barrel-db`, no `var/store.db` yet) makes core refuse to boot with the `niffler-store-migrate` instructions; `barrel` here is the escape hatch. An **unset** value whose engine binary is missing (`var/bin/store-sqlite` absent) warns and falls back to `var/bin/store` — an explicit request never falls back"
+ },
+ {
+  "id": "A756",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Missing: what the DSN's account must be allowed to do (goose applies DDL migrations at every boot - a fresh database, then each new migration as it ships), and that the connection's timeouts and pool size are code-resident rather than env-tunable.",
+  "evidence": "components/store-tidb/main.go:108-116 (the DSN is required and parsed), :125-131 (Timeout 5 s, ReadTimeout 60 s, WriteTimeout 30 s), :141-143 (SetMaxOpenConns(1), SetMaxIdleConns(1)), :147-163 (goose provider.Up applies migrations at boot)",
+  "old_string": "Sessions are forced to UTC unless the DSN sets `time_zone` |",
+  "new_string": "Sessions are forced to UTC unless the DSN sets `time_zone`. The account needs rights for goose's DDL migrations, applied at every boot (a fresh database, then each new migration as it ships); the connect/read/write timeouts (5 s/60 s/30 s) and the single pooled connection are code-resident, not env-tunable |"
+ },
+ {
+  "id": "A757",
+  "slice": "Environment variables",
+  "status": "already",
+  "reason": "Verified, no change: `NIF_STORE_BIN` is read only by the test helpers (`tests/helpers.nim`) and passed in by the Makefile's test targets; no component and no core module consults it, so its place in the build-and-script list is right. `.env.example:395` documents it under 'Test & bench only'.",
+  "evidence": "tests/helpers.nim:291-311 (store binary selection), Makefile:494,502 (tests receive it), .env.example:395, no production hit in core/ or components/",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A787",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Confirmed: the ctxtest fixture - a running component process, though test-only and not in the manifest - reads `NIF_REPO_ROOT` to load `components/fabric/examples/*.nim`, and tests/helpers.nim:331 reads it too. The absolute 'never consulted by a running harness' is what is wrong; narrowing it to 'shipped component' keeps the list useful and keeps the variable out of the runtime table. (A601's edit is the other half of the same sentence; the anchors are disjoint.)",
+  "evidence": "components/ctxtest/main.nim:549,630,636,648,655,662,668,676 (readFile(getEnv(\"NIF_REPO_ROOT\") / \"components/fabric/examples/...\")), components/ctxtest/main.nim:1-4 (test-only, not in manifest.yaml), tests/helpers.nim:331, docs/MANUAL.md:387",
+  "old_string": "are never consulted by a running harness, so they are not part of the runtime table below.",
+  "new_string": "are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches."
+ },
+ {
+  "id": "A804",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "Confirmed: `components/llm-openai`, the swap-in example the component table names, has no provider, no `models` catalog and none of `llm`'s four built-in entries - its whole chain is `NIF_OPENAI_CONTEXT` -> a two-entry `deepseek-chat`/`deepseek-reasoner` table -> 128000 - and it calls os.Getenv on every chat instead of freezing the value at boot. Appended to the same cell, since the resolution order stated there is the default adapter's.",
+  "evidence": "components/llm-openai/main.go:36-57 (defaultContext 128000; two-entry knownContext; contextWindow reads os.Getenv per call), :158 (context := contextWindow(usedModel) inside the chat handler), :30-34 (the file's own comment), docs/MANUAL.md:64 (llm-openai is the swap-in example)",
+  "old_string": "→ 128000 | `models` catalog, then the built-in table, then `128000` |",
+  "new_string": "→ 128000 (the `llm-openai` swap-in example resolves only `NIF_OPENAI_CONTEXT` → a two-entry `deepseek-chat`/`deepseek-reasoner` table → `128000`, and re-reads the variable on every call) | `models` catalog, then the built-in table, then `128000` |"
+ },
+ {
+  "id": "A819",
+  "slice": "Environment variables",
+  "status": "apply",
+  "reason": "The shipped-components table - which the layout chapter calls the inventory of `components/` - names the mcp manager but not the bridge binary it supervises. The bridge is built by `make build` into `var/bin/mcp-bridge`, deliberately has no manifest entry (a bare `mcp-bridge` would crash-loop without `--server`), and is never started by hand. Noted inside the existing `mcp` row rather than as a new table row.",
+  "evidence": "manifest.yaml:124-140 (the mcp entry carries the NOTE forbidding a bridge manifest entry), Makefile:222-223 and :312-313 (var/bin/mcp-bridge is built by `make build`, listed in components-inner), components/mcp/main.go:57-61 (the manager owns the bridge path, NIF_MCP_BRIDGE_BIN), docs/MANUAL.md:38 (the table is the inventory) and :1668-1678 (the spawn shape it describes)",
+  "old_string": "one supervised bridge per server; tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp))",
+  "new_string": "one supervised bridge per server (the child is the separate `mcp-bridge` binary — `var/bin/mcp-bridge`, built by `make build`, path overridable with `NIF_MCP_BRIDGE_BIN`; it has no manifest entry and is never started by hand); tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp))"
+ },
+ {
+  "id": "A821",
+  "slice": "Environment variables",
+  "status": "already",
+  "reason": "Verified, no change: the variable is read by the `mcp` manager (components/mcp/main.go:58) with the documented default `<root>/var/bin/mcp-bridge` (root from NIF_ROOT), which is exactly what the row says, and `.env.example:289` carries the commented entry.",
+  "evidence": "components/mcp/main.go:53-61 (root := NIF_ROOT; bridgeBin := os.Getenv(\"NIF_MCP_BRIDGE_BIN\"), else root + \"/var/bin/mcp-bridge\"), .env.example:289",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A544",
+  "slice": "Component ecosystem (plugins)",
+  "status": "apply",
+  "reason": "Confirmed: `components/plugins/main.nim` forwards `defines` to `builder.build` regardless of language, but the builder only consumes them in its `nim` branch - the `go` and `ts` branches never look at the key, so a manifest that declares `defines` on a Go or TS entry builds fine and ignores them. The bullet is amended in place (the `env` half is accurate as written and stays).",
+  "evidence": "components/builder/main.nim:88-95 (defines validated and turned into -d: flags inside `of \"nim\"`), :105-136 (Go branch: files/go.mod only), :148-205 (TS branch: package.json/tsconfig only), components/plugins/main.nim:249-250 (buildArgs[\"defines\"] set whenever the manifest lists them)",
+  "old_string": "- A manifest entry may carry `defines` (an array of `-d:`-style prepends) and\n  `env` (an array of `NAME=value` strings). Both are passed through — `defines`\n  to the builder, `env` to the spawn — so a package can carry its own\n  configuration without editing the manifest.",
+  "new_string": "- A manifest entry may carry `defines` (an array of `-d:`-style prepends) and\n  `env` (an array of `NAME=value` strings). Both are passed through — `defines`\n  to the builder (Nim only: a Go or TS build accepts and silently ignores\n  them), `env` to the spawn — so a package can carry its own configuration\n  without editing the manifest."
+ },
+ {
+  "id": "A545",
+  "slice": "Component ecosystem (plugins)",
+  "status": "apply",
+  "reason": "Confirmed and worth stating, because the current sentence suggests any same-package path is fine. `plugins` validates `sources` against `main`'s own directory (`source.splitFile().dir != mainDir` -> error) and then hands the builder `files[source.extractFilename()]`, so only the basename ever travels and a path in a subdirectory is refused at manifest read time; the builder caps the object at 64 files / 2 MB. A `sources` key on a Nim or TS entry is refused the same way (`sources must be an array on a Go component`).",
+  "evidence": "components/plugins/main.nim:183-199 (same-directory check, non-symlink, .go, no duplicates), :251-255 (files[source.extractFilename()] = readFile(dest/source)), components/builder/main.nim:25-34 (validGoSourceName: flat names only), :115-129 (at most 64 files, 2 MB)",
+  "old_string": "  `\"sources\": [\"component/helper.go\", ...]`; these must be non-symlink,\n  same-package `.go` files beside `main`, and the builder compiles them as one\n  package.",
+  "new_string": "  `\"sources\": [\"component/helper.go\", ...]`; these must be non-symlink `.go`\n  files **in the same directory as `main`** (the plugins manifest reader refuses\n  a path in a subdirectory, and only the basename reaches the builder), at most\n  64 files and 2 MB in total, and the builder compiles them with `main` as one\n  package. A `sources` key on a Nim or TS entry is refused when the manifest is\n  read."
+ },
+ {
+  "id": "A600",
+  "slice": "Component ecosystem (plugins)",
+  "status": "already",
+  "reason": "Verified, no change: `components/dialog/dialog.sh` hand-writes the envelope and the bare `reg.publish` payload (no SDK at all) and the manual still lists it as the third reference shape with exactly that wording, so the teaching example is intact.",
+  "evidence": "components/dialog/dialog.sh:1-19 (envelope + bare reg.publish written by hand), docs/WIRE.md:44-47 (the registration shape), docs/MANUAL.md:994",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A572",
+  "slice": "Background processes (processes)",
+  "status": "apply",
+  "reason": "The parenthetical is false. Core's approval gate lives in the dispatch path (`x-harness.approval` is enforced there), and `cli` never goes through it: it resolves the providing component from the catalog and publishes directly to `svc.<component>.call`, so `cli call process_start` runs ungated while the model's own call is gated. The MANUAL already says as much for the workspace substitution two bullets later ('A bare bus call (`cli call process_start`) skips that substitution'); this row makes the approval sentence agree.",
+  "evidence": "components/cli/main.nim:100-114 (callTool publishes to \"svc.\" & comp & \".call\" - no svc.core.call hop), core/dispatch.nim:1619-1630 (the approval gate sits in the core dispatch path), components/processes/main.nim:497-521 (schemas only: approval: always, no gate of its own)",
+  "old_string": "while a direct `process_start` (e.g. from `cli`) is gated",
+  "new_string": "while a direct `process_start` issued through core (the model, or any tool reached via `svc.core.call`) is gated — a bus client that addresses `svc.processes.call` itself (the `cli`, a script) is not gated at all"
+ }
+]

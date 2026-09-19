@@ -173,3 +173,49 @@ Both supersessions carry their reasoning in the row's `status`/`reason`, so the
 record shows why an `apply` row did not land. One manual repair followed the
 apply: A035's patch had leaked a process note into the prose and one paragraph
 ran long — both fixed by hand in `docs/MANUAL.md` and in the source row.
+
+## Round two — `batch-open2-1..8` (applied)
+
+The second wave's 307 still-open rows, split by `partition_open.py` into eight
+balanced batches (that script slices only what `status.py` reports open, so
+round one's `batch-N.txt` record is untouched). Each child re-verified against
+the current MANUAL and the code, then wrote `edits/batch-open2-<N>.json`:
+
+| | |
+|---|---:|
+| apply | 146 |
+| already | 85 |
+| code (see code-bugs.md) | 28 |
+| skip | 48 |
+
+The round was verified as a *round* before applying — `simulate_round.py`,
+written for this: every anchor unique, and still unique after the earlier rows
+of the round have landed, no duplicate ids, no drafting apparatus in a proposed
+`new_string`, a warning when the MANUAL has moved past
+`edits/anchor-revision.txt`. It applies in id order exactly as `apply_edits.py`
+does, so a collision is found before a single byte is written. Verdict:
+**146/146, MANUAL 3082 → 3448 lines**, then two hand repairs (below).
+
+**What the round-level check caught that no child could:**
+
+- **A784 ⊂ A547** — a genuine collision, not a duplicate: A547 (open2-4) rewrites
+the same sentence and does not keep A784's wording, so in id order A784's anchor
+is gone before it is reached. Re-anchored past A547's replacement, with its
+`new_string` rewritten so it cannot reintroduce the pre-A547 text and silently
+undo A547. (The A579/A584 pair *is* order-independent — that child deliberately
+kept the shared sentence verbatim — which is why the check reports collisions
+rather than assuming them.)
+- **Two of my own checks were wrong**, both fixed: the simulator's apply loop
+read `new` from the leakage-check loop above it (a Python scoping leak), so every
+row was replaced by the last row's text — that manufactured `−91 lines` and three
+phantom failures; and the leakage guard flagged the word "superseded" in
+legitimate prose about checkpoints. A check that is itself wrong is worse than no
+check: it launders a wrong claim.
+
+**Hand repairs after the apply** (both recorded here because they are edits to
+text a row produced): the TOC entry `[Search (`grep`)](#search-grep)` dangled —
+the section is `### `grep` in detail` — so it now points at `#grep-in-detail`;
+and the "Build and script knobs" note, already one 512-character line before the
+round, had grown to 865 and is re-wrapped. Final state: 3459 lines, 29 `##`
+headings, **no broken internal links**, no ledger ids in the prose, fences
+balanced.

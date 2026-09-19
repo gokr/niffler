@@ -1,0 +1,326 @@
+[
+  {
+    "id": "A759",
+    "slice": "Recovery",
+    "status": "already",
+    "reason": "Verified against both store engines: the sentence names exactly the two flock files and states the kernel-release rule correctly, so no MANUAL edit. (Its FIX in components/store.md was 'none'.)",
+    "evidence": "docs/MANUAL.md:2841-2845 (“a `store` that refuses to start means another process still holds the lock (`var/store.db.lock` / `var/barrel-db.lock`), not a stale file: `make down` or kill the stale store and the kernel releases it”); components/store-sqlite/main.go:136 (`acquireLock(dbPath + \".lock\")` → `var/store.db.lock`, :162-176 non-blocking flock); components/store/main.nim:48-49 (`let lockPath = path & \".lock\"` → `var/barrel-db.lock`). The two neighbouring Recovery rows (make clean, `git restore components/ core/ sdk/ manifest.yaml Makefile`) are already in the text.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A585",
+    "slice": "Starting and stopping",
+    "status": "apply",
+    "reason": "The four-leg probe chain in this bullet is real — but only for the TUI, the client the bullet names; every other shipped client probes differently. The wave-2 report was right that the sentence reads as universal. One appended sentence names the per-client chains (verified in the current tree).",
+    "evidence": "~/git/niffler-tui/tui/main.go:3057-3072 (NIF_NATS_URL → `$NIF_ROOT/var/nats-url` → `./var/nats-url` → default — the four legs), sdk/subjects.nim:19-32 (`resolveNatsUrl`: NIF_NATS_URL → harness root’s `var/nats-url` → 127.0.0.1:4222; `harnessRoot()` is NIF_ROOT or the binary’s own clone, never the cwd), components/console/main.nim:58-62 and components/cli/main.nim:28-32 (both call it), components/dialog/dialog.sh:24-31 (NIF_NATS_URL → `./var/nats-url` → 4222, cwd only).",
+    "old_string": "they probe for a live bus\n  (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` →\n  127.0.0.1:4222), connect and register `client: true` (so an autostarted\n  core stays up while they run). Unlike `ensureHarness` they do **not** check\n  which root the answering core serves, so a TUI can join a foreign harness's\n  bus that the desktop UI would refuse.",
+    "new_string": "they probe for a live bus\n  (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` →\n  127.0.0.1:4222), connect and register `client: true` (so an autostarted\n  core stays up while they run). Unlike `ensureHarness` they do **not** check\n  which root the answering core serves, so a TUI can join a foreign harness's\n  bus that the desktop UI would refuse. The chain is per client: the Nim clients (`cli`, `console`) probe\n  `NIF_NATS_URL` → `<NIF_ROOT or their own clone>/var/nats-url` →\n  127.0.0.1:4222 and never the cwd, while the bash `dialog` uses\n  `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222."
+  },
+  {
+    "id": "A586",
+    "slice": "Starting and stopping",
+    "status": "apply",
+    "reason": "Real gap: the marker is described as what interactive frontends do, but two shipped clients register without it, so an autostarted core can exit under them. One sentence, appended to the marker sentence.",
+    "evidence": "components/console/main.nim:71-74 (reg.publish with name/version/pid/tools, no `client` field), components/dialog/dialog.sh:63-103 (reg.publish with two tools, no `client` field); core/catalog.nim:794-798 (clientCount counts only `client: true` publishers), core/niffler.nim:659-691 (autostart exit); components/console/main.nim:101-140 (reconnect loop) vs the dialog’s `wait \"$reply_pid\"` tail.",
+    "old_string": "Interactive frontends register `\"client\": true` (the SDK's `interactive()`\n/ `Component.Client` marker).",
+    "new_string": "Interactive frontends register `\"client\": true` (the SDK's `interactive()`\n/ `Component.Client` marker). `console` and `dialog` are not interactive frontends by this\ndefinition: neither registers `client: true`, so an autostarted core\ncan exit under them (the `console` reconnects on its own when a new\nharness appears)."
+  },
+  {
+    "id": "A541",
+    "slice": "Approvals",
+    "status": "skip",
+    "reason": "Same finding as A571 — the gate lives in core’s dispatcher, so a caller that reaches a component directly is not gated. Folded into A571’s single new bullet of §Approvals (which names the `plugins` case explicitly) rather than editing the same list twice.",
+    "evidence": "components/plugins/main.nim:256 (`comp.request(\"builder\", \"build\", buildArgs, 320_000)` — no gate, no timeout policy), components/plugins/main.nim:628,653,700 (`plugin_install`/`update`/`remove` each carry their own `approval: \"always\"`), core/dispatch.nim:1580+1594-1597 (the gate is inside `dispatchToolCall`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A571",
+    "slice": "Approvals",
+    "status": "apply",
+    "reason": "Real gap, and the sharper half of the A541/A571 pair: the chapter describes the gate as if every caller passed through it. Documents that it protects core-mediated callers only, with the two concrete bypasses (a peer component calling `svc.builder.call`, a bus client publishing `svc.<component>.call`).",
+    "evidence": "core/dispatch.nim:1575-1600 (the only approval gate is inside `dispatchToolCall`), components/cli/main.nim:104-117 (`cli call` publishes straight to `svc.<component>.call`), components/dialog/dialog.sh:60-103 (subscribes `svc.dialog.call` directly), components/plugins/main.nim:256 vs :628/653/700 (the install path’s inner builder call is unGated; the outer plugin tool is gated).",
+    "old_string": "- Core's own destructive tools are named `spawn`, `kill`, `remove` and\n  `conversation_delete`; they are gated by name inside `handleCoreTool`, not\n  through a schema, so `x-harness.approval` appears on component tools only.",
+    "new_string": "- Core's own destructive tools are named `spawn`, `kill`, `remove` and\n  `conversation_delete`; they are gated by name inside `handleCoreTool`, not\n  through a schema, so `x-harness.approval` appears on component tools only.\n- The gate lives in core's dispatcher, so it protects core-mediated\n  callers only: the model, and anything that comes through `svc.core.call`.\n  A caller that reaches a component directly runs an `approval: \"always\"`\n  tool unasked — the `plugins` install path calls `svc.builder.call`\n  itself (its own `plugin_install` call is what carries the approval), and\n  `./var/bin/cli`, `dialog` or a test publishing to `svc.<component>.call`\n  never enters that gate. Treat such a caller as the trust level of the\n  shell that started the harness."
+  },
+  {
+    "id": "A619",
+    "slice": "Approvals",
+    "status": "already",
+    "reason": "Verified: `/compact` really is the replaceable-compactor rung, run without an LLM turn and without appending a user message, and a decline is reported rather than degraded to lossy trim. The row’s own FIX was 'none'.",
+    "evidence": "docs/MANUAL.md:718-725 (`/compact` bullet); core/conversation.nim:2966-2997 (manual compaction inside the empty-content branch: no chat call, no message append, `reset:compact` emitted by `attemptCompaction`); core/conversation.nim:1445-1455,1598-1604 (a decline leaves the transcript untouched and reports `compact:declined`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A620",
+    "slice": "Approvals",
+    "status": "apply",
+    "reason": "The quoted reason is prose; the code returns exactly two string reasons, one of them naming `NIF_COMPACTION_TOOL`. Replaces the parenthetical with the real reasons so an operator can match the reply against the source.",
+    "evidence": "core/conversation.nim:2974-2976 (`\"reason\": \"no compaction component available (\" & \"NIF_COMPACTION_TOOL=\" & ccfg.tool & \")\"`), core/conversation.nim:2990-2997 (`compacted: true` with beforeTokens/afterTokens/generation, else `nothing to compact: the compactor declined or no permitted cut exists yet`).",
+    "old_string": "The reply reports `compacted: true` with\nbefore/after token counts, or `compacted: false` with the reason (no\ncompaction component configured, the compactor declined, or nothing\ncompactable yet); a decline never silently falls back to lossy trim.",
+    "new_string": "The reply reports `compacted: true` with `beforeTokens`, `afterTokens`\nand `generation`, or `compacted: false` with one of exactly two reasons,\n`no compaction component available (NIF_COMPACTION_TOOL=<value>)` or\n`nothing to compact: the compactor declined or no permitted cut exists\nyet` (the second also covers a candidate attempt that failed\nvalidation); a decline never silently falls back to lossy trim."
+  },
+  {
+    "id": "A657",
+    "slice": "Approvals",
+    "status": "already",
+    "reason": "Verified: neither grep tool carries `x-harness.approval` and both are read-only, so the gated-tool list is right to omit them. (The shipped components row that calls them approval-free is unaffected.)",
+    "evidence": "components/grep/main.nim:52-54 (`grep`: `{\"timeoutMs\": 60000, \"parallel\": true, \"workspace\": ...}`, no approval), components/grep/main.nim:100-102 (`files`: `{\"timeoutMs\": 60000, \"onDemand\": true, ...}`, no approval).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A532",
+    "slice": "Progressive tool discovery",
+    "status": "already",
+    "reason": "Verified: the sentence is present and still true — a build only drops a binary in `var/bin`; something must start it (manifest autostart at boot, `core.spawn`, or a plugin install's own spawn step). The row's FIX was 'none'.",
+    "evidence": "docs/MANUAL.md §Progressive tool discovery, “A binary under `var/bin` is inert until manifest autostart, `core.spawn`, or a plugin install starts it.”; core/dispatch.nim:308-346 (spawn), components/plugins/main.nim:242-263 (install builds then spawns every service component), components/builder/main.nim:104-105 (build returns the path).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A546",
+    "slice": "Progressive tool discovery",
+    "status": "already",
+    "reason": "Verified: both builder tools are on demand and none is direct or hidden, so the inventory bullet ('Core lifecycle/status/catalog, builder, plugins, and fetch.') is exactly right. The row's FIX was 'none'.",
+    "evidence": "components/builder/main.nim:49-53 (`build`: `{\"approval\": \"always\", \"timeoutMs\": 300000, \"onDemand\": true}`), components/builder/main.nim:203-205 (`info`: `{\"onDemand\": true}`); no `comp.tool` in that file lacks onDemand.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A617",
+    "slice": "Progressive tool discovery",
+    "status": "already",
+    "reason": "Verified for what it claims: the two-flag exemption sentence is accurate (core checks `runner` **and** `hidden` at dispatch) and `compaction_propose` does carry both. The part of the sentence that is wrong — the `(compaction, recall)` example — is A630's edit, not a second edit here.",
+    "evidence": "core/dispatch.nim:1511-1537 (`checkToolAllowlist`: returns early when the allowlist is empty, exempts `chat`/`put`/`get`/`list`/`del` by name, then requires `x-harness.runner` **and** `x-harness.hidden`), components/compaction/main.nim:216 (`{\"hidden\": true, \"runner\": true, \"timeoutMs\": 120_000, \"effect\": \"read\"}`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A618",
+    "slice": "Progressive tool discovery",
+    "status": "apply",
+    "reason": "Real gap: the run's own compaction seam is a hidden tool and belongs in the MANUAL's hidden inventory (the list is otherwise complete for the shipped tree). One name added, matching the sentence's phrasing.",
+    "evidence": "components/compaction/main.nim:215-221 (`discard comp.tool(\"compaction_propose\", schema, ...)`, `schema[\"x-harness\"] = %*{\"hidden\": true, \"runner\": true, \"timeoutMs\": 120_000, \"effect\": \"read\"}`); docs/MANUAL.md:2071-2077 is the hidden list.",
+    "old_string": "Internal tools remain hidden: core `session`/`session_prepare`, store\n`del`, LLM `chat`/`llm_resolve`, the systemprompt prompt, and the",
+    "new_string": "Internal tools remain hidden: core `session`/`session_prepare`, store\n`del`, LLM `chat`/`llm_resolve`, the systemprompt prompt, the compaction seam's\n`compaction_propose`, and the"
+  },
+  {
+    "id": "A630",
+    "slice": "Progressive tool discovery",
+    "status": "apply",
+    "reason": "The example list is wrong and misleading: `context_recall` is on demand, not hidden, so it is refused in an allowlisted conversation. Replaces the parenthetical with the machinery the sentence is really about and states the two-flags-together rule the code enforces.",
+    "evidence": "components/recall/main.nim:238-239 (`schema[\"x-harness\"] = %*{\"onDemand\": true, \"runner\": true, \"sessionId\": true, \"timeoutMs\": 15_000, \"effect\": \"read\"}` — no `hidden`), core/dispatch.nim:1532-1537 (the exemption needs `runner` **and** `hidden`), core/dispatch.nim:1526-1529 (no allowlist ⇒ nothing checked); tests/t_recall.nim guards the on-demand registration.",
+    "old_string": "Hidden takes precedence if both flags are present. A hidden tool that also carries `x-harness.runner: true` is exempt from a subagent's frozen tool allowlist — how replaceable runner machinery (compaction, recall) reaches a child whose toolset was frozen before it existed.",
+    "new_string": "Hidden takes precedence if both flags are present. A hidden tool that also carries `x-harness.runner: true` is exempt from a subagent's frozen tool allowlist — how replaceable runner machinery (the compactor) reaches a child whose toolset was frozen before it existed. The two flags are required together: an on-demand tool that carries `runner` without `hidden` is **not** exempt, and is refused in an allowlisted conversation like any other tool outside its `tools` list."
+  },
+  {
+    "id": "A631",
+    "slice": "Progressive tool discovery",
+    "status": "apply",
+    "reason": "Real gap worth one parenthetical: the table's Invocation column reads as if `invoke` were the only way in, but exposure is not an ACL — without a tool allowlist a call by bare name dispatches from the full catalog.",
+    "evidence": "core/dispatch.nim:1526-1529 (`checkToolAllowlist` returns immediately when `sessionAllowlist` is nil/empty), core/dispatch.nim:1575-1596 (dispatch by catalog lookup, not by exposure), core/catalog.nim:316-319 (`isHidden`/`isOnDemand` are projection predicates).",
+    "old_string": "| on demand | `x-harness.onDemand: true` | omitted | hint + schema lookup | `invoke` |",
+    "new_string": "| on demand | `x-harness.onDemand: true` | omitted | hint + schema lookup | `invoke` (a call by bare name also dispatches when the conversation has no tool allowlist) |"
+  },
+  {
+    "id": "A632",
+    "slice": "Progressive tool discovery",
+    "status": "code",
+    "reason": "Code bug, not prose: `invokeTool` resolves a `component.tool` spelling for the lookup but dispatches the raw string, so the tolerant spelling is accepted and then fails with “no component provides tool 'recall.context_recall'”. Fix: dispatch the resolved bare name (`ct.dispatchToolCall(name, arguments, defaultTimeoutMs)`) and add a dotted-invoke case to `tests/t_discover.nim`. No MANUAL edit — the docs already say the bare name is canonical and that the gateway tolerates the dotted form.",
+    "evidence": "core/dispatch.nim:272-292 (`let name = target`; `if ct.cat.toolSchema(name) == nil and name.contains('.')`: `name = name.split('.')[^1]`; then `return ct.dispatchToolCall(target, arguments, defaultTimeoutMs)` — the raw `target`, not `name`), core/dispatch.nim:1606-1608 (the resulting error, “no component provides tool '<tool>' — is it registered?”).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A646",
+    "slice": "Progressive tool discovery",
+    "status": "apply",
+    "reason": "Real gap: `context_recall` is the one on-demand tool the runner's own notices tell the model to call, and it is the only shipped on-demand tool missing from this inventory. One clause, in the list that already exists.",
+    "evidence": "components/recall/main.nim:238 (registration, `onDemand: true`), components/recall/main.nim:221-224 (description: “Every notice naming replaced content carries its ref verbatim — pass it back here unchanged”); core/catalog.nim:431-453 (on-demand hints come from the component's own registry, so this inventory is the reader's only index).",
+    "old_string": "- Search and inspection: `files` (sorted listing), the git\n  tools, `undo_last_edit`, `repo_map` (the ranked workspace map the model",
+    "new_string": "- Search and inspection: `files` (sorted listing), the git\n  tools, `undo_last_edit`, `context_recall` (what a notice naming replaced\n  content points at), `repo_map` (the ranked workspace map the model"
+  },
+  {
+    "id": "A647",
+    "slice": "Progressive tool discovery",
+    "status": "already",
+    "reason": "Verified: `context_recall` is deliberately *not* hidden (it is on demand), so its absence from the hidden list is correct — the row's own FIX was 'none', and `tests/t_recall.nim` is the guard against re-adding it there.",
+    "evidence": "components/recall/main.nim:238-239 (`onDemand: true, runner: true, ...`, no `hidden`); docs/MANUAL.md:2071-2077 (hidden list); tests/t_recall.nim (asserts the tool registers on demand rather than hidden).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A654",
+    "slice": "Progressive tool discovery",
+    "status": "already",
+    "reason": "Verified: `grep` carries no `onDemand`, so it is direct and the bullet ('Routine work: `bash`, `grep`, and the file tools') is right. FIX was 'none'.",
+    "evidence": "components/grep/main.nim:52-54 (`comp.tool(%*{\"timeoutMs\": 60000, \"parallel\": true, \"workspace\": ...})` — no `onDemand`); core/catalog.nim:316-333 (direct = neither hidden nor on demand).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A655",
+    "slice": "Progressive tool discovery",
+    "status": "already",
+    "reason": "Verified: `files` is discover-only, and this bullet is the MANUAL's only statement of that fact — keep it. FIX was 'none'.",
+    "evidence": "components/grep/main.nim:100-102 (`comp.tool(%*{\"timeoutMs\": 60000, \"onDemand\": true, \"workspace\": ...})`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A656",
+    "slice": "Progressive tool discovery",
+    "status": "apply",
+    "reason": "Real delta: the MANUAL mentions the runner-facing `x-harness.parallel` hint once and never says what it does or which shipped tools carry it. The natural home is that very sentence (replicas ↔ runner scheduling); `grep` declares it and `files` does not, so the distinction an operator meets in a batched wave is spelled out.",
+    "evidence": "components/grep/main.nim:52 (`\"parallel\": true`), components/grep/main.nim:100 (`files`: absent), components/edit/main.nim:1284 (`read`: `\"parallel\": true`), core/dispatch.nim:1716-1726 (`isParallelSafeTool`: opt-in via `x-harness.parallel`, never for approval-gated/session-context/core tools).",
+    "old_string": "This\nserver-side choice is independent of the runner-facing `x-harness.parallel`\nhint.",
+    "new_string": "This\nserver-side choice is independent of the runner-facing `x-harness.parallel`\nhint: a tool that declares `parallel: true` may be dispatched\nconcurrently with other parallel-marked tools in the same assistant\nmessage (`grep` and `read` do; `files`, though read-only, does not, so\nan `invoke`d `files` serializes)."
+  },
+  {
+    "id": "A696",
+    "slice": "Progressive tool discovery",
+    "status": "apply",
+    "reason": "Real gap, and the smaller half of the A696/A727 pair: logfile's two tools are discoverable but unnamed here, so a reader must reach the component section to learn they exist. Names them (the `observe_*` family stays generic, which A727 verified is right).",
+    "evidence": "components/logfile/main.nim:292-294 (`logfile_search`, `{\"onDemand\": true}`), components/logfile/main.nim:448-450 (`logfile_paths`, `{\"onDemand\": true}`) — the component registers no other tool; components/observe/main.nim has twelve, all `onDemand`.",
+    "old_string": "and the observe/logfile diagnostics.",
+    "new_string": "and the `observe_*` diagnostics plus\n  logfile's `logfile_search`/`logfile_paths`."
+  },
+  {
+    "id": "A727",
+    "slice": "Progressive tool discovery",
+    "status": "already",
+    "reason": "Verified: every `observe_*` tool is on demand, so the generic “the observe/logfile diagnostics” phrasing is correct; naming them individually was the optional half, and A696 takes the useful part (logfile's two). FIX was 'none'.",
+    "evidence": "components/observe/main.nim:297,361,376,419,447,472,494,506,515,591,677,714 (twelve registrations, each with `onDemand: true`; five also carry `\"approval\": \"always\"`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A660",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "The row is right and the MANUAL is the outlier: `runHook` echoes the command's combined output to the component's stderr only when the exit code is non-zero — a hook that exits 0 has its output thrown away. Replaced the sentence with the failing-hook wording the row reproduced live.",
+    "evidence": "components/hooks/main.nim:100-106 (`let r = runCmd(wrapped, timeoutMs)`; `if r.code != 0: stderr.writeLine(\"hooks: exit \" & ... & r.output)`), sdk/niffler/procutil.nim:70-73,110-112 (`runCmd` captures the command's combined stdout+stderr via `( cmd ) > <tmp> 2>&1`); components/hooks/README.md:6-8 states the failing-hook fact correctly; core/supervisor.nim:126-138,202 redirects child output to `var/logs/hooks.log`.",
+    "old_string": "Hook stdout and stderr go to the component's own log, `var/logs/hooks.log`\n(the supervisor redirects child output there) — never into logfile's JSONL,\nwhich persists bus traffic only.",
+    "new_string": "A **failing** hook's combined output is echoed to the component's stderr\nand lands in `var/logs/hooks.log` (the supervisor redirects child output\nthere); a hook that exits 0 has its output discarded. Neither path writes\ninto logfile's JSONL, which persists bus traffic only."
+  },
+  {
+    "id": "A661",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "Real gap, and the row's own suggested idiom is backwards: `runHook` decodes the envelope and hands over `env.payload`, so a hook's stdin holds the event payload with no `payload` key at all (`jq -r .msg`, not `jq .payload.msg` — the example block below this paragraph is wrong and needs the same one-line fix). Documented the unwrapping, the temp-file name and the default permissions.",
+    "evidence": "components/hooks/main.nim:82-90 (`let env = decode(payload)`; `if env.payload != nil: body = env.payload.pretty`; a non-envelope falls into the `except CatchableError: discard` raw-bytes path), components/hooks/main.nim:95-99 (`let payloadPath = getTempDir() / (\"niffler-hook-\" & $getCurrentProcessId() & \"-\" & $hookCounter & \".json\")`, plain `writeFile`), components/hooks/main.nim:100-101 (`\"cat \" & quoteShell(payloadPath) & \" | \" & command`). Reproduced: a probe importing `sdk/envelope` and running the component's own decode path prints the payload object (`sessionId`/`turnId`/`phase`/`reply`), never `{v,id,kind,payload}`.",
+    "old_string": "A hook is a plain process: the decoded event\npayload is piped to the command's stdin as pretty JSON — written to a temp\nfile and `cat` into the hook, never interpolated into the command line —\nfailures and timeouts (default 10s, max 60s) are logged and never fatal,\nand a payload is capped at 256 KB with a truncation marker appended.",
+    "new_string": "A hook is a plain process: the event **payload** is piped to the command's\nstdin as pretty JSON — the envelope is stripped, and a message that is not\nan envelope passes through as raw bytes, so the hook reads the payload's\nfields at the top level (`jq -r .msg`, never `jq -r .payload.msg`) —\nwritten to a temp file (`getTempDir()/niffler-hook-<pid>-<n>.json`, default\npermissions: treat it like a capture directory) and `cat` into the hook,\nnever interpolated into the command line — failures and timeouts (default\n10s, max 60s) are logged and never fatal, and a payload is capped at 256 KB\nwith a truncation marker appended."
+  },
+  {
+    "id": "A662",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "The row's finding (a `*` token never fires) was true of the revision it audited; the component has since gained NATS wildcard matching (uncommitted, current tree), which inverts the premise and leaves the MANUAL sentence wrong in the other direction: `>` does not match a middle part, `*` is the one-token wildcard and `>` the rest. Applied the accurate statement plus the row's 'keep the list disjoint' warning (which the current tap-per-spec code still warrants — see A664).",
+    "evidence": "components/hooks/main.nim:58-83 (`matchHook`: token split, `if tok == \"*\": continue`, a `>` that is not the last pattern token never matches, `pattern[^1] == \">\"` for the prefix case), components/hooks/main.nim:15-19 (the component's own comment: \"Wildcards follow NATS: '*' is one token, a trailing '>' is the rest\"), tests/t_hooks.nim:28 (`NIF_HOOKS_EVENTS=ev.session.*.turn`). Reproduced with the two procs copied verbatim: `ev.session.abc.turn` fires, `ev.session.abc.toolcall` does not for spec `ev.session.*.turn`, `ev.log.error` fires for `ev.log.>`.",
+    "old_string": "A `>` matches any middle part of a subject: `ev.session.*.turn` fires for\nevery conversation's finished turn (`ev.session.*.toolcall` for every tool\ncall; the session id rides the subject and the payload).",
+    "new_string": "Wildcards follow NATS: `*` matches exactly one subject token and a trailing\n`>` matches the rest, so `ev.session.*.turn` fires for every conversation's\nfinished turn and `ev.log.>` for every log event (the session id rides the\nsubject and the payload). Keep the list disjoint: a message that satisfies\ntwo specs makes the first matching command run once per subscription that\nheard it."
+  },
+  {
+    "id": "A663",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "Verified by execution, and the sentence is also stale in its own right (it still names `>.` collapsing while its example is `*.`): the mapping does not collapse a trailing wildcard, so `ev.log.>` needs a doubled underscore — the spelling the component's comment and the README both get wrong, and a silently inert env var for the operator who copies them.",
+    "evidence": "components/hooks/main.nim:41-49 (`multiReplace((\"*.\", \"\"), (\">.\", \"\"), (\".\", \"_\"), (\"*\", \"_\"), (\">\", \"_\"))`); reproduced with that exact expression: `ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`, `ev.log.>` → `NIF_HOOKS_EV_LOG__`, `ev.log.*` → `NIF_HOOKS_EV_LOG__` (the comment at components/hooks/main.nim:44-46 and components/hooks/README.md:26-28 both claim the single-underscore form).",
+    "old_string": "Subject → env name: dots and `>` become `_`, uppercased, with `>.`\ncollapsing so the canonical names survive\n(`ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`).",
+    "new_string": "Subject → env name: dots and wildcards become `_`, uppercased, with `*.`\nand `>.` collapsing so the canonical names survive\n(`ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`); a wildcard that ends\nthe spec contributes its own underscore, so `ev.log.>` and `ev.log.*` are\nboth `NIF_HOOKS_EV_LOG__`."
+  },
+  {
+    "id": "A664",
+    "slice": "Hooks",
+    "status": "code",
+    "reason": "Code bug, still reproducible after the wildcard rewrite: one NATS subscription per configured spec outside `ev.session.*`, and the SDK dispatches per binding, so a message two specs both cover runs the same first-match command twice. Fix in `components/hooks/main.nim`: dedupe per delivered message (track `(subject, command)` per message) or refuse overlapping specs at boot; extend `tests/t_hooks.nim` (it covers a single spec). The MANUAL now warns instead (see A662's edit); the MANUAL's own first-match-wins clause is accurate and needs no change.",
+    "evidence": "components/hooks/main.nim:143-161 (one `comp.tap(\"ev.session.>\", ...)` plus one `comp.tap(s, ...)` per non-`ev.session.*` spec), sdk/niffler/sdk.nim (the pump dispatches every matching binding separately); reproduced in the wave-2 report with `NIF_HOOKS_EVENTS=\"ev.log.error,ev.log.>\"`: two lines in the first spec's file, none in the second's, for one event.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A665",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "Real gap worth one sentence: the component is tool-less by design and its no-config behaviour (stay up, say so) is exactly what an operator wants to know before disabling or debugging it.",
+    "evidence": "components/hooks/main.nim:126-137 (no `comp.tool` anywhere in the file; `echo \"hooks: no hooks configured (set NIF_HOOKS_<EVENT>, see components/hooks/README.md) — watching nothing, staying up\"`), components/hooks/main.nim:171-173 (`comp.run()` regardless).",
+    "old_string": "approval decisions live in core's dispatch gate.",
+    "new_string": "approval decisions live in core's dispatch gate. It registers no tools at\nall — the interface is the environment and the bus — and with no matching\n`NIF_HOOKS_<SUBJECT>` set it logs `watching nothing, staying up` and keeps\nrunning."
+  },
+  {
+    "id": "A666",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "Real gap: the section names example kinds (notification, webhook, error tail) but never the events worth watching, so the reader has to guess subject names against the bus inventory. One sentence pointing at the inventory (which already lists every payload field).",
+    "evidence": "core/conversation.nim:1742-1750 (turn/assistant/status/token/advice/done events), core/conversation.nim:2915-2917 (`ev.session.<id>.done` carries `reply`; `ev.session.<id>.turn` carries `content`/`error`), docs/MANUAL.md \\§The bus in one screen (the `ev.session.<id>.*` block), components/hooks/README.md:38-44 (the payload-highlight table).",
+    "old_string": "desktop notification, sound alert, email, webhook, error tail — live in\n`components/hooks/README.md`.",
+    "new_string": "desktop notification, sound alert, email, webhook, error tail — live in\n`components/hooks/README.md`. The events worth\nwatching are `ev.session.<id>.turn` (turn boundaries), `ev.session.<id>.done`\n(carries `reply`), `ev.session.<id>.status` (per LLM round),\n`ev.session.<id>.context` (warn/trim/reset) and `ev.log.<component>`; their\npayload fields are listed under [The bus in one screen](#the-bus-in-one-screen)."
+  },
+  {
+    "id": "A667",
+    "slice": "Hooks",
+    "status": "already",
+    "reason": "Verified: a non-zero exit and a timeout both log to the component's stderr and never raise, and the timeout kills the whole process group and reports exit 124 — exactly what the sentence says. FIX was 'none'.",
+    "evidence": "components/hooks/main.nim:100-108 (`runCmd`'s error path -> `hooks: failed on <subject>: <msg>`, never a raise), sdk/niffler/procutil.nim:117-132 (`killGroup(pid, SIGTERM)`, 1 s grace, `SIGKILL`, `result.code = 124`).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A668",
+    "slice": "Hooks",
+    "status": "already",
+    "reason": "Verified: the observe-only claim holds — the component registers no tools and never touches core's approval path, so its only interface is the environment and the bus. FIX was 'none'.",
+    "evidence": "components/hooks/main.nim (no `comp.tool`, no `approval` reference anywhere in the file), core/dispatch.nim:1594-1597 (approvals are core's gate).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A669",
+    "slice": "Hooks",
+    "status": "code",
+    "reason": "The defect is in the component's README, not the MANUAL: the MANUAL sentence it sits next to (`var/logs/hooks.log`, logfile's JSONL) is corrected by A660's edit, and no MANUAL text mentions the phantom variable. Fix: delete the `$NIF_HOOK_SUBJECT` sentence in `components/hooks/README.md:4-8` and state that the subject is visible only through the configured spec (the component passes no subject variable to the hook).",
+    "evidence": "components/hooks/README.md:4-8 (“the firing subject is in `$NIF_HOOK_SUBJECT`... actually just stdin”); `grep -rn NIF_HOOK_SUBJECT` over the tree matches nothing else; components/hooks/main.nim:100-110 (`runHook` passes the payload on stdin only, and its stderr line names the subject).",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A670",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "The row itself is verified (the default is right, the list is comma-split and read at boot), but the sentence has since been rewritten to '`>` matches any middle part (trailing `>` prefix-matches too)', which the current `matchHook` does not implement: `*` is the one-token wildcard and a trailing `>` the rest. Corrected the wildcard clause, kept the rest verbatim.",
+    "evidence": "components/hooks/main.nim:58-83 (`matchHook`), components/hooks/main.nim:15-19 and :128 (`NIF_HOOKS_EVENTS`, default `\"ev.session.*.turn\"`), components/hooks/main.nim:122-131 (comma split, `.strip()`, empty entries skipped, subject kept only when `getEnv(hookEnvFor(s))` is non-empty).",
+    "old_string": "| `NIF_HOOKS_EVENTS` | comma-separated bus subjects the hooks component watches; `>` matches any middle part (trailing `>` prefix-matches too). Read at boot — a config change is `core.kill` + `core.spawn` | `ev.session.*.turn` |",
+    "new_string": "| `NIF_HOOKS_EVENTS` | comma-separated bus subjects the hooks component watches, with NATS wildcards (`*` one token, a trailing `>` the rest). Read at boot — a config change is `core.kill` + `core.spawn` | `ev.session.*.turn` |"
+  },
+  {
+    "id": "A671",
+    "slice": "Hooks",
+    "status": "apply",
+    "reason": "Same fact as A663, in the table row the report quotes: the mapping double-underscores a trailing wildcard, and the row's 'with `>.` collapsing' no longer matches its own `*.` example. Corrected both spellings in place.",
+    "evidence": "components/hooks/main.nim:41-49 (the `multiReplace` chain); reproduced: `ev.log.>` → `NIF_HOOKS_EV_LOG__`, `ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`.",
+    "old_string": "| `NIF_HOOKS_<SUBJECT>` | the shell command run for one watched subject (dots and `>` become `_`, with `>.` collapsing: `ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`); event payload piped to stdin as JSON | unset |",
+    "new_string": "| `NIF_HOOKS_<SUBJECT>` | the shell command run for one watched subject (dots and wildcards become `_`, with `*.` and `>.` collapsing: `ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`, `ev.log.>` → `NIF_HOOKS_EV_LOG__`); event payload piped to stdin as JSON | unset |"
+  },
+  {
+    "id": "A674",
+    "slice": "Hooks",
+    "status": "already",
+    "reason": "Verified: `ev.session.<id>.turn` carries exactly `{sessionId, turnId, phase: start|done, content?, error?}` — there is no `reply` field — and the bus inventory in the MANUAL is the right place for the Hooks section to point at. FIX was 'none'.",
+    "evidence": "core/conversation.nim:1742-1747 (the `runTurn` doc block: \"turn\", {sessionId, turnId, phase: start|done, content?, error?}; \"done\", {sessionId, turnId, reply}), core/conversation.nim:1762-1768 (`emitTurnDone` emits `phase: done` plus `error` only), core/conversation.nim:1770-1772 (the `phase: start` event carries `content`); docs/MANUAL.md \\§The bus in one screen, `ev.session.<id>.turn` line.",
+    "old_string": "",
+    "new_string": ""
+  },
+  {
+    "id": "A675",
+    "slice": "Hooks",
+    "status": "code",
+    "reason": "The MANUAL is right (`reply` rides `ev.session.<id>.done`, `content` rides the `start` phase of `ev.session.<id>.turn`); the defect is in the component's README table and every example built on `.payload.reply`. Fix in `components/hooks/README.md:38-44` and its example block (and note the second, independent error there: `.payload.X` must be `.X`, because the payload arrives unwrapped — A661).",
+    "evidence": "components/hooks/README.md:34 (“| `ev.session.>.turn` | finished user turn (any conversation) | `sessionId`, `turnId`, `phase: \\\"done\\\"`, `reply` |”) vs core/conversation.nim:1745 (`\\\"done\\\"` carries `reply`) and docs/WIRE.md (the `ev.session.<id>.done` payload); the sound-gate and \"email a session summary\" examples read `.payload.reply` off the turn event.",
+    "old_string": "",
+    "new_string": ""
+  }
+]
