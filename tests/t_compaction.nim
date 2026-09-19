@@ -135,7 +135,7 @@ proc main() =
   let convId = "conv-compaction-" & $int(epochTime())
   putDoc(nc, "conversation", convId,
     %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt",
-       "modelOverride": "", "title": "compaction fixture"})
+       "modelOverride": "mock-parent-model", "title": "compaction fixture"})
   let nextSeq = seedMessages(nc, convId, 1, 8, 2200)
   let seededCount = nextSeq - 1
 
@@ -159,6 +159,13 @@ proc main() =
           row{"cancelId"}.getStr("") == row{"sessionId"}.getStr("") and
           not row{"emitTokens"}.getBool(true)
     found)
+  check("auxiliary compaction chat inherits the parent model/provider", block:
+    var inherited = false
+    for row in firstLog:
+      if row{"purpose"}.getStr("") == "compaction":
+        inherited = row{"model"}.getStr("") == "mock-parent-model" and
+          row{"provider"}.getStr("") == "mock-provider"
+    inherited)
   check("auxiliary tools retain the exact main-call descriptions and schemas", block:
     var auxiliaryTools, mainTools: JsonNode
     for row in firstLog:
@@ -228,6 +235,39 @@ proc main() =
       for row in requestLog(logPath):
         if row{"sessionId"}.getStr("") == manualConv: inc mainCalls
       mainCalls == 0)
+
+  block truncatedManualCompact:
+    coreProc.stopHard()
+    var truncatedExtra = extra
+    truncatedExtra.add(("NIF_MOCK_COMPACTION_LENGTH", "1"))
+    coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = truncatedExtra,
+      logFile = root / "var" / "test-logs" / "core-compaction-truncated.log")
+    doAssert waitComponent(nc, "store"), "store did not register for truncated fixture"
+    doAssert waitComponent(nc, "llm"), "llm did not register for truncated fixture"
+    doAssert waitComponent(nc, "compaction"), "compaction did not register for truncated fixture"
+    let truncatedConv = "conv-compaction-truncated-" & $int(epochTime())
+    putDoc(nc, "conversation", truncatedConv,
+      %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt",
+         "title": "truncated compact fixture"})
+    discard seedMessages(nc, truncatedConv, 1, 8, 2200, markFirst = false)
+    let truncated = call(nc, "core", "session",
+      %*{"sessionId": truncatedConv, "compact": true}, 180_000)
+    check("manual compact reports a truncated summary precisely",
+          not truncated{"compacted"}.getBool(true) and
+          truncated{"reason"}.getStr("").contains("summary-output-truncated") and
+          truncated{"status"}.getStr("").contains("Declined"), $truncated)
+    check("truncated compaction installs no projection",
+          getDoc(nc, "context_projection", truncatedConv) == nil)
+    check("truncated compaction cleans its settled snapshot",
+          listDocs(nc, "compaction_input", truncatedConv & ":").len == 0)
+    coreProc.stopHard()
+    coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = extra,
+      logFile = root / "var" / "test-logs" / "core-compaction-after-truncated.log")
+    doAssert waitComponent(nc, "store"), "store did not re-register after truncated fixture"
+    doAssert waitComponent(nc, "llm"), "llm did not re-register after truncated fixture"
+    doAssert waitComponent(nc, "compaction"), "compaction did not re-register after truncated fixture"
 
   # Append new canonical history behind the committed high-water mark, then
   # kill the entire harness. The restarted session runner must rebuild from

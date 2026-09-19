@@ -1442,16 +1442,24 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                         frozenTools: JsonNode,
                         onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
                         turnId = "", trigger = "pressure",
-                        cfg = compactionConfigFromEnv()): bool =
+                        provider = "", model = "",
+                        cfg = compactionConfigFromEnv()): CompactionAttempt =
   ## One bounded replacement attempt (§4.4–§6.3): persist and reference a
   ## verified snapshot, ask the selected replaceable component for a
   ## candidate, validate it, atomically install one context_projection with
   ## expectRev, then and only then replace the in-memory covered span. A
-  ## timeout, decline, malformed answer or conflict returns false and leaves
-  ## the old projection installed; the caller proceeds to lossy trim.
-  if cfg.tool.len == 0 or ct.cat.toolSchema(cfg.tool) == nil or
-      messages.len != p.nodes.len:
-    return false
+  ## timeout, decline, malformed answer or conflict returns a structured
+  ## failure and leaves the old projection installed; automatic callers
+  ## proceed to lossy trim while manual callers surface the precise reason.
+  result = CompactionAttempt(status: casFailed,
+    reason: "compaction failed before a candidate could be installed")
+  if cfg.tool.len == 0 or ct.cat.toolSchema(cfg.tool) == nil:
+    result.status = casUnavailable
+    result.reason = "no compaction component available"
+    return
+  if messages.len != p.nodes.len:
+    result.reason = "live context/node ledger mismatch"
+    return
   sweepCompactionSnapshots(ct, p.convId)
 
   var ids, sources, roles, callIds, answerIds: seq[string]
@@ -1478,7 +1486,9 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     manifest.add(mn)
   let cuts = permittedCuts(ids, sources, roles, callIds, answerIds)
   if cuts.len == 0:
-    return false
+    result.status = casDeclined
+    result.reason = "no permitted cut exists yet"
+    return
   var lastCovered = 1
   for c in cuts: lastCovered = max(lastCovered, c.index - 1)
   var contentRows = newJArray()
@@ -1529,11 +1539,14 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
       if old.value == nil or
           old.value{"generation"}.getInt(-1) != p.generation or
           old.value{"checkpoint"} == nil:
-        return false
+        result.reason = "previous checkpoint projection is missing or stale"
+        return
       previousProjection = old.value
       meta["previousCheckpoint"] = old.value{"checkpoint"}
-    except CatchableError:
-      return false
+    except CatchableError as e:
+      result.reason = "previous checkpoint projection is unavailable"
+      result.detail = e.msg
+      return
   try:
     discard ct.storePutRev("compaction_input", metaId, meta)
     for i, page in pages:
@@ -1544,7 +1557,9 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   except CatchableError as e:
     cleanupSnapshot(ct, metaId, pages.len)
     echo "core: WARNING compaction snapshot not persisted: " & e.msg
-    return false
+    result.reason = "compaction snapshot could not be persisted"
+    result.detail = e.msg
+    return
   var settled = false
   defer:
     if settled: cleanupSnapshot(ct, metaId, pages.len)
@@ -1568,6 +1583,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
       "timeoutMs": cfg.timeoutMs
     }
   }
+  if provider.len > 0: request["provider"] = %provider
+  if model.len > 0: request["model"] = %model
   var cand: JsonNode
   try:
     cand = ct.dispatchToolCall(cfg.tool, request, cfg.timeoutMs)
@@ -1578,7 +1595,9 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     if onEvent != nil:
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "compact:failed", "error": e.msg})
-    return false
+    result.reason = "compactor call failed"
+    result.detail = e.msg
+    return
   settled = true
   # Resolve the claimed boundary first; the pure validator then checks that
   # the candidate names the exact implied covered range.
@@ -1601,13 +1620,17 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "compact:declined",
                             "detail": checked.declineReason})
-    return false
+    result.status = casDeclined
+    result.reason = checked.declineReason
+    return
   of csInvalid:
     if onEvent != nil:
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "compact:invalid",
                             "detail": checked.detail})
-    return false
+    result.reason = "compactor returned an invalid candidate"
+    result.detail = checked.detail
+    return
   of csCandidate:
     discard
   # The granted auxiliary budget is part of the snapshot contract (§4.7):
@@ -1622,8 +1645,13 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                             "detail": "auxiliary call budget exceeded: " &
                               $claimedCalls & " claimed > " &
                               $cfg.maxLlmCalls & " granted"})
-    return false
-  if coveredFrom < 1 or cutIdx <= coveredFrom: return false
+    result.reason = "compactor exceeded its auxiliary LLM-call budget"
+    result.detail = $claimedCalls & " claimed > " &
+      $cfg.maxLlmCalls & " granted"
+    return
+  if coveredFrom < 1 or cutIdx <= coveredFrom:
+    result.reason = "compactor selected an invalid covered range"
+    return
   # Covered nodes must still be byte-identical to the persisted snapshot.
   # A concurrent steer may append outside the cut, but replacement never
   # installs over a changed covered span (§6.1).
@@ -1632,7 +1660,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
       if onEvent != nil:
         onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                               "reason": "compact:stale"})
-      return false
+      result.reason = "compaction snapshot became stale"
+      return
 
   # Candidate boundaries name projection nodes; durable coverage must name
   # canonical messages. In particular, a legal checkpoint-only cut cannot
@@ -1645,7 +1674,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                  else: ids[cutIdx - 1]
   if not recordFrom.startsWith(p.convId & ":") or
       not recordTo.startsWith(p.convId & ":"):
-    return false
+    result.reason = "compactor boundary does not resolve to canonical history"
+    return
   let newGeneration = p.generation + 1
   let rendered = renderCheckpoint(checked.checkpoint, newGeneration,
                                   recordFrom, recordTo)
@@ -1656,7 +1686,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "compact:invalid",
                             "detail": "checkpoint does not strictly reduce the covered span"})
-    return false
+    result.reason = "checkpoint does not strictly reduce the covered span"
+    return
 
   var retained: seq[string]
   for i in 1 ..< p.nodes.len:
@@ -1687,14 +1718,18 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   try:
     let old = ct.storeGetItem("context_projection", p.convId)
     if old.value != nil and old.value{"generation"}.getInt(-1) != p.generation:
-      return false
+      result.reason = "projection generation changed before commit"
+      return
     if old.value == nil and p.generation != 0:
-      return false
+      result.reason = "projection disappeared before commit"
+      return
     discard ct.storePutRev("context_projection", p.convId, record,
                            expectRev = old.rev)
   except CatchableError as e:
     echo "core: WARNING compaction projection commit failed: " & e.msg
-    return false
+    result.reason = "compaction projection commit failed"
+    result.detail = e.msg
+    return
 
   # Commit order matters: only an acknowledged projection put authorizes the
   # in-memory replacement. A crash before the put reloads canonical; a crash
@@ -1729,7 +1764,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                           "covered": record{"covered"},
                           "beforeTokens": record{"measurements"}{"promptTokensBefore"},
                           "afterTokens": record{"measurements"}{"promptTokensAfter"}})
-  true
+  result.status = casCompacted
+  result.reason = "compacted"
 
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
@@ -1989,7 +2025,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       let ccfg = compactionConfigFromEnv()
       if ccfg.tool.len > 0 and ct.cat.toolSchema(ccfg.tool) != nil:
         discard attemptCompaction(ct, p, messages, promptToolsJson, onEvent,
-                                  turnId, "pressure", ccfg)
+                                  turnId, "pressure", resolvedProvider,
+                                  selectedModel, ccfg)
         # Steering/advice received while the auxiliary call was in flight is
         # append-only history. Fold it in after settlement and re-admit the
         # complete candidate before either trim or provider dispatch (§6.1).
@@ -2090,7 +2127,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
             let ccfg = compactionConfigFromEnv()
             if ccfg.tool.len > 0 and ct.cat.toolSchema(ccfg.tool) != nil:
               discard attemptCompaction(ct, p, messages, promptToolsJson,
-                                        onEvent, turnId, "overflow", ccfg)
+                                        onEvent, turnId, "overflow",
+                                        resolvedProvider, selectedModel, ccfg)
               discard drainSteer(ct, p, messages, onEvent, turnId)
               drainMap(ct, p, messages, onEvent)
               drainDiagnostics(ct, p, messages, onEvent)
@@ -2981,19 +3019,31 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
           if tool{"name"}.getStr("") in entry.allowlist:
             filtered.add(tool)
         promptToolsJson = filtered
+      var compactProvider = ""
+      var compactModel = entry.modelOverride
+      try:
+        let resolved = resolveTurnConfig(ct, entry.persister,
+                                         entry.modelOverride)
+        compactProvider = resolved{"provider"}.getStr("")
+        compactModel = resolved{"model"}.getStr(compactModel)
+      except CatchableError:
+        discard # older/replaced llm components still resolve chat defaults
       let beforeTokens = estimateTokens(entry.messages)
-      let compacted = attemptCompaction(ct, entry.persister, entry.messages,
-                                        promptToolsJson, onEvent, "", "manual",
-                                        ccfg)
+      let attempt = attemptCompaction(ct, entry.persister, entry.messages,
+                                      promptToolsJson, onEvent, "", "manual",
+                                      compactProvider, compactModel, ccfg)
       let afterTokens = estimateTokens(entry.messages)
       sessions[sessionId] = entry
-      if compacted:
+      if attempt.status == casCompacted:
         return %*{"ok": true, "sessionId": sessionId, "compacted": true,
                   "beforeTokens": beforeTokens, "afterTokens": afterTokens,
                   "generation": entry.persister.generation}
+      var reason = attempt.reason
+      if attempt.detail.len > 0:
+        reason &= ": " & attempt.detail
       return %*{"ok": true, "sessionId": sessionId, "compacted": false,
-                "reason": "nothing to compact: the compactor declined or no " &
-                          "permitted cut exists yet",
+                "reason": reason,
+                "status": $attempt.status,
                 "beforeTokens": beforeTokens}
     if hasExport:
       # Export the exact provider request assembled from the current context.

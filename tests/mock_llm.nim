@@ -70,10 +70,13 @@ let mockHistoryMarker = getEnv("NIF_MOCK_HISTORY_MARKER", "")
 let mockCompactionSleepMs = block:
   try: parseInt(getEnv("NIF_MOCK_COMPACTION_SLEEP_MS", "0"))
   except CatchableError: 0
+let mockCompactionLength = getEnv("NIF_MOCK_COMPACTION_LENGTH", "").len > 0
 var currentSessionId = ""
 var currentCancelId = ""
 var currentEmitTokens = true
 var currentPurpose = ""
+var currentProvider = ""
+var currentModel = ""
 
 proc estimateTokens(messages: JsonNode, tools: JsonNode): int =
   ## Same chars/4 proxy core's estimateTokens uses (plus per-message
@@ -113,6 +116,7 @@ proc logRequest(estimate: int, rejected: bool, note: string,
     defer: f.close()
     let line = %*{"tools": tools, "estimate": estimate, "rejected": rejected,
                   "note": note,
+                  "provider": currentProvider, "model": currentModel,
                   "checkpoint": containsText(messages, "<context_checkpoint"),
                   "steer": containsText(messages, "Steer: "),
                   "historyMarker": markerStart(messages, mockHistoryMarker) >= 0,
@@ -148,6 +152,8 @@ proc(c: Component, args: JsonNode): JsonNode =
   currentCancelId = args{"cancelId"}.getStr("")
   currentEmitTokens = args{"emitTokens"}.getBool(true)
   currentPurpose = args{"purpose"}.getStr("")
+  currentProvider = args{"provider"}.getStr("")
+  currentModel = args{"model"}.getStr("")
   let messages = args{"messages"}
   let est = estimateTokens(messages, args{"tools"})
   # The provider's own view of the request: chars/4 plus its tokenizer
@@ -189,6 +195,11 @@ proc(c: Component, args: JsonNode): JsonNode =
           break
     if seed.len > 3500: seed = seed[0 ..< 3500]
     let excerpt = if seed.len > 240: seed[0 ..< 240] else: seed
+    if mockCompactionLength:
+      return %*{"content": "{\"objective\":\"truncated",
+        "model": "mock-summary-model", "finish_reason": "length",
+        "usage": {"prompt_tokens": est, "completion_tokens": 128,
+                  "total_tokens": est + 128}}
     let checkpoint = %*{
       "objective": seed,
       "constraints": ["Keep canonical history unchanged"],
@@ -287,7 +298,8 @@ proc(c: Component, args: JsonNode): JsonNode =
   # admission (§6.1) learns the capacity from it before the first request.
   # NIF_MOCK_HIDE_CTX withholds it to exercise the §6.5 recovery path where
   # capacity is unknown until the provider rejects.
-  var r = %*{"ok": true, "model": "mock-model"}
+  var r = %*{"ok": true, "provider": "mock-provider",
+             "model": args{"model"}.getStr("mock-model")}
   if mockCtx > 0 and not mockHideCtx:
     r["context"] = %mockCtx
   r)

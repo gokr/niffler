@@ -509,7 +509,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_COMPACTION_TOOL` | contract-v1 candidate tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
 | `NIF_COMPACTION_TIMEOUT_MS` | whole candidate-call deadline, clamped to 5000–600000 ms; the candidate tool's own `x-harness.timeoutMs` (120000) caps the wait the runner actually performs, so a larger value only extends the component's auxiliary-call deadline (the runner gives up first and the snapshot waits for the 600 s sweep) | `90000` |
 | `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt, clamped to 1–16; a candidate reporting more calls than granted is rejected as invalid, and the granted count scales the request's `maxTotalInputTokens`/`maxTotalOutputTokens`. The shipped `compaction` component always makes exactly one auxiliary call and reports `llmCalls: 1` — the budget is for a summarizer that iterates | `4` |
-| `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap, clamped to 128–32768 and floored at 128 by the shipped component | `2048` |
+| `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap, clamped to 128–32768 and floored at 128 by the shipped component | `4096` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring; accepted range 1–10000, outside it the component exits non-zero | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring; accepted range 65536–104857600 | `16777216` |
 | `NIF_OBSERVE_ENTRY_BYTES` | maximum retained bytes per observed message; accepted range 1024–1048576, and a larger message is kept as a base64 preview of three quarters of the cap | `65536` |
@@ -838,12 +838,13 @@ that raises it. `/limit clear` removes all three.
 automatic pressure ladder: core asks the configured compaction component for
 a checkpoint over a permitted cut, installs it atomically, and emits the
 usual `ev.session.<id>.context {reason: "reset:compact"}`. No LLM turn runs and no
-user message is appended. The reply reports `compacted: true` with `beforeTokens`, `afterTokens`
-and `generation`, or `compacted: false` with one of exactly two reasons,
-`no compaction component available (NIF_COMPACTION_TOOL=<value>)` or
-`nothing to compact: the compactor declined or no permitted cut exists
-yet` (the second also covers a candidate attempt that failed
-validation); a decline never silently falls back to lossy trim.
+user message is appended. The auxiliary summary inherits the conversation's
+resolved provider/model; it does not silently follow a later global-provider
+switch. The reply reports `compacted: true` with `beforeTokens`, `afterTokens`
+and `generation`, or `compacted: false` with the precise decline/failure
+reason (for example `no permitted cut exists yet`, `input-budget-exceeded`,
+`summary-output-truncated`, an invalid candidate detail, or an unavailable
+compactor). A decline never silently falls back to lossy trim.
 
 The distinction that matters: these limits are *yours*, so they negotiate;
 the job-scoped budgets (`maxRounds`/`maxCalls`/`maxTokens`, which the `agent`

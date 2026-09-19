@@ -209,6 +209,8 @@ proc main() =
     "sessionId": {"type": "string", "description": "Parent conversation identity (provenance only; auxiliary calls use their own id)"},
     "attemptId": {"type": "string", "description": "Runner-generated attempt identity"},
     "trigger": {"type": "string", "enum": ["pressure", "overflow", "manual"]},
+    "provider": {"type": "string", "description": "Resolved parent provider nickname for the auxiliary summary"},
+    "model": {"type": "string", "description": "Resolved parent model for the auxiliary summary"},
     "snapshot": {"type": "object", "description": "Runner-owned compaction_input reference plus generation/high-water/digest"},
     "budget": {"type": "object", "description": "Hard per-attempt input/output/call/timeout limits"}
   }, required = @["version", "sessionId", "attemptId", "snapshot", "budget"],
@@ -277,7 +279,7 @@ proc main() =
       let maxOutput = max(args{"budget"}{"maxSummaryTokens"}.getInt(2048), 128)
       let cancelId = "compaction." & args{"sessionId"}.getStr("") &
         "." & attemptId
-      let reply = auxiliaryChat(c, %*{
+      var chatArgs = %*{
         "messages": llmMessages,
         "tools": formatTools(loaded.meta{"tools"}),
         "sessionId": cancelId,
@@ -286,8 +288,18 @@ proc main() =
         "emitTokens": false,
         "purpose": "compaction",
         "maxTokens": maxOutput
-      }, args{"sessionId"}.getStr(""), cancelId,
-         args{"budget"}{"timeoutMs"}.getInt(90_000))
+      }
+      # Compaction belongs to the parent conversation's model choice. Without
+      # these explicit fields llm resolves the mutable global active provider;
+      # the 1M-token parent could be summarized by an unrelated 128k backend.
+      let provider = args{"provider"}.getStr("")
+      let model = args{"model"}.getStr("")
+      if provider.len > 0: chatArgs["provider"] = %provider
+      if model.len > 0: chatArgs["model"] = %model
+      let reply = auxiliaryChat(c, chatArgs, args{"sessionId"}.getStr(""),
+        cancelId, args{"budget"}{"timeoutMs"}.getInt(90_000))
+      if reply{"finish_reason"}.getStr("") == "length":
+        return decline(args, "summary-output-truncated")
       let calls = reply{"tool_calls"}
       if calls != nil and calls.kind == JArray and calls.len > 0:
         raise newException(ValueError,

@@ -260,6 +260,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   links and table shape; the translation banner says AI-autotranslated). The
   READMEs link them, and they link back to English/Simplified/Traditional, so
   the whole manual is now reachable in all three languages.
+- **Manual `/compact` reports the real refusal and keeps its model identity.**
+  A live 67%-full conversation had hundreds of legal cuts, but the auxiliary
+  summary hit the old 2048-token output cap (`finish_reason: length`). Core
+  collapsed that invalid/truncated candidate into “compactor declined or no
+  permitted cut,” falsely blaming cut eligibility. The shipped compactor now
+  recognizes length truncation as the stable `summary-output-truncated`
+  decline, manual controls return structured failure detail, and the default
+  summary cap is 4096. Auxiliary summaries also inherit the parent
+  conversation's resolved provider/model instead of following a mutable global
+  provider switch.
 - **Manual compaction: `/compact`.** Runs the conversation's replaceable
   compactor on demand — a verified checkpoint replaces older history, with
   no LLM turn and no user message — instead of waiting for the automatic

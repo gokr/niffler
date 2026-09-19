@@ -294,7 +294,7 @@ Niffler 没有单一配置文件。状态分布在五处，按生命周期选择
 | `NIF_COMPACTION_TOOL` | runner 选择的 contract-v1 候选工具；为空则禁用摘要，但不影响 prune/trim/错误准入 | `compaction_propose` |
 | `NIF_COMPACTION_TIMEOUT_MS` | 整个候选调用的截止时间（最小 5000 ms） | `90000` |
 | `NIF_COMPACTION_MAX_LLM_CALLS` | 授予一次尝试的辅助摘要调用预算；报告调用数超过授予值的候选会被判为无效 | `4` |
-| `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | 每次调用的检查点输出上限 | `2048` |
+| `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | 每次调用的检查点输出上限 | `4096` |
 | `NIF_OBSERVE_RING` | observe 全局环形缓冲保留的消息数 | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | 全局环形缓冲保留的近似 wire 字节数 | `16777216` |
 | `NIF_OBSERVE_ENTRY_BYTES` | 每条观察消息保留的最大字节数 | `65536` |

@@ -35,11 +35,27 @@ const
   ## component's checkpoint renders through the same frame, so a candidate
   ## stored by one implementation reloads under another.
 
-type CompactionConfig* = object
-  tool*: string            ## "" = summarization disabled; the guard still runs
-  timeoutMs*: int
-  maxLlmCalls*: int
-  maxSummaryTokens*: int
+type
+  CompactionStatus* = enum
+    casCompacted
+    casDeclined
+    casFailed
+    casUnavailable
+
+  CompactionAttempt* = object
+    ## Structured outcome of one replacement attempt. Automatic admission
+    ## only needs `compacted`; manual /compact also returns `reason` so a
+    ## valid cut whose summarizer was truncated is not misreported as "no
+    ## permitted cut".
+    status*: CompactionStatus
+    reason*: string
+    detail*: string
+
+  CompactionConfig* = object
+    tool*: string            ## "" = summarization disabled; the guard still runs
+    timeoutMs*: int
+    maxLlmCalls*: int
+    maxSummaryTokens*: int
 
 proc compactionConfigFromEnv*(): CompactionConfig =
   ## Harness-level configuration (§4.1). Session overrides persisting in
@@ -47,7 +63,7 @@ proc compactionConfigFromEnv*(): CompactionConfig =
   result.tool = getEnv("NIF_COMPACTION_TOOL", "compaction_propose").strip()
   result.timeoutMs = 90_000
   result.maxLlmCalls = 4
-  result.maxSummaryTokens = 2048
+  result.maxSummaryTokens = 4096
   try:
     if getEnv("NIF_COMPACTION_TIMEOUT_MS").len > 0:
       result.timeoutMs = parseInt(getEnv("NIF_COMPACTION_TIMEOUT_MS"))
@@ -194,7 +210,8 @@ type CandidateStatus* = enum
   csDeclined       ## a first-class decline; `declineReason` is stable
   csInvalid        ## malformed/out-of-contract — bounded fallback path
 
-const declineReasons = ["no-useful-cut", "input-budget-exceeded", "indivisible"]
+const declineReasons = ["no-useful-cut", "input-budget-exceeded", "indivisible",
+                        "summary-output-truncated"]
 const ckFields = ["objective", "constraints", "decisions", "completedWork",
                   "currentBlocker", "nextSteps"]
 
