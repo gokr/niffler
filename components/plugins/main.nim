@@ -3,7 +3,9 @@
 ## Third-party components are distributed as plain git repos: one repo = one
 ## package = N components, described by a niffler.json manifest at the root
 ## ({"name", "version", "components":
-##   [{"name", "lang", "main", "sources"?, "env"?, "interactive"?}]}).
+##   [{"name", "lang", "main", "sources"? (Go), "env"?, "interactive"?}]}).
+## A TS component declares its dependencies in its own source: the builder
+## installs whatever its imports reference (no manifest field — same as Go).
 ## Discovery is GitHub topic search (topic:niffler-component) — no registry.
 ## GitHub ANDs query words, so plugin_search retries a zero-hit multi-word
 ## query with fewer words (see the plugin_search docstring).
@@ -215,7 +217,7 @@ proc readManifest(dir: string): Manifest =
     if mc.name.len == 0 or mc.main.len == 0:
       raise newException(ValueError,
         "niffler.json component entry needs name and main")
-    if mc.lang notin ["nim", "go"]:
+    if mc.lang notin ["nim", "go", "ts"]:
       raise newException(ValueError,
         "niffler.json: unsupported lang '" & mc.lang & "' for " & mc.name)
     if not fileExists(dir / mc.main) or symlinkExists(dir / mc.main):

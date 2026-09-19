@@ -59,7 +59,7 @@
 | `bash` | Nim | required | 经典工具：带超时和输出上限的 shell 命令。命令作为自身进程组的组长运行，因此超时或回合被取消会杀掉整棵进程树（退出码 124 / 130）——不会留下孤儿进程。结果携带 `text`（以 `(exit N)` 状态行开头——非零即失败；124 = 超时，130 = 已取消——其后是合并的 stdout/stderr；LLM 记录看到的就是它）以及机器字段 `exit_code`、`cancelled`，输出过大时还有 `spill {path, bytes, lines}`（溢出到临时文件，可用 `read` 分页读取）。`run_in_background: true` 把长跑命令（服务器、监视器）交给 `processes` 组件而不是阻塞——见 [Background processes](#background-processes-processes) |
 | `repomap` | Nim | optional | 排序后的工作区地图（docs/research/REPOMAP.md）：约 1KB 内给出承重文件及其关键定义，由 tree-sitter + 原生 Nim tags 图与个性化 PageRank 构建（aider repomap 的移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且为读效应——模型主动询问，不注入任何东西。工作区打开时的自动追加（在 `ev.workspace.opened` 时追加一条 append-only 条目；组件发布，runner 追加）**默认关闭**：设置 `NIF_REPOMAP_AUTOAPPEND=1` 选择开启。默认关闭是因为 A/B 没有过线（full30：约多 40% token、准确率无提升；Multi10 high 开启后 8/10 vs 9/10，尽管 low 复跑结论反转、最初的高档测试部分测的是桩地图——见 `bench/reports/repomap-ab-*.md`），而且 onDemand 工具不会自己激活。选择开启后，追加还有**门控**（`docs/research/REPOMAP-GATES.md`）：低于普查下限的工作区从不构建，桩地图（字节/符号/文件阈值）从不注入——被扣留的地图记录为 `repo map withheld`。关闭追加时，它只是一个模型想要定位时可以发现的可选组件。缓存：`var/repomap-tags/`（按 mtime 键控）。可选组件——缺失就没有地图，其他一切不变 |
 | `processes` | Nim | optional | 带归属者的长跑命令：`process_start`（脱离父进程、独立进程组，立即返回 id）、`process_poll`（增量排空输出）、`process_kill`（停止整个进程组）、`process_list`——见 [Background processes](#background-processes-processes) |
-| `builder` | Nim | required | 把 agent 编写的 Nim/Go 源码编译为二进制 |
+| `builder` | Nim | required | 把 agent 编写的 Nim/Go/TypeScript 源码编译为二进制——依赖由源码声明，而不是由调用方传入：Go 走 `go mod tidy`，TS 在基础安装后扫描 entrypoint 的 import 并经 npm 安装 |
 | `llm` | Go | required | 流式 chat 适配器（隐藏的 `chat` 工具；`ev.llm.token` 增量；取消）——协议：OpenAI 兼容 Chat Completions、OpenAI Codex（ChatGPT OAuth）Responses 和 Anthropic Messages；`components/llm-openai` 中的 `llm-openai` 是最小非流式示例，可通过 `manifest.yaml` 换上 |
 | `models` | Go | optional | models.dev 提供商/模型目录、原子缓存、严格解析，以及插件修正/发现层（见 [Model catalog](#model-catalog-models)） |
 | `provider` | Go | optional | store 持久化的 LLM 提供商注册表：`provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`，订阅 OAuth 登录（`provider_oauth_start`/`complete`/`cancel`），`ev.provider.switch` 通知 |
@@ -628,6 +628,13 @@ supervisor 不可移除——这种不对称正是架构（ARCHITECTURE.md）。
   自己的工具链编译。Go 条目可以声明
   `"sources": ["component/helper.go", ...]`；这些必须是与 `main` 同目录、同包的
   非符号链接 `.go` 文件，builder 把它们作为一个包编译。
+- TypeScript 条目无需依赖字段：依赖写在源码自己的 import 里。基础安装后
+  builder 扫描 entrypoint 的 import 并 npm 安装外部包（≤32 个；跳过相对路径与
+  `node:` 内置模块），所以 `import sdk from "niffler-sdk"` 加
+  `import { Project } from "ts-morph"` 就是完整的依赖声明——与 Go 条目靠 import 走
+  `go mod tidy` 完全同形，安装结果会把解析出的版本范围写进生成的
+  `package.json`。TS 安装需要 npm registry（所有 TS 构建都是如此），
+  `NIF_NPM_REGISTRY` 可重定向。
 - manifest 条目标记 `"interactive": true` 的组件会构建进 `var/bin`，但不会传给
   `core.spawn`。它是终端客户端（例如 TUI），由用户手动启动，因此不受监督、
   不会在引导时重启。移除或更新其包之前先手动停止任何运行中的客户端。

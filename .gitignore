@@ -9,6 +9,7 @@ nimcache/
 # TypeScript SDK build artifacts
 sdk/ts/dist/
 sdk/ts/node_modules/
+cc-plugin/node_modules/
 
 # Go
 *.exe

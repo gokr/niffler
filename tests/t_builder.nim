@@ -5,7 +5,7 @@
 ## NIF_ROOT so scratch sources and binaries never pollute the real
 ## var/build and var/bin.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, sequtils, strutils]
 import natsnim
 import envelope
 import helpers
@@ -150,6 +150,31 @@ proc main() =
     check("builder ts build ok", r5{"ok"}.getBool(false), $r5)
     check("builder ts binary exists",
           fileExists(tmp / "var" / "bin" / "tcompts"), $r5)
+
+    # Imports are the dependency declaration (no build parameter): the source
+    # requires a package that nothing else installed, and the builder has to
+    # resolve and install it from the import alone.
+    const tsSrcDeps = """
+      import sdk from "niffler-sdk";
+      const pad = require("left-pad") as (s: string, n: number) => string;
+      const comp = sdk.newComponent("tcomptsdeps", "0.1.0");
+      comp.tool("ts_ping_deps", {
+        type: "object",
+        description: "Ping the TypeScript deps test component",
+        properties: {},
+      }, async () => ({ pong: pad("ab", 5) }));
+      comp.run();
+      """.dedent()
+    let r6 = call(nc, "builder", "build",
+                  %*{"lang": "ts", "name": "tcomptsdeps", "source": tsSrcDeps},
+                  400_000)
+    check("builder ts build resolves an import", r6{"ok"}.getBool(false), $r6)
+    check("builder reports the resolved dependency",
+          r6{"deps"}.kind == JArray and
+          "left-pad" in r6{"deps"}.getElems().mapIt(it.getStr("")), $r6)
+    check("builder records the dep in package.json",
+          readFile(tmp / "var" / "build" / "tcomptsdeps" / "package.json")
+            .contains("left-pad"), $r6)
   else:
     echo "NOTE: set NIF_TEST_NETWORK=1 to run the TypeScript build test"
 

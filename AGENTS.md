@@ -354,7 +354,7 @@ let data = callEnvelope("session",
   %*{"sessionId": "probe-" & $int(epochTime()), "content": "Ping"}).encode()
 var msg: ptr natsMsg
 let st = natsConnection_Request(addr msg, nc.conn, "svc.core.call",
-                                data.cstring, data.len.cint, 120_000 * 1_000_000)
+                                data.cstring, data.len.cint, 120_000)
 doAssert checkStatus(st)
 let r = decode($natsMsg_GetData(msg))
 echo (if r.kind == ekResult: "OK " & $r.args else: "FAIL " & $r.error)

@@ -131,6 +131,34 @@ proc main() =
   commitRepo(repoDir)
   commitRepo(interactiveRepo)
 
+  # TS packages declare their dependencies in their own source: this entry
+  # imports a package that only the builder's import scan can discover, and
+  # the manifest carries no dependency field at all.
+  let tsRepo = pkgDir / "tsdepsrepo"
+  createDir(tsRepo / "tsdep")
+  writeFile(tsRepo / "niffler.json", """{
+    "name": "testtsdeps",
+    "version": "1.0.0",
+    "components": [
+      {"name": "tsdep", "lang": "ts", "main": "tsdep/main.ts"}
+    ]
+  }
+  """)
+  writeFile(tsRepo / "tsdep" / "main.ts", """
+    import sdk from "niffler-sdk";
+    const pad = require("left-pad") as (s: string, n: number) => string;
+    const comp = sdk.newComponent("tsdep", "0.1.0");
+    comp.tool("tsdep_pad", {
+      type: "object",
+      description: "Pads a string using the package's left-pad import",
+      properties: { s: { type: "string" }, n: { type: "number" } },
+      required: ["s", "n"],
+    }, async (_c: unknown, args: any) =>
+      ({ padded: pad(String(args?.s ?? ""), Number(args?.n ?? 0)) }));
+    comp.run();
+    """.dedent())
+  commitRepo(tsRepo)
+
   # --- boot core ----------------------------------------------------------
   let (server, url) = startNats()
   defer: stopServer(server)
@@ -245,6 +273,22 @@ proc main() =
   check("interactive install persisted",
         ilist.output.contains("testinteractive") and
         ilist.output.contains("\"interactive\":true"), ilist.output)
+
+  # deps pass-through is gone: a TS entry's imports are the declaration, and
+  # the manifest reader never sees a dependency field.
+  if getEnv("NIF_TEST_NETWORK") == "1":
+    let tinst = runCli(cliBin, url, @["install", "file://" & tsRepo], 600_000,
+                       root = root)
+    check("ts plugin package install ok", tinst.code == 0 and
+          tinst.output.contains("INSTALL OK"), tinst.output)
+    let tcall = runCli(cliBin, url,
+                       @["call", "tsdep_pad", """{"s":"ab","n":5}"""],
+                       30_000, root = root)
+    check("ts plugin resolves its own import",
+          tcall.code == 0 and tcall.output.contains("\"padded\":\"   ab\""),
+          tcall.output)
+  else:
+    echo "NOTE: set NIF_TEST_NETWORK=1 to run the TypeScript plugin package install test"
 
   # --- branch-tracked Go package: manual make + update without releases ---
   # go.mod's replace assumes a sibling checkout (like gokr/niffler-tui),

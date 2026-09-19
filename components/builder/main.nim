@@ -44,6 +44,37 @@ proc validDefine(name: string): bool =
       return false
   true
 
+proc validNpmName(name: string): bool =
+  ## npm package names: optional @scope/ prefix, then lowercase identifier
+  ## characters. A scanned import specifier reaches both package.json and an
+  ## `npm install` argv, so the whitelist is the injection guard (no quotes,
+  ## no separators, no schemes).
+  if name.len == 0 or name.len > 214:
+    return false
+  var rest = name
+  if rest.startsWith("@"):
+    let slash = rest.find('/')
+    if slash <= 1 or slash >= rest.len - 1:
+      return false
+    rest = rest[(slash + 1) .. ^1]
+  if rest[0] notin {'a'..'z', '0'..'9'}:
+    return false
+  for ch in rest:
+    if ch notin {'a'..'z', '0'..'9', '-', '_', '.'}:
+      return false
+  true
+
+proc packageName(spec: string): string =
+  ## "lodash/cloneDeep" -> "lodash", "@scope/pkg/sub" -> "@scope/pkg".
+  if spec.startsWith("@"):
+    let slash = spec.find('/')
+    if slash < 0: return spec
+    let second = spec.find('/', slash + 1)
+    return if second < 0: spec else: spec[0 ..< second]
+  let slash = spec.find('/')
+  if slash < 0: return spec
+  spec[0 ..< slash]
+
 let comp = newComponent("builder", "0.1.0")
 
 comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
@@ -70,6 +101,13 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
     ## - defines: Optional array of Nim compile defines, e.g. ["ssl"] for
     ##   HTTPS-capable httpclient — appended as -d:NAME (validated; Nim
     ##   identifier characters only)
+    ##
+    ## TS builds need no dependency parameter: the entrypoint's own imports
+    ## declare them. After the base npm install the builder scans them out of
+    ## the source (TypeScript's own preProcessFile — comments and strings are
+    ## not mistakes) and npm-installs the external packages, which records
+    ## their resolved ranges in package.json — the same shape as `go mod tidy`
+    ## deriving a Go component's requires from its imports.
     let root = rootDir()
     let srcDir = rootVarDir("build")
     let binDir = root / "var" / "bin"
@@ -164,6 +202,27 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
         "    \"outDir\": \"dist\",\n    \"strict\": true,\n" &
         "    \"esModuleInterop\": true,\n    \"skipLibCheck\": true\n  },\n" &
         "  \"include\": [\"main.ts\"]\n}\n")
+      # The entrypoint's imports declare the component's dependencies, so the
+      # builder resolves them instead of asking the caller for a list. The
+      # scanner is the TypeScript compiler's own preProcessFile (comments and
+      # strings cannot fool it), run through the typescript package the base
+      # install just put in this project.
+      writeFile(dir / "scan-imports.js",
+        "// builder-owned helper: print the entrypoint's external import " &
+        "specifiers as JSON.\n" &
+        "const ts = require(\"typescript\");\n" &
+        "const fs = require(\"fs\");\n" &
+        "const builtins = new Set(require(\"module\").builtinModules);\n" &
+        "const info = ts.preProcessFile(fs.readFileSync(process.argv[2], \"utf8\"), true, true);\n" &
+        "const out = new Set();\n" &
+        "for (const f of info.importedFiles) {\n" &
+        "  const s = f.fileName;\n" &
+        "  if (s.startsWith(\".\") || s.startsWith(\"/\")) continue;\n" &
+        "  // node builtins ship with the runtime: \"fs\", \"fs/promises\", \"node:path\"\n" &
+        "  if (s.startsWith(\"node:\") || builtins.has(s) || builtins.has(s.split(\"/\")[0])) continue;\n" &
+        "  out.add(s);\n" &
+        "}\n" &
+        "console.log(JSON.stringify([...out]));\n")
       # NIF_NPM_REGISTRY (e.g. https://registry.npmmirror.com) overrides
       # the default registry for ts component installs — GitHub-hostile
       # networks usually reach npm mirrors fine.
@@ -175,11 +234,45 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
         300000)
       if ic != 0:
         return %*{"ok": false, "lang": lang, "error": tailBytes(io, 2000)}
-      let (cc, co) = runCmd("cd " & quoteShell(dir) &
-                            " && ./node_modules/.bin/tsc",
-                            120000)
-      if cc != 0:
-        return %*{"ok": false, "lang": lang, "error": tailBytes(co, 2000)}
+      let (sc, so) = runCmd(
+        "cd " & quoteShell(dir) & " && node scan-imports.js main.ts", 60000)
+      if sc != 0:
+        return %*{"ok": false, "lang": lang,
+                  "error": "import scan failed: " & tailBytes(so, 2000)}
+      var scanned: seq[string]
+      try:
+        for spec in parseJson(so):
+          let pkg = packageName(spec.getStr(""))
+          if pkg.len == 0 or pkg in ["nats", "niffler-sdk"] or pkg in scanned:
+            continue
+          if not validNpmName(pkg):
+            return %*{"ok": false, "lang": lang,
+                      "error": "source imports an unusable package name: " &
+                               tailBytes(pkg, 64)}
+          scanned.add(pkg)
+      except CatchableError as e:
+        return %*{"ok": false, "lang": lang,
+                  "error": "import scan returned no usable list: " & e.msg}
+      if scanned.len > 32:
+        return %*{"ok": false, "lang": lang,
+                  "error": "the source imports " & $scanned.len &
+                           " packages; at most 32 are installed"}
+      var installLog = ""
+      if scanned.len > 0:
+        var pkgs = ""
+        for pkg in scanned:
+          pkgs.add(" " & quoteShell(pkg))
+        let (dc, depOut) = runCmd(
+          "cd " & quoteShell(dir) & " && npm install" & registryFlag &
+          " --no-audit --no-fund --loglevel=error" & pkgs, 300000)
+        if dc != 0:
+          return %*{"ok": false, "lang": lang, "error": tailBytes(depOut, 2000)}
+        installLog = depOut
+      let (ccx, cox) = runCmd("cd " & quoteShell(dir) &
+                              " && ./node_modules/.bin/tsc",
+                              120000)
+      if ccx != 0:
+        return %*{"ok": false, "lang": lang, "error": tailBytes(cox, 2000)}
       if not fileExists(dir / "dist" / "main.js"):
         return %*{"ok": false, "lang": lang,
                   "error": "tsc produced no dist/main.js"}
@@ -195,7 +288,8 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
       moveFile(tmpBinary, binary)
       return %*{"ok": true, "lang": lang, "name": name,
                 "binary": binary,
-                "log": tailBytes(io & "\n" & co, 500)}
+                "deps": scanned,
+                "log": tailBytes(io & "\n" & installLog & "\n" & cox, 500)}
     else:
       return %*{"ok": false, "error": "unsupported lang '" & lang &
                 "' (supported: nim, go, ts)"}
