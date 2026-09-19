@@ -130,7 +130,7 @@ recover 會先重建並清空 spawned 元件記錄，然後引導三元件設定
 確保一個 runner，並把回合轉發到 `svc.session.<sessionId>.call`。runner 是受監督
 的子程序（重啟策略 `never`）；它以元件名 `session-<id>`（零工具）註冊，啟動時
 從 `catalog {op: snapshot}` 播種自己的目錄，併發出與經典 core 內迴圈相同的
-`ev.session.*` 事件。會話是臨時的：歷史存在 store 中，因此新的 runner 會在下次
+`ev.session.<id>.*` 事件。會話是臨時的：歷史存在 store 中，因此新的 runner 會在下次
 呼叫時恢復會話。殺掉 runner 隻影響該會話——程序就是隔離單元。兩個方向上回合
 都不會巢狀。
 
@@ -285,7 +285,7 @@ Niffler 沒有單一設定檔。狀態分佈在五處，按生命週期選擇：
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外額外搜尋伺服器二進位的目錄（展開 `~`） | — |
 | `NIF_TRAFILATURA` | Trafilatura 可執行檔案路徑/名稱；`off` 禁用外部提取 | 在 `PATH` 上自動探測 `trafilatura` |
 | `NIF_LOG_LEVEL` | SDK 結構化日誌釋出閾值（`debug`、`info`、`warn`、`error`） | `info` |
-| `NIF_LLM_MAX_RETRIES` | 瞬時 LLM 失敗（429/5xx/過載/連線斷開）的額外嘗試次數，指數退避；每次重試都會廣播 `ev.session.retry`。認證/配額/壞請求錯誤總是快速失敗 | `2` |
+| `NIF_LLM_MAX_RETRIES` | 瞬時 LLM 失敗（429/5xx/過載/連線斷開）的額外嘗試次數，指數退避；每次重試都會廣播 `ev.session.<id>.retry`。認證/配額/壞請求錯誤總是快速失敗 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 流式回應中途斷開時的額外嘗試——與一般情況分開計預算，因為斷開的流可能已經計費了輸出 | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | 連線/撥號失敗的額外嘗試次數 | `2` |
 | `NIF_LLM_RETRY_AFTER_CAP_MS` | 伺服器 `retry-after` 提示的等待上限；更長的提示等待會被夾到這個值 | `3600000` |
@@ -316,8 +316,8 @@ Niffler 沒有單一設定檔。狀態分佈在五處，按生命週期選擇：
 | `NIF_MAX_DIRECT_TOKENS` | `invoke {sticky: true}` 提升時對會話直接工具集的估算 token 上限；超出的提升會被推遲並在工具結果中報告 | `4000` |
 | `NIF_PROFILE` | 新會話預設的命名工具設定，在 `session` 呼叫未攜帶 `profile` 引數時使用 | unset |
 | `NIF_AGENT_MAX_DEPTH` | `agent_spawn` 委託可巢狀的深度上限（core 在分發時強制執行；agent 元件映象同一限制）。`0` 完全禁止委託；到達上限時 spawn 工具仍然可見 | `1` |
-| `NIF_HOOKS_EVENTS` | hooks 元件監視的逗號分隔匯流排主題；末尾 `>` 通配可用。啟動時讀取——改設定即 `core.kill` + `core.spawn` | `ev.session.turn` |
-| `NIF_HOOKS_<SUBJECT>` | 某個被監視主題要執行的 shell 命令（點和 `>` 變成 `_`：`ev.session.turn` → `NIF_HOOKS_EV_SESSION_TURN`）；事件負載以 JSON 從 stdin 傳入 | unset |
+| `NIF_HOOKS_EVENTS` | hooks 元件監視的逗號分隔匯流排主題；主題中任意位置的 `>` 通配可用。啟動時讀取——改設定即 `core.kill` + `core.spawn` | `ev.session.*.turn` |
+| `NIF_HOOKS_<SUBJECT>` | 某個被監視主題要執行的 shell 命令（點和 `>` 變成 `_`：`ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`）；事件負載以 JSON 從 stdin 傳入 | unset |
 | `NIF_HOOKS_TIMEOUT_MS` | 每個 hook 的超時；超過 60000 的值會被夾住 | `10000` |
 | `NIF_MCP_REGISTRY_URL` | 外部 MCP 伺服器目錄的基址（氣隙/代理環境） | `registry.modelcontextprotocol.io` |
 | `NIF_MCP_PROBE_TIMEOUT_MS` | `mcp_add` 中一次真實連線探測的超時（覆蓋 30s 預設值，並在呼叫自身的 `timeoutMs` 更高時覆蓋它） | `30000` |
@@ -365,16 +365,16 @@ svc.<component>.call   佇列組的工具呼叫請求/應答
 svc.session.<id>.steer   回合中途訊息注入（fire-and-forget，{content}）
 svc.session.<id>.advise  回合繫結的顧問請求/應答（expert 同伴）：
                          僅當命名 turnId 仍活躍時接受
-ev.session.turn        {sessionId, turnId, phase: start|done, content?, error?}
-ev.session.assistant   {sessionId, turnId?, content, provider?, model?, context?, usage?}
-ev.session.status      {sessionId, turnId?, provider?, model?, context?, usedTokens?}
-ev.session.token       {sessionId, turnId?, content, reasoning}  （實時 token 增量）
-ev.session.toolcall    {sessionId, turnId?, callId?, phase: start|done, tool, args, result|error, durationMs?}
-ev.session.advice      {sessionId, turnId?, source, content} 一條建議被折入
-ev.session.notice      {sessionId, turnId?, kind?, content?, jobId?, child?,
+ev.session.<id>.turn        {sessionId, turnId, phase: start|done, content?, error?}
+ev.session.<id>.assistant   {sessionId, turnId?, content, provider?, model?, context?, usage?}
+ev.session.<id>.status      {sessionId, turnId?, provider?, model?, context?, usedTokens?}
+ev.session.<id>.token       {sessionId, turnId?, content, reasoning}  （實時 token 增量）
+ev.session.<id>.toolcall    {sessionId, turnId?, callId?, phase: start|done, tool, args, result|error, durationMs?}
+ev.session.<id>.advice      {sessionId, turnId?, source, content} 一條建議被折入
+ev.session.<id>.notice      {sessionId, turnId?, kind?, content?, jobId?, child?,
                        status?} 執行時機器內容被折入（子代理結算、後臺程序退出、自主喚醒）
-ev.session.done        {sessionId, turnId?, reply} | {sessionId, turnId?, error}
-ev.session.context     {sessionId, turnId?, promptTokens, usedTokens, context, warning?|trimmed?}
+ev.session.<id>.done        {sessionId, turnId?, reply} | {sessionId, turnId?, error}
+ev.session.<id>.context     {sessionId, turnId?, promptTokens, usedTokens, context, warning?|trimmed?}
 ev.catalog.updated     任何註冊變化之後的直接（面向提示詞的）工具投影；
                        `catalog {op: snapshot}` 仍返回全部（含隱藏/on-demand schema）
 ev.models.updated      重新整理後有效的 provider/model/source 計數
@@ -394,8 +394,8 @@ cancel.<component>     取消側通道：回合取消落在在途分發上時由
 ```
 
 **流式。** `llm` 元件在生成時流式輸出 token：`ev.llm.token` 增量（content 和
-reasoning）→ core 為活躍回合轉發為 `ev.session.token` → UI 追加到實時 assistant
-氣泡。最終的 `ev.session.assistant` 事件總是攜帶完整內容，因此漏掉最後一幀也會
+reasoning）→ core 為活躍回合轉發為 `ev.session.<id>.token` → UI 追加到實時 assistant
+氣泡。最終的 `ev.session.<id>.assistant` 事件總是攜帶完整內容，因此漏掉最後一幀也會
 自愈。向 `llm.cancel.<sessionId>` 釋出訊息即可中止在途呼叫。
 
 用 `nats sub '>'` 附著到匯流排，可以實時看到 harness 在思考。
@@ -471,7 +471,7 @@ session 呼叫設定（Web UI 以 `/approvals`、`/limit` 和 `/compact` 暴露�
   它的命令。`/limit clear` 清除全部三項。
 - **`/compact`** —— 立即執行壓縮器，而不是等待自動壓力階梯：core 向已設定的
   壓縮元件請求允許切點上的檢查點，原子安裝它，併發出通常的
-  `ev.session.context {reason: "reset:compact"}`。不執行 LLM 回合，也不追加
+  `ev.session.<id>.context {reason: "reset:compact"}`。不執行 LLM 回合，也不追加
   使用者訊息。回覆報告 `compacted: true` 及前後 token 數，或
   `compacted: false` 及原因（未設定壓縮元件、壓縮器拒絕、或還無可壓縮內容）；
   拒絕絕不靜默降級為有損裁剪。
@@ -521,7 +521,7 @@ core 監視會話使用了模型上下文視窗的多少，並採取*樸素*行�
   （或 prompt + completion 回退）作為當前佔用的最佳值。provider、model、
   context、佔用和覆蓋也映象進會話頭，因此計量器無需載入整個記錄就能跨重啟
   存活。
-- core 發出 `ev.session.status`，包含已解析的 provider/model/context 和當前
+- core 發出 `ev.session.<id>.status`，包含已解析的 provider/model/context 和當前
   `usedTokens`；客戶端直接渲染 `usedTokens / context`。當提供商上報快取輸入
   （`prompt_tokens_details.cached_tokens`）時，status 事件還攜帶
   `cacheHitTokens` 和 `cacheHitRatio`——凍結的提示詞字首意味著首次請求後大部分
@@ -537,7 +537,7 @@ core 監視會話使用了模型上下文視窗的多少，並採取*樸素*行�
   384000）——提供商在准入時把請求的 `max_tokens` 計入其視窗，因此固定 16K
   的保留曾讓 736,803 token 的提示詞溢位 1,048,576 的提供商限制，而該提示詞
   本身是裝得下的。`NIF_CTX_RESERVE` 覆蓋推匯出的保留量。core 在到達有效線的
-  75% 處警告一次（`ev.session.context {reason: "warn:threshold"}`）；線上上
+  75% 處警告一次（`ev.session.<id>.context {reason: "warn:threshold"}`）；線上上
   ——絕不晚於視窗的 90%——core 執行有界階梯：確定性工具結果 prune → 已設定
   壓縮器 → 最老完整回合 trim → 顯式 `context-recovery-required`。在 wire 上，
   `llm` 元件還會把請求的輸出夾到序列化提示詞（訊息加工具 schema）留出的餘量，
@@ -793,14 +793,14 @@ CodeWhale hooks 中僅觀察的子集（docs/research/CODEWHALE.md）。一個 h
 設定基於環境變數，啟動時讀取（改設定 = `core.kill` + `core.spawn`）：
 
 ```bash
-NIF_HOOKS_EVENTS="ev.session.turn,ev.log.error"   # 要監視的主題
+NIF_HOOKS_EVENTS="ev.session.*.turn,ev.log.error"   # 要監視的主題
 NIF_HOOKS_EV_SESSION_TURN='notify-send Niffler "turn finished"'
 NIF_HOOKS_EV_LOG_ERROR='jq -r .payload.msg | mail -s Niffler you@example.com'
 NIF_HOOKS_TIMEOUT_MS=10000
 ```
 
 主題 → 環境變數名：點和 `>` 變成 `_` 並大寫
-（`ev.session.turn` → `NIF_HOOKS_EV_SESSION_TURN`）。可工作的示例——桌面通知、
+（`ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`）。可工作的示例——桌面通知、
 聲音提醒、郵件、webhook、錯誤尾部——在 `components/hooks/README.md` 中。
 
 ## Fetch
@@ -1827,13 +1827,13 @@ var/nats-monitor-url
 `expert` 元件是非互動的顧問同伴（設計：
 [research/EXPERT.md](research/EXPERT.md)）。它併發跟隨一個或多個工作會話——
 用 `expert_follow {session_id}` 顯式武裝（需審批，預設關閉）——把每個被跟隨
-會話的 `ev.session.*` 事件看進一個有界的每會話記憶體當前回合幀，並詢問 LLM 裁判
+會話的 `ev.session.<id>.*` 事件看進一個有界的每會話記憶體當前回合幀，並詢問 LLM 裁判
 （一次無狀態隱藏 `chat` 呼叫：固定快取穩定的知識字首 + 一條臨時觀察，無工具）
 證據是否值得 steer。只有高置信度、點名活躍非隱藏工具的 steer 會被投遞，經
 回合繫結的 `svc.session.<id>.advise` 請求/應答介面：runner 僅在該確切回合仍在
 執行時接受建議——遲到的建議被拒絕（`stale-turn`/`no-active-turn`），絕不排進
 下一回合。被接受的建議作為帶標記的使用者訊息折入
-（`[Niffler advisor: expert] ...`），持久化，並在 `ev.session.advice` 上宣告。
+（`[Niffler advisor: expert] ...`），持久化，並在 `ev.session.<id>.advice` 上宣告。
 裁判通道本身保持全域性：一次只有一條判斷在途、共享冷卻、每會話最新狀態合併。
 
 | 工具 | 做什麼 |

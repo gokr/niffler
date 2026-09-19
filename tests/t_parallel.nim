@@ -20,7 +20,7 @@
 ##                 adding threads to the Nim SDK (pid + overlap assertions).
 ##   retry       — NIF_MOCK_FAIL_FIRST=2: the mock llm fails its first two
 ##                 chat calls with a retryable 503; the runner's B3 auto-retry
-##                 must recover the turn and publish ev.session.retry events.
+##                 must recover the turn and publish ev.session.*.retry events.
 
 import std/[json, os, osproc, strutils, times]
 import natsnim
@@ -502,19 +502,19 @@ proc main() =
     defer: stopServer(server)
     defer: removeDir(root)
 
-    # Count ev.session.retry events for our session.
+    # Count ev.session.*.retry events for our session.
     var retrySub: ptr natsSubscription
-    check("retry: subscribe ev.session.retry",
+    check("retry: subscribe ev.session.*.retry",
           checkStatus(natsConnection_SubscribeSync(
-            addr retrySub, nc.conn, "ev.session.retry".cstring)))
+            addr retrySub, nc.conn, "ev.session.*.retry".cstring)))
     defer: natsSubscription_Destroy(retrySub)
 
     let sessionId = "conv-parallel-retry-" & $int(epochTime())
     # Watch status events for the A3 cache block (mock reports cached_tokens).
     var statusSub: ptr natsSubscription
-    check("retry: subscribe ev.session.status",
+    check("retry: subscribe ev.session.*.status",
           checkStatus(natsConnection_SubscribeSync(
-            addr statusSub, nc.conn, "ev.session.status".cstring)))
+            addr statusSub, nc.conn, "ev.session.*.status".cstring)))
     defer: natsSubscription_Destroy(statusSub)
     var cacheSeen = false
     let turn = call(nc, "core", "session",

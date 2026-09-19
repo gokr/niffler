@@ -34,7 +34,7 @@ proc main() =
   # lease/denied/no-tool checks, before any component dispatch), so a nil
   # connection and an empty catalog are enough — like t_core_requests.
   var ct = CoreTools(cat: Catalog(),
-                     pending: PendingCalls(items: @[]))
+                     pending: PendingCalls())
   ct.nested = NestedState(session: "t-unit")
 
   proc reg(lease: string; seconds: float = 30) =

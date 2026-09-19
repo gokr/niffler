@@ -118,7 +118,7 @@ import { currentProfile } from './lib/toolProfiles';
   // Per-conversation thinking effort ("" = provider default "auto").
   let sessionEfforts = $state<Record<string, EffortLevel>>({});
   // Per-conversation context usage as persisted in the conversation header
-  // (survives resume; live updates arrive via ev.session.status).
+  // (survives resume; live updates arrive via ev.session.<id>.status).
   let sessionCtxUsed = $state<Record<string, number>>({});
   let sessionStatus = $state<Record<string, SessionStatus>>({});
   let managerOpen = $state(false);
@@ -305,7 +305,7 @@ import { currentProfile } from './lib/toolProfiles';
   const headerContext = $derived(
     headerStatus?.context ?? effective?.context ?? 0
   );
-  // Live usedTokens from ev.session.status first, then the persisted
+  // Live usedTokens from ev.session.<id>.status first, then the persisted
   // conversation header (contextUsed) so the gauge survives resume.
   const headerUsed = $derived(
     headerStatus?.usedTokens ?? (sessionId ? sessionCtxUsed[sessionId] ?? 0 : 0)
@@ -480,9 +480,12 @@ import { currentProfile } from './lib/toolProfiles';
   );
 
   onMount(() =>
-    on("ev.session.status", (ev) => {
+    on("ev.session.", (ev) => {
       // Runtime/status frames update the header's provider/model/context
-      // provenance and the context gauge live during a turn.
+      // provenance and the context gauge live during a turn. Subjects are
+      // per-conversation (ev.session.<id>.status); the kind is the last
+      // token.
+      if (!ev.subject.endsWith(".status")) return;
       const p = ev.payload ?? {};
       if (p.sessionId) {
         sessionStatus = { ...sessionStatus, [p.sessionId]: p };

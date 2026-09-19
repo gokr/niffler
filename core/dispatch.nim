@@ -31,7 +31,7 @@ type
                                           ## dispatch's idle slot while a turn runs so a
                                           ## mid-turn call is refused with "busy" instead
                                           ## of waiting for a client deadline to expire)
-    pending*: PendingCalls                ## session calls stashed during a turn
+    pending*: PendingCalls                ## session call forwarding state
     runner*: bool                         ## true in a session runner: core tools go over the bus
     # Streaming turn channel: while a session turn is running, runTurn installs
     # a subscription on ev.llm.token and dispatchToolCall pumps it during its
@@ -59,9 +59,9 @@ type
       ## Delegated child-runner preparation (set by the system harness after
       ## CoreTools exists): ensure a conversation header + session runner and
       ## return {subject}. Serves the "session_prepare" core tool so a
-      ## component (agent) can drive a subagent mid-turn — core's session
-      ## tool would stash the request while a turn runs (pumpCoreWhileBusy:
-      ## "turns must never nest") and deadlock the caller.
+      ## component (agent) can drive a subagent mid-turn without an extra
+      ## hop through svc.core.call (which would forward and the busy runner
+      ## would refuse).
     uiReg*: UiRegistry                   ## numbered interactive clients with
                                          ## renewable leases (system core only;
                                          ## nil in runners — they forward "ui"
@@ -166,7 +166,6 @@ type
     deadline*: float
 
   PendingCalls* = ref object
-    items*: seq[tuple[env: Envelope, reply: string]]
     forwards*: seq[SessionForward]
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
@@ -483,8 +482,9 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     return %*{"ok": true, "sessionId": sessionId, "deleted": deleted}
   of "session_prepare":
     ## Delegated child-runner preparation for components (agent): returns the
-    ## runner's direct subject WITHOUT running a turn — the session tool would
-    ## be stashed mid-turn (pumpCoreWhileBusy) and deadlock the caller.
+    ## runner's direct subject WITHOUT running a turn — going through the
+    ## session tool instead would forward the call and the mid-turn runner
+    ## would refuse it with "busy".
     if ct.prepareSession == nil:
       return %*{"error": "session_prepare is not available in this context"}
     return ct.prepareSession(args{"sessionId"}.getStr(""))
@@ -949,22 +949,14 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
   ## blocked waiting for a component reply. Without this, a component
   ## calling back into core (plugin_install → core.spawn) would deadlock
   ## against the in-flight turn: core waits for the install, the install
-  ## waits for core. Concurrent session requests are stashed — turns must
-  ## never nest — and drained by pumpCoreCalls once the turn ends.
-  ##
-  ## EXCEPT a content-less session call (the status readback, `/export`, a
-  ## control change): that is forwarded to the target runner asynchronously
-  ## (routeSession) instead of being stashed or refused. Stashing answers it
-  ## only when this turn ends, and the caller has usually given up by then —
-  ## the TUI's `/export` waits 10s and reported "request svc.core.call:
-  ## context deadline exceeded", and a second UI's model/control save
-  ## timed out behind an unrelated conversation's turn. Routing serves the
-  ## idle target immediately while keeping core's pump free; when the TARGET
-  ## conversation is itself mid-turn, its runner refuses the call with code
-  ## "busy" (pumpBusyCall) — the same explicit refusal, decided by the
-  ## process that actually knows the turn state. A dropped user *message*
-  ## would be worse than a refusal, which is why a turn-starting call is
-  ## still stashed rather than routed.
+  ## waits for core. Session calls — control and turn-starting alike — ride
+  ## their own forwarding inboxes (routeSession) and are completed by
+  ## pumpSessionForwards, so this pump never blocks on a runner and turns
+  ## never nest in it: separate conversations' turns overlap, and a
+  ## conversation mid-turn refuses further turns itself with code "busy"
+  ## (pumpBusyCall) — decided by the process that actually knows the turn
+  ## state. A dropped user message is not possible: the forward either
+  ## reaches a runner or the caller gets an explicit error reply.
   pumpSessionForwards(ct)
   if ct.coreSub == nil: return
   while true:
@@ -982,19 +974,16 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
         "expected a call envelope").encode())
       continue
     if env.tool == "session":
-      let content = if env.args.kind == JObject:
-                      env.args{"content"}.getStr("")
-                    else: ""
-      if content.len == 0 and ct.routeSession != nil:
-        # A content-less control call rides its own inbox (see the proc
-        # doc): the target runner serves it now or refuses it with "busy".
+      # All session calls — control and turn-starting alike — ride their own
+      # forwarding inbox; the target runner serves them now (refusing with
+      # "busy" when its conversation is mid-turn) and the reply completes
+      # via pumpSessionForwards. Nothing is stashed: this pump never blocks
+      # on a runner, so unrelated conversations overlap freely.
+      if ct.routeSession == nil:
+        ct.nc.publish(reply, errorEnvelope(env.id, "no-tool",
+          "session routing is unavailable").encode())
+      else:
         ct.routeSession(env, reply)
-        continue
-      if content.len == 0:
-        ct.nc.publish(reply, errorEnvelope(env.id, "busy",
-          "the conversation is mid-turn — retry when the turn finishes").encode())
-        continue
-      ct.pending.items.add((env: env, reply: reply))
       continue
     var resp: Envelope
     try:

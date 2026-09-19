@@ -314,7 +314,7 @@ proc main() =
       break
     sleep(250)
   check("slow child's turn began", turnStarted, "no transcript yet")
-  sleep(600)                  # margin for the ev.session.turn tap
+  sleep(600)                  # margin for the ev.session.*.turn tap
   turn("cnt-busy")            # stage 2: agent_run {session} while mid-turn
   let busy = lastTool("cnt-busy")
   check("agent_run on a mid-turn child is refused with busy",

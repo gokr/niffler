@@ -548,7 +548,7 @@
     );
   }
 
-  // Live LLM deltas (ev.session.token): append to the current round's
+  // Live LLM deltas (ev.session.<id>.token): append to the current round's
   // assistant bubble. When the previous round was committed (assistant
   // event) the next round gets its own bubble — otherwise a multi-round
   // turn would keep overwriting the same div with each round's text.
@@ -622,7 +622,9 @@
     const off = on("ev.session.", (ev) => {
       const p = ev.payload ?? {};
       const l = ensureLive(p.sessionId ?? null);
-      const kind = ev.subject.slice("ev.session.".length);
+      // Per-conversation subjects (ev.session.<id>.<kind>): the kind is the
+      // last token.
+      const kind = ev.subject.split(".").pop();
       if (kind === "toolcall") {
         const existing = l.messages.find(
           (m) => m.role === "tool" && m.pending && m.tool === p.tool

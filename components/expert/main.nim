@@ -1,7 +1,7 @@
 ## expert — the advisory peer (docs/research/EXPERT.md).
 ##
 ## Follows one or more working sessions on the bus (multi-target,
-## best-effort), watches their ev.session.* events into bounded per-session
+## best-effort), watches their ev.session.<id>.* events into bounded per-session
 ## in-process observation frames, and asks an LLM judge (the hidden `chat`
 ## tool, no tools of its own) whether the evidence warrants a steer. The
 ## judge returns constrained JSON — silent or steer — and only
@@ -717,10 +717,11 @@ proc onSessionEvent(comp: Component, subject: string, data: string) =
   let sid = p{"sessionId"}.getStr("")
   if sid.len == 0 or sid notin gFollows: return
   var f = gFollows[sid]
-  let suffix = if subject.len > "ev.session.".len:
-                 subject.substr("ev.session.".len)
-               else: ""
-  case suffix
+  # Per-session subjects: ev.session.<sessionId>.<kind> — the kind is the
+  # last token, the session id rides the payload (and the subject).
+  let dot = subject.rfind('.')
+  let kind = if dot >= 0: subject[dot + 1 .. ^1] else: subject
+  case kind
   of "turn":
     if p{"phase"}.getStr("") == "start":
       # A request alone contains no evidence about harness usage; evaluating
@@ -781,7 +782,7 @@ proc onSessionEvent(comp: Component, subject: string, data: string) =
     f.ctxLimit = p{"context"}.getInt(f.ctxLimit)
     gFollows[sid] = f
     # Context pressure is the one non-tool event worth an intervention.
-    if suffix == "context" and f.ctxLimit > 0 and
+    if kind == "context" and f.ctxLimit > 0 and
         f.usedTokens * 5 >= f.ctxLimit * 4:
       maybeEvaluate(comp, sid)
   of "token":
@@ -801,7 +802,7 @@ comp.tool:
                      provider: string = ""): JsonNode =
     ## Follow a working session (multi-target): every followed session keeps
     ## its own observation frame, knowledge prefix and judgment budget, and
-    ## all of them are watched concurrently. The expert watches ev.session.*
+    ## all of them are watched concurrently. The expert watches ev.session.<id>.*
     ## events into a bounded current-turn frame and asks an LLM judge whether
     ## to steer; high-confidence steers are delivered turn-bound (rejected
     ## once the turn ends). Re-following a session resets its frame. Use when

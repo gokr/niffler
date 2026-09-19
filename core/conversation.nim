@@ -2,7 +2,7 @@
 ##
 ## Two drivers:
 ## - session runners (core/session.nim): one process per conversation,
-##   serving svc.session.<sessionId>.call, emitting ev.session.* events
+##   serving svc.session.<sessionId>.call, emitting ev.session.<id>.* events
 ## - svc.core.call "session" (service mode): the system ensures a runner
 ##   per sessionId and forwards — clients keep one stable address
 ##
@@ -24,6 +24,11 @@ import dispatch
 import approval
 import supervisor
 import retry
+
+proc sanitizeSessionId*(s: string): string
+  ## Forward declaration: the per-session event publisher (ev.session.<id>.*)
+  ## above the definition site needs the sanitized subject token; the
+  ## implementation (wrapping sdk/subjects) is further down.
 
 ## The minimal structural fallback prompt. The real constitution lives in
 ## the systemprompt component (components/systemprompt/): the session
@@ -1743,7 +1748,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   ## ("token", {sessionId, turnId, content, reasoning} live deltas),
   ## ("status", {...turnId...}), ("advice", {sessionId, turnId, source,
   ## content}) and ("done", {sessionId, turnId, reply}) as they happen.
-  ## turnContent is the user request that started this turn (ev.session.turn).
+  ## turnContent is the user request that started this turn
+  ## (ev.session.<id>.turn).
   let sessionId = p.convId
   let turnId = "turn-" & newId()
   # Live turn identity for pumpAdvise: advisor requests are accepted only
@@ -2235,7 +2241,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       # Cache economics (A3/CodeWhale borrow): the frozen prefix means most
       # prompt tokens should be cached after the first request; surface the
       # provider's cached split so a low hit ratio is visible and attributable
-      # (ev.session.context carries the reset reason when we know one).
+      # (ev.session.<id>.context carries the reset reason when we know one).
       if p.cachePrompt > 0:
         statusEv["cache"] = %*{"prompt": p.cachePrompt, "read": p.cacheRead,
                                "hitRate": round(float(p.cacheRead) * 100.0 /
@@ -2526,7 +2532,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
                          sessions: var Table[string, Session],
                          caller = ""): JsonNode =
   ## session {sessionId, content?, model?}: run one turn or persist a model
-  ## selection, emitting ev.session.* events. Session state is rebuilt from
+  ## selection, emitting ev.session.<id>.* events. Session state is rebuilt from
   ## the store on first use (resume). caller is the self-declared component
   ## name from the call envelope — the interactive component driving this
   ## session; approvals raised by the turn are routed to it.
@@ -2912,7 +2918,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
 
   proc onEvent(kind: string, data: JsonNode) {.closure.} =
     let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: data)
-    ct.nc.publish("ev.session." & kind, env.encode())
+    ct.nc.publish("ev.session." & sanitizeSessionId(sessionId) & "." & kind,
+                  env.encode())
 
   if hasDiscovery:
     # Explicit client discovery is serialized by the runner, just like a
@@ -3189,21 +3196,11 @@ proc ensureRunner*(ct: CoreTools, sessionId: string): string =
       "session runner for " & sessionId & " did not come up")
   sessionSubject(sessionId)
 
-proc callSession*(ct: CoreTools, args: JsonNode, caller = ""): JsonNode =
-  ## Direct (blocking) session path used by unit/direct callers. The system
-  ## core normally uses routeSessionCall below so one long turn cannot block
-  ## unrelated conversation runners. caller is forwarded so the runner can
-  ## route approvals to the driver.
-  let sessionId = args{"sessionId"}.getStr("")
-  if sessionId.len == 0:
-    return %*{"error": "session needs sessionId"}
-  let subject = ensureRunner(ct, sessionId)
-  dispatchSubjectCall(ct, subject, "session", args, 1800_000, caller)
-
 proc routeSessionCall*(ct: CoreTools, env: Envelope, reply: string) =
   ## Start a session request and return immediately. The core's main pump owns
   ## the forwarding inboxes; the runner process remains the serialization
-  ## boundary for calls belonging to one conversation.
+  ## boundary for calls belonging to one conversation, so separate
+  ## conversations' turns overlap while one conversation never nests turns.
   if reply.len == 0: return
   let sessionId = env.args{"sessionId"}.getStr("")
   if sessionId.len == 0:
@@ -3235,26 +3232,13 @@ proc routeSessionCall*(ct: CoreTools, env: Envelope, reply: string) =
     ct.nc.publish(reply, errorEnvelope(env.id, "boom", e.msg).encode())
 
 proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
-  ## Serve svc.core.call messages (session/spawn/catalog). Content-less
-  ## session calls (status/export/controls) are forwarded asynchronously so
-  ## one conversation's turn cannot delay another's; a turn-starting call
-  ## keeps the blocking path (its reply is the turn's result), and calls
-  ## stashed while core was busy replay here first.
+  ## Serve svc.core.call messages (session/spawn/catalog). Every session call
+  ## — control or turn-starting — is forwarded through a private inbox
+  ## (routeSessionCall) and completed by pumpSessionForwards, so this pump
+  ## never blocks on a runner: separate conversations' turns overlap, and
+  ## each runner stays the serialization boundary for its own conversation
+  ## (a mid-turn runner refuses further turns with "busy").
   pumpSessionForwards(ct)
-  while ct.pending != nil and ct.pending.items.len > 0:
-    let pend = ct.pending.items[0]
-    ct.pending.items.delete(0)
-    var resp: Envelope
-    try:
-      let r = callSession(ct, pend.env.args, pend.env.caller)
-      if r{"error"} != nil:
-        raise newException(ValueError, r{"error"}.getStr("session error"))
-      resp = resultEnvelope(pend.env.id, r)
-    except CatchableError as e:
-      resp = errorEnvelope(pend.env.id, "boom", e.msg)
-    ct.nc.publish(pend.reply, resp.encode())
-  if ct.pending != nil:
-    ct.pending.items = @[]
   while true:
     pumpSessionForwards(ct)
     var msg: ptr natsMsg
@@ -3271,23 +3255,15 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
         "expected a call envelope").encode())
       continue
     if env.tool == "session":
-      let content = if env.args.kind == JObject:
-                      env.args{"content"}.getStr("")
-                    else: ""
-      if content.len == 0 and ct.routeSession != nil:
-        # Content-less control calls never block the pump: the target runner
-        # serves them at once, or refuses with "busy" when its own
-        # conversation is mid-turn (pumpBusyCall).
+      if ct.routeSession == nil:
+        ct.nc.publish(reply, errorEnvelope(env.id, "no-tool",
+          "session routing is unavailable").encode())
+      else:
         ct.routeSession(env, reply)
-        continue
+      continue
     var resp: Envelope
     try:
       case env.tool
-      of "session":
-        let r = callSession(ct, env.args, env.caller)
-        if r{"error"} != nil:
-          raise newException(ValueError, r{"error"}.getStr("session error"))
-        resp = resultEnvelope(env.id, r)
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
           "session_prepare", "session_info", "prompt_preview", "doctor",
           "conversation_delete", "profile":

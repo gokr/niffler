@@ -83,7 +83,7 @@ const noticeFullReplyIn = "agent_status"
 
 var liveTurns = initHashSet[string]()
   ## Sessions whose runner has a turn in flight, maintained by the
-  ## ev.session.turn tap below. This is the ONLY state that lets the steer
+  ## ev.session.*.turn tap below. This is the ONLY state that lets the steer
   ## lane deliver immediately; everything else is queued for the pull lane.
   ## Conservative by design: a stale entry (missed "done") means we publish
   ## into a runner that may not be draining — the notice then ALSO stays
@@ -104,7 +104,7 @@ proc replySummary(reply: string; replyBytes: int): string =
 
 proc parentMidTurn(parent: string): bool =
   ## True when the parent's runner is holding a turn, so the steer lane can
-  ## fold the notice in immediately. Fed by the ev.session.turn tap (core
+  ## fold the notice in immediately. Fed by the ev.session.*.turn tap (core
   ## emits phase start/done for every turn), not by a catalog probe — the
   ## catalog has no turn state.
   parent in liveTurns
@@ -810,7 +810,7 @@ proc continuable(child, caller: string): tuple[
   return (true, "", subject, activation)
 
 proc refreshTurns() =
-  ## Poll the ev.session.turn tap before reading live turn state.
+  ## Poll the ev.session.*.turn tap before reading live turn state.
   ##
   ## The tap is only drained while a handler WAITS (SDK pumpTaps), so a
   ## handler entered right after a child's turn returned still sees the child
@@ -822,7 +822,7 @@ proc refreshTurns() =
 
 proc busyChild(child: string): bool =
   ## True when the child's runner is holding a turn right now. Answered from
-  ## the ev.session.turn tap (the catalog has no turn state). Used to refuse
+  ## the ev.session.*.turn tap (the catalog has no turn state). Used to refuse
   ## `agent_run {session}` with a clear `busy` instead of queueing a caller
   ## that promised it wanted the result now. The tap is refreshed first so a
   ## turn that just ended is not still counted (see refreshTurns).
@@ -1776,7 +1776,7 @@ discard comp.tap("_INBOX.agentjob.>",
                                 "sessionId": value{"sessionId"},
                                 "status": value{"status"}}))
 
-discard comp.tap("ev.session.turn",
+discard comp.tap("ev.session.*.turn",
   proc(c: Component, subject: string, data: string) =
     ## Track which sessions hold a live turn, so a settlement notice can pick
     ## the steer lane when the parent is mid-turn. Observe-only and

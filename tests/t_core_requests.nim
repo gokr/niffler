@@ -18,7 +18,7 @@ proc main() =
   defer: natsSubscription_Destroy(sub)
   defer: natsSubscription_Destroy(replies)
   let ct = CoreTools(nc: nc, cat: cat, coreSub: sub,
-    pending: PendingCalls(items: @[]))
+    pending: PendingCalls())
   for busy in [false, true]:
     for data in ["not json", "null", "[]",
                  """{"id":"keep-id","kind":"event","payload":{}}"""]:

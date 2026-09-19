@@ -54,7 +54,7 @@ proc main() =
 
   var eventSub: ptr natsSubscription
   let eventSt = natsConnection_SubscribeSync(addr eventSub, nc.conn,
-                                              "ev.session.toolcall".cstring)
+                                              "ev.session.*.toolcall".cstring)
   doAssert checkStatus(eventSt)
   defer: natsSubscription_Destroy(eventSub)
 

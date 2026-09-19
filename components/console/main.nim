@@ -47,7 +47,7 @@ proc render(subject: string, data: string) =
          styled(env.tool, 1) & " ! " & chop($env.error, 300)
   of ekEvent:
     let payload = if env.payload == nil: "" else: $env.payload
-    if subject == "ev.session.assistant":
+    if subject.startsWith("ev.session.") and subject.endsWith(".assistant"):
       # model text: render content directly (it is the conversation)
       echo ts() & " " & styled("assistant", 33) & "  " &
            chop(payload, 2000)

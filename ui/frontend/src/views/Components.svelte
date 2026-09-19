@@ -202,7 +202,8 @@
     const offSession = on("ev.session.", (event) => {
       const payload = event.payload ?? {};
       if (payload.sessionId !== sessionId) return;
-      const kind = event.subject.slice("ev.session.".length);
+      // Per-conversation subjects: the kind is the last token.
+      const kind = event.subject.split(".").pop();
       if (kind === "toolcall" || kind === "done") syncExposure(sessionId);
     });
     const offStatus = onStatus((online) => {

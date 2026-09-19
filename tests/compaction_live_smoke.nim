@@ -94,8 +94,8 @@ proc main() =
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()
-  let contexts = subscribe(nc, "ev.session.context")
-  let statuses = subscribe(nc, "ev.session.status")
+  let contexts = subscribe(nc, "ev.session.*.context")
+  let statuses = subscribe(nc, "ev.session.*.status")
   defer:
     discard natsSubscription_Unsubscribe(contexts)
     discard natsSubscription_Unsubscribe(statuses)

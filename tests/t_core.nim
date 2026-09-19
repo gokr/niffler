@@ -308,7 +308,7 @@ proc main() =
   var turnSub: ptr natsSubscription
   check("subscribe session turn events",
         checkStatus(natsConnection_SubscribeSync(
-          addr turnSub, nc.conn, "ev.session.turn".cstring)))
+          addr turnSub, nc.conn, "ev.session.*.turn".cstring)))
   defer: natsSubscription_Destroy(turnSub)
   let slowSession = "agent-slow-core-regression"
   let slowProc = startComponent(cliBin, url, root = root, args = [

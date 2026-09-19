@@ -25,7 +25,7 @@ proc main() =
   let hookOut = root / "hook-out.jsonl"
   let hookProc = startComponent(repoRoot / "var" / "bin" / "hooks", url,
     root = root,
-    extra = [("NIF_HOOKS_EVENTS", "ev.session.turn"),
+    extra = [("NIF_HOOKS_EVENTS", "ev.session.*.turn"),
              ("NIF_HOOKS_EV_SESSION_TURN", "cat >> " & quoteShell(hookOut))],
     logFile = root / "hooks.log")
   defer:
@@ -47,7 +47,7 @@ proc main() =
   let env = Envelope(v: 1, id: "t1", kind: ekEvent,
     payload: %*{"sessionId": "probe", "turnId": "tr1", "phase": "done",
                 "reply": "hello hook"})
-  nc2.publish("ev.session.turn", env.encode())
+  nc2.publish("ev.session.probe.turn", env.encode())
   discard natsConnection_Flush(nc2.conn)
 
   var fired = false

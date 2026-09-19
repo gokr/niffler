@@ -17,23 +17,29 @@ Hooks are env-configured at boot (a hookless boot stays up; change config
 by `core.kill` + `core.spawn`, the harness's hot-change idiom):
 
 ```bash
-NIF_HOOKS_EVENTS="ev.session.turn,ev.log.error"   # subjects to watch
+NIF_HOOKS_EVENTS="ev.session.*.turn,ev.log.error"   # subjects to watch
 NIF_HOOKS_EV_SESSION_TURN='your-command-here'      # subject → command
 NIF_HOOKS_EV_LOG_ERROR='your-command-here'
 NIF_HOOKS_TIMEOUT_MS=10000                         # per-hook, 100..60000
 ```
 
-Subject→env mapping: dots and `>` become `_`, uppercased —
-`ev.session.turn` → `NIF_HOOKS_EV_SESSION_TURN`, `ev.log.>` →
+Subject→env mapping: dots and `>` become `_`, uppercased, with `>.`
+collapsing so the per-session event namespace keeps its canonical names —
+`ev.session.*.turn` → `NIF_HOOKS_EV_SESSION_TURN`, `ev.log.>` →
 `NIF_HOOKS_EV_LOG_`.
+
+A `>` matches any middle part of the subject: `ev.session.*.turn` fires for
+every conversation's finished turn, `ev.session.*.toolcall` for every tool
+call. The session id rides the payload (`sessionId`) and the subject
+(`ev.session.<sessionId>.<kind>`).
 
 ## Event payloads you'll receive
 
 | Subject | Fires | Payload highlights |
 |---|---|---|
-| `ev.session.turn` | finished user turn | `sessionId`, `turnId`, `phase: "done"`, `reply` |
-| `ev.session.status` | per LLM round | `model`, `provider`, `promptTokens`, `usedTokens`, `usage`, `cacheHitTokens`, `cacheHitRatio` |
-| `ev.session.context` | warn/trim | `reason` (`"reset:trim"`), `trimmed`, `warning` |
+| `ev.session.*.turn` | finished user turn (any conversation) | `sessionId`, `turnId`, `phase: "done"`, `reply` |
+| `ev.session.*.status` | per LLM round | `model`, `provider`, `promptTokens`, `usedTokens`, `usage`, `cacheHitTokens`, `cacheHitRatio` |
+| `ev.session.*.context` | warn/trim | `reason` (`"reset:trim"`), `trimmed`, `warning` |
 | `ev.log.error` (via `ev.log.>`) | component logged error | `level`, `msg`, `component` |
 
 ## Examples

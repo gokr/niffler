@@ -162,18 +162,21 @@ turn to `svc.session.<id>.call`. Clients keep a single stable address
 (`svc.core.call`); runners are ephemeral — history lives in the store,
 a fresh runner resumes the conversation on the next call.
 
-Session subjects (core emits during `svc.core.call` session turns — UIs
-subscribe `ev.session.>` and render live):
+Session subjects (the runner emits during a turn as
+`ev.session.<sessionId>.<kind>` — one subject hierarchy per conversation,
+so a client watching one conversation subscribes `ev.session.<id>.>` and
+receives only its frames, while observers subscribe `ev.session.>` for
+everything — UIs render live from the narrow subscription):
 
 ```
-ev.session.turn        # {sessionId, turnId, phase: start|done, content?, error?}
+ev.session.<id>.turn        # {sessionId, turnId, phase: start|done, content?, error?}
                        #   turn lifecycle; content (the user request) on start.
                        #   turnId identifies the turn — advisory delivery binds
                        #   to it and every session event carries it
-ev.session.assistant   # {sessionId, turnId?, content, provider?, model?,
+ev.session.<id>.assistant   # {sessionId, turnId?, content, provider?, model?,
                        #   context?, usage?}
                        #   complete model text + actual backend metadata per LLM round
-ev.session.status      # {sessionId, turnId?, provider?, providerSource?, model?,
+ev.session.<id>.status      # {sessionId, turnId?, provider?, providerSource?, model?,
                        #   catalog?, context?, contextSource?, promptTokens?,
                        #   usedTokens?, cache?: {prompt, read, hitRate}}
                        #   resolved turn config and live context occupancy.
@@ -181,38 +184,43 @@ ev.session.status      # {sessionId, turnId?, provider?, providerSource?, model?
                        #   prompt-cache reads (A3; present when the provider
                        #   sends prompt_tokens_details). Also emitted by
                        #   model-only session calls (no inference)
-ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
+ev.session.<id>.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
                        #   warning?|trimmed?}; context-window pressure
                        #   (75% warn, 90% trim)
-ev.session.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
+ev.session.<id>.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
                        #   a transient LLM failure is being retried after delayMs
                        #   (exponential backoff; NIF_LLM_MAX_RETRIES, default 2).
                        #   Auth/quota/bad-request failures never retry
-ev.session.token       # {sessionId, turnId?, content, reasoning} live token deltas
+ev.session.<id>.token       # {sessionId, turnId?, content, reasoning} live token deltas
                        #   (streamed while the model generates)
-ev.session.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
+ev.session.<id>.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
                        #   tool, args, result? | error?, errorCode?}
                        #   start fires before dispatch, done after the result
                        #   (error keeps its legacy string shape; errorCode is
                        #   the stable machine code when known)
-ev.session.steer       # {sessionId, turnId?, content} a steer message was folded in
-ev.session.advice      # {sessionId, turnId?, source, content, reason?} an
+ev.session.<id>.steer       # {sessionId, turnId?, content} a steer message was folded in
+ev.session.<id>.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
-ev.session.notice      # {sessionId, turnId?, kind?, content?, jobId?, child?,
+ev.session.<id>.notice      # {sessionId, turnId?, kind?, content?, jobId?, child?,
                        #   status?} a settlement notice, background process exit,
                        #   or the opening of an autonomous wake turn was folded in;
                        #   `content` is the rendered text UIs show (the durable
                        #   `agentnotice` record carries the summary and the recourse
                        #   to the full reply; see "Settlement notices")
-ev.session.done        # {sessionId, turnId?, reply} or {sessionId, turnId?, error}
+ev.session.<id>.done        # {sessionId, turnId?, reply} or {sessionId, turnId?, error}
 ```
+
+Wildcards compose: `ev.session.>` observes every conversation's frames,
+`ev.session.<id>.>` one conversation, `ev.session.*.token` every token
+stream. The payload keeps `sessionId` for clients that subscribe wide.
 
 LLM streaming (adapter → core → UI): the `llm` component emits
 `ev.llm.token {sessionId, content, reasoning}` deltas while generating;
-core forwards matching deltas for the active turn as `ev.session.token`
-and heals any last-frame race with the final assistant event (which
-always carries the complete content). Cancellation: publish an envelope
-to `llm.cancel.<sessionId>` to abort an in-flight streaming call.
+core forwards matching deltas for the active turn as
+`ev.session.<id>.token` and heals any last-frame race with the final
+assistant event (which always carries the complete content). Cancellation:
+publish an envelope to `llm.cancel.<sessionId>` to abort an in-flight
+streaming call.
 
 Approval subjects (human gate for `x-harness.approval: "always"` tools):
 

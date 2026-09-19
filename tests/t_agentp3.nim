@@ -186,7 +186,7 @@ proc main() =
   check("slow child spawned", slowChild.startsWith("agent-") and
         slowJob.startsWith("job-"), $spawnRes)
   check("slow child's turn began", waitTurnStarted(slowChild))
-  sleep(600)                    # margin for the ev.session.turn tap
+  sleep(600)                    # margin for the ev.session.*.turn tap
 
   let steerLive = agent("agent_steer",
                         %*{"session_id": slowChild,

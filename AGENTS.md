@@ -36,7 +36,12 @@ working in every language.
   `core/session.nim`) per conversation and forwards `session` tool calls to
   `svc.session.<id>.call` (clients keep calling `svc.core.call`). Runners are
   internal children (restart `never`), ephemeral, and resume from the store;
-  killing one loses only the in-flight turn. Turns never nest. The tty REPL
+  killing one loses only the in-flight turn. **Turns never nest within a
+  conversation** (its runner serves one turn at a time; a second turn is
+  refused with `busy`), but **separate conversations run concurrently**: core
+  never blocks on a runner — every session call, turn-starting included,
+  rides a private forwarding inbox (`routeSessionCall`), so a long turn in
+  one conversation cannot delay another's. The tty REPL
   (`core/tty.nim`) is an **admin shell**, not a conversation UI: status
   commands only (help/status/catalog/tools/sessions) — the LLM chat lives in
   the web UI and the niffler-tui plugin; scripting goes through the `cli`
@@ -129,7 +134,7 @@ working in every language.
   `invoke {sticky: true}` is the explicit exception: it appends one normalized
   schema to the persisted direct set, changing the request prefix once; the
   append is durable and never removes or rewrites earlier tools.
-  Cache hits are surfaced per turn in `ev.session.context` status events
+  Cache hits are surfaced per turn in `ev.session.<id>.context` status events
   (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full misses are a
   trim (`reason: "reset:trim"`) and a sticky `invoke` promotion
   (`reason: "reset:tools"`, emitted only when the direct set actually grew).
@@ -296,7 +301,7 @@ The SPA is a NATS client, not a Wails client: it only talks to
 - `llm` is Go (`sdk/go`); the builder gives agent-written Go components a
   `go.mod` with a `replace niffler.dev/sdk => <root>/sdk/go` automatically.
   It streams live tokens as `ev.llm.token` deltas; core re-emits them as
-  `ev.session.token` for the active turn. `components/llm-openai` is the
+  `ev.session.<id>.token` for the active turn. `components/llm-openai` is the
   minimal non-streaming example adapter.
 - TypeScript components (`sdk/ts`, npm package `niffler-sdk`) build with
   `builder.build {lang: "ts", ...}`: npm install (registry access needed)

@@ -188,7 +188,7 @@ proc main() =
   # --- session config: persist a model selection without making an API call
   var statusSub: ptr natsSubscription
   doAssert checkStatus(natsConnection_SubscribeSync(
-    addr statusSub, nc.conn, "ev.session.status".cstring))
+    addr statusSub, nc.conn, "ev.session.*.status".cstring))
   let configured = call(nc, "core", "session", %*{
     "sessionId": "provider-model-config", "model": "custom-session-model"
   }, 30_000)
@@ -392,7 +392,7 @@ proc main() =
 
     var statusSub: ptr natsSubscription
     doAssert checkStatus(natsConnection_SubscribeSync(
-      addr statusSub, nc.conn, "ev.session.status".cstring))
+      addr statusSub, nc.conn, "ev.session.*.status".cstring))
     let turn = call(nc, "core", "session", %*{
       "sessionId": "provider-model-e2e",
       "content": "reply exactly OK",

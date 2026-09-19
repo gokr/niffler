@@ -417,8 +417,8 @@ proc main() =
     let inbox = "_INBOX.busy." & newId()
     let replies = openSub(nc, inbox)
     let directed = openSub(nc, "svc.approval.probe.request")
-    let turns = openSub(nc, "ev.session.turn")
-    let calls = openSub(nc, "ev.session.toolcall")
+    let turns = openSub(nc, "ev.session.*.turn")
+    let calls = openSub(nc, "ev.session.*.toolcall")
     defer:
       natsSubscription_Destroy(replies)
       natsSubscription_Destroy(directed)

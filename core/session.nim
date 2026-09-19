@@ -3,7 +3,7 @@
 ## Spawned by the system harness (core/niffler.nim: ensureRunner) with the
 ## session id as argv. Serves svc.session.<sessionId>.call: runs turn per
 ## request via conversation.nim (resume from the store on first use),
-## emitting ev.session.* events. Core tools (including discover) go
+## emitting ev.session.<id>.* events. Core tools (including discover) go
 ## back over the bus to svc.core.call — one implementation, in the system.
 ##
 ## The process is the unit of isolation: kill the runner, every other
@@ -44,7 +44,7 @@ proc main() =
   var approval = newApproval(nc, cat, tty = false)
   var ct = CoreTools(nc: nc, cat: cat, sup: nil, root: root,
                      approval: approval, coreSub: nil, runner: true,
-                     pending: PendingCalls(items: @[]),
+                     pending: PendingCalls(),
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),

@@ -539,7 +539,7 @@ proc main() =
   var approval = newApproval(nc, cat, isatty(stdin))
   var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval,
                      root: root, runner: false,
-                     pending: PendingCalls(items: @[]),
+                     pending: PendingCalls(),
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),

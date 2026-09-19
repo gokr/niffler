@@ -13,12 +13,16 @@
 ## Configuration (env, read at boot — config changes are core.kill +
 ## core.spawn, the harness's hot-change idiom):
 ##   NIF_HOOKS_EVENTS      comma-separated subjects to watch, default
-##                         "ev.session.turn" (one per finished user turn).
-##                         Trailing '>' wildcards work (expert-style).
+##                         "ev.session.*.turn" (one per finished user turn,
+##                         any conversation). Wildcards follow NATS: '*' is
+##                         one token, a trailing '>' is the rest, so
+##                         ev.session.*.toolcall works too.
 ##   NIF_HOOKS_<SUBJECT>   the command to run for that subject, dots and
-##                         '>' mapped to underscores:
-##                         ev.session.turn → NIF_HOOKS_EV_SESSION_TURN
-##                         ev.log.>        → NIF_HOOKS_EV_LOG_
+##                         wildcards mapped to underscores ('*.' and '>.'
+##                         collapse, so the default still reads
+##                         NIF_HOOKS_EV_SESSION_TURN):
+##                         ev.session.*.turn → NIF_HOOKS_EV_SESSION_TURN
+##                         ev.log.>           → NIF_HOOKS_EV_LOG_
 ##   NIF_HOOKS_TIMEOUT_MS  per-hook timeout, default 10000, max 60000.
 ##
 ## The hook command runs through `sh -c` (operator-provided, same trust
@@ -35,9 +39,14 @@ const maxPayloadBytes = 256_000
   ## payload cap: an event payload is a summary, not a transcript.
 
 proc hookEnvFor(subject: string): string =
-  ## ev.session.turn → NIF_HOOKS_EV_SESSION_TURN; '>' collapses to '_'
-  ## (so ev.log.> → NIF_HOOKS_EV_LOG_).
-  "NIF_HOOKS_" & subject.toUpperAscii().multiReplace((".", "_"), (">", "_"))
+  ## ev.session.*.turn → NIF_HOOKS_EV_SESSION_TURN ('*.' collapses, so the
+  ## per-session event namespace keeps its canonical env name);
+  ## ev.log.> → NIF_HOOKS_EV_LOG_ (trailing wildcards collapse to '_').
+  "NIF_HOOKS_" & subject.toUpperAscii().multiReplace(("*.", ""),
+                                                      (">.", ""),
+                                                      (".", "_"),
+                                                      ("*", "_"),
+                                                      (">", "_"))
 
 var hookCounter = 0
   ## Payload temp files are serialized (single-threaded SDK poll loop), so
@@ -47,10 +56,29 @@ type
   Hook = tuple[subject, command: string]
 
 proc matchHook(hooks: seq[Hook], subject: string): string =
-  ## First matching spec wins; a trailing '>' prefix-matches.
+  ## First matching spec wins, with NATS wildcard semantics: '*' matches
+  ## exactly one token, a trailing '>' matches the rest
+  ## (ev.session.*.turn = every conversation's turn, ev.log.> = all log
+  ## events). A spec is therefore also a valid NATS subscription pattern.
+  let tokens = subject.split('.')
   for (s, cmd) in hooks:
-    if s == subject or (s.endsWith(">") and
-                        subject.startsWith(s[0 ..< ^1])):
+    if s == subject: return cmd
+    let pattern = s.split('.')
+    var ok = true
+    for i, tok in pattern:
+      if i >= tokens.len:
+        ok = false
+        break
+      if tok == ">":
+        # '>' consumes the remainder; terminal by construction
+        if i == pattern.high: break
+        ok = false
+        break
+      if tok == "*": continue
+      if tok != tokens[i]:
+        ok = false
+        break
+    if ok and (pattern.len == tokens.len or pattern[^1] == ">"):
       return cmd
   return ""
 
@@ -97,7 +125,7 @@ proc main() =
       10_000
 
   var hooks: seq[Hook] = @[]
-  for subject in getEnv("NIF_HOOKS_EVENTS", "ev.session.turn").split(','):
+  for subject in getEnv("NIF_HOOKS_EVENTS", "ev.session.*.turn").split(','):
     let s = subject.strip()
     if s.len == 0: continue
     let cmd = getEnv(hookEnvFor(s))

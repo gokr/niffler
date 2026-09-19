@@ -4,7 +4,7 @@
 ## (tests/mock_llm.nim) and the expert component. One expert follows one
 ## working session; the scripted working turn calls bash, giving the expert a
 ## window to judge and deliver turn-bound advice mid-turn. Asserts the full
-## loop: ev.session.turn start/done with a shared turnId, the advise
+## loop: ev.session.*.turn start/done with a shared turnId, the advise
 ## request/reply accepted while the turn is live, the advisory folded into
 ## the conversation as a marked user message (and persisted), expert_status
 ## diagnostics, and stale-advise rejection after the turn ends.
@@ -39,7 +39,7 @@ proc adviseRequest(nc: NatsConnection, sessionId: string,
   return r.args
 
 proc drainTurnEvents(sub: ptr natsSubscription): seq[JsonNode] =
-  ## Collect whatever ev.session.turn events are queued right now.
+  ## Collect whatever ev.session.*.turn events are queued right now.
   while true:
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, sub, 100)
@@ -116,8 +116,8 @@ proc main() =
   # Watch the turn lifecycle events for the session we are about to run.
   var turnSub: ptr natsSubscription
   let tst = natsConnection_SubscribeSync(addr turnSub, nc.conn,
-                                         "ev.session.turn".cstring)
-  check("subscribe ev.session.turn", checkStatus(tst))
+                                         "ev.session.*.turn".cstring)
+  check("subscribe ev.session.*.turn", checkStatus(tst))
   defer: natsSubscription_Destroy(turnSub)
 
   let sessionId = "conv-expert-" & $int(epochTime())

@@ -445,7 +445,7 @@ proc publishExitNotice(e: Entry) =
   ##
   ## Rides the lane the agent's settlement notices use —
   ## svc.session.<id>.steer with a {"notice": …} payload — so the runner folds
-  ## it in as an appended user message and emits ev.session.notice. Without it
+  ## it in as an appended user message and emits ev.session.<id>.notice. Without it
   ## the model only learns by polling process_poll: nothing reaped a child
   ## except a tool call, so an exit stayed invisible until someone asked.
   ##

@@ -206,7 +206,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "session_prepare", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Ensure a conversation's session runner is alive and return its direct call subject, without running a turn. Used by components that drive subagent sessions mid-turn (core's session tool would stash them until the running turn ends).",
+      "description": "Ensure a conversation's session runner is alive and return its direct call subject, without running a turn. Used by components that drive subagent sessions mid-turn (core's session tool would forward the call and the busy runner would refuse it).",
       "properties": {"sessionId": {"type": "string"}},
       "required": ["sessionId"],
       "x-harness": {"hidden": true}
@@ -395,7 +395,7 @@ proc profileTokens*(direct: JsonNode): int =
   ## Rough prompt cost of a resolved direct set: ~4 serialized chars per
   ## token plus fixed per-tool overhead. Good enough for the budget
   ## guardrail and profile listings; the exact number shows up in
-  ## ev.session.context usage once the conversation runs.
+  ## ev.session.<id>.context usage once the conversation runs.
   if direct == nil or direct.kind != JArray: return 0
   for tool in direct:
     result += ($(tool{"schema"})).len div 4 + 16
