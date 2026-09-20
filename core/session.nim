@@ -22,6 +22,7 @@ import approval
 import catalog
 import conversation
 import dispatch
+import supervisor
 
 var gStop = false
 
@@ -147,6 +148,26 @@ proc main() =
     quit(1)
   ct.nested = NestedState(sub: nestedSub,
                           leases: initTable[string, NestedLease]())
+  # The approval gate must not stall the runner: while a human verdict is
+  # pending (askHuman), the wait loop pumps the same idle surfaces a
+  # dispatch wait does — session calls keep getting their instant "busy"
+  # refusal (otherwise a client's call goes unanswered until the approval
+  # times out), steering/advice/nested surfaces stay live, and a __cancel
+  # control aborts the wait so the stop the human asked for lands instead
+  # of queueing unread. cancelled reads the same flag runTurn checks
+  # between rounds.
+  approval.onIdle = proc() =
+    ct.cat.pump()
+    if ct.sup != nil: ct.sup.pump(ct.cat)
+    pumpTokenStream(ct)
+    pumpSteer(ct)
+    pumpBusyCall(ct)
+    pumpMap(ct)
+    pumpDiag(ct)
+    pumpAdvise(ct)
+    pumpNested(ct)
+  approval.cancelled = proc(): bool =
+    ct.steerStream != nil and ct.steerStream.cancelRequested
   # Readiness signal for the system's ensureRunner: presence in the catalog.
   let reg = %*{"name": name, "version": "0.1.0", "pid": getCurrentProcessId(),
                "tools": newJArray()}

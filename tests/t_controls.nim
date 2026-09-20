@@ -439,9 +439,10 @@ proc main() =
     check("mid-turn: the turn started", started)
 
     # Wait until the turn is provably inside a tool DISPATCH: that is the
-    # window whose idle slots pump the runner's call subject (an approval
-    # wait has its own loop and answers nothing). The scripted bash call
-    # sleeps, so the window is wide.
+    # window whose idle slots pump the runner's call subject. (An approval
+    # wait pumps the same surfaces now — askHuman's onIdle hook — so busy
+    # refusals stay instant there too.) The scripted bash call sleeps, so
+    # the window is wide.
     var dispatching = false
     let dispatchDeadline = epochTime() + 30.0
     while not dispatching and epochTime() < dispatchDeadline:
@@ -518,6 +519,125 @@ proc main() =
     check("mid-turn: the running turn still finishes",
           turnReply != nil and turnReply{"turnError"}.getStr("") == "",
           $turnReply)
+
+  # -------------------------------------------------------------------------
+  # 7. a session call that arrives while the turn waits for an approval is
+  # answered at once (the askHuman idle hook pumps the same surfaces as a
+  # dispatch wait) — the "I typed a prompt and nothing happened" hang
+  block approvalBusy:
+    var p = startProbe("approvalbusy", @[("NIF_MOCK_ROUNDS", "1"),
+                                         ("NIF_MOCK_TOOLCMD", "true")])
+    defer: p.stopProbe()
+    let nc = p.nc
+    let sid = "approvalbusy-" & $int(epochTime())
+    var seen: seq[JsonNode] = @[]
+    let inbox = "_INBOX.approvalbusy." & newId()
+    let replies = openSub(nc, inbox)
+    let directed = openSub(nc, "svc.approval.probe.request")
+    let broadcast = openSub(nc, "ev.approval.request")
+    defer:
+      natsSubscription_Destroy(replies)
+      natsSubscription_Destroy(directed)
+      natsSubscription_Destroy(broadcast)
+    publishCall(nc, "svc.core.call", inbox,
+                callEnvelope("session",
+                             %*{"sessionId": sid, "content": "work"},
+                             "probe"))
+
+    # Wait until the bash question is published: the runner is now inside
+    # the approval wait loop, not a dispatch wait.
+    var asked = false
+    let askDeadline = epochTime() + 60.0
+    while not asked and epochTime() < askDeadline:
+      if serviceQuestions(nc, [directed, broadcast], "silent", seen) > 0:
+        asked = true
+      else:
+        let polled = pollEnv(replies, 20)
+        if polled.found:
+          fail("turn ended before the approval was asked: " &
+               $callerOf(polled.env))
+    check("approval wait: the question was asked", asked, $seen)
+
+    # A read-only session call during the approval wait is answered at once
+    # with busy — no hang until the approval times out.
+    let busyInbox = "_INBOX.approvalbusy2." & newId()
+    let busyReplies = openSub(nc, busyInbox)
+    defer: natsSubscription_Destroy(busyReplies)
+    let askedAt = epochTime()
+    publishCall(nc, "svc.core.call", busyInbox,
+                callEnvelope("session", %*{"sessionId": sid}))
+    var refusal: string = ""
+    let busyDeadline = epochTime() + 5.0
+    while refusal.len == 0 and epochTime() < busyDeadline:
+      let polled = pollEnv(busyReplies, 50)
+      if polled.found:
+        refusal = callerOf(polled.env){"error"}.getStr("")
+    check("approval wait: the call is answered at once, not left hanging",
+          refusal.contains("mid-turn — retry") and
+          epochTime() - askedAt < 5.0, refusal)
+
+    # Answering the question lets the turn finish normally.
+    var turnReply: JsonNode = nil
+    let doneDeadline = epochTime() + 60.0
+    while turnReply == nil and epochTime() < doneDeadline:
+      discard serviceQuestions(nc, [directed, broadcast], "yes", seen)
+      let polled = pollEnv(replies, 50)
+      if polled.found: turnReply = callerOf(polled.env)
+    check("approval wait: the turn finishes after the answer",
+          turnReply != nil and turnReply{"turnError"}.getStr("") == "",
+          $turnReply)
+
+  # -------------------------------------------------------------------------
+  # 8. a __cancel control published while the turn waits for an approval
+  # aborts the wait: the turn ends as cancelled instead of waiting out the
+  # approval timeout (the two-channel stop's runner half)
+  block cancelDuringApproval:
+    var p = startProbe("cancelapproval", @[("NIF_MOCK_ROUNDS", "2"),
+                                           ("NIF_MOCK_TOOLCMD", "true")])
+    defer: p.stopProbe()
+    let nc = p.nc
+    let sid = "cancelapproval-" & $int(epochTime())
+    var seen: seq[JsonNode] = @[]
+    let inbox = "_INBOX.cancelapproval." & newId()
+    let replies = openSub(nc, inbox)
+    let directed = openSub(nc, "svc.approval.probe.request")
+    let broadcast = openSub(nc, "ev.approval.request")
+    defer:
+      natsSubscription_Destroy(replies)
+      natsSubscription_Destroy(directed)
+      natsSubscription_Destroy(broadcast)
+    publishCall(nc, "svc.core.call", inbox,
+                callEnvelope("session",
+                             %*{"sessionId": sid, "content": "work"},
+                             "probe"))
+    var asked = false
+    let askDeadline = epochTime() + 60.0
+    while not asked and epochTime() < askDeadline:
+      if serviceQuestions(nc, [directed, broadcast], "silent", seen) > 0:
+        asked = true
+      else:
+        let polled = pollEnv(replies, 20)
+        if polled.found:
+          fail("turn ended before the approval was asked: " &
+               $callerOf(polled.env))
+    check("cancel approval: the question was asked", asked, $seen)
+
+    # The two-channel stop's runner half: the __cancel control on the steer
+    # channel. No answer is ever given to the pending question.
+    let cancelAt = epochTime()
+    nc.publish("svc.session." & sid & ".steer",
+      Envelope(v: 1, id: "cancel-approval", kind: ekEvent,
+               payload: %*{"__cancel": true}).encode())
+    var turnReply: JsonNode = nil
+    let doneDeadline = epochTime() + 30.0
+    while turnReply == nil and epochTime() < doneDeadline:
+      let polled = pollEnv(replies, 50)
+      if polled.found: turnReply = callerOf(polled.env)
+    check("cancel approval: the turn ends cancelled, promptly",
+          turnReply != nil and
+          turnReply{"turnError"}.getStr("").contains("cancelled") and
+          epochTime() - cancelAt < 15.0,
+          "took " & $(epochTime() - cancelAt) & "s: " & $turnReply)
 
   report("CONTROLS")
 

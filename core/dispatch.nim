@@ -1861,6 +1861,29 @@ proc dispatchToolCalls*(ct: CoreTools,
     pumpDiag(ct)
     pumpAdvise(ct)
     pumpNested(ct)
+    # Turn cancellation while this WAVE is in flight, same contract as the
+    # single-call dispatchSubjectCall path: stop waiting on the remaining
+    # calls (marking them cancelled, with a partial result when the callee
+    # answers the cancel side-channel in time) instead of running the whole
+    # wave out to its timeouts for a caller that is gone. The round loop
+    # then sees cancelRequested at its next round boundary and ends the turn.
+    if ct.steerStream != nil and ct.steerStream.cancelRequested and
+        ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
+        epochTime() - ct.steerStream.cancelAt <= 30.0:
+      let sessionId = ct.activeTurn.session
+      for i in 0 ..< calls.len:
+        if pending[i].done: continue
+        let comp = ct.cat.toolIndex.getOrDefault(pending[i].tool)
+        let subject = "svc." & comp & ".call"
+        publishToolCancel(ct, subject, pending[i].tool, sessionId)
+        let partial = waitPartialReply(ct, pending[i].sub,
+                                       partialReplyGraceMs, "cancelled",
+                                       "cancelled by request")
+        if partial != nil:
+          pending[i].value = partial
+        pending[i].error = "cancelled by request"
+        pending[i].done = true
+      break
   for i in 0 ..< calls.len:
     result[i] = ToolCallOutcome(ok: pending[i].ok,
                                 value: pending[i].value,

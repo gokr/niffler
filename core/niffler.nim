@@ -648,6 +648,16 @@ proc main() =
   if not checkStatus(cs):
     raise newException(IOError, "subscribe svc.core.call: " & getErrorString(cs))
   ct.coreSub = coreSub
+  # Same cooperative-wait contract as the runners (approval.onIdle): while
+  # core waits for a human verdict on spawn/kill/remove, the wait loop keeps
+  # serving svc.core.call — session turns, catalog and the ui registry keep
+  # flowing instead of the whole harness freezing until the approval times
+  # out. pumpCoreCalls re-enters the gate only for a second approval ask,
+  # which the waiting guard denies immediately (no nested modal waits).
+  approval.onIdle = proc() =
+    pumpCoreCalls(ct, coreSub)
+    cat.pump()
+    sup.pump(cat)
   echo "core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)"
 
   if isatty(stdin) and not autostart:

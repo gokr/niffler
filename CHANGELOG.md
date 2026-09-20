@@ -8,6 +8,30 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A conversation's runner answers while it waits for a human approval.**
+  `askHuman`'s wait loop used to pump nothing: a session call that arrived
+  while a turn sat at an approval prompt went unanswered — not even the
+  instant "busy" refusal a tool dispatch gives — until the approval timed
+  out (300s default), which read as a hang and left the caller's deadline to
+  expire. The approval wait now pumps the same idle surfaces a dispatch wait
+  does (core's `svc.core.call`, a runner's busy/cancel/steer/advice/nested
+  surfaces), a `__cancel` control aborts the wait as a denial so a stop lands
+  promptly, and nested approval questions (reachable through those pumps) are
+  denied immediately instead of opening a second blocking wait inside the
+  first — the human can answer one modal at a time.
+- **Turn cancellation also aborts a concurrent tool-call wave.** The
+  single-call dispatch had the cancel-abort path (publish `cancel.<component>`,
+  short grace for a partial reply, `TurnCancelled`); a wave of parallel tool
+  calls ran out its timeouts instead. The wave loop now marks the remaining
+  calls cancelled and returns, so the round boundary ends the turn as
+  cancelled instead of waiting on dead work.
+- **Stale interactive clients are swept from the catalog.** External clients
+  (TUIs) have no supervisor to match their pid, so a hard-exited TUI — a
+  `/restart` successor, a killed terminal — left its `tui-<hex>` entry
+  registered forever. The system catalog now checks client pids for liveness
+  every 30s and drops the dead ones, which also keeps `clientCount` (and the
+  autostarted core's shutdown) honest.
+
 - **TS components resolve their dependencies from their own imports — no
   build parameter, and TS plugin packages became installable.** The builder
   generated a fixed `package.json` (`nats` + `niffler-sdk`), so a TypeScript
@@ -27,6 +51,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   builder and spawns it like any other component.
 
 ### Fixed
+
+- **manual `/compact`: the context gauge reflects the compaction immediately.**
+  A commit zeroes the measured prompt size on purpose — the new projection has
+  not been through a provider yet — and the gauge reads `usedTokens` from a
+  status frame, so after `/compact` it kept showing the pre-compaction number
+  until some later turn happened to measure the smaller prompt. (The automatic
+  path never showed this: the compaction happens inside a turn, and the very
+  next request re-measures.) The manual path now publishes a status frame with
+  the local estimate — `usedTokens`, the window, `reason: "reset:compact"`,
+  `generation`, and `estimated: true` so nothing pretends it was measured — and
+  the next request's measured usage replaces it. A *declined* compaction
+  publishes nothing, so the gauge can never show a size for a compaction that
+  did not happen. The UI notes it (`context compacted — the size shown is an
+  estimate until the next request re-measures it`), localized in all three
+  languages. `t_compaction` asserts the frame, its fields, and the decline's
+  silence; the MANUAL documents the frame under `/compact` (EN + both zh).
+
+- **A stop during LLM retry backoff waited out the whole delay.** The
+  transient-failure backoff was a plain `sleep`, so a `__cancel` queued
+  unread for up to the maximum backoff. The wait is now sliced and pumped, so
+  the cancel flag is raised within a quarter second and the retried dispatch
+  aborts itself.
 
 - **lsp: scope is a bound, not an equality — work outside the workspace is no
   longer refused.** `hLsp` refused any path outside the conversation workspace

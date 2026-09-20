@@ -12,6 +12,8 @@ import std/sha1
 import natsnim
 import ../sdk/envelope
 import schema_validation
+when defined(posix):
+  import std/posix
 
 type
   ToolReg* = object
@@ -822,8 +824,40 @@ proc dropComponent*(cat: Catalog, name: string) =
   ## core.kill/core.remove. Crashes use dropReplica instead.
   cat.dropRegistration(name, "removed")
 
+var lastClientSweep = 0.0
+
+proc reapDeadClients*(cat: Catalog) =
+  ## Interactive clients are external processes — no supervisor matches their
+  ## pid to a component, so a TUI that hard-exits (SIGKILL, closed terminal,
+  ## a /restart successor replacing it) leaves a stale registration until the
+  ## next boot. Sweep them by pid liveness: a client whose process is gone is
+  ## dropped (dropReplica removes the entry once its last pid dies). Rate
+  ## limited inside cat.pump, so every pump site (core loop, runners, dispatch
+  ## idle slots) gets it for free. pid reuse can briefly keep a stale entry
+  ## alive — acceptable for a 0-tool presence signal; the ui registry's
+  ## leases remain the conversation-ownership authority. Only the system
+  ## catalog reaps (onChange is set by niffler.nim alone): runners follow
+  ## the same reg.> stream from their own copy, and their announce would be
+  ## noise on the bus.
+  when not defined(posix): return
+  if cat.onChange == nil: return
+  when not defined(posix): return
+  var dead: seq[string]
+  for name, reg in cat.components:
+    if not reg.client: continue
+    var alive = false
+    for pid in reg.pids:
+      if pid > 0 and kill(Pid(pid), 0) == 0: alive = true
+    if not alive and reg.pids.len > 0:
+      dead.add(name)
+  for name in dead:
+    cat.dropRegistration(name, "lost (client process gone)")
+
 proc pump*(cat: Catalog) =
   ## Drain pending registration messages; call from event gaps in the loop.
+  if epochTime() - lastClientSweep >= 30.0:
+    lastClientSweep = epochTime()
+    reapDeadClients(cat)
   while true:
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, cat.sub, 1)

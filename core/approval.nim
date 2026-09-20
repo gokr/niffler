@@ -45,6 +45,26 @@ type
       ## caller): "" or "ask" = gate every x-harness.approval tool, "auto" =
       ## this conversation auto-grants them. Chosen by the human through the
       ## session control op, never by the model.
+    onIdle*: proc() {.closure.}
+      ## Optional idle hook, called on every wait-loop iteration while a
+      ## human verdict is pending. The harness wires it to its own pump set
+      ## (core's svc.core.call surface, a runner's busy/cancel surfaces) so
+      ## waiting for a human never stalls the rest of the system: without
+      ## it, a session call arriving during an approval wait went unanswered
+      ## (not even a "busy" refusal) and a stop/cancel control queued
+      ## unread until the approval timed out.
+    cancelled*: proc(): bool {.closure.}
+      ## Optional cancel predicate (a session runner wires it to the steer
+      ## stream's cancelRequested flag): when it turns true, the wait aborts
+      ## as a denial so the turn can end as cancelled instead of waiting out
+      ## the whole approval timeout.
+    waiting*: bool
+      ## Re-entrancy guard: the idle hook can service nested calls (a core
+      ## pump answers svc.core.call, a runner pump answers nested/advise
+      ## surfaces), and a nested approval question must not open a second
+      ## blocking wait inside the first — the human can only answer one
+      ## modal at a time anyway. Nested asks are denied immediately; the
+      ## model retries the tool next round against a free gate.
 
 
 const ackTimeoutSecs = 1.5  ## how long the driver has to ack a directed request
@@ -176,6 +196,17 @@ proc askHuman*(a: Approval, payload: JsonNode, timeoutMs: int): bool =
   ## publish closures below (a `var JsonNode` cannot be, by memory-safety).
   let id = payload{"id"}.getStr("")
   let tool = payload{"tool"}.getStr("")
+  if a.waiting:
+    # A nested approval question (see Approval.waiting): deny immediately,
+    # before publishing anything — the human can only answer one modal at a
+    # time, and blocking inside the outer wait's idle hook would deadlock
+    # the outer wait itself. The model retries the tool next round against
+    # a free gate.
+    echo "core: approval for " & tool & " nested inside a pending " &
+         "approval — denying (retry the tool when the gate is free)"
+    return false
+  a.waiting = true
+  defer: a.waiting = false
   var directed = a.caller.len > 0
   if directed:
     payload["caller"] = %a.caller
@@ -205,6 +236,11 @@ proc askHuman*(a: Approval, payload: JsonNode, timeoutMs: int): bool =
   let deadline = epochTime() + timeoutMs.float / 1000.0
   let ackDeadline = epochTime() + ackTimeoutSecs
   while epochTime() < deadline:
+    if a.onIdle != nil: a.onIdle()
+    if a.cancelled != nil and a.cancelled():
+      echo "core: approval for " & tool & " cancelled by request — denying"
+      publishResolved(false)
+      return false
     if directed and not acked and epochTime() > ackDeadline:
       # The driver did not take the request (gone or not interactive):
       # offer it to every attached interactive client instead.

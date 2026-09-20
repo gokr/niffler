@@ -2188,7 +2188,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                                "retryAfterMs": hintMs,
                                "budget": $failureKind,
                                "error": e.msg})
-          sleep(delayMs)
+          # Wait out the backoff in slices so a stop (the __cancel steer
+          # control) lands promptly instead of queueing behind the whole
+          # delay — the retried dispatch's own idle slot raises the cancel
+          # once the loop resumes.
+          var remaining = delayMs
+          while remaining > 0 and
+              not (ct.steerStream != nil and ct.steerStream.cancelRequested):
+            let slice = min(remaining, 250)
+            sleep(slice)
+            ct.cat.pump()
+            if ct.sup != nil: ct.sup.pump(ct.cat)
+            pumpSteer(ct)
+            remaining -= slice
           attempt += 1
           continue
         else:
@@ -3005,7 +3017,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       # no LLM turn and no user message. The attempt installs a checkpoint
       # projection and emits the same reset:compact context event the
       # automatic path does; a decline is reported, never silently degraded
-      # to a lossy trim (automatic admission still owns that rung).
+      # to a lossy trim (automatic admission still owns that rung). On the
+      # automatic path the very next request re-measures the prompt size, so
+      # the commit's zeroed measurement is invisible; on this path nothing
+      # follows, so a flagged estimated status frame goes out too (below) or
+      # the context gauge would keep showing the pre-compaction number.
       let ccfg = compactionConfigFromEnv()
       if ccfg.tool.len == 0 or ct.cat.toolSchema(ccfg.tool) == nil:
         sessions[sessionId] = entry
@@ -3021,11 +3037,13 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
         promptToolsJson = filtered
       var compactProvider = ""
       var compactModel = entry.modelOverride
+      var resolvedStatus: JsonNode = nil
       try:
         let resolved = resolveTurnConfig(ct, entry.persister,
                                          entry.modelOverride)
         compactProvider = resolved{"provider"}.getStr("")
         compactModel = resolved{"model"}.getStr(compactModel)
+        resolvedStatus = resolved
       except CatchableError:
         discard # older/replaced llm components still resolve chat defaults
       let beforeTokens = estimateTokens(entry.messages)
@@ -3035,6 +3053,26 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       let afterTokens = estimateTokens(entry.messages)
       sessions[sessionId] = entry
       if attempt.status == casCompacted:
+        if onEvent != nil:
+          # The commit zeroes the measured prompt size (p.contextUsed /
+          # p.promptTokens = 0: this projection has not been through a
+          # provider yet), and the gauge reads `usedTokens` from a status
+          # frame — so without this frame it would keep the last measured,
+          # pre-compaction number until the next turn. Publish the local
+          # estimate now, flagged `estimated`; the next request's measured
+          # usage replaces it (and a resume falls back to the header).
+          var frame = if resolvedStatus != nil: resolvedStatus
+                      else: %*{"sessionId": sessionId,
+                               "context": entry.persister.ctxSize}
+          frame["sessionId"] = %sessionId
+          frame["turnId"] = %""
+          frame["reason"] = %"reset:compact"
+          frame["generation"] = %entry.persister.generation
+          frame["beforeTokens"] = %beforeTokens
+          frame["afterTokens"] = %afterTokens
+          frame["usedTokens"] = %afterTokens
+          frame["estimated"] = %true
+          onEvent("status", frame)
         return %*{"ok": true, "sessionId": sessionId, "compacted": true,
                   "beforeTokens": beforeTokens, "afterTokens": afterTokens,
                   "generation": entry.persister.generation}
