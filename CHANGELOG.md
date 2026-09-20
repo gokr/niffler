@@ -52,6 +52,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **CI: the test workflow had been failing before any test ran.** Every run on
+  `main` (doc-only commits included) died at "Native and Nim dependencies", with
+  `make test: skipped`, and the log's last lines were
+  `Error: Build failed for the package: futhark` / `collect2: error: ld returned
+  1 exit status` on a link line ending `-lclang`. `futhark` is a transitive Nim
+  dependency (bitbarrel → lz4wrapper → futhark) whose build tool `opir` links
+  libclang, and `install-native-deps` installed everything *but* `libclang-dev`;
+  Debian/Ubuntu also keep `libclang.so` under `/usr/lib/llvm-<N>/lib`, off the
+  linker's default search path, and nimble builds futhark in its own directory
+  where this repo's `config.nims` does not reach. It stayed invisible locally
+  because any machine with futhark already built never relinks it. Fixes:
+  `install-native-deps` now installs `libclang-dev`; `install-nim-deps`
+  exposes the library directory to the linker for the install
+  (`LIBRARY_PATH=/usr/lib/llvm-<N>/lib`); and `make doctor` probes the
+  *library*, not just the `clang` binary — `clang: OK` was true on the failing
+  runner while the build died. Reproduced and verified locally: without the
+  path, the exact `cannot find -lclang`; with it, `opir` links.
+- **CI runs the server gate, because the UI half cannot run in a bare
+  checkout.** `make test` also runs `test-ui`, whose typecheck needs
+  `ui/frontend/wailsjs/**` — Wails-generated bindings (gitignored, produced by
+  `wails build`) that a fresh clone has nowhere to get from; the run stopped
+  there with `Cannot find module '../wailsjs/go/main/Bridge'`. The workflow now
+  runs `make test-server` (the 60-test bus-contract suite) and documents why the
+  UI half is a local check until CI generates the bindings. The frontend's
+  dependency-free unit tests are outside the workflow too.
+
 - **manual `/compact`: the context gauge reflects the compaction immediately.**
   A commit zeroes the measured prompt size on purpose — the new projection has
   not been through a provider yet — and the gauge reads `usedTokens` from a
