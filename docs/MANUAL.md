@@ -161,7 +161,8 @@ empty rather than wrong.
 The census that feeds the graph walks the workspace once, skipping hidden
 directories, `docs/`, `var/`, `logs/`, `vendor/`, `node_modules/`, the build
 outputs (`dist/`, `build/`, `target/`, `nimcache/`, …) and the other junk
-directories, and stops after 5000 files or 5 s. A docs-only or otherwise tiny
+directories, and stops after 5000 files or 5 s. A single build is capped at
+90 s inside the tool's 120 s envelope. A docs-only or otherwise tiny
 workspace therefore maps to nothing — the append path logs
 `repo map withheld`, and the tool answers `No map: …`.
 
@@ -170,8 +171,10 @@ bracketed preamble naming the workspace and warning that it is a snapshot
 taken when the conversation started, then the map. It goes into ordinary
 append-only history — the runner folds it in before the conversation's next
 LLM request, never into the frozen prefix — so a later compaction may trim it
-away and `repo_map` re-creates it on demand. Observers see the append call
-on `svc.session.<id>.map {sessionId, workspace, bytes}`.
+away and `repo_map` re-creates it on demand. The component publishes the
+finished map to `svc.session.<id>.map` (the runner's drain subject); the
+append it then makes is visible to observers as `ev.session.<id>.map
+{sessionId, workspace, bytes}`.
 
 ### `grep` in detail
 

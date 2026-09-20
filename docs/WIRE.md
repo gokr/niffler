@@ -89,6 +89,18 @@ svc.session.<id>.advise # turn-bound advisory request/reply (the expert peer,
                         #   answered {accepted, reason?} — accepted only while
                         #   that exact turn is live (stale-turn, no-active-turn,
                         #   advisory-limit, duplicate, ...); never queued past it
+svc.session.<id>.map    # fire-and-forget event envelope {workspace, conversationId,
+                        #   map} from the repomap component: a finished workspace map
+                        #   the runner appends to history once (append-only, never
+                        #   the frozen prefix — a later trim lets the repo_map tool
+                        #   re-create it). Opt-in (NIF_REPOMAP_AUTOAPPEND=1) and gated
+                        #   (research/REPOMAP-GATES.md); a map that never arrives
+                        #   never fails a conversation
+svc.session.<id>.diag   # fire-and-forget event envelope {conversationId, path, text}
+                        #   from the lsp component: rendered diagnostics for a file
+                        #   you just edited, delivered when the server answered
+                        #   (instead of making the edit wait) and appended to history
+                        #   once. A cold or absent server yields a one-line note
 cancel.<component>     # turn-cancel side-channel (see "Cancellation"): a runner
                         #   publishes an event envelope {sessionId, tool, ts} when
                         #   it abandons an in-flight dispatch; components opt in
@@ -207,6 +219,13 @@ ev.session.<id>.notice      # {sessionId, turnId?, kind?, content?, jobId?, chil
                        #   `content` is the rendered text UIs show (the durable
                        #   `agentnotice` record carries the summary and the recourse
                        #   to the full reply; see "Settlement notices")
+ev.session.<id>.map         # {sessionId, workspace, bytes} the workspace map was
+                       #   appended to history (once per conversation; the append
+                       #   itself arrives on svc.session.<id>.map). Appended, not
+                       #   injected into the frozen prefix
+ev.session.<id>.diagnostics # {sessionId, path, bytes} asynchronously delivered
+                            #   diagnostics for an edited file were appended to
+                            #   history (the append arrives on svc.session.<id>.diag)
 ev.session.<id>.done        # {sessionId, turnId?, reply} or {sessionId, turnId?, error}
 ```
 
