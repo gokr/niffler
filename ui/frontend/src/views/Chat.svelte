@@ -673,6 +673,11 @@
           // remaining prefix — the next request pays full prompt price.
           l.ctxNote = (l.ctxNote ? l.ctxNote + " · " : "") +
             t("chat.cacheReset");
+        } else if (p.reason === "reset:compact") {
+          // The commit zeroes the measured size and the gauge shows the
+          // estimate core just published; the next request re-measures.
+          l.ctxNote = (l.ctxNote ? l.ctxNote + " · " : "") +
+            t("chat.compacted");
         }
       }
     });

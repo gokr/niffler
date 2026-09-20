@@ -838,7 +838,12 @@ that raises it. `/limit clear` removes all three.
 automatic pressure ladder: core asks the configured compaction component for
 a checkpoint over a permitted cut, installs it atomically, and emits the
 usual `ev.session.<id>.context {reason: "reset:compact"}`. No LLM turn runs and no
-user message is appended. The auxiliary summary inherits the conversation's
+user message is appended. The commit zeroes the measured prompt size (this
+projection has not been through a provider yet), so the manual path also
+publishes a status frame — `usedTokens` is the local estimate, `estimated:
+true`, plus the window — or the context gauge would keep showing the
+pre-compaction number until the next turn measured it. The next request's
+measured usage replaces the estimate. The auxiliary summary inherits the conversation's
 resolved provider/model; it does not silently follow a later global-provider
 switch. The reply reports `compacted: true` with `beforeTokens`, `afterTokens`
 and `generation`, or `compacted: false` with the precise decline/failure

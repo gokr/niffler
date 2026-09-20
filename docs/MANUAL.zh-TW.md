@@ -472,7 +472,10 @@ session 呼叫設定（Web UI 以 `/approvals`、`/limit` 和 `/compact` 暴露�
 - **`/compact`** —— 立即執行壓縮器，而不是等待自動壓力階梯：core 向已設定的
   壓縮元件請求允許切點上的檢查點，原子安裝它，併發出通常的
   `ev.session.<id>.context {reason: "reset:compact"}`。不執行 LLM 回合，也不追加
-  使用者訊息。回覆報告 `compacted: true` 及前後 token 數，或
+  使用者訊息。提交會把已測量的提示詞大小清零（這份投影還沒經提供商測量過），因此
+  手動路徑還會發出一幀 status —— `usedTokens` 是本機估算值、`estimated: true`，
+  並帶上視窗大小 —— 否則上下文儀表會一直顯示壓縮前的數字，直到下一回合重新測量；
+  下一次請求的實測值會替換該估算。回覆報告 `compacted: true` 及前後 token 數，或
   `compacted: false` 及原因（未設定壓縮元件、壓縮器拒絕、或還無可壓縮內容）；
   拒絕絕不靜默降級為有損裁剪。
 

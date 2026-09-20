@@ -52,6 +52,23 @@ proc listDocs(nc: NatsConnection, kind: string;
   if r{"items"} != nil:
     for item in r{"items"}: result.add(item)
 
+proc subscribeEvents(nc: NatsConnection, subject: string): ptr natsSubscription =
+  ## Sync subscription for ev.session.<id>.<kind> frames — the gauge-relevant
+  ## status frames and the context frames are published by the runner, so a
+  ## test can assert what a UI would receive.
+  doAssert checkStatus(natsConnection_SubscribeSync(addr result, nc.conn,
+                                                   subject.cstring))
+
+proc drainEvents(sub: ptr natsSubscription): seq[JsonNode] =
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, sub, 1)
+    if st == NATS_TIMEOUT: break
+    doAssert checkStatus(st)
+    let env = decode($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if env.payload != nil: result.add(env.payload)
+
 proc seedMessages(nc: NatsConnection, convId: string, firstSeq, pairs,
                   bodyBytes: int, markFirst = true): int =
   result = firstSeq
@@ -207,6 +224,13 @@ proc main() =
       %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt",
          "title": "manual compact fixture"})
     discard seedMessages(nc, manualConv, 1, 8, 2200, markFirst = false)
+    # Subscribe before the call: these are the frames a UI consumes, and the
+    # manual path publishes them while the control call runs.
+    let statusSub = subscribeEvents(nc, "ev.session." & manualConv & ".status")
+    let contextSub = subscribeEvents(nc, "ev.session." & manualConv & ".context")
+    defer:
+      discard natsSubscription_Unsubscribe(statusSub)
+      discard natsSubscription_Unsubscribe(contextSub)
     let manual = call(nc, "core", "session",
       %*{"sessionId": manualConv, "compact": true}, 180_000)
     check("manual compact commits without an LLM turn",
@@ -236,6 +260,31 @@ proc main() =
         if row{"sessionId"}.getStr("") == manualConv: inc mainCalls
       mainCalls == 0)
 
+    # The context gauge reads `usedTokens` from a status frame, and the commit
+    # zeroes the measured prompt size (the projection has not been through a
+    # provider). Without this frame the gauge keeps the pre-compaction number
+    # until the next turn — the whole point of the manual-path emission.
+    var estimatedTokens = -1
+    var estimatedGen = 0
+    var carriedContext = false
+    for ev in drainEvents(statusSub):
+      if ev{"reason"}.getStr("") != "reset:compact": continue
+      if ev{"estimated"}.getBool(false):
+        estimatedTokens = ev{"usedTokens"}.getInt(-1)
+      estimatedGen = ev{"generation"}.getInt(0)
+      carriedContext = ev{"context"} != nil
+    check("manual compact publishes the estimated usedTokens a gauge needs",
+          estimatedTokens == manual{"afterTokens"}.getInt(-2) and
+          estimatedTokens > 0 and estimatedGen == 1 and carriedContext,
+          "estimated=" & $estimatedTokens & " gen=" & $estimatedGen &
+          " context=" & $carriedContext)
+    var sawContextReset = false
+    for ev in drainEvents(contextSub):
+      if ev{"reason"}.getStr("") == "reset:compact":
+        sawContextReset = ev{"beforeTokens"}.getInt(0) > 0
+    check("manual compact emits the reset:compact context event",
+          sawContextReset)
+
   block truncatedManualCompact:
     coreProc.stopHard()
     var truncatedExtra = extra
@@ -251,12 +300,24 @@ proc main() =
       %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt",
          "title": "truncated compact fixture"})
     discard seedMessages(nc, truncatedConv, 1, 8, 2200, markFirst = false)
+    let truncatedStatus = subscribeEvents(nc,
+      "ev.session." & truncatedConv & ".status")
+    defer: discard natsSubscription_Unsubscribe(truncatedStatus)
     let truncated = call(nc, "core", "session",
       %*{"sessionId": truncatedConv, "compact": true}, 180_000)
     check("manual compact reports a truncated summary precisely",
           not truncated{"compacted"}.getBool(true) and
           truncated{"reason"}.getStr("").contains("summary-output-truncated") and
           truncated{"status"}.getStr("").contains("Declined"), $truncated)
+    # A decline must NOT announce a size: the gauge would show a number for a
+    # compaction that never happened (and the old measured one stays valid).
+    var declineFrames = 0
+    for ev in drainEvents(truncatedStatus):
+      if ev{"reason"}.getStr("") == "reset:compact" and
+         ev{"estimated"}.getBool(false):
+        inc declineFrames
+    check("declined compaction publishes no estimated size", declineFrames == 0,
+          $declineFrames)
     check("truncated compaction installs no projection",
           getDoc(nc, "context_projection", truncatedConv) == nil)
     check("truncated compaction cleans its settled snapshot",
