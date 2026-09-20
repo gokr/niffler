@@ -26,6 +26,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   packages uninstallable: `plugin_install` builds the entry through the
   builder and spawns it like any other component.
 
+- **Concurrent turn dispatch — a long turn in one conversation no longer
+  parks everyone else's.** Core never blocks on a runner: every session call
+  (turn-starting included) rides its private forwarding inbox
+  (`routeSessionCall`) and is completed by `pumpSessionForwards`, replacing
+  the blocking `callSession` path and the "stash while busy" queue
+  (`pending.items`). Each runner stays the serialization boundary for its own
+  conversation — a second turn there is still refused with "busy" — while
+  separate conversations overlap, and `pumpCoreWhileBusy` routes session calls
+  instead of stashing them. The invariant core now relies on is stated in
+  AGENTS.md (`2408bd1`).
+
 ### Fixed
 
 - **lsp: scope is a bound, not an equality — work outside the workspace is no
@@ -441,6 +452,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The bus-contract suite runs in a bounded pool: ~15 min sequential →
+  ~2m42s with the pool on the dev box.** The ~60 test binaries each own a
+  private NATS server and a temporary `NIF_ROOT`, so they already overlap
+  safely; `scripts/run-tests.sh` now runs them with `TEST_JOBS` workers
+  (default one per core, overridable per run; the script itself honors
+  `NIF_TEST_JOBS`), captures each test's output to `var/test-logs/<name>.log`,
+  prints one `ok <time> <name> — <NAME> TEST PASSED` line per test, dumps a
+  failing test's tail immediately and keeps going — one run shows every
+  failure — then summarizes with the slowest tests. The suite's output
+  contract changes from live-streamed `OK:` lines to that summary plus
+  per-test logs: `TEST_JOBS=1` restores sequential behavior and
+  `NIF_TEST_VERBOSE=1` interleaves each test's captured output after its
+  line (`2ecec27`).
+- **Session events moved to per-session subjects:
+  `ev.session.<sessionId>.<kind>`.** The runner used to emit one shared
+  hierarchy (`ev.session.turn` and friends), so a client watching one
+  conversation received every conversation's frames. Now
+  `ev.session.<id>.>` carries only that conversation, observers keep
+  `ev.session.>`, and wildcards compose (`ev.session.*.token`,
+  `ev.session.>`); the payload still carries `sessionId`. Consumers updated:
+  the agent/expert/console taps, the web UI, `WIRE.md`, MANUAL (+ zh) and the
+  website. The hooks component follows: `NIF_HOOKS_EVENTS` defaults to
+  `ev.session.*.turn` (still one hook per finished user turn, any
+  conversation), matching uses NATS wildcard semantics — `*` is one token, a
+  trailing `>` is the rest — and wildcard tokens collapse in env names, so
+  the default hook still reads `NIF_HOOKS_EV_SESSION_TURN` (`2408bd1`).
 - **edit: the read batching nudge is gone.** The hint taught the
   windows-era shape; under the canonical reads shape the full30 run showed
   0/17 post-nudge conversions while every batch was spontaneous pre-nudge,
