@@ -69,5 +69,18 @@ jobs:
           make install-native-deps
           make install-nim-deps
 
+      # `make test` runs test-ui, which typechecks the SPA and exits 1 without
+      # ui/frontend/node_modules. `npm test` itself needs no dependencies
+      # (node --experimental-strip-types), so this is only for tsc/svelte-check.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/frontend/package-lock.json
+
+      - name: Frontend dependencies (for test-ui's typecheck)
+        working-directory: ui/frontend
+        run: npm ci --no-audit --no-fund
+
       - name: make test
         run: make -j4 test
