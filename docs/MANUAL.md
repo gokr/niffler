@@ -394,16 +394,25 @@ core: or keep using the old engine: NIF_STORE_BACKEND=barrel
 
 `niffler-store-migrate` (in `var/bin`) runs **offline** — it starts its own
 private NATS server and store processes, so no harness needs to be booted,
-and it never edits the source data. It reads every document **of the kinds it probes** — a hardcoded
-candidate list (core's own `spill` and `contextreceipt` kinds are missing
-from it today), so a kind added later is silently skipped and the count
-check cannot notice: the run still exits 0 reporting that every kind
-matches the source. The direction wired up today is barrel → `sqlite` (the
+and it never edits the source data. The store contract cannot enumerate
+kinds (`list` needs one), so it reads every document **of the kinds it
+probes** — a candidate list that is a verified census of every kind the
+harness writes today (`agentjob`, `agentnotice`, `approval`,
+`compaction_input`, `component`, `context_projection`, `contextreceipt`,
+`conversation`, `fabricprog`, `mcp`, `message`, `plugin`, `profile`,
+`session`, `sessionmeta`, `slash`, `spill`) — and the closing verification
+walks the kinds it actually CARRIED, per kind, against the target. A kind
+added to the harness later is still silently skipped until the census is
+extended (the bus gives no way to see it), which is why the list is
+maintained beside the store's kind table.
+The direction wired up today is barrel → `sqlite` (the
 default) or barrel → `tidb` with `--to tidb`; a SQLite-only root is refused
 with "root already uses sqlite — nothing to migrate". Each document is
 replayed into the fresh target, then verified per kind. The flags
-(`--root`, `--to <engine>`, `--dry-run`, `--scan [<top>]`, `--all [<top>]`)
-are described by the tool's own `--help`; the design behind each stage is
+(`--root`, `--to <engine>`, `--dry-run`, `--scan [<top>]`, `--all [<top>]`,
+`--force`) are described by the tool's own `--help`; `--force` overlays an
+existing target database (the old one is moved aside as
+`<name>.<timestamp>.aside`) and the design behind each stage is
 [research/STORE_V2.md](research/STORE_V2.md) "Moving data between engines".
 
 `--scan` finds the top directory, sibling clones, and benchmark trees
@@ -510,7 +519,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_LLM_TIMEOUT_MS` | ceiling for one `llm` `chat` completion; slow reasoning models (e.g. GLM thinking=max via llmgateway) can exceed the default on a single response | `300000` |
 | `NIF_CTX_RESERVE` | output tokens held back by context admission; defaults to the model's resolved catalog output cap, `16384` when unknown; `0` disables the reserve | catalog output cap |
 | `NIF_COMPACTION_TOOL` | contract-v1 candidate tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
-| `NIF_COMPACTION_TIMEOUT_MS` | whole candidate-call deadline, clamped to 5000–600000 ms; the candidate tool's own `x-harness.timeoutMs` (120000) caps the wait the runner actually performs, so a larger value only extends the component's auxiliary-call deadline (the runner gives up first and the snapshot waits for the 600 s sweep) | `90000` |
+| `NIF_COMPACTION_TIMEOUT_MS` | whole candidate-call deadline, clamped to 5000–600000 ms; the runner passes it as the dispatch bound (`budget.timeoutMs`) and the candidate tool's own `x-harness.timeoutMs` is the same 600000 ceiling, so a configuration up to the clamp is what the runner actually waits for (a value above the clamp still only extends the component's auxiliary-call deadline — the runner gives up first and the snapshot waits for the 600 s sweep) | `90000` |
 | `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt, clamped to 1–16; a candidate reporting more calls than granted is rejected as invalid, and the granted count scales the request's `maxTotalInputTokens`/`maxTotalOutputTokens`. The shipped `compaction` component always makes exactly one auxiliary call and reports `llmCalls: 1` — the budget is for a summarizer that iterates | `4` |
 | `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap, clamped to 128–32768 and floored at 128 by the shipped component | `4096` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring; accepted range 1–10000, outside it the component exits non-zero | `2000` |
@@ -1105,7 +1114,7 @@ The agent adds capabilities at runtime, mid-conversation:
    exists: `{ok, lang, name, binary, log}` on success, `{ok: false, lang,
    error}` on failure, where `error` is the compiler's own output tail (2000
    bytes). No exit code is reported, so a build killed at its internal budget
-   (Nim 120 s, Go and `npm install` 300 s, `tsc` 120 s) reads exactly like a
+   (Nim, Go and `npm install` 300 s, `tsc` 120 s) reads exactly like a
    compile error with whatever output it had produced
 3. `spawn {name, binary, replicas?}` (core) starts it; it registers itself;
    new conversations expose its tools directly (when not on demand), existing
@@ -1529,9 +1538,10 @@ NIF_HOOKS_TIMEOUT_MS=10000
 Wildcards follow NATS: `*` matches exactly one subject token and a trailing
 `>` matches the rest, so `ev.session.*.turn` fires for every conversation's
 finished turn and `ev.log.>` for every log event (the session id rides the
-subject and the payload). Keep the list disjoint: a message that satisfies
-two specs makes the first matching command run once per subscription that
-heard it.
+subject and the payload). Overlapping specs are safe: a message that
+satisfies two of them still runs the first matching command **once** — the
+component dedupes per delivered message (a 256-entry ring keyed by envelope
+id and command), so the list need not be disjoint.
 
 Subject → env name: dots and wildcards become `_`, uppercased, with `*.`
 and `>.` collapsing so the canonical names survive
@@ -2720,10 +2730,13 @@ kind `approval`) and the program source core writes to
 ### `observe`: bounded live inspection
 
 `observe` has one raw `>` subscription. It preserves the original JSON node,
-including unknown envelope fields and bare registration payloads — unlike
-its sibling `console`, which renders envelopes only: a bare `reg.publish`
-prints there as an empty-bodied `event reg.publish` line (see
-[The bus in one screen](#the-bus-in-one-screen)). Malformed JSON
+including unknown envelope fields and bare registration payloads. Its
+sibling `console` decodes every message: an envelope renders as
+`call`/`result`/`error`/`event`, while a bare payload (a `reg.publish` /
+`reg.depart` registration) renders as `event <subject>` followed by the
+object itself, and a result line carries the tool it answers (shortened
+envelope id; attribution from an id→tool map of the calls already rendered —
+the SDK's reply envelope carries no tool name). Malformed JSON
 is retained as `{raw, decodeError}` when it is valid UTF-8; arbitrary bytes use
 lossless `rawBase64` instead. Oversized messages are represented by a bounded
 base64 preview rather than letting one message consume the process.
@@ -3344,7 +3357,9 @@ there.
 `/doctor deep` additionally fans out to each component's own self test over
 the bus (`comp.selfTest`): `bash`, for example, really execs a command through
 its process-group path and then proves the timeout kill at a 1 s budget,
-expecting exit 124.
+expecting exit 124. Components that do not implement one are listed under
+`selftestMissing` (and as one `selftest (not implementing)` markdown row) —
+coverage information, never a failed check.
 
 The compaction contract has a verification lane of its own:
 `make test-compaction` runs the end-to-end propose/commit/restart/reload

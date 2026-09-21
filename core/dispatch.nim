@@ -852,13 +852,23 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let stTimeout = if deep: 120_000 else: 10_000
     doc{"selftest"} = newJArray()
     var stNames: seq[string]
+    var stMissing: seq[string]
     for name, reg in ct.cat.components:
       if name == "core" or reg.client: continue
+      var implements = false
       for t in reg.tools:
         if t.name == "selftest":
-          stNames.add(name)
+          implements = true
           break
+      if implements: stNames.add(name)
+      else: stMissing.add(name)
     stNames.sort()
+    stMissing.sort()
+    # Docs/WIRE.md promises the report NAMES the components without a self
+    # test (the mechanism is opt-in, so this is coverage information, never a
+    # failure): keeping it silent made the promise false and hid the gaps
+    # four components were found to have.
+    doc["selftestMissing"] = %stMissing
     var stFailed = 0
     for name in stNames:
       let t0 = epochTime()
@@ -896,6 +906,11 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
       let detail = item{"summary"}.getStr("").replace("|", "\\|").replace("\n", " ")
       markdown.add("| selftest/" & name & " | " & state & " | " & detail & " |")
+    if stMissing.len > 0:
+      # Named gaps, never a failure: the self-test seam is opt-in (WIRE.md),
+      # and this is the coverage report the docs promise.
+      markdown.add("| selftest (not implementing) | ℹ️ info | " &
+        stMissing.join(", ") & " |")
     let report = markdown.join("\n")
     doc["text"] = %report
     if args{"ask"}.getBool(false):

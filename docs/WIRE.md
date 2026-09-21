@@ -773,7 +773,9 @@ both SDKs) — a component checking its own wiring, on core's behalf:
   for transport-level failures.
 
 Components without a selftest tool are not broken — the mechanism is
-opt-in; `/doctor` reports them as not implementing one.
+opt-in; `/doctor` lists them under `selftestMissing` (and as one
+`selftest (not implementing)` row in its markdown report), so the gaps are
+visible without ever failing the check.
 
 Catalog note: tool names are unique across the harness (discover/invoke
 dispatch by bare name), but `selftest` is deliberately exempt — it exists

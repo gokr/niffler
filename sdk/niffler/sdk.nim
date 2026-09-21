@@ -164,8 +164,8 @@ proc selfTest*(c: Component, handler: ToolHandler): Component =
   ## checks: [{name, ok, detail, ms}]}. Quick mode must stay cheap (no
   ## spawns, < ~10s); deep may run real end-to-end probes and take
   ## correspondingly longer — callers pick the timeout. /doctor fans out to
-  ## every component that registers one; components without it are
-  ## reported as not implementing a self test.
+  ## every component that registers one and lists the rest under
+  ## `selftestMissing` (coverage information, never a failed check).
   let schema = toolSchema(
     %*{"deep": {"type": "boolean",
                 "description": "Thorough mode: live end-to-end probes (may spawn processes)"}},

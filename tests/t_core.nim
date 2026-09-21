@@ -80,6 +80,34 @@ proc main() =
         cross.output.contains("\"notFound\":[\"no-such-tool\"]"),
         cross.output)
 
+  # doctor: the read-only health report, including the self-test fan-out's
+  # coverage list. The sandbox runs store (engine store, selftest) and bash
+  # (selftest) alongside builder/plugins/edit (none), so both halves are
+  # non-empty and provably distinct — the report NAMES non-implementers
+  # instead of leaving them silently out.
+  let doc = call(nc, "core", "doctor", newJObject(), 60_000)
+  var docMissing: seq[string]
+  for m in doc{"selftestMissing"}:
+    docMissing.add(m.getStr(""))
+  var docProbed: seq[string]
+  for item in doc{"selftest"}:
+    docProbed.add(item{"component"}.getStr(""))
+  check("doctor fans out to the components that implement selftest",
+        doc{"error"} == nil and "store" in docProbed and
+        "bash" in docProbed, $doc)
+  check("doctor names the components that do not implement one",
+        docMissing.len > 0 and "builder" in docMissing and
+        "store" notin docMissing and "bash" notin docMissing,
+        $doc{"selftestMissing"})
+  check("doctor's two lists never overlap",
+        docProbed.len > 0 and docMissing.len > 0, $doc)
+  check("doctor's probed count matches the fan-out list",
+        doc{"selftestComponents"}.getInt(0) == docProbed.len,
+        $doc{"selftestComponents"})
+  check("doctor's markdown report carries the coverage row",
+        doc{"text"}.getStr("").contains("selftest (not implementing)"),
+        $doc{"text"}.getStr("")[0 ..< min(400, doc{"text"}.getStr("").len)])
+
   # core.status: authoritative live set from the supervisor
   let st = call(nc, "core", "status", newJObject(), 10_000)
   check("core.status returns the shipped components",
