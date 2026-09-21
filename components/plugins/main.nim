@@ -2,10 +2,13 @@
 ##
 ## Third-party components are distributed as plain git repos: one repo = one
 ## package = N components, described by a niffler.json manifest at the root
-## ({"name", "version", "components":
-##   [{"name", "lang", "main", "sources"? (Go), "env"?, "interactive"?}]}).
-## A TS component declares its dependencies in its own source: the builder
-## installs whatever its imports reference (no manifest field — same as Go).
+## ({"name", "version", "manifestVersion"?, "components":
+##   [{"name", "lang", "main"?, "project"?, "build"?, "sources"?,
+##     "env"?, "interactive"?}]}).
+## Manifest v1 keeps the compact source form for backwards compatibility.
+## Manifest v2 points builder at a real project: package.json/package-lock.json,
+## go.mod/go.sum and .nimble/lockfiles remain the package's own dependency
+## declaration, while the recipe only describes reproducible argv steps.
 ## Discovery is GitHub topic search (topic:niffler-component) — no registry.
 ## GitHub ANDs query words, so plugin_search retries a zero-hit multi-word
 ## query with fewer words (see the plugin_search docstring).
@@ -152,14 +155,21 @@ proc dropRecord(pkg: string) =
 # install / update / remove internals
 
 type
-  ManifestComp = tuple[name, lang, main: string, sources, env: seq[string],
-                       defines: seq[string], interactive: bool]
-  Manifest = tuple[name, version: string, comps: seq[ManifestComp]]
+  ManifestComp = tuple[name, lang, main, project: string,
+                       sources, env, defines: seq[string],
+                       steps, artifact: JsonNode,
+                       interactive: bool, manifestVersion: int]
+  Manifest = tuple[name, version: string, manifestVersion: int,
+                   comps: seq[ManifestComp]]
 
 proc validManifestSourcePath(path: string): bool =
   if path.len == 0 or path.isAbsolute(): return false
   let parts = path.replace('\\', '/').split('/')
   not parts.anyIt(it.len == 0 or it == "." or it == "..")
+
+proc validManifestProjectPath(path: string): bool =
+  if path == ".": return true
+  validManifestSourcePath(path)
 
 proc readManifest(dir: string): Manifest =
   let path = dir / "niffler.json"
@@ -169,6 +179,9 @@ proc readManifest(dir: string): Manifest =
   let m = readFile(path).parseJson()
   result.name = m{"name"}.getStr("")
   result.version = m{"version"}.getStr("")
+  result.manifestVersion = m{"manifestVersion"}.getInt(1)
+  if result.manifestVersion notin [1, 2]:
+    raise newException(ValueError, "niffler.json: manifestVersion must be 1 or 2")
   if result.name.len == 0:
     raise newException(ValueError, "niffler.json has no 'name'")
   let comps = m{"components"}
@@ -177,16 +190,41 @@ proc readManifest(dir: string): Manifest =
   for e in comps:
     var mc: ManifestComp
     mc.name = e{"name"}.getStr("")
-    mc.lang = e{"lang"}.getStr("").toLowerAscii()
+    mc.lang = e{"lang"}.getStr(e{"language"}.getStr("")).toLowerAscii()
+    if mc.lang == "typescript": mc.lang = "ts"
     mc.main = e{"main"}.getStr("")
-    if not validManifestSourcePath(mc.main):
-      raise newException(ValueError,
-        "niffler.json: invalid component main path '" & mc.main & "'")
+    mc.project = e{"project"}.getStr(".")
+    mc.steps = nil
+    mc.artifact = nil
+    mc.manifestVersion = result.manifestVersion
+    if result.manifestVersion == 1:
+      if not validManifestSourcePath(mc.main):
+        raise newException(ValueError,
+          "niffler.json: invalid component main path '" & mc.main & "'")
+    else:
+      if mc.main.len > 0 or not validManifestProjectPath(mc.project):
+        raise newException(ValueError,
+          "niffler.json: v2 components use a safe project path, not main")
+      let build = e{"build"}
+      if build == nil or build.kind != JObject or
+         build{"steps"} == nil or build{"artifact"} == nil or
+         build{"steps"}.kind != JArray or build{"artifact"}.kind != JObject:
+        raise newException(ValueError,
+          "niffler.json: v2 component needs build.steps and build.artifact")
+      mc.steps = build{"steps"}
+      mc.artifact = build{"artifact"}
+      let runner = mc.artifact{"runner"}.getStr("").toLowerAscii()
+      let artifactPath = mc.artifact{"path"}.getStr("")
+      if not validManifestSourcePath(artifactPath) or
+         runner notin ["executable", "node"]:
+        raise newException(ValueError,
+          "niffler.json: v2 artifact needs a safe path and runner")
     mc.interactive = e{"interactive"}.getBool(false)
     mc.sources = @[]
     let sourcesArr = e{"sources"}
     if sourcesArr != nil:
-      if mc.lang != "go" or sourcesArr.kind != JArray:
+      if result.manifestVersion != 1 or mc.lang != "go" or
+         sourcesArr.kind != JArray:
         raise newException(ValueError,
           "niffler.json: sources must be an array on a Go component")
       let mainDir = mc.main.splitFile().dir
@@ -209,20 +247,26 @@ proc readManifest(dir: string): Manifest =
     mc.defines = @[]
     let definesArr = e{"defines"}
     if definesArr != nil:
-      if definesArr.kind != JArray:
+      if result.manifestVersion != 1 or definesArr.kind != JArray:
         raise newException(ValueError,
           "niffler.json: defines must be an array on " & mc.name)
       for dn in definesArr:
         mc.defines.add(dn.getStr(""))
-    if mc.name.len == 0 or mc.main.len == 0:
+    if mc.name.len == 0 or
+       (result.manifestVersion == 1 and mc.main.len == 0):
       raise newException(ValueError,
-        "niffler.json component entry needs name and main")
+        "niffler.json component entry needs name and (for v1) main")
     if mc.lang notin ["nim", "go", "ts"]:
       raise newException(ValueError,
         "niffler.json: unsupported lang '" & mc.lang & "' for " & mc.name)
-    if not fileExists(dir / mc.main) or symlinkExists(dir / mc.main):
+    if result.manifestVersion == 1:
+      if not fileExists(dir / mc.main) or symlinkExists(dir / mc.main):
+        raise newException(ValueError,
+          "niffler.json: " & mc.main & " not found or is a symlink for component " & mc.name)
+    elif not dirExists(dir / mc.project) or symlinkExists(dir / mc.project):
       raise newException(ValueError,
-        "niffler.json: " & mc.main & " not found or is a symlink for component " & mc.name)
+        "niffler.json: project " & mc.project &
+        " not found or is a symlink for component " & mc.name)
     for source in mc.sources:
       if not fileExists(dir / source) or symlinkExists(dir / source):
         raise newException(ValueError,
@@ -240,38 +284,109 @@ proc spawnComponent(mc: ManifestComp, binary: string): JsonNode =
     return %*{"name": mc.name, "binary": binary, "spawned": false,
               "error": e.msg}
 
-proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
-  ## One component: build from source via the builder component.
-  ## Returns a status record; "built" empty means it failed.
+proc buildComp(mc: ManifestComp, dest, binDir: string): JsonNode =
+  ## Build only. Spawning is deliberately a second phase so an update can
+  ## compile every replacement before it stops the currently running package.
   createDir(binDir)
-  let binary = binDir / mc.name
   try:
-    var buildArgs = %*{"lang": mc.lang, "name": mc.name,
-                       "source": readFile(dest / mc.main)}
-    if mc.defines.len > 0:
-      buildArgs["defines"] = %mc.defines
-    if mc.sources.len > 0:
-      var files = newJObject()
-      for source in mc.sources:
-        files[source.extractFilename()] = %readFile(dest / source)
-      buildArgs["files"] = files
-    let r = comp.request("builder", "build", buildArgs, 320_000)
-    if r{"ok"}.getBool(false):
-      let absBinary = absolutePath(binary)
-      if mc.interactive:
-        result = %*{"name": mc.name, "binary": absBinary,
-                    "interactive": true, "spawned": false}
-      else:
-        result = spawnComponent(mc, absBinary)
-      result["built"] = %"source"
-      if mc.env.len > 0:
-        result["env"] = %mc.env
+    var r: JsonNode
+    if mc.manifestVersion == 2:
+      let buildArgs = %*{"lang": mc.lang, "name": mc.name,
+                         "sourceRoot": absolutePath(dest),
+                         "project": mc.project, "steps": mc.steps,
+                         "artifact": mc.artifact, "publish": false}
+      r = comp.request("builder", "build_package", buildArgs, 600_000)
     else:
-      result = %*{"name": mc.name, "spawned": false,
+      var buildArgs = %*{"lang": mc.lang, "name": mc.name,
+                         "source": readFile(dest / mc.main)}
+      if mc.defines.len > 0:
+        buildArgs["defines"] = %mc.defines
+      if mc.sources.len > 0:
+        var files = newJObject()
+        for source in mc.sources:
+          files[source.extractFilename()] = %readFile(dest / source)
+        buildArgs["files"] = files
+      r = comp.request("builder", "build", buildArgs, 320_000)
+    if not r{"ok"}.getBool(false):
+      result = %*{"ok": false, "name": mc.name, "spawned": false,
                   "error": "build failed: " & tailBytes(r{"error"}.getStr("?"), 400)}
+      if r{"log"} != nil: result["log"] = r{"log"}
+      return
+    result = %*{"ok": true, "name": mc.name, "binary":
+                absolutePath(r{"binary"}.getStr(binDir / mc.name)),
+                "built": "source", "spawned": false}
+    if r{"runtime"} != nil: result["runtime"] = r{"runtime"}
+    if r{"runner"} != nil: result["runner"] = r{"runner"}
+    if r{"staged"} != nil: result["staged"] = r{"staged"}
+    if mc.env.len > 0: result["env"] = %mc.env
+    if r{"log"} != nil: result["log"] = r{"log"}
   except CatchableError as e:
-    result = %*{"name": mc.name, "spawned": false,
+    result = %*{"ok": false, "name": mc.name, "spawned": false,
                 "error": "build failed: " & e.msg}
+
+proc spawnBuilt(mc: ManifestComp, built: JsonNode): JsonNode =
+  result = built
+  if not built{"ok"}.getBool(false): return
+  if mc.interactive:
+    result["interactive"] = %true
+    result["spawned"] = %false
+    return
+  let spawned = spawnComponent(mc, built{"binary"}.getStr(""))
+  result["spawned"] = %spawned{"spawned"}.getBool(false)
+  if spawned{"error"} != nil: result["error"] = spawned{"error"}
+
+proc buildComponents(mf: Manifest, dest, binDir: string):
+    tuple[items: JsonNode, ok: bool] =
+  result.items = newJArray()
+  result.ok = true
+  for mc in mf.comps:
+    let built = buildComp(mc, dest, binDir)
+    result.items.add(built)
+    if not built{"ok"}.getBool(false): result.ok = false
+
+proc spawnComponents(mf: Manifest, built: JsonNode): JsonNode =
+  result = newJArray()
+  for i, mc in mf.comps:
+    result.add(spawnBuilt(mc, built[i]))
+
+proc cleanupBuilt(items: JsonNode) =
+  ## Remove v2 candidates and runtime bundles when a later package component
+  ## fails to build. Published v1 binaries and an installed package's live
+  ## artifacts are never touched here.
+  if items == nil: return
+  for item in items:
+    if not item{"ok"}.getBool(false): continue
+    if item{"staged"}.getBool(false):
+      let binary = item{"binary"}.getStr("")
+      let runtime = item{"runtime"}.getStr("")
+      try:
+        if binary.len > 0 and fileExists(binary): removeFile(binary)
+        if runtime.len > 0 and dirExists(runtime): removeDir(runtime)
+      except CatchableError:
+        discard
+
+proc publishBuilt(mf: Manifest, built: JsonNode): bool =
+  ## Publish all v2 candidates only after every recipe in the package passed.
+  ## The candidate and final binary live on the same filesystem, so each
+  ## replacement is one rename and the old running process keeps its mapped
+  ## executable. Node bundles are already versioned and need no rename.
+  try:
+    for item in built:
+      if item{"staged"}.getBool(false) and
+         not fileExists(item{"binary"}.getStr("")):
+        return false
+    for i, mc in mf.comps:
+      let item = built[i]
+      if not item{"staged"}.getBool(false): continue
+      let candidate = item{"binary"}.getStr("")
+      let final = absolutePath(root() / "var" / "bin" / mc.name)
+      if fileExists(final): removeFile(final)
+      moveFile(candidate, final)
+      item["binary"] = %final
+      item["staged"] = %false
+    true
+  except CatchableError:
+    false
 
 proc writeGoWork(dest: string, mf: Manifest) =
   ## Untracked go.work in a clone that redirects the repo's sibling-checkout
@@ -323,7 +438,10 @@ proc writeGoWork(dest: string, mf: Manifest) =
   content.add("\nreplace niffler.dev/sdk => \"" & root() / "sdk" / "go" & "\"\n")
   writeFile(work, content)
 
-proc doInstall(repo, refArg: string): JsonNode =
+proc cleanupRuntimes(rec: JsonNode)
+proc removeComps(rec: JsonNode): JsonNode
+
+proc doInstall(repo, refArg: string, replacing: JsonNode = nil): JsonNode =
   ## Resolve ref (latest release tag, else default branch — skipped for
   ## local file:// repos, which clone HEAD), clone, then build each
   ## component, spawn service components and persist the record. Interactive
@@ -368,28 +486,69 @@ proc doInstall(repo, refArg: string): JsonNode =
     return errResult("git clone failed", extra = %*{"output": tailBytes(cout, 800)})
 
   let mf = readManifest(dest)
-  writeGoWork(dest, mf)
+  if mf.manifestVersion == 1: writeGoWork(dest, mf)
   let binDir = root() / "var" / "bin"
-  var components = newJArray()
-  var installed = 0
-  for mc in mf.comps:
-    let st = installComp(mc, dest, binDir)
-    if st{"spawned"}.getBool(false) or
-       (st{"interactive"}.getBool(false) and
-        st{"built"}.getStr("").len > 0):
-      inc installed
-    components.add(st)
+  let built = buildComponents(mf, dest, binDir)
+  if not built.ok:
+    cleanupBuilt(built.items)
+    removeDir(dest)
+    return errResult("package build failed; no components were stopped",
+                     extra = %*{"components": built.items})
+  if not publishBuilt(mf, built.items):
+    cleanupBuilt(built.items)
+    removeDir(dest)
+    return errResult("package publish failed; no components were stopped",
+                     extra = %*{"components": built.items})
 
+  # An update has now proved that every replacement builds. Only this point
+  # is allowed to stop the old package; a failed recipe leaves it running.
+  var removed = newJArray()
+  if replacing != nil:
+    removed = removeComps(replacing)
+    cleanupRuntimes(replacing)
+  let components = spawnComponents(mf, built.items)
+  var installed = 0
+  for st in components:
+    if st{"spawned"}.getBool(false) or st{"interactive"}.getBool(false):
+      inc installed
   if installed == 0:
     removeDir(dest)
     return errResult("no component could be installed",
-                     extra = %*{"components": components})
+                     extra = %*{"components": components, "removed": removed})
 
   saveRecord(mf.name, %*{"name": mf.name, "repo": repo, "ref": refTag,
                          "dir": dest, "version": mf.version,
+                         "manifestVersion": mf.manifestVersion,
                          "components": components, "addedAt": epochTime()})
   result = okResult(%*{"package": mf.name, "repo": repo, "ref": refTag,
-                       "dir": dest, "components": components})
+                       "dir": dest, "components": components,
+                       "removed": removed})
+
+proc cleanupRuntimes(rec: JsonNode) =
+  ## Runtime bundles are versioned, so an update can leave the old Node
+  ## process alive while the new one is built and published. Remove the old
+  ## bundle only after core.remove has drained that process.
+  let comps = rec{"components"}
+  if comps == nil: return
+  for e in comps:
+    let runtime = e{"runtime"}.getStr("")
+    try:
+      if runtime.len > 0 and dirExists(runtime): removeDir(runtime)
+    except CatchableError:
+      discard
+
+proc cleanupArtifacts(rec: JsonNode) =
+  ## The supervisor owns processes, while plugins owns the published build
+  ## artifacts. Remove them only after core.remove.
+  let comps = rec{"components"}
+  if comps == nil: return
+  cleanupRuntimes(rec)
+  for e in comps:
+    let binary = e{"binary"}.getStr("")
+    try:
+      if binary.len > 0 and fileExists(binary): removeFile(binary)
+    except CatchableError:
+      discard
 
 proc removeComps(rec: JsonNode): JsonNode =
   ## core.remove every recorded component; tolerate individual failures.
@@ -446,7 +605,7 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
     if branch != rec{"ref"}.getStr(""):
       try:
         let mf = readManifest(dest)
-        writeGoWork(dest, mf)
+        if mf.manifestVersion == 1: writeGoWork(dest, mf)
         saveRecord(mf.name, %*{"name": mf.name, "repo": rec{"repo"}.getStr(""),
                                "ref": branch, "dir": dest, "version": mf.version,
                                "components": rec{"components"},
@@ -455,30 +614,32 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
         discard
     else:
       try:
-        writeGoWork(dest, readManifest(dest))
+        let mf = readManifest(dest)
+        if mf.manifestVersion == 1: writeGoWork(dest, mf)
       except CatchableError:
         discard
     return okResult(%*{"updated": false, "ref": branch, "commit": after})
 
-  let removed = removeComps(rec)
   var mf: Manifest
   try:
     mf = readManifest(dest)
   except CatchableError as e:
-    dropRecord(pkg)
-    return errResult("manifest invalid after pull; package removed: " & e.msg,
-                     extra = %*{"removed": removed, "from": before, "to": after})
-  writeGoWork(dest, mf)
+    return errResult("manifest invalid after pull; old components remain running: " & e.msg,
+                     extra = %*{"from": before, "to": after})
+  if mf.manifestVersion == 1: writeGoWork(dest, mf)
 
   let binDir = root() / "var" / "bin"
-  var components = newJArray()
+  let built = buildComponents(mf, dest, binDir)
+  if not built.ok:
+    return errResult("pulled new commits but build failed; old components remain running",
+                     extra = %*{"components": built.items, "from": before, "to": after})
+  let removed = removeComps(rec)
+  cleanupRuntimes(rec)
+  let components = spawnComponents(mf, built.items)
   var installed = 0
-  for mc in mf.comps:
-    let st = installComp(mc, dest, binDir)
-    if st{"spawned"}.getBool(false) or
-       (st{"interactive"}.getBool(false) and st{"built"}.getStr("").len > 0):
+  for st in components:
+    if st{"spawned"}.getBool(false) or st{"interactive"}.getBool(false):
       inc installed
-    components.add(st)
   if installed == 0:
     return errResult("pulled new commits but no component could be rebuilt",
                      extra = %*{"components": components, "removed": removed,
@@ -486,6 +647,7 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
 
   saveRecord(mf.name, %*{"name": mf.name, "repo": rec{"repo"}.getStr(""),
                          "ref": branch, "dir": dest, "version": mf.version,
+                         "manifestVersion": mf.manifestVersion,
                          "components": components,
                          "addedAt": rec{"addedAt"}.getFloat(epochTime())})
   return okResult(%*{"updated": true, "ref": branch, "from": before, "to": after,
@@ -683,20 +845,21 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
       let dir = rec{"dir"}.getStr("")
       if dir.len > 0 and dirExists(dir):
         try:
-          writeGoWork(dir, readManifest(dir))
+          let mf = readManifest(dir)
+          if mf.manifestVersion == 1: writeGoWork(dir, mf)
         except CatchableError:
           discard
       return okResult(%*{"updated": false, "ref": latest})
-    let removed = removeComps(rec)
+    # doInstall builds the new checkout before removing the old components.
+    # If any recipe fails, the old record and live processes remain intact.
+    let r = doInstall(repo, latest, replacing = rec)
+    if not r{"ok"}.getBool(false):
+      return errResult("update failed; old package remains installed",
+                       extra = %*{"detail": r})
     if dirExists(rec{"dir"}.getStr("")):
       removeDir(rec{"dir"}.getStr(""))
-    let r = doInstall(repo, latest)
-    if not r{"ok"}.getBool(false):
-      dropRecord(package)
-      return errResult("update failed; package removed",
-                       extra = %*{"removed": removed, "detail": r})
     return okResult(%*{"updated": true, "from": rec{"ref"}.getStr(""),
-                       "to": latest, "removed": removed, "install": r})
+                       "to": latest, "install": r})
 
 
 comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
@@ -710,6 +873,7 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
     if rec == nil:
       return errResult("package not installed: " & package)
     let removed = removeComps(rec)
+    cleanupArtifacts(rec)
     let dir = rec{"dir"}.getStr("")
     if dir.len > 0 and dirExists(dir):
       removeDir(dir)

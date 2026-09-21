@@ -666,7 +666,7 @@ doctor:
 		echo "  webkit2gtk-4.1: MISSING — run 'make install-ui-deps'"; \
 	fi)
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
-	@echo "                  npm registry access needed for 'builder.build {lang: \"ts\"}'"
+	@echo "                  npm registry access needed for TS source/package recipes"
 	@echo "Then: make — and launch niffler-ui or ./var/bin/niffler"
 
 install-go:

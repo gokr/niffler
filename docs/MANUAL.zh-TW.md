@@ -59,7 +59,7 @@
 | `bash` | Nim | required | 經典工具：帶超時和輸出上限的 shell 命令。命令作為自身程序組的組長執行，因此超時或回合被取消會殺掉整棵程序樹（退出碼 124 / 130）——不會留下孤兒程序。結果攜帶 `text`（以 `(exit N)` 狀態行開頭——非零即失敗；124 = 超時，130 = 已取消——其後是合併的 stdout/stderr；LLM 記錄看到的就是它）以及機器欄位 `exit_code`、`cancelled`，輸出過大時還有 `spill {path, bytes, lines}`（溢位到臨時檔案，可用 `read` 分頁讀取）。`run_in_background: true` 把長跑命令（伺服器、監視器）交給 `processes` 元件而不是阻塞——見 [Background processes](#background-processes-processes) |
 | `repomap` | Nim | optional | 排序後的工作區地圖（docs/research/REPOMAP.md）：約 1KB 內給出承重檔案及其關鍵定義，由 tree-sitter + 原生 Nim tags 圖與個性化 PageRank 建置（aider repomap 的移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且為讀效應——模型主動詢問，不注入任何東西。工作區開啟時的自動追加（在 `ev.workspace.opened` 時追加一條 append-only 條目；元件釋出，runner 追加）**預設關閉**：設定 `NIF_REPOMAP_AUTOAPPEND=1` 選擇開啟。預設關閉是因為 A/B 沒有過線（full30：約多 40% token、準確率無提升；Multi10 high 開啟後 8/10 vs 9/10，儘管 low 復跑結論反轉、最初的高檔測試部分測的是樁地圖——見 `bench/reports/repomap-ab-*.md`），而且 onDemand 工具不會自己啟用。選擇開啟後，追加還有**門控**（`docs/research/REPOMAP-GATES.md`）：低於普查下限的工作區從不建置，樁地圖（位元組/符號/檔案閾值）從不注入——被扣留的地圖記錄為 `repo map withheld`。關閉追加時，它只是一個模型想要定位時可以發現的可選元件。快取：`var/repomap-tags/`（按 mtime 鍵控）。可選元件——缺失就沒有地圖，其他一切不變 |
 | `processes` | Nim | optional | 帶歸屬者的長跑命令：`process_start`（脫離父程序、獨立程序組，立即返回 id）、`process_poll`（增量排空輸出）、`process_kill`（停止整個程序組）、`process_list`——見 [Background processes](#background-processes-processes) |
-| `builder` | Nim | required | 把 agent 編寫的 Nim/Go/TypeScript 原始碼編譯為二進位——依賴由原始碼宣告，而不是由呼叫方傳入：Go 走 `go mod tidy`，TS 在基礎安裝後掃描 entrypoint 的 import 並經 npm 安裝 |
+| `builder` | Nim | required | 編譯 agent 編寫的 Nim/Go/TypeScript 原始碼，並透過 `build_package` 建置外掛專案；外掛保留自己的依賴檔與鎖檔，builder 在隔離工作區執行受限 argv 配方並發布宣告的 artifact |
 | `llm` | Go | required | 流式 chat 介面卡（隱藏的 `chat` 工具；`ev.llm.token` 增量；取消）——協議：OpenAI 相容 Chat Completions、OpenAI Codex（ChatGPT OAuth）Responses 和 Anthropic Messages；`components/llm-openai` 中的 `llm-openai` 是最小非流式示例，可透過 `manifest.yaml` 換上 |
 | `models` | Go | optional | models.dev 提供商/模型目錄、原子快取、嚴格解析，以及外掛修正/發現層（見 [Model catalog](#model-catalog-models)） |
 | `provider` | Go | optional | store 持久化的 LLM 提供商登錄檔：`provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`，訂閱 OAuth 登入（`provider_oauth_start`/`complete`/`cancel`），`ev.provider.switch` 通知 |
@@ -611,14 +611,16 @@ supervisor 不可移除——這種不對稱正是架構（ARCHITECTURE.md）。
 ## Component ecosystem (`plugins`)
 
 `plugins` 元件是生態門戶——社群元件包就是根目錄帶 `niffler.json` manifest 的
-普通 GitHub 倉庫（一個倉庫 = 一個包 = N 個元件）。帶 GitHub topic
+普通 GitHub 倉庫（一個倉庫 = 一個包 = N 個元件）。v1 manifest 保留 `main` 原始碼
+形式；v2 manifest 宣告 `project`、argv `steps` 和 `artifact`，依賴繼續由
+`package.json`/鎖檔、`go.mod`/`go.sum` 或 Nimble 檔案完整定義。帶 GitHub topic
 `niffler-component` 的倉庫無需任何登錄檔即可被發現：
 
 | 工具 | 做什麼 |
 |---|---|
 | `plugin_search {query?}` | GitHub topic 搜尋；返回倉庫、描述、star 數 |
 | `plugin_installed` | 本 harness 已安裝的包 |
-| `plugin_install {repo, version?}` | clone 到 `var/plugins/<pkg>@<ref>/`，經 builder 的 `build` 工具從原始碼建置每個元件，然後 `spawn` 每個服務元件（需審批） |
+| `plugin_install {repo, version?}` | clone 到 `var/plugins/<pkg>@<ref>/`，v1 經 builder 的 `build`、v2 經 `build_package` 建置每個元件，然後 `spawn` 每個服務元件（需審批） |
 | `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重灌；沒有 release 的包（跟蹤分支）原地拉取（現有 clone 的 `git pull --ff-only`），只在拉取移動了 HEAD 時重建 |
 | `plugin_remove {package}` | `core.remove` 每個受監督元件，刪除 clone，丟棄記錄 |
 
@@ -631,13 +633,13 @@ supervisor 不可移除——這種不對稱正是架構（ARCHITECTURE.md）。
   自己的工具鏈編譯。Go 條目可以宣告
   `"sources": ["component/helper.go", ...]`；這些必須是與 `main` 同目錄、同包的
   非符號連結 `.go` 檔案，builder 把它們作為一個包編譯。
-- TypeScript 條目無需依賴欄位：依賴寫在原始碼自己的 import 裡。基礎安裝後
-  builder 掃描 entrypoint 的 import 並 npm 安裝外部套件（≤32 個；跳過相對路徑與
-  `node:` 內建模組），所以 `import sdk from "niffler-sdk"` 加
-  `import { Project } from "ts-morph"` 就是完整的依賴宣告——與 Go 條目靠 import 走
-  `go mod tidy` 完全同形，安裝結果會把解析出的版本範圍寫進生成的
-  `package.json`。TS 安裝需要 npm registry（所有 TS 建置都是如此），
-  `NIF_NPM_REGISTRY` 可重定向。
+- v2 外掛在自己的生態系統檔案中宣告依賴：TypeScript 使用
+  `package.json`/`package-lock.json`，Go 使用 `go.mod`/`go.sum`，Nim 使用
+  `.nimble`/鎖檔。配方在 project 目錄執行，也可以組合工具鏈（例如
+  `npm ci` 後執行 `wails build`）；`${NIF_SDK_ROOT}`、`${NIF_SDK_GO}`、
+  `${NIF_SDK_TS}`、`${NIF_PROJECT}` 和 `${NIF_OUTPUT}` 是唯一 builder 替換項。
+  步驟是 argv 陣列而不是 shell 字串，builder 會拒絕路徑穿越、
+  符號連結輸入、超大專案、錯誤 runner 和未宣告的 artifact。
 - manifest 條目標記 `"interactive": true` 的元件會建置進 `var/bin`，但不會傳給
   `core.spawn`。它是終端客戶端（例如 TUI），由使用者手動啟動，因此不受監督、
   不會在引導時重啟。移除或更新其包之前先手動停止任何執行中的客戶端。

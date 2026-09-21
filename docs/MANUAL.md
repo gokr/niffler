@@ -60,7 +60,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled, 126 = cwd not enterable (the tool also uses 126 for found-but-not-executable), 127 = `bash` not on `PATH`, 128 + signal when the command killed itself (139 = SIGSEGV, 143 = SIGTERM) — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a file under `var/toolout/` (the absolute path is in `spill.path`; pageable with `read`, swept after 1 h). `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes) |
 | `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect — the model asks, nothing is injected. The workspace-open auto-append (one append-only entry on `ev.workspace.opened`; the component publishes it, the runner appends it) is **off by default**: set `NIF_REPOMAP_AUTOAPPEND=1` to opt in. It ships off because the A/B did not clear the bar (full30: ~40% more tokens, no accuracy gain; Multi10 high 8/10 vs 9/10 with it on, though the low rerun inverted that and the original high run partly measured stub maps — see `bench/reports/repomap-ab-*.md`) and onDemand tools never activate themselves. Opted in, the append is also **gated** (`docs/research/REPOMAP-GATES.md`): a workspace below the census floor is never built and a stub map (byte/symbol/file thresholds) is never injected — withheld maps are logged as `repo map withheld`. With the append off this is simply a component the model can discover when it wants orientation. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes. Parameters, budget default and cap, tag tiers and the append payload: [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
-| `builder` | Nim | required | compiles agent-written Nim/Go/TypeScript source into binaries: `build {lang, name, source, files?, defines?}` (approval-gated, on demand; `name` is 1–64 lowercase letters, digits and single hyphens — the traversal guard that refuses `../escape`; `files` is Go-only: ≤64 flat `*.go` sources, ≤2 MB, no `main.go`/`*_test.go`; `defines` is Nim-only, `-d:NAME` with identifier characters, and a non-array value is ignored) and `info` (on demand) returns the SDK paths (`sdk`/`sdkGo`/`sdkTs`), the global tool-naming rule, the build → spawn → discover `flow`, and a complete compiling skeleton per language — the fastest way to a component that builds on the first try. **Dependencies are declared by the source, never by the build call**: a Go build resolves its imports with `go mod tidy`, and a TS build scans the entrypoint's imports after the base install (`typescript`'s own `preProcessFile`) and npm-installs the external packages, recording their ranges in `package.json`; the reply lists them under `deps` |
+| `builder` | Nim | required | compiles agent-written Nim/Go/TypeScript source with `build {lang, name, source, files?, defines?}`, and builds manifest-v2 plugin projects with `build_package {name, lang, sourceRoot, project, steps, artifact}` (approval-gated, on demand). Package projects keep their own dependency manifests and lockfiles; the builder stages them, expands only controlled SDK/output placeholders, executes bounded argv recipes, validates the declared `executable`/`node` artifact, and returns the published binary/runtime bundle. Recipes may combine toolchains (for example `npm ci` followed by `wails build`); recipes use a bounded argv tool set and cannot invoke a shell wrapper. `info` returns SDK paths, the global tool-naming rule, and both build flows |
 | `llm` | Go | required | streaming chat adapter — three hidden tools, none of them in a conversation's direct set: `chat` (one inference, `ev.llm.token` deltas, cancellation; `runner`-exempt, timeout `NIF_LLM_TIMEOUT_MS`), `llm_resolve` (the credential-free resolution probe clients call) and `llm_models_source` (the `x-models-source` v1 live-id source the `models` catalog calls) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example (it reads only `NIF_OPENAI_API_KEY`, `NIF_OPENAI_BASE_URL`, `NIF_OPENAI_MODEL` and `NIF_OPENAI_CONTEXT` — not `NIF_OPENAI_PROVIDER` — and always sends `max_tokens: 32768`, a hardcoded value with no knob); swap it in via `manifest.yaml` — comment `llm` out in the same edit, since `chat` is a globally unique tool name and a duplicate registration is refused; `make build` builds `var/bin/llm-openai` either way. Expect nothing beyond the chat contract: no `ev.llm.token` streaming, no cancel, no `finish_reason`, no `llm_resolve` (core degrades gracefully on the last one) |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
@@ -1154,18 +1154,24 @@ architecture (ARCHITECTURE.md).
 
 The `plugins` component is the ecosystem front door — community component
 packages are plain GitHub repos with a `niffler.json` manifest at the root
-(one repo = one package = N components). The manifest itself is small:
-`niffler.json` = `{name, components: [{name, lang: "nim"|"go"|"ts", main,
-sources?, env?, defines?, interactive?}]}` — `lang` must be one of the three
-SDKs, `main` must exist and not be a symlink, and a manifest that declares no
-components is rejected. Repos tagged with the GitHub
+(one repo = one package = N components). Manifest v1 keeps the compact
+`{name, components: [{name, lang, main, sources?, env?, defines?, interactive?}]}`
+form. Manifest v2 uses `{manifestVersion: 2, components: [{name, lang,
+project, build: {steps: [[argv...]], artifact: {path, runner}}}]}`: the
+package owns `package.json`/lockfiles, `go.mod`/`go.sum`, or Nimble files;
+Niffler only supplies the SDK placeholders and builder seam. `lang` is
+metadata for the Nim, Go, or TypeScript SDK; recipes may combine external
+package tools (for example a Go/Wails client uses npm and wails). The builder
+rejects unsupported commands and shell-wrapper steps, while project/artifact
+paths must stay inside the clone, and
+a manifest that declares no components is rejected. Repos tagged with the GitHub
 topic `niffler-component` are discoverable without any registry:
 
 | Tool | What it does |
 |---|---|
 | `plugin_search {query?}` | GitHub topic search; returns repo, description, stars, plus the winning `query` and per-attempt diagnostics — GitHub ANDs the words, so a zero-hit query is retried with fewer of them |
 | `plugin_installed` | the packages installed on this harness |
-| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via the builder's `build` tool, then `spawn` each service component (approved). Installing a package that already has a record is an error, not a re-install — use `plugin_update`, or `plugin_remove` first; the clone is shallow (`--depth 1`) and carries an untracked `go.work` for a Go package that expects a sibling SDK checkout |
+| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component via the builder (`build` for v1, `build_package` for v2), then `spawn` each service component (approved). Installing a package that already has a record is an error, not a re-install — use `plugin_update`, or `plugin_remove` first; the clone is shallow (`--depth 1`) and v1 Go packages carry an untracked `go.work` for manual builds |
 | `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt only when the pull moved HEAD |
 | `plugin_remove {package}` | `core.remove` every supervised component, delete the clone, drop the record |
 
@@ -1185,14 +1191,17 @@ topic `niffler-component` are discoverable without any registry:
   64 files and 2 MB in total, and the builder compiles them with `main` as one
   package. A `sources` key on a Nim or TS entry is refused when the manifest is
   read.
-- A TypeScript entry needs no dependency field: it declares its dependencies
-  in its own source. After the base install the builder scans the entrypoint's
-  imports and npm-installs the external packages (≤32; relative paths and
-  `node:` builtins are skipped), so `import sdk from "niffler-sdk"` plus
-  `import { Project } from "ts-morph"` is the whole declaration — the same shape as
-  a Go entry's imports under `go mod tidy`, and the install records the
-  resolved ranges in the generated `package.json`. The install needs the npm
-  registry, like every TS build; `NIF_NPM_REGISTRY` redirects it.
+- Manifest-v2 packages declare dependencies in their own ecosystem files:
+  TypeScript uses `package.json`/`package-lock.json`, Go uses `go.mod`/`go.sum`,
+  and Nim uses `.nimble`/lockfiles. The recipe runs from the declared project
+  directory, so `npm ci`/`npm run build`, `go mod download`/`go build`,
+  `nimble install`/`nim c`, or `npm ci` followed by `wails build` all use the
+  package's normal dependency semantics. A Wails desktop client is a Go
+  component with an `executable` artifact and may be marked `interactive`.
+  `${NIF_SDK_ROOT}`, `${NIF_SDK_GO}`, `${NIF_SDK_TS}`, `${NIF_PROJECT}` and
+  `${NIF_OUTPUT}` are the only builder substitutions. Steps are argv arrays,
+  not shell strings, and the builder rejects traversal, symlinked inputs,
+  oversized projects, unsafe runners, and undeclared artifacts.
 - A component manifest entry with `"interactive": true` is built into
   `var/bin` but is not passed to `core.spawn`. It is a terminal client (for
   example a TUI) that the user starts manually, so it is not supervised or

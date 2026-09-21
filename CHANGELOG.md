@@ -32,23 +32,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every 30s and drops the dead ones, which also keeps `clientCount` (and the
   autostarted core's shutdown) honest.
 
-- **TS components resolve their dependencies from their own imports — no
-  build parameter, and TS plugin packages became installable.** The builder
-  generated a fixed `package.json` (`nats` + `niffler-sdk`), so a TypeScript
-  component that needed a third-party parser had nothing to resolve against —
-  `import { Project } from "ts-morph"` could never build. Go never had that problem
-  (`go mod tidy` reads the imports out of the source), so the fix follows the
-  same shape instead of asking the caller for a dependency list: after the base
-  npm install the builder scans the entrypoint with TypeScript's own
-  `preProcessFile` (comments and strings cannot fool it), npm-installs the
-  external packages it finds (relative paths and `node:` builtins skipped,
-  ≤32, names whitelisted before they reach an argv), and the resolved ranges
-  land in the generated `package.json` — so the component's imports are the
-  whole declaration, and it is visible in the same approval payload as the
-  source. The reply lists what was installed under `deps`. The plugins
-  manifest reader also accepts `"lang": "ts"` now, which previously made TS
-  packages uninstallable: `plugin_install` builds the entry through the
-  builder and spawns it like any other component.
+- **Plugins now build real language projects through `builder.build_package`.**
+  Manifest v2 packages declare their own `package.json`/lockfile,
+  `go.mod`/`go.sum`, or Nimble files and provide a bounded argv recipe plus
+  an artifact runner (`executable` or `node`). `plugins` remains responsible
+  for clone/update/install/remove and lifecycle records; `builder` copies the
+  clone into an isolated workspace, injects only the platform SDK paths,
+  executes the recipe, validates the declared artifact, and publishes it
+  atomically. Recipes may combine toolchains, so a Wails desktop plugin can
+  run `npm ci` followed by `wails build` and publish an interactive executable.
+  Nim, Go, and TypeScript use the same seam, while manifest v1
+  source components remain compatible. Updates build the replacement before
+  stopping the old component.
 
 ### Fixed
 
