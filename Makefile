@@ -1,6 +1,6 @@
 # Niffler — build without knowing Go, Nim or Wails.
 #
-#   make all    build core + components + desktop UI (default)
+#   make all    build core + components (default)
 #   make setup  install all prerequisites for this platform (Ubuntu/macOS)
 #   make doctor check prerequisites and report what is missing
 #
@@ -17,7 +17,6 @@ ROOT    := $(abspath .)
 # choosenim and Nimble-installed helpers.
 export PATH := $(HOME)/.nimble/bin:$(PATH)
 WAILS   ?= $(shell command -v wails 2>/dev/null || echo "$(HOME)/go/bin/wails")
-UI_TAGS := $(if $(filter Linux,$(shell uname -s)),-tags webkit2_41,)
 
 # platform detection for the setup/doctor targets
 UNAME_S := $(shell uname -s)
@@ -58,12 +57,10 @@ GO_SRCS  = $(filter-out %_test.go,$(wildcard components/$(1)/*.go)) components/$
 NIMFLAGS ?=
 MODE := var/bin/.mode
 
-# UI sources, excluding generated/installed trees (wailsjs, dist, build, deps)
-UI_INPUTS := $(shell find ui \( -path ui/build -o -path ui/frontend/node_modules \
-             -o -path ui/frontend/dist -o -path ui/frontend/wailsjs \
-             -o -name package.json.md5 \) -prune -o -type f -print)
-
-UI_BIN := ui/build/bin/niffler-ui
+# The desktop UI is a separate interactive plugin (gokr/niffler-ui), built
+# with `make install-ui`; it is intentionally not part of `make all`/`make build`.
+# The harness keeps only the installed client artifact in var/bin.
+UI_BIN := var/bin/niffler-ui
 BUILD_LOCK := bash scripts/with-build-lock.sh
 TEST_LOCK  := bash scripts/with-build-lock.sh -s
 # Per-file recipes lock themselves unless a held lock is already active
@@ -71,14 +68,10 @@ TEST_LOCK  := bash scripts/with-build-lock.sh -s
 # build generation and exports this marker to the inner sub-make).
 BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 
-# Commit hash shown in the About dialog (injected via -ldflags; the SPA no
-# longer embeds it — the header chip moved into the native About dialog).
-UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-
 .DEFAULT_GOAL := all
 
-.PHONY: help all build components components-inner ui ui-install ui-uninstall run down down-here \
-        test test-server test-ui test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
+.PHONY: help all build components components-inner run down down-here \
+        test test-server test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
@@ -89,12 +82,10 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
         install-natscli install-jq install-zenity
 
 help:
-	@echo 'make all       build core + components + desktop UI (default)'
-	@echo 'make build     build core + components only (no UI)'
-	@echo 'make ui        build the Wails desktop UI'
-	@echo 'make install-ui   build the desktop UI + launcher entry/icon (Linux;'
-	@echo '                  same as ui-install)'
-	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
+	@echo 'make all       build core + components (default)'
+	@echo 'make build     same, explicit target (no UI — the UI lives in gokr/niffler-ui)'
+	@echo 'make install-ui   build + install the desktop UI (gokr/niffler-ui) and the'
+	@echo '                  launcher that boots this harness on demand'
 	@echo 'make install    put niffler/niffler-cli (+ niffler-tui on request) on PATH'
 	@echo 'make install-tui  same, installing the niffler-tui client without asking'
 	@echo 'make uninstall  remove those PATH entries again (WITH_TUI=1 to preinstall)'
@@ -103,17 +94,18 @@ help:
 	@echo 'make ram       RAM of running niffler stacks (harness + components + nats + clients)'
 	@echo 'make down      stop any running harness, components and nats-server'
 	@echo 'make down-here stop only THIS checkout's harness, components and bus'
-	@echo 'make test      full gate: bus-contract suite + frontend tests'
+	@echo 'make test      full gate: the bus-contract suite (frontend tests are in'
+	@echo '               gokr/niffler-ui: make test / make typecheck there)'
 	@echo 'make test-server  bus-contract suite only (no node/UI toolchain)'
-	@echo 'make test-ui   frontend lib tests + typecheck (no NATS needed)'
-	@echo 'make dev       Svelte dev server in a browser (bridge stubbed)'
+	@echo 'make dev       Svelte dev server in a browser (bridge stubbed; needs the'
+	@echo '               niffler-ui checkout: make dev there)'
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'
 	@echo 'make clean     remove all build artifacts'
 	@echo 'make recover   stop everything, rebuild shipped binaries, wipe spawned'
 	@echo '               component records, restart interactively (--recover)'
 
-all: build ui
+all: build
 
 # ---------------------------------------------------------------------------
 # core + components
@@ -326,47 +318,14 @@ release:
 	@echo "release binaries in var/bin (-d:release) — 'make build' swaps debug back"
 
 # ---------------------------------------------------------------------------
-# desktop UI
-
-ui: $(UI_BIN)
-
-$(UI_BIN): $(UI_INPUTS)
-	@if [ ! -x "$(WAILS)" ]; then \
-		echo "wails CLI not found (looked at $(WAILS))."; \
-		echo "Install: make install-wails"; \
-		exit 1; fi
-	$(BUILD_WRAP) bash -c 'cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage \
-		-ldflags "-X main.buildCommit=$(UI_COMMIT) -X main.nifRoot=$(ROOT)"'
-
-# Desktop integration (Linux): the appicon the window shows comes from the
-# embedded icon in main.go, but the launcher/taskbar icon needs a desktop
-# entry + hicolor icons — the same pattern as flatout's install-desktop.
-BIN_DIR      := $(HOME)/.local/bin
-DESKTOP_DIR  := $(HOME)/.local/share/applications
-ICON_DIR     := $(HOME)/.local/share/icons/hicolor
-DESKTOP_DST  := $(DESKTOP_DIR)/niffler.desktop
-
-ui-install: ui
-	@echo "Installing Niffler desktop integration..."
-	@mkdir -p $(BIN_DIR) $(DESKTOP_DIR) $(ICON_DIR)/48x48/apps $(ICON_DIR)/256x256/apps
-	cp $(UI_BIN) $(BIN_DIR)/niffler-ui
-	chmod +x $(BIN_DIR)/niffler-ui
-	sed 's|Exec=.*|Exec=$(BIN_DIR)/niffler-ui|' ui/niffler.desktop > $(DESKTOP_DST)
-	cp ui/appicon-48.png $(ICON_DIR)/48x48/apps/niffler.png
-	cp ui/appicon-256.png $(ICON_DIR)/256x256/apps/niffler.png
-	-update-desktop-database $(DESKTOP_DIR) 2>/dev/null || true
-	-gtk-update-icon-cache -f $(ICON_DIR) 2>/dev/null || true
-	@echo "Launcher 'Niffler' installed (executable: $(BIN_DIR)/niffler-ui)."
-	@echo "You may need to log out and back in for the icon to appear."
-
-ui-uninstall:
-	@echo "Removing Niffler desktop integration..."
-	rm -f $(BIN_DIR)/niffler-ui
-	rm -f $(DESKTOP_DST)
-	rm -f $(ICON_DIR)/48x48/apps/niffler.png
-	rm -f $(ICON_DIR)/256x256/apps/niffler.png
-	-update-desktop-database $(DESKTOP_DIR) 2>/dev/null || true
-	@echo "Done."
+# desktop UI (separate repository: gokr/niffler-ui)
+#
+# This clone keeps no UI source. install-ui clones that repo at its latest
+# release tag, builds it against THIS harness (writing an untracked go.work so
+# the SDK comes from here), drops the binary in var/bin and writes the
+# launcher — the same shape as install-tui for the terminal client.
+install-ui:
+	bash ./scripts/install-ui.sh
 
 # CLI/terminal integration: niffler-prefixed symlinks + the on-demand
 # niffler-tui wrapper in a user bin dir (see scripts/install.sh — never
@@ -378,10 +337,8 @@ uninstall:
 	./scripts/install.sh --uninstall
 
 # The README names these aliases so the desktop and terminal entry points
-# read in the same direction: install-ui = ui-install, install-tui =
-# install WITH_TUI=1.
-install-ui: ui-install
-
+# read in the same direction: install-ui builds the UI repo against this
+# harness (above), install-tui = install WITH_TUI=1.
 install-tui:
 	$(MAKE) --no-print-directory install WITH_TUI=1
 
@@ -471,26 +428,16 @@ var/bin/test_t_supervisor_backoff: core/supervisor.nim core/catalog.nim
 
 var/bin/test_t_ctx_accounting: core/conversation.nim
 
-test: test-ui test-server
+# The full gate. The frontend half (lib unit tests + typecheck) lives in the
+# UI's own repository now (gokr/niffler-ui: make test / make typecheck) — its
+# toolchain, generated Wails bindings and node_modules are that repo's
+# business, which is what let this suite go back to being self-contained.
+test: test-server
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
-# Everything that needs the node/UI toolchain lives in test-ui, so a
-# server-side change can be verified without it.
 test-server: build $(TEST_BINS) gotest
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
-
-# The frontend. The lib tests import the TypeScript sources directly (node
-# type stripping), so they need no dependencies; the typecheck does, and
-# fails loudly when ui/frontend/node_modules is missing (`make ui` installs
-# it). Neither touches the bus.
-test-ui:
-	@command -v node >/dev/null 2>&1 || { \
-		echo "node not found — install Node.js 20+ (make install-node)"; exit 1; }
-	@node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error("Node.js 20+ required by the frontend tests"); process.exit(1); }'
-	cd ui/frontend && npm test
-	@if [ -d ui/frontend/node_modules ]; then cd ui/frontend && npm run typecheck; \
-	else echo "ui/frontend/node_modules missing — run: cd ui/frontend && npm install (or make ui)"; exit 1; fi
 
 test-bash:    build var/bin/test_t_bash    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_bash
 test-store:   build var/bin/test_t_store   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_store
@@ -581,10 +528,12 @@ recover: build
 	./var/bin/niffler --recover
 
 dev:
-	cd ui/frontend && npm run dev
+	@echo "the SPA dev server lives with the UI now:"
+	@echo "  git clone https://github.com/gokr/niffler-ui && cd niffler-ui && make dev"
+	@exit 1
 
 clean:
-	$(BUILD_LOCK) rm -rf var nimcache ui/build ui/frontend/node_modules ui/frontend/dist
+	$(BUILD_LOCK) rm -rf var nimcache
 
 # ---------------------------------------------------------------------------
 # prerequisites
