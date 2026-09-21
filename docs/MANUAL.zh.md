@@ -6,8 +6,13 @@
 [ARCHITECTURE.md](ARCHITECTURE.md)；未完成工作汇总于
 [research/PLAN.md](research/PLAN.md)。
 
-> 🤖 AI 自动翻译，可能滞后于英文版；以 [English](MANUAL.md) 为准。
+> 🤖 AI 自动翻译，**滞后于英文版**；以 [English](MANUAL.md) 为准。
 > 章节标题保留英文，以便跨文档链接保持稳定。
+> 上次全文同步早于 2026-09-18 的文档审计：英文版此后新增了 9 个章节
+> （`bash`/`repomap`/`grep` 详解、Clients and the UI registry、
+> Output caps and `finish_reason`、Repository inspection (`git`)、
+> Fabric）并全篇修订，本文件尚未重新生成。需要当前行为时请直接阅读
+> 英文原文；完整重新翻译是一次独立的专项工作。
 
 [English](MANUAL.md) · 简体中文 · [繁體中文](MANUAL.zh-TW.md)
 
