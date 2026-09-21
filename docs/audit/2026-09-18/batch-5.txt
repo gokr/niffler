@@ -1,7 +1,0 @@
-component-edit	16
-environment-variables	14
-component-fabric	11
-provider-registry-provider	8
-wrong-claims-summary	6
-y-missing-capability	3
-the-env-file	1

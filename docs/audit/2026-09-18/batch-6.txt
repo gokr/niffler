@@ -1,7 +1,0 @@
-component-repomap	16
-approvals	13
-model-catalog-models	12
-component-models	7
-component-ecosystem-plugins	6
-expert-model-catalog-background-processes-mcp-spot-checks	4
-z-sections-to-trim-to-a-pointer-other-docs-own-them	1

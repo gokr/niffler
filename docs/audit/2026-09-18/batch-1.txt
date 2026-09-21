@@ -1,6 +1,0 @@
-skills	26
-context-window	12
-fabric-and-subagents	9
-x-claims-that-are-simply-wrong	7
-a-documented-but-stale-wrong	4
-wrong-or-misleading-claims-in-this-slice	2
