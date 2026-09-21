@@ -2601,7 +2601,6 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # turn and persists nothing.
   let isWake = args{"wake"}.getBool(false)
   var turnContent = content
-  let hasModel = args.kind == JObject and args.hasKey("model")
   let hasThinking = args.kind == JObject and args.hasKey("thinking")
   let hasTitle = args.kind == JObject and args.hasKey("title")
   let hasCwd = args.kind == JObject and args.hasKey("cwd")
@@ -2936,6 +2935,10 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     ct.updateConversationHeader(sessionId,
       %*{"providerOverride": entry.providerOverride})
   if args.kind == JObject and args.hasKey("model"):
+    # The arg was never assigned to the entry: the block persisted the
+    # header's own (stale) value back — a model-only session call updated
+    # nothing and the turn resolved the global default (t_provider).
+    entry.modelOverride = args{"model"}.getStr("").strip()
     ct.updateConversationHeader(sessionId,
       %*{"modelOverride": entry.modelOverride})
   if args.kind == JObject and args.hasKey("thinking"):
