@@ -2941,7 +2941,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   if args.kind == JObject and args.hasKey("thinking"):
     entry.thinkingEffort = args{"thinking"}.getStr("").strip()
     if entry.thinkingEffort notin ["", "low", "medium", "high", "max"]:
-      return %*{"error": "thinking must be low, medium or high (empty clears)"}
+      return %*{"error": "thinking must be low, medium, high or max (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})
   # Conversation controls: presence of the key means set (empty `approvals`

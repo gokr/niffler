@@ -200,7 +200,16 @@ proc newCatalog*(nc: NatsConnection): Catalog =
                      "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default). Values: low, medium, high, max (deepest)"},
         "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"},
         "profile": {"type": "string", "description": "Named tool profile resolved into the direct toolset when the conversation is first built; ignored on resume (the snapshot is byte-stable)"},
-        "wake": {"type": "boolean", "description": "Wake a dormant conversation: run a turn that folds pending background-settlement notices in, so a parent learns its subagents finished without the human asking. Declined (no turn) when wakes are disabled via NIF_AGENT_WAKES=0, when the consecutive-wake budget (NIF_AGENT_WAKES, default 3) is spent, or when nothing is pending. Used by the agent component, not UIs."}
+        "wake": {"type": "boolean", "description": "Wake a dormant conversation: run a turn that folds pending background-settlement notices in, so a parent learns its subagents finished without the human asking. Declined (no turn) when wakes are disabled via NIF_AGENT_WAKES=0, when the consecutive-wake budget (NIF_AGENT_WAKES, default 3) is spent, or when nothing is pending. Used by the agent component, not UIs."},
+        "discovery": {"type": "object", "description": "Per-call discovery projection passed to the discover tool ({include?, exclude?, components?}); presence of the key replaces the turn's default projection. The handler honours it; the argument was omitted from this schema (A124 — UIs sent it schemaless)"},
+        "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 16,
+                  "description": "Per-conversation tool allowlist frozen at first call (the header carries it); empty/absent leaves the fundamental direct set"},
+        "maxRounds": {"type": "integer", "minimum": 1,
+                      "description": "Per-turn LLM round budget (frozen at first call with the value 1..NIF_MAX_TURN_ROUNDS); ignored on resume"},
+        "maxCalls": {"type": "integer", "minimum": 1, "maximum": 500,
+                     "description": "Per-turn total tool-dispatch budget (frozen at first call); ignored on resume"},
+        "maxTokens": {"type": "integer", "minimum": 1,
+                      "description": "Per-turn cumulative token budget (frozen at first call); ignored on resume"}
       },
       "required": ["sessionId"],
       "x-harness": {"hidden": true}

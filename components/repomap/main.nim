@@ -35,7 +35,10 @@ const
   MAP_MAX_BUDGET = 4096
   WALK_MAX_FILES = 5000        # census cap (same as lsp warmup)
   WALK_BUDGET_SECS = 5.0       # census wall-clock budget
-  BUILD_TIMEOUT_MS = 90_000    # per-build cap inside the tool's 120s
+  # No per-build cap: the build is parse-on-miss per file (mtime-keyed,
+  # never re-parsing an unchanged file), so the tool call's x-harness
+  # timeoutMs is the per-build cap. A separate 90s constant would be a
+  # second clock nobody reads — deleted rather than wired (A495).
   TAGS_CACHE_DIR = "var" / "repomap-tags"   # CACHE_VERSION lives in the dir
                                              # name when the format changes
 
@@ -110,7 +113,9 @@ proc saveCachedTags(absFile: string, mtime: float, rel: string,
 
 proc census(ws: string): seq[string] =
   ## Bounded source-file census of the workspace (extension coverage of the
-  ## tags tiers: .nim/.nims/.go/.py/.ts). Hidden dirs and known junk are
+  ## tags tiers: .nim/.nims, .go, .py, .ts, .js, .c/.h, .cpp/.hpp/.cc/.hh/
+  ## .cxx/.hxx, .rs, .rb — see main.nim's walk below). Hidden dirs and known
+  ## junk are
   ## skipped; caps keep huge trees O(budget).
   var deadline = epochTime() + WALK_BUDGET_SECS
   var stack = @[ws]
