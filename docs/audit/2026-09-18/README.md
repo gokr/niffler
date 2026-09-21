@@ -77,3 +77,27 @@ outcome in `applied.md`. Nothing but `docs/MANUAL.md` is edited by this flow;
 Status legend for the ledger: `apply` (edit is in `edits/batch-N.json`),
 `applied`, `already` (docs were right by now), `skip` (belongs elsewhere),
 `code` (needs a code change), `unclear` (could not verify).
+
+## Closed (round three, 2026-09-21)
+
+The ledger is closed — `python3 status.py`:
+
+    ledger rows: 822
+      applied                439   (incl. the 37 code rows, marked below)
+      decided:skip           193
+      decided:already        190
+
+Every `code` verdict row is applied — commits `fccbb74` (the 28 pending +
+build-gap/b1-b4 follow-through) and `15c1888` (A124/A495/A496, the three
+"filed separately" rows whose filing had never happened). The per-row
+outcomes, verification commands and live probes (store-migrate 6-kind
+barrel→sqlite, hooks dedup, console attribution, store put guard, SDK
+session seam) are recorded in `code-bugs.md`, "Round three". Nothing is
+open: the X/Y/Z special sections, the (Z) trims and the wave-two coverage
+gap (infra-and-examples + the three store engines) are all decided, and
+the build-system gap's "check other multi-file components" follow-up
+verified every NIM_SRCS/wildcard target covered.
+
+Removal of this directory is tracked in issue #75; the zh-manual re-sync
+that must precede it is #74. Issues: #71 closed with the round-three
+evidence.
