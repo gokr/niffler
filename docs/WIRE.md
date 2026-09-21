@@ -195,7 +195,15 @@ ev.session.<id>.status      # {sessionId, turnId?, provider?, providerSource?, m
                        #   cache reports cumulative provider-reported
                        #   prompt-cache reads (A3; present when the provider
                        #   sends prompt_tokens_details). Also emitted by
-                       #   model-only session calls (no inference)
+                       #   model-only session calls (no inference). A manual
+                       #   /compact publishes a frame itself: reason
+                       #   "reset:compact", generation, beforeTokens,
+                       #   afterTokens and usedTokens = the local estimate
+                       #   flagged estimated: true (the commit zeroes the
+                       #   measured size — this projection has not been
+                       #   through a provider yet); the next request's
+                       #   measured usage replaces it, and a declined
+                       #   compaction publishes nothing
 ev.session.<id>.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
                        #   warning?|trimmed?}; context-window pressure
                        #   (75% warn, 90% trim)
@@ -341,7 +349,9 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   request (see `components/llm/main.go`).
 - `cancel.<component>` — published by a session runner when a turn cancel
   lands while a tool dispatch is in flight (event envelope
-  `{sessionId, tool, ts}`). Components opt in by subscribing their own
+  `{sessionId, tool, ts}`) — a single call, or a parallel wave, where each
+  remaining call gets its own publish and the usual short grace for a partial
+  reply. Components opt in by subscribing their own
   subject and matching `sessionId` against the injected `__session.session`
   private context (`x-harness.sessionId`); bash kills the running command's
   process group (exit 130), mcp-bridge aborts the in-flight MCP call —
@@ -356,8 +366,11 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   `""` for `__session.session` and cannot spoof a session id. Components
   without a subscription drop the message and run to completion or deadline —
   request/reply callers that stop waiting only abandon the reply; the target
-  work is not stopped. A generic `ev.cancel.<call-id>` subject remains a
-  possible future addition.
+  work is not stopped.
+
+The LLM retry backoff is sliced and pumped (~250 ms slices), so a stop lands
+within a quarter second instead of queueing behind the whole delay. A generic
+`ev.cancel.<call-id>` subject remains a possible future addition.
 
 ## Settlement notices
 
@@ -621,6 +634,16 @@ so any attached interactive client can step in; direct (non-session) calls
 broadcast immediately. The gate verdict is published on
 `ev.approval.resolved` so other clients dismiss stale modals. Timeout →
 denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
+
+The wait itself is not a dead sleep: while a verdict is pending, `askHuman`
+pumps the same idle surfaces a dispatch wait does (core's `svc.core.call`, a
+runner's busy/cancel/steer/advice/nested pumps), so a session call arriving
+mid-wait gets the instant `busy` refusal instead of going unanswered until the
+timeout, and a `__cancel` control aborts the wait as a denial — the turn ends
+cancelled instead of waiting out the approval timeout. A nested approval
+question (reachable through those pumps) is denied immediately: the human can
+answer one modal at a time, and the model retries the tool next round against
+a free gate.
 
 ## Conversation controls (`/approvals`, `/limit`, `/compact`)
 

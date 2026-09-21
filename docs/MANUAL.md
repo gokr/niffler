@@ -785,6 +785,14 @@ included):
 - A tool approval that no client answers times out after 5 minutes
   (`timeoutMs`, 300 s) and is denied (the log says `timed out after Ns —
   denying`); a `/limit` keep-going question has its own shorter window (120 s).
+- While the gate waits, the harness stays responsive: the wait loop pumps the
+  same idle surfaces a tool dispatch does, so a session call arriving during
+  an approval wait is answered instantly with `busy` (not silence until the
+  timeout), steering stays live, and a stop (`__cancel`) aborts the wait as a
+  denial — the turn ends cancelled instead of waiting out the 5 minutes. A
+  nested approval question (reachable through those pumps) is denied
+  immediately — the human answers one modal at a time, and the model retries
+  the tool next round against a free gate.
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
 - Core's own destructive tools are named `spawn`, `kill`, `remove` and
   `conversation_delete`; they are gated by name inside `handleCoreTool`, not
@@ -865,7 +873,9 @@ A session call that arrives while a turn is running is refused immediately
 with `busy` ("the conversation is mid-turn — retry when the turn finishes")
 rather than waiting: turns never nest, and a client that waits instead just
 expires its own timeout (this is what made `/export` look broken during a long
-turn).
+turn). The refusal holds through an approval wait too — a call landing while
+the conversation sits at an approval prompt gets the same instant answer,
+because the wait pumps the same idle surfaces a dispatch does.
 
 ## Context window
 
@@ -935,6 +945,9 @@ reports:
   loading the entire transcript.
 - Core emits `ev.session.<id>.status` with the resolved provider/model/context and
   current `usedTokens`; clients render `usedTokens / context` directly.
+  A manual `/compact` publishes one of these frames itself, flagged
+  `estimated: true` with the local estimate, until the next request re-measures
+  (see [Conversation controls](#conversation-controls-approvals-limit-and-compact)).
   When the provider reports cached input (`prompt_tokens_details.cached_tokens`),
   the status event also carries the conversation's cumulative cache split as
   `cache {prompt, read, hitRate}` (summed prompt and cached tokens, ratio in
@@ -3389,7 +3402,12 @@ can exit under them (the `console` reconnects on its own when a new
 harness appears). That mark is a registration, not a lease: a
 client killed without `reg.depart` keeps an autostarted core up — and keeps
 core believing a human is reachable for approvals — until the catalog drops
-it (the `ui` registry's 20 s lease is a separate clock, see
+it. A hard exit (SIGKILL, a closed terminal, a `/restart` successor) has no
+supervisor to match its pid, so the system catalog sweeps dead interactive
+clients by pid liveness every 30 s (`lost (client process gone)` in the log),
+which keeps the client count — and the autostart shutdown — honest; pid reuse
+can briefly keep a stale entry alive. The `ui` registry's 20 s lease remains
+a separate clock (see
 [Clients and the UI registry](#clients-and-the-ui-registry)). An
 **autostarted** core counts them: when the last one departs it shuts down
 after `NIF_AUTOSTART_IDLE_S` (default 10s —
