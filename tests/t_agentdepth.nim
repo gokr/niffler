@@ -56,7 +56,8 @@ proc bootSandbox(tag, maxDepth: string) =
   var nc = waitConnect(url)
   defer: nc.close()
 
-  var extra = @[("NIF_AUTO_APPROVE", "1"), ("NIF_RUNNER_IDLE_S", "2")]
+  var extra = @[("NIF_AUTO_APPROVE", "1"), ("NIF_RUNNER_IDLE_S", "2"),
+                   ("NIF_AGENT_NOTICE_HOLD", "0")]
   if maxDepth.len > 0:
     extra.add(("NIF_AGENT_MAX_DEPTH", maxDepth))
   var coreProc = startComponent(sandbox.sandboxBin("niffler"), url, root = root,
