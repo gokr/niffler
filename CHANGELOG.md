@@ -8,6 +8,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **docs/WIRE.md documents the two session append channels, and the MANUAL's
+  repomap detail is corrected.** The wire spec — the one document a client
+  codes against — listed neither append channel: `svc.session.<id>.map`
+  (repomap) and `svc.session.<id>.diag` (lsp) were absent from the subject
+  list, and `ev.session.<id>.map` / `ev.session.<id>.diagnostics` from the
+  session-event enumeration, while their siblings `.steer` and `.advise` were
+  there. Both channels and both observer events are now specified with their
+  real payloads (component → runner `{workspace, conversationId, map}` /
+  `{conversationId, path, text}`; runner → observers `{sessionId, workspace,
+  bytes}` / `{sessionId, path, bytes}`), including the once-only append and
+  the never-frozen-prefix rule. The MANUAL's repomap section named
+  `svc.session.<id>.map` as what observers see, but that is the runner's drain
+  subject — the event whose fields it listed is `ev.session.<id>.map` — and it
+  now also records the per-build cap (90 s inside the tool's 120 s envelope),
+  which was missing. The localized manuals carry the repomap row but no
+  "in detail" sections; English stays the source, so they are left as-is.
+
 - **A conversation's runner answers while it waits for a human approval.**
   `askHuman`'s wait loop used to pump nothing: a session call that arrived
   while a turn sat at an approval prompt went unanswered — not even the
