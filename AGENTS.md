@@ -135,7 +135,8 @@ working in every language.
   schema to the persisted direct set, changing the request prefix once; the
   append is durable and never removes or rewrites earlier tools.
   Cache hits are surfaced per turn in `ev.session.<id>.context` status events
-  (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full misses are a
+  (the nested `cache {prompt, read, hitRate}`, plus the header's
+  `cachePrompt`/`cacheRead`/`cacheHitRate`); the only legitimate full misses are a
   trim (`reason: "reset:trim"`) and a sticky `invoke` promotion
   (`reason: "reset:tools"`, emitted only when the direct set actually grew).
 - **Subagent continuation is append-only by construction**
