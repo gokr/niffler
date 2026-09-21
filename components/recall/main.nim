@@ -251,13 +251,21 @@ proc main() =
         else: recallDefaultLines)
       if mode == "search":
         # The conversation's whole canonical history, projection or not. The
-        # runner injects __session for session calls (x-harness.sessionId); an
-        # explicit "session" is how a test — or a look at a child's history —
-        # names another conversation.
-        let conv = block:
-          let explicit = args{"session"}.getStr("")
-          if explicit.len > 0: explicit
-          else: args{"__session"}{"session"}.getStr("")
+        # runner injects __session for session calls (x-harness.sessionId);
+        # direct bus callers (tests, cli) carry no lease and name the target
+        # with an explicit "session". OWNERSHIP (search reads whole
+        # conversations — the store's list does not leak whole kinds from a
+        # session either): a leased call may search only its own
+        # conversation; an explicit session that is not the caller's own is
+        # refused, so a session cannot read another conversation's history.
+        let explicit = args{"session"}.getStr("")
+        let injected = args{"__session"}{"session"}.getStr("")
+        if injected.len > 0 and explicit.len > 0 and explicit != injected:
+          return errResult(
+            "context_recall: search may only read this conversation's " &
+            "history — " & explicit & " does not belong to it", "forbidden")
+        let conv = if explicit.len > 0: explicit
+                   else: injected
         try:
           return okResult(searchConversation(c, conv, query,
                                             args{"role"}.getStr(""), limit))

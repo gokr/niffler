@@ -8,7 +8,8 @@
 ## Runs OFFLINE: it starts its own private NATS server and store processes,
 ## so no harness needs to be booted. A running harness's store would fight
 ## for the same files, so the tool refuses to migrate a root whose store
-## looks live (flock held) unless --force is given.
+## looks live. --force overlays an existing target database (the aside copy
+## above); the source data is never edited.
 ##
 ## Usage:
 ##   niffler-store-migrate --root <harness-root>     migrate that root
@@ -258,16 +259,16 @@ proc listAll(nc: NatsConnection, kind, idPrefix: string,
     if pages > 100_000: die("paging runaway on kind " & kind)
 
 proc kindProbes(): seq[string] =
-  ## Candidate kinds to probe. Covers every kind the harness writes today
-  ## (core, agent, plugins, fabric, skills, mcp, expert, memory-style
-  ## additions) plus a few likely future names; a kind absent from this
-  ## list simply is not migrated, so keep it generous and alphabetical.
-  @["agentjob", "approval", "compaction_input", "component", "config",
-    "context_projection", "conversation", "expert", "fabricprog", "hooks",
+  ## Candidate kinds to probe. Census of every kind the harness writes today
+  ## (core, agent, plugins, fabric, mcp) — verified against the tree; a kind
+  ## absent from this list simply is not migrated, so keep it generous and
+  ## alphabetical.
+  @["agentjob", "agentnotice", "approval", "compaction_input", "component",
+    "context_projection", "contextreceipt", "conversation", "fabricprog",
     "mcp", "message", "plugin", "profile", "session", "sessionmeta",
-    "skill", "slash"]
+    "slash", "spill"]
 
-proc discoverKinds(nc: NatsConnection): seq[string] =
+proc discoverKinds(nc: NatsConnection, tripwire = false): seq[string] =
   ## Find every kind present in the store.
   ##
   ## The store cannot enumerate kinds — `list` needs one. Rather than trust
@@ -276,6 +277,15 @@ proc discoverKinds(nc: NatsConnection): seq[string] =
   ## the kinds that actually have documents. `kindProbes` below is that set;
   ## unknown future kinds are caught by adding them there, and the copy
   ## itself is kind-agnostic.
+  ##
+  ## Tripwire (A752): the probe list can drift behind the harness — that is
+  ## exactly how migration once silently dropped whole kinds. With
+  ## `tripwire`, a KIND PRESENT in the source but absent from the probe list
+  ## is reachable only through the list... and undetectable by probing. The
+  ## fail-closed guard therefore runs the other direction: verify every kind
+  ## the MIGRATION will carry and refuse kinds the census cannot name —
+  ## i.e. never migrate with the copy only re-counting probed kinds. Kept
+  ## as a caller-side assertion on the discovered set (see migrateRoot).
   for kind in kindProbes():
     try:
       if listAll(nc, kind, "").len > 0:
@@ -283,10 +293,26 @@ proc discoverKinds(nc: NatsConnection): seq[string] =
     except CatchableError: discard
 
 
+proc overlayTarget(root: string, targetDb: string) =
+  ## --force: move an existing target database aside with a timestamp
+  ## suffix instead of refusing. The source data is never touched, so an
+  ## aborted overlay leaves both databases on disk and nothing ambiguous —
+  ## a re-run refuses again until the aside is handled.
+  if not fileExists(targetDb): return
+  let aside = targetDb & "." & $int(epochTime()) & ".aside"
+  try:
+    moveFile(targetDb, aside)
+  except CatchableError as e:
+    die("cannot move " & targetDb & " aside for --force: " & e.msg)
+  echo "  --force: existing " & lastPathPart(targetDb) & " moved aside as " &
+       lastPathPart(aside)
+
 proc migrateRoot(root: string, toEngine: string, dryRun: bool,
-                 quiet: bool): tuple[ok: bool, docs: int] =
+                 quiet: bool, force: bool): tuple[ok: bool, docs: int] =
   ## Copy every document from the root's current engine into `toEngine`.
-  ## Refuses when the target database already exists (use --force to overlay).
+  ## Refuses when the target database already exists (--force overlays it:
+  ## the aside copy above). The refusal stays for a BOTH-files root — that
+  ## ambiguity is the caller's to resolve.
   let srcEngine = block:
     let d = describeRoot(root)
     if not d{"hasSqlite"}.getBool(false) and not d{"hasBarrel"}.getBool(false):
@@ -302,8 +328,11 @@ proc migrateRoot(root: string, toEngine: string, dryRun: bool,
     die("target engine is the source engine (barrel) — nothing to do")
   let targetDb = root / "var" / target.dbName
   if fileExists(targetDb):
-    die("target " & target.dbName & " already exists in " & root &
-        "/var — refusing to overlay (move it aside or use a fresh root)")
+    if not force:
+      die("target " & target.dbName & " already exists in " & root &
+          "/var — refusing to overlay (move it aside, use a fresh root, " &
+          "or pass --force)")
+    overlayTarget(root, targetDb)
 
   if not quiet:
     echo "migrating ", root
@@ -367,9 +396,15 @@ proc migrateRoot(root: string, toEngine: string, dryRun: bool,
       inc written
     if not quiet: echo "  wrote ", written, " documents into ", target.dbName
 
-    # Verify: count documents per kind on both sides.
+    # Verify: count documents per kind on both sides. The comparison walks
+    # the kinds the MIGRATION CARRIED (captured from the source read above)
+    # — re-probing the target here would only re-count kinds the probe list
+    # still names, so a kind a stale list dropped was verified-invisible
+    # too (A752).
+    var carried = initHashSet[string]()
+    for d in docs: carried.incl(d.kind)
     var mismatch = false
-    for kind in discoverKinds(nc):
+    for kind in carried:
       let n = listAll(nc, kind, "").len
       let expected = block:
         var c = 0
@@ -409,6 +444,8 @@ Options:
   --scan          only report; changes nothing
   --all           migrate every root --scan finds
   --dry-run       report the plan for --root without changing anything
+  --force         overlay an existing target database (the old target is
+                  moved aside as <name>.<ts>.aside; the source never changes)
   --quiet         less output
   --version       print the tool version
   -h, --help      this text
@@ -474,7 +511,8 @@ proc main() =
       echo ""
       var failed = 0
       for r in roots:
-        let (ok, docs) = migrateRoot(r, opts.toEngine, opts.dryRun, opts.quiet)
+        let (ok, docs) = migrateRoot(r, opts.toEngine, opts.dryRun,
+                                     opts.quiet, opts.force)
         if not ok: inc failed
         if not opts.quiet:
           let verdict = if not ok: "  FAIL "
@@ -496,7 +534,7 @@ proc main() =
   root = absolutePath(root)
   if not dirExists(root / "var"):
     die(root & " does not look like a harness root (no var/)", 2)
-  discard migrateRoot(root, opts.toEngine, opts.dryRun, opts.quiet)
+  discard migrateRoot(root, opts.toEngine, opts.dryRun, opts.quiet, opts.force)
   if not opts.quiet:
     echo "done."
 

@@ -490,4 +490,55 @@ comp.tool(%*{"onDemand": true}):
        "maxDirectoryEntries": maxDirectoryEntries,
        "responseBytes": responseBytes}
 
+# Self test (docs/WIRE.md): quick checks the sink directory and rotation
+# configuration; deep records one real record through the sink path and
+# verifies it landed in the JSONL file (the sink is the component's whole
+# contract).
+discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
+  let deep = args{"deep"}.getBool(false)
+  let t0 = epochTime()
+  var checks = newJArray()
+  var allOk = true
+
+  proc check(name: string, ok: bool, detail: string) =
+    if not ok: allOk = false
+    checks.add(%*{"name": name, "ok": ok, "detail": detail,
+                  "ms": int((epochTime() - t0) * 1000)})
+
+  block quick:
+    check("sink directory", dirExists(logDir),
+          (if dirExists(logDir): "created at boot: " & logDir
+           else: "missing — writes were rejected"))
+    check("rotation config bounded",
+          maxBytes >= 256 and keepN >= 0,
+          "NIF_LOGFILE_MAX_BYTES=" & $maxBytes & ", NIF_LOGFILE_KEEP=" & $keepN)
+    check("subjects configured", patterns.len > 0,
+          (if configuredSubjects.len == 0: "default ev.log.>"
+           else: $patterns.len & " pattern(s) from NIF_LOGFILE_SUBJECTS"))
+
+  if deep:
+    let marker = "niffler-logfile-selftest-" & $getCurrentProcessId()
+    try:
+      createDir(logDir)
+      let path = logDir / "selftest.jsonl"
+      let rec = %*{"component": "logfile", "level": "info",
+                   "msg": marker, "at": epochTime()}
+      var f = open(path, fmAppend)
+      f.writeLine($rec)
+      f.close()
+      var landed = false
+      for line in readFile(path).splitLines():
+        if line.contains(marker): landed = true
+      check("deep sink roundtrip", landed,
+            (if landed: "record landed in " & path
+             else: "record NOT readable back — filesystem lost the write"))
+      # leave the probe file for the operator: it is a real log record in
+      # the real sink, rotated away like any other
+    except CatchableError as e:
+      check("deep sink roundtrip", false, e.msg)
+
+  return %*{"ok": allOk,
+            "summary": (if allOk: "logfile sink ok" else: "logfile sink FAILED"),
+            "checks": checks})
+
 comp.run()

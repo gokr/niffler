@@ -601,7 +601,13 @@ proc main() =
           var alreadyManifest = false
           for c in sup.children:
             if c.name == name: alreadyManifest = true
-          if alreadyManifest: continue  # shipped manifest definition wins
+          if alreadyManifest:
+            # The manifest's shipped definition wins — but say so: a stale
+            # stored record must not silently shadow (or be shadowed by) a
+            # component the operator thinks was replaced (A801).
+            echo "core: stored component " & name &
+                 " skipped — the manifest declares it"
+            continue
           if fileExists(binary):
             let replicas = min(max(item{"value"}{"replicas"}.getInt(1), 1), 16)
             var restoreArgs: seq[string]

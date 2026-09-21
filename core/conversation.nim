@@ -220,6 +220,7 @@ type
     messages*: seq[JsonNode]
     persister*: Persister
     workspace*: string       ## absolute, immutable after conversation creation
+    providerOverride*: string ## session-local provider nickname; empty = global default
     modelOverride*: string
     thinkingEffort*: string  ## "" (provider default) | low | medium | high | max
     allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
@@ -254,7 +255,7 @@ proc newPersister*(ct: CoreTools): Persister =
     discard ct.storePutRev("conversation", result.convId,
       %*{"createdAt": epochTime(),
          "model": getEnv("NIF_OPENAI_MODEL", ""),
-         "modelOverride": "", "title": ""})
+         "providerOverride": "", "modelOverride": "", "title": ""})
   except CatchableError:
     discard
 
@@ -430,7 +431,7 @@ proc ensureConversationHeader*(ct: CoreTools, convId: string) =
     discard ct.storePutRev("conversation", convId,
       %*{"createdAt": epochTime(),
          "model": getEnv("NIF_OPENAI_MODEL", ""),
-         "modelOverride": "", "title": ""})
+         "providerOverride": "", "modelOverride": "", "title": ""})
   except CatchableError:
     discard
 
@@ -460,9 +461,10 @@ proc updateConversationHeader(ct: CoreTools, convId: string, fields: JsonNode) =
   except CatchableError as e:
     echo "core: WARNING conversation metadata persistence failed: " & e.msg
 
-proc persistConversationRuntime(p: Persister, modelOverride, provider,
+proc persistConversationRuntime(p: Persister, providerOverride, modelOverride, provider,
                                 model: string) =
   var fields = %*{
+    "providerOverride": providerOverride,
     "modelOverride": modelOverride,
     "provider": provider,
     "model": model,
@@ -982,9 +984,12 @@ proc stopTokenStream*(ct: CoreTools) =
   ct.tokenStream.cb = nil
 
 proc resolveTurnConfig(ct: CoreTools, p: var Persister,
-                       modelOverride: string): JsonNode =
-  ## Resolve the backend once for a turn or an interactive model selection.
+                       providerOverride, modelOverride: string): JsonNode =
+  ## Resolve the backend once for a turn using this conversation's provider
+  ## pin; an empty pin deliberately falls back to the harness default.
   var resolveArgs = newJObject()
+  if providerOverride.len > 0:
+    resolveArgs["provider"] = %providerOverride
   if modelOverride.len > 0:
     resolveArgs["model"] = %modelOverride
   let resolved = ct.dispatchToolCall("llm_resolve", resolveArgs, 10_000)
@@ -1768,7 +1773,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   result.reason = "compacted"
 
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
-              modelOverride: string,
+              providerOverride, modelOverride: string,
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
               thinkingEffort = "", turnContent = "", workspace = "",
@@ -1816,7 +1821,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   var selectedModel = modelOverride
   var resolvedProvider = ""
   try:
-    var status = resolveTurnConfig(ct, p, modelOverride)
+    var status = resolveTurnConfig(ct, p, providerOverride, modelOverride)
     status["turnId"] = %turnId
     resolvedProvider = status{"provider"}.getStr("")
     selectedModel = status{"model"}.getStr(selectedModel)
@@ -2275,7 +2280,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       turnTokens += p.contextUsed
     if ctxSize > 0:
       p.ctxSize = ctxSize
-    p.persistConversationRuntime(modelOverride, usedProvider, usedModel)
+    p.persistConversationRuntime(providerOverride, modelOverride, usedProvider, usedModel)
     if onEvent != nil:
       var statusEv = %*{
         "sessionId": sessionId,
@@ -2670,6 +2675,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
     entry.messages = @[%*{"role": "system", "content": sp}]
+    entry.providerOverride = header{"providerOverride"}.getStr("")
     entry.modelOverride = header{"modelOverride"}.getStr("")
     entry.thinkingEffort = header{"thinkingEffort"}.getStr("")
     # Frozen per-session controls (subagent scoping): the header carries
@@ -2818,14 +2824,34 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       if trimThrough > 0:
         var keptM: seq[JsonNode] = @[]
         var keptN: seq[CtxNode] = @[]
+        var firstKeptSeq = 0
         for i, m in stored:
           let n = storedNodes[i]
           # The system node has no canonical id and is never trimmed.
           if n.source == nsCanonical and n.canonicalSeq <= trimThrough:
             continue
+          if firstKeptSeq == 0 and n.source == nsCanonical:
+            firstKeptSeq = n.canonicalSeq
           keptM.add(m)
           keptN.add(n)
         if keptM.len < stored.len:
+          # The reload path must re-insert the omission notice trimTurns
+          # wrote at cut time (A637): the header's watermark says a span was
+          # dropped, but without the notice the model sees a frozen system
+          # node flowing into mid-history turns — no durable pointer that
+          # canonical history carries what is missing from this projection.
+          # The notice names the dropped RANGE (ids below the first kept
+          # canonical seq); trimTurns' exact coveredFrom/coveredTo pair
+          # lives in the live run only, so the reload notice is range-honest
+          # rather than byte-identical.
+          let notice = %*{"role": "system", "content":
+            "[history omitted without summary: earlier messages (canonical " &
+            "seq < " & $firstKeptSeq & ") were dropped to fit the model " &
+            "window — the originals remain in canonical history]"}
+          keptM.insert(notice, 0)
+          keptN.insert(CtxNode(source: nsNotice,
+                               id: sessionId & "#omit-reload",
+                               projectionIndex: 0), 0)
           stored = keptM
           storedNodes = keptN
     for m in stored: entry.messages.add(m)
@@ -2905,8 +2931,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
 
   # Presence of the key means "set/clear the override"; omission preserves
   # the conversation's previous selection.
+  if args.kind == JObject and args.hasKey("provider"):
+    entry.providerOverride = args{"provider"}.getStr("").strip()
+    ct.updateConversationHeader(sessionId,
+      %*{"providerOverride": entry.providerOverride})
   if args.kind == JObject and args.hasKey("model"):
-    entry.modelOverride = args{"model"}.getStr("").strip()
     ct.updateConversationHeader(sessionId,
       %*{"modelOverride": entry.modelOverride})
   if args.kind == JObject and args.hasKey("thinking"):
@@ -3040,7 +3069,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       var resolvedStatus: JsonNode = nil
       try:
         let resolved = resolveTurnConfig(ct, entry.persister,
-                                         entry.modelOverride)
+                                         entry.providerOverride, entry.modelOverride)
         compactProvider = resolved{"provider"}.getStr("")
         compactModel = resolved{"model"}.getStr(compactModel)
         resolvedStatus = resolved
@@ -3100,7 +3129,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
                        "tools": exportTools,
                        "sessionId": sessionId,
                        "stream": true}
-      let resolved = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      let resolved = resolveTurnConfig(ct, entry.persister, entry.providerOverride, entry.modelOverride)
       let selectedModel = resolved{"model"}.getStr(entry.modelOverride)
       let provider = resolved{"provider"}.getStr("")
       if selectedModel.len > 0:
@@ -3126,17 +3155,18 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     try:
       # overlay the resolved config onto the literal — do NOT reassign, or
       # session-local fields (sessionId, thinkingEffort, token counters) are lost
-      let resolved = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      let resolved = resolveTurnConfig(ct, entry.persister, entry.providerOverride, entry.modelOverride)
       for key, fieldValue in resolved:
         status[key] = fieldValue
       entry.persister.persistConversationRuntime(
-        entry.modelOverride, status{"provider"}.getStr(""),
-        status{"model"}.getStr(entry.modelOverride))
+        entry.providerOverride, entry.modelOverride,
+        status{"provider"}.getStr(""), status{"model"}.getStr(entry.modelOverride))
     except CatchableError as e:
       status["warning"] = %e.msg
     onEvent("status", status)
     sessions[sessionId] = entry
     status["ok"] = %true
+    status["providerOverride"] = %entry.providerOverride
     status["modelOverride"] = %entry.modelOverride
     return status
 
@@ -3173,7 +3203,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
 
   var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
-                      entry.modelOverride, entry.exposure, onEvent,
+                      entry.providerOverride, entry.modelOverride, entry.exposure, onEvent,
                       entry.thinkingEffort, turnContent, entry.workspace,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
                       entry.limitRounds, entry.limitTokens, entry.limitSeconds,
@@ -3182,8 +3212,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # turnError distinguishes "the turn failed" from "the model said this" so
   # drivers (agent_run) report child LLM failures as failures, not text.
   var sessionResult = %*{"ok": true, "sessionId": sessionId, "reply": reply,
+                  "providerOverride": entry.providerOverride,
                   "modelOverride": entry.modelOverride,
-                  "thinkingEffort": entry.thinkingEffort,
                   "approvals": entry.approvalMode,
                   "limits": %*{"rounds": entry.limitRounds,
                                 "tokens": entry.limitTokens,

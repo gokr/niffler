@@ -103,6 +103,11 @@ discard comp.tool("put", putSchema,
       return errResult(
         "sessions may only put curated kinds (fabricprog); '" & kind &
         "' is harness-managed", "forbidden-kind")
+    if kind.len == 0 or id.len == 0 or value == nil or value.kind == JNull:
+      # Same contract as both Go engines (put needs kind, id and value): `$`
+      # on a nil JsonNode is a SIGSEGV inside this process — the caller sees
+      # a timeout and the supervisor hides the crash as a restart.
+      return errResult("put needs kind, id and value", "bad-request")
     let cur = getRev(kind, id)
     if expectRev > 0:
       if cur == 0:

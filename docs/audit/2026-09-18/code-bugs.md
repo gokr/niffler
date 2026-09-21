@@ -112,3 +112,46 @@ not in the prerequisite list, so editing them rebuilds nothing and the tests
 silently run the old binary. I hit this with `roots.nim`; `touch
 components/lsp/main.nim` was the workaround. Other multi-file components should
 be checked for the same omission.
+
+## Round three — the pending 28 `code` rows, all applied and verified
+
+The 28 rows `code-bugs.md` listed as decisions for the code owner are now
+applied. Everything was gated: `make build` clean, `test-ctxcompact`,
+`test-recall`, `test-discover`, `test-hooks`, `test-processes`, `test-store`,
+`test-logfile`, `test-console` PASSED; the SDK macro change was verified with
+a live component echo (`comp.sessionContext`); the three live probes above
+(store-migrate 6-kind barrel→sqlite, hooks dedup, console attribution, store
+put nil guard) reproduced the audit's failures and passed after the fixes.
+
+| id | outcome |
+|---|---|
+| A522 | components/builder/main.nim — the `- defines:` doc line is unwrapped, so the SDK's param-doc extractor reads the whole sentence |
+| A538 | components/builder/main.nim — Nim build branch passes 300_000 to runCmd (matches the advertised x-harness timeout; the schema was already 300000), so an agent-written Nim component is killed at its own budget, not procutil's 120s default |
+| A539+A521 | components/builder/main.nim — build's `defines` is `seq[string]` (the SDK publishes {type: array, items: string} and decodes argStrSeq); sdk/niffler/sdk.nim's toolImpl needed the nnkBracketExpr branch first ($ on a bracket node was invalid) |
+| A558 | components/builder/main.nim — x-harness sessionId: true on build; cancel.builder side-channel (bash's drainCancels pattern) kills the running compile via runCmd's cancelled probe; queued dead-turn builds skip; sdk/niffler/sdk.nim exposes __session to block-form handlers as comp.sessionContext (verified with a live component echo) |
+| A567 | components/cli/main.nim — `--timeout 5` (space form) consumes the next token; usage text still documents both spellings |
+| A568 | components/cli/main.nim — wait's positional secs is parsed in a try; a non-numeric value prints usage and exits 2 |
+| A582 | components/console/main.nim — non-envelope messages (reg.publish/reg.depart) render as `event <subject>  <object>` instead of an empty body (verified live) |
+| A583 | components/console/main.nim — result/error lines echo a shortened envelope id and keep an id->tool map of rendered calls, so a result names its tool (verified live) |
+| A599 | components/dialog/dialog.sh — dialog_ask headless answers `no-display` (nobody could answer) vs `timeout` (nobody answered); dialog_show reports shown yes/no from the backend's exit status (|| true removed — a failed zenity/notify-send is no longer a fake shown) and echoes the normalized kind |
+| A614 | components/compaction/main.nim — the tool's x-harness timeoutMs is 600000 (core's clamp ceiling), so 121-600s NIF_COMPACTION_TIMEOUT_MS configurations are no longer cut at dispatch; core/dispatch.nim's timeout precedence is documented (the tool cap applies to unbounded callers; a deadline-bounded caller keeps its own bound) |
+| A632 | core/dispatch.nim — invokeTool dispatches the RESOLVED bare name; tests/t_discover.nim gained the dotted-invoke case (PASSED) |
+| A637 | core/conversation.nim — the trimThrough reload path re-inserts the omission notice (range-honest: canonical seq < firstKeptSeq) so a restarted conversation keeps a durable pointer to the dropped span; make test-ctxcompact's trimd restart block PASSED unchanged |
+| A640 | components/recall/main.nim — mode:search with an injected session refuses an explicit session that is not the caller's own (error kind forbidden); direct bus callers keep unrestricted access; tests/t_recall.nim asserts the cross-conversation refusal and the own-session path (PASSED) |
+| A659+A678+A698+A729 | components/grep|logfile|observe|hooks — every one registers the SDK's hidden selftest (docs/WIRE.md): quick checks wiring/config, deep runs a real bounded probe (grep: rg fixture in a temp dir; logfile: a record through the real sink path; observe: a synthetic record through the real ring; hooks: the temp-file stdin pipe with jq) |
+| A664 | components/hooks/main.nim — a 256-ring of (envelope id, command) keys dedupes per delivered message: an event matching two specs fires once (verified live: ev.log.error + ev.log.> → one line in a.jsonl, zero in b.jsonl) |
+| A669 | components/hooks/README.md — the phantom $NIF_HOOK_SUBJECT sentence replaced (the subject is visible only through the configured spec) |
+| A675 | components/hooks/README.md — payload-table note (arrives UNWRAPPED: .reply, never .payload.reply) and every example fixed (.payload.X → .X, verified with jq) |
+| A676 | components/hooks/README.md — cacheHitTokens/cacheHitRatio → the real cache {prompt, read, hitRate} shape |
+| A751 | tools/store_migrate.nim — --force honoured: moves an existing target database aside as <name>.<ts>.aside instead of refusing; listed in the header and usage (the refusal stays for a both-files root) |
+| A752 | tools/store_migrate.nim — probe list = verified kind census (spill, contextreceipt, agentnotice, approval, mcp added; config/expert/hooks/skill — kinds that never existed — dropped); verification compares the kinds the MIGRATION CARRIED, not a re-probe of the target (a stale probe list was verified-invisible); END-TO-END: 6 kinds seeded (incl. spill+contextreceipt) barrel→sqlite, all found, written, verified |
+| A767 | components/store/main.nim — barrel put without kind/id/value answers put needs kind, id and value (bad-request) like both Go engines (verified live: clean reply, process alive — was SIGSEGV exit 139) |
+| A798 | components/systemprompt/main.nim — the dead loadContextFileFromDir(dir) call deleted (the directory was re-read one line later) |
+| A801 | core/niffler.nim — boot restore echoes core: stored component <name> skipped — the manifest declares it instead of a silent continue |
+
+Not fixed here (still open, tracked below):
+
+- **A659/A678/A698/A729 (contract half)** — the *wording* the consolidation
+  proposed stays unsettled; the code half (registering selftests in grep,
+  hooks, logfile, observe) IS applied above. docs/WIRE.md already documents
+  the opt-in contract; no core change was needed.

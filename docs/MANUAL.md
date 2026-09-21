@@ -84,7 +84,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server (the child is the separate `mcp-bridge` binary — `var/bin/mcp-bridge`, built by `make build`, path overridable with `NIF_MCP_BRIDGE_BIN`; it has no manifest entry and is never started by hand); tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
 | `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and preferred by core over a PATH install, so no NATS prerequisite is needed. Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it: `make install-nats` only says so, and `make doctor` reports `nats-server: OK` or explains that it is built from source |
-| `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer (`dialog_show` → `{ok, shown, via: zenity|notify|log, kind}`, `dialog_ask` → `{ok, answer: yes|no|timeout}`). Neither tool is approval-gated or on demand, so both land in the direct toolset of every conversation started while `dialog` is up, and without a display (`DISPLAY` unset or zenity missing) `dialog_ask` answers `timeout` immediately without asking anyone. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `spawn {name: "dialog", binary: ".../var/bin/dialog"}` (core's tool). Prereqs: the nats CLI and `jq` are hard — without either the component cannot answer at all; `zenity` (or `notify-send`) only for the visible part, and only with `DISPLAY` set. `make setup` installs all three, `make doctor` checks them |
+| `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer (`dialog_show` → `{ok, shown: yes|no, via: zenity|notify|log, kind}` — `shown` is the backend's real outcome: a failed dialog or the log fallback is `no`, never a fake `yes`; `dialog_ask` → `{ok, answer: yes|no|timeout|no-display}` — `timeout` means a human had the dialog and let it lapse, `no-display` means nobody could answer). Neither tool is approval-gated or on demand, so both land in the direct toolset of every conversation started while `dialog` is up, and without a display (`DISPLAY` unset or zenity missing) `dialog_ask` answers `no-display` immediately without asking anyone. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `spawn {name: "dialog", binary: ".../var/bin/dialog"}` (core's tool). Prereqs: the nats CLI and `jq` are hard — without either the component cannot answer at all; `zenity` (or `notify-send`) only for the visible part, and only with `DISPLAY` set. `make setup` installs all three, `make doctor` checks them |
 
 `components/ctxtest/` is the exception to one directory per component = one
 shipped component: it is the contract tests' own fixture — a stub `chat` LLM
@@ -1037,10 +1037,15 @@ reports:
   the resolver behind those notices: `ref` is one `{source, id}` object or an
   array of them (`source` is `canonical`, `spill` or `checkpoint`), `mode: full`
   (the default) pages one document with `offset`/`limit` under a 256 KB
-  per-document ceiling, `mode: match` greps one document's lines, and
+  per-document ceiling, `mode: match` greps one document's lines — bounded
+  by `limit` lines only, with no byte ceiling, so a query matching one
+  enormous single-line result returns that line whole — and
   `mode: search` greps the conversation for messages mentioning `query`
-  (`role` filters them, `session` picks another conversation) and returns
-  bounded one-line hits whose `id` can then be read back as a `canonical`
+  (`role` filters them; `session` picks the conversation to search — a
+  session-leased call may name only ITS OWN conversation, so a runner call
+  cannot read another conversation's history, while direct bus callers
+  keep unrestricted access) and returns bounded one-line hits whose `id`
+  can then be read back as a `canonical`
   ref. Defaults: 2000 lines, 50 matches, 20 hits; the tool is on demand and
   read-effect, and it is `runner`-exempt so subagents can always reach it.
 - A provider-reported `context-overflow` gets exactly one receipt-backed
@@ -1059,11 +1064,13 @@ reports:
   resume honors it, so a restart rebuilds the trimmed projection instead
   of re-inflating the full pre-trim context while the meter restores
   post-trim usage. Dropped turns remain in canonical history for
-  `context_recall`, but today the omission notice is projection-only: a resumed
-  runner rebuilds the trimmed projection from `trimThrough` and does not
-  re-create it, so after a restart nothing tells the model the dropped span
-  exists. `mode: search` is the only way back into trimmed history — the notice
-  carries no recall ref, because a whole-turn drop covers many messages.
+  `context_recall`, and the omission notice is DURABLE: a resumed runner
+  rebuilds the trimmed projection from `trimThrough` and re-inserts the
+  notice (range-honest — it names the canonical span below the first kept
+  seq, not the live run's exact `coveredFrom`/`coveredTo` pair), so a
+  restart keeps a visible pointer to what the projection dropped. `mode:
+  search` is the way back into trimmed history — the notice carries no
+  recall ref, because a whole-turn drop covers many messages.
 
 - The prune step is byte-exact and model-free: a tool result over 8192 bytes is
   rewritten as its first 4096 bytes, an `[tool result middle pruned: N bytes

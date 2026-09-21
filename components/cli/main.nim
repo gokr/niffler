@@ -230,9 +230,21 @@ proc main() =
     of cmdLongOption, cmdShortOption:
       case p.key
       of "timeout", "t":
-        try: timeoutMs = p.val.parseInt() * 1000
+        var val = p.val
+        if val.len == 0:
+          # Space-separated form (`--timeout 5`): parseopt leaves val empty
+          # and the value arrives as the next token — consume it here, so
+          # the documented spelling works and "5" never lands in the
+          # positional command arguments (A567).
+          p.next()
+          if p.kind == cmdArgument:
+            val = p.key
+          else:
+            echo "cli: --timeout needs a value (use --timeout=<secs>)"
+            quit(2)
+        try: timeoutMs = val.parseInt() * 1000
         except ValueError:
-          echo "cli: bad --timeout value: " & p.val
+          echo "cli: bad --timeout value: " & val
           quit(2)
       else:
         echo "cli: unknown option --" & p.key
@@ -260,7 +272,17 @@ proc main() =
   of "wait":
     if positional.len < 2:
       usage(); quit(2)
-    let secs = if positional.len >= 3: parseInt(positional[2]) else: 60
+    let secs = block:
+      # A non-numeric positional is a usage error, not a crash (A568): the
+      # unguarded parseInt used to die with an uncaught ValueError.
+      if positional.len >= 3:
+        try: parseInt(positional[2])
+        except ValueError:
+          echo "cli: wait: seconds must be a number, got '" &
+               positional[2] & "'"
+          usage()
+          quit(2)
+      else: 60
     if waitForComponent(nc, positional[1], secs):
       echo "cli: " & positional[1] & " registered"
       quit(0)

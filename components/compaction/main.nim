@@ -215,8 +215,14 @@ proc main() =
     "budget": {"type": "object", "description": "Hard per-attempt input/output/call/timeout limits"}
   }, required = @["version", "sessionId", "attemptId", "snapshot", "budget"],
   description = "Runner-owned context recovery seam. Reads the referenced verified snapshot and returns one structured checkpoint candidate or a stable decline. This is an internal runner tool, not a user summarization command.")
+  # The schema timeout is this tool's transport cap (core dispatch applies
+  # it to unbounded callers; a deadline-bounded caller keeps its own bound).
+  # Core's NIF_COMPACTION_TIMEOUT_MS clamp ceiling is 600000, but the schema
+  # carried 120000 — whole-call configurations of 121-600s were cut at
+  # dispatch (A614). Declared to the clamp ceiling; the runner still passes
+  # cfg.timeoutMs (its own clamp) as the caller bound.
   schema["x-harness"] = %*{"hidden": true, "runner": true,
-                           "timeoutMs": 120_000, "effect": "read"}
+                           "timeoutMs": 600_000, "effect": "read"}
 
   discard comp.tool("compaction_propose", schema,
     proc(c: Component, args: JsonNode): JsonNode =

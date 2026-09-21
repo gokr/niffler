@@ -31,7 +31,7 @@
 ## line. Worked examples (desktop notification, sound, email, webhook)
 ## live in components/hooks/README.md.
 
-import std/[envvars, json, os, osproc, sequtils, strutils]
+import std/[envvars, json, os, osproc, sequtils, strutils, times]
 import niffler/sdk
   # re-exports sdk/procutil: runCmd (temp-file capture, timeout kill)
 
@@ -51,6 +51,26 @@ proc hookEnvFor(subject: string): string =
 var hookCounter = 0
   ## Payload temp files are serialized (single-threaded SDK poll loop), so
   ## a plain counter keeps names unique across hook runs.
+
+const firedRing = 256
+  ## Recently fired (envelope id, command) pairs kept for dedup — a message
+  ## matching TWO tap bindings (one message, multiple deliveries) must run
+  ## the same first-match command ONCE (A664: the SDK dispatches per
+  ## binding). Bounded ring; serialized poll loop = no races.
+
+var firedRingSeq: seq[string] = @[]
+
+proc alreadyFired(envelopeId, command: string): bool =
+  ## True when this (message, command) pair already ran a hook. The
+  ## envelope id is unique per message; a garbage delivery (decode falls
+  ## back to a fresh id) may miss the ring — dedup is best-effort
+  ## transport hygiene, never correctness (a replayed event SHOULD run).
+  let key = envelopeId & ":" & command
+  if key in firedRingSeq: return true
+  firedRingSeq.add(key)
+  if firedRingSeq.len > firedRing:
+    firedRingSeq.delete(0, firedRingSeq.len - firedRing - 1)
+  return false
 
 type
   Hook = tuple[subject, command: string]
@@ -84,12 +104,18 @@ proc matchHook(hooks: seq[Hook], subject: string): string =
 
 proc runHook(command, subject, payload: string, timeoutMs: int) =
   var body = payload
+  var envelopeId = ""
   try:
     let env = decode(payload)
+    envelopeId = env.id
     if env.payload != nil:
       body = env.payload.pretty
   except CatchableError:
     discard  # not an envelope — pass raw bytes through
+  if alreadyFired(envelopeId, command):
+    stderr.writeLine("hooks: duplicate delivery on " & subject &
+                     " (message matches multiple specs) — fired once")
+    return
   if body.len > maxPayloadBytes:
     body = body[0 ..< maxPayloadBytes] & "\n...[truncated]"
   # The command comes from the operator's own env (same trust level as
@@ -159,6 +185,57 @@ proc main() =
           let chosen = matchHook(hooks, subject)
           if chosen.len > 0:
             runHook(chosen, subject, data, timeoutMs))
+
+  # Self test (docs/WIRE.md): quick validates the env configuration without
+  # running anything; deep executes the hook CONTRACT once through the real
+  # pipe path (the temp-file stdin hand-off runHook uses) with a benign
+  # command — proving the transport, not the operator's command.
+  discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
+    let deep = args{"deep"}.getBool(false)
+    let t0 = epochTime()
+    var checks = newJArray()
+    var allOk = true
+
+    proc check(name: string, ok: bool, detail: string) =
+      if not ok: allOk = false
+      checks.add(%*{"name": name, "ok": ok, "detail": detail,
+                    "ms": int((epochTime() - t0) * 1000)})
+
+    block quick:
+      check("hooks configured", hooks.len > 0,
+            (if hooks.len > 0: $hooks.len & " spec(s) (off-by-default component)"
+             else: "no NIF_HOOKS_<EVENT> set — watching nothing, staying up"))
+      check("timeout clamp bounded",
+            timeoutMs >= 100 and timeoutMs <= 60_000,
+            "NIF_HOOKS_TIMEOUT_MS=" & $timeoutMs)
+
+    if deep:
+      # The contract: JSON payload on stdin through the temp-file pipe —
+      # exactly the construction runHook uses (cat <tempfile> | command). A
+      # jq roundtrip proves the pipe end-to-end without touching the
+      # operator's configured command.
+      let probe = %*{"level": "info", "msg": "niffler-hooks-selftest"}
+      inc hookCounter
+      let payloadPath = getTempDir() /
+        ("niffler-hook-selftest-" & $getCurrentProcessId() & "-" &
+         $hookCounter & ".json")
+      try:
+        writeFile(payloadPath, $probe)
+        let r = runCmd("cat " & quoteShell(payloadPath) & " | jq -r .msg",
+                       5_000)
+        check("deep pipe roundtrip", r.code == 0 and
+              r.output.strip() == probe{"msg"}.getStr(""),
+              (if r.code == 0: "payload arrived unwrapped on stdin"
+               else: "exit " & $r.code & ": " & r.output.strip()))
+      except CatchableError as e:
+        check("deep pipe roundtrip", false, e.msg)
+      finally:
+        try: removeFile(payloadPath)
+        except CatchableError: discard
+
+    return %*{"ok": allOk,
+              "summary": (if allOk: "hooks contract ok" else: "hooks contract FAILED"),
+              "checks": checks})
 
   comp.run()
 

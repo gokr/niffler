@@ -107,27 +107,36 @@ JQFILTER
 # display backends
 # ---------------------------------------------------------------------------
 
-# show MESSAGE TITLE KIND → prints "via|extra" (via: zenity | notify | log)
+# show MESSAGE TITLE KIND → prints "rc,usedkind,via"
+#   rc: the display backend's exit status — 0 = the dialog WAS shown; a
+#       failed zenity/notify-send is non-zero, never a fake "yes"; the
+#       "log" fallback reports 1 (a log line is the headless fallback,
+#       not a dialog). The exit status is no longer swallowed.
+#   usedkind: the normalized kind actually requested (info/warning/error)
+#   via: zenity | notify | log
 show_dialog() {
   local message="$1" title="$2" kind="${3:-info}"
+  case "$kind" in
+    warning|error) ;;
+    *) kind="info" ;;
+  esac
   if [[ -n "${DISPLAY:-}" ]] && command -v zenity >/dev/null 2>&1; then
-    case "$kind" in
-      warning|error) ;;
-      *) kind="info" ;;
-    esac
-    zenity "--$kind" --title "$title" --text "$message" --timeout 30 >/dev/null 2>&1 || true
-    echo "zenity"
+    zenity "--$kind" --title "$title" --text "$message" --timeout 30 >/dev/null 2>&1
+    echo "$?,${kind},zenity"
     return
   fi
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send -u normal "$title" "$message" >/dev/null 2>&1 || true
-    echo "notify"
+    notify-send -u normal "$title" "$message" >/dev/null 2>&1
+    echo "$?,${kind},notify"
     return
   fi
-  echo "log"
+  echo "1,${kind},log"
 }
 
-# ask MESSAGE TITLE → prints "yes|no|timeout", side-stderr reports the backend
+# ask MESSAGE TITLE → prints "yes|no|timeout|no-display".
+# no-display: NO human could answer (no display tool at all) — distinct
+# from "timeout", which means a human had one and let it lapse. The caller
+# must be able to tell "nobody answered" from "nobody could answer".
 ask_dialog() {
   local message="$1" title="$2"
   if [[ -n "${DISPLAY:-}" ]] && command -v zenity >/dev/null 2>&1; then
@@ -140,8 +149,8 @@ ask_dialog() {
       *) echo "timeout"; return ;;
     esac
   fi
-  # Headless: no human can answer — be honest about it.
-  echo "timeout"
+  # Headless: no human can answer — say so, don't fake a lapse.
+  echo "no-display"
 }
 
 # ---------------------------------------------------------------------------
@@ -168,11 +177,21 @@ handle() {
       title="$(jq -r '.title // "Niffler says"' <<<"$args_json" 2>/dev/null || true)"
       local kind
       kind="$(jq -r '.kind // "info"' <<<"$args_json" 2>/dev/null || true)"
-      local via
-      via="$(show_dialog "$message" "$title" "$kind")"
-      log "dialog_show via=$via kind=$kind"
-      result="$(jq -nc --arg via "$via" --arg kind "$kind" \
-        '{ok: true, shown: true, via: $via, kind: $kind}')"
+      # show_dialog normalizes kind and reports the backend's outcome:
+      # "rc,usedkind,via" — the backend's exit status (0 = shown, log
+      # fallback = nothing shown), usedkind = the kind actually requested.
+      local shown_out
+      shown_out="$(show_dialog "$message" "$title" "$kind")"
+      local shown_rc usedkind via
+      shown_rc="$(cut -d',' -f1 <<<"$shown_out")"
+      usedkind="$(cut -d',' -f2 <<<"$shown_out")"
+      via="$(cut -d',' -f3 <<<"$shown_out")"
+      local shown="no"
+      [[ "$shown_rc" == "0" ]] && shown="yes"
+      log "dialog_show via=$via kind=$usedkind shown=$shown (rc=$shown_rc)"
+      result="$(jq -nc --arg via "$via" --arg kind "$usedkind" \
+        --arg shown "$shown" --arg answer "$shown" \
+        '{ok: true, shown: $shown, answer: $answer, via: $via, kind: $kind}')"
       ;;
     dialog_ask)
       title="$(jq -r '.title // "Niffler asks"' <<<"$args_json" 2>/dev/null || true)"

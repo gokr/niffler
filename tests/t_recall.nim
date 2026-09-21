@@ -166,6 +166,24 @@ proc main() =
         "unused import os" in m{"text"}.getStr("") and
         "ZEBRAFISH" notin m{"text"}.getStr(""), $m)
 
+  # --- ownership: a leased session may search only its own conversation -----
+  # The runner injects __session for session calls; a search naming another
+  # conversation is refused rather than used. Direct bus callers (this test,
+  # cli) carry no lease and keep unrestricted access.
+  let crossRead = call(nc, "recall", "context_recall",
+                       %*{"mode": "search", "query": "zebrafish",
+                          "session": conv,
+                          "__session": {"session": "conv-other"}}, 15_000)
+  check("a leased session cannot read another conversation's history",
+        not crossRead{"ok"}.getBool(true) and
+        "does not belong to it" in crossRead{"error"}.getStr(""), $crossRead)
+  let ownRead = call(nc, "recall", "context_recall",
+                     %*{"mode": "search", "query": "zebrafish",
+                        "__session": {"session": conv}}, 15_000)
+  check("a leased session reads its own history (explicit session = own conv)",
+        ownRead{"ok"}.getBool(false) and ownRead{"count"}.getInt(0) == 2,
+        $ownRead)
+
   # --- refusal paths are explicit -------------------------------------------
   let noConv = call(nc, "recall", "context_recall",
                     %*{"mode": "search", "query": "x"}, 15_000)

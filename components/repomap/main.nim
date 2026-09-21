@@ -231,7 +231,9 @@ proc hRepoMap(c: Component, args: JsonNode): JsonNode =
   if map.len == 0:
     return %*{"ok": true,
               "text": "No map: no supported source files found in " &
-                      ws & " (tiers cover .nim/.nims/.go/.py/.ts).",
+                      ws & " (tiers cover .nim/.nims, .go, .py, .ts, .js, " &
+                      ".c/.h, .cpp/.hpp/.cc/.hh/.cxx/.hxx, .rs, .rb — " &
+                      "tree-sitter for the non-Nim tiers, native tagger for Nim).",
               "files": 0}
   return %*{"ok": true, "text": map, "budget": budget, "buildMs": ms,
             "note": "snapshot of the workspace now — files you edit change it; call again for a fresh one"}

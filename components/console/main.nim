@@ -10,7 +10,7 @@
 ## (or just ./var/bin/console — it follows the harness's var/nats-url
 ## discovery file, then defaults to the local bus, same as every component.)
 
-import std/[json, os, strutils, times]
+import std/[json, os, strutils, tables, times]
 import natsnim
 import envelope
 import dotenv
@@ -32,19 +32,50 @@ proc chop(s: string, n: int): string =
   if s.len <= n: return s
   result = s[0 ..< n] & "…"
 
+var callTools = initTable[string, string]()
+  ## envelope id → tool of the calls already rendered, so a result line can
+  ## name what it answers (SDK replies carry no tool — resultEnvelope only
+  ## sets the id).
+
+proc shortId(id: string): string =
+  ## Enough of an envelope id to correlate a reply with its call on screen.
+  if id.len <= 12: return id
+  id[0 ..< 8] & "…"
+
 proc render(subject: string, data: string) =
+  # reg.publish / reg.depart and other bare payloads are NOT envelopes:
+  # their JSON object is the message. An envelope always carries v + kind;
+  # anything else renders as the raw object instead of an empty body.
+  var raw: JsonNode = nil
+  try:
+    raw = data.parseJson()
+  except CatchableError:
+    discard
+  let isEnvelope = raw != nil and raw.kind == JObject and
+                   raw.hasKey("kind") and raw.hasKey("v")
+  if not isEnvelope:
+    echo ts() & " " & styled("event ", 35) & subject & "  " &
+         chop(if raw != nil: $raw else: data, 500)
+    return
   let env = decode(data)
   let kind = $env.kind
   case env.kind
   of ekCall:
+    if env.id.len > 0:
+      callTools[env.id] = env.tool
+      if callTools.len > 1024: callTools.clear()  # bounded: recent calls only
     echo ts() & " " & styled("call  ", 36) & subject & "  " &
          styled(env.tool, 1) & " " & chop($env.args, 300)
   of ekResult:
+    let tool = if env.tool.len > 0: env.tool
+               else: callTools.getOrDefault(env.id, "")
     echo ts() & " " & styled("result", 32) & "  " &
-         styled(env.tool, 1) & " → " & chop($env.args, 500)
+         styled(tool, 1) & " (" & shortId(env.id) & ") → " & chop($env.args, 500)
   of ekError:
+    let tool = if env.tool.len > 0: env.tool
+               else: callTools.getOrDefault(env.id, "")
     echo ts() & " " & styled("error ", 31) & "  " &
-         styled(env.tool, 1) & " ! " & chop($env.error, 300)
+         styled(tool, 1) & " (" & shortId(env.id) & ") ! " & chop($env.error, 300)
   of ekEvent:
     let payload = if env.payload == nil: "" else: $env.payload
     if subject.startsWith("ev.session.") and subject.endsWith(".assistant"):

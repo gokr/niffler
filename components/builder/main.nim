@@ -6,7 +6,9 @@
 ## package's own dependency files and lockfiles. The agent/plugin's next step
 ## is core.spawn {name, binary}.
 
-import std/[json, os, strutils]
+import std/[json, os, sequtils, strutils, times]
+import natsnim
+import envelope
 import niffler/sdk
 
 proc validComponentName(name: string): bool =
@@ -164,11 +166,62 @@ proc writeSdkWorkspace(root, workspace, project: string) =
     (if project == ".": "." else: project.replace('\\', '/')) &
     "\n\nreplace niffler.dev/sdk => \"" & root / "sdk" / "go" & "\"\n")
 
+# --- cancellation side-channel (A558, mirrors components/bash/main.nim) -----
+# build is a long-running, approval-gated dispatch whose reply is abandoned
+# when the session turn is cancelled while the compiler runs — the compile
+# kept going. The runner publishes cancel.builder {sessionId, tool, ts} (the
+# component name names the subject); the handler polls this subscription
+# from runCmd's wait loop via the `cancelled` probe, so the kill decision
+# happens in the component (the serialized pump is blocked inside the
+# handler while the compiler runs).
+const cancelFreshSeconds = 30.0
+var cancelSub: ptr natsSubscription
+var cancelledSessions: seq[tuple[sessionId: string, at: float]]
+
 let comp = newComponent("builder", "0.1.0")
 
-comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
+proc drainCancels(mySession: string): bool =
+  ## Poll cancel.builder non-blocking; true when a fresh cancel targets
+  ## mySession (the caller kills its compile group). A cancel for another
+  ## session is stashed, not dropped — that session's queued build skips
+  ## itself later (wasCancelled).
+  if cancelSub == nil:
+    if comp.nc.conn == nil: return false
+    let st = natsConnection_SubscribeSync(addr cancelSub, comp.nc.conn,
+                                          "cancel.builder")
+    if not checkStatus(st): return false
+  var cancelled = false
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, cancelSub, 0)
+    if not checkStatus(st): break  # NATS_TIMEOUT = drained
+    var payload = newJObject()
+    try:
+      let env = decode($natsMsg_GetData(msg))
+      if env.kind == ekEvent and env.payload != nil: payload = env.payload
+    except CatchableError:
+      discard
+    natsMsg_Destroy(msg)
+    let sid = payload{"sessionId"}.getStr("")
+    let ts = payload{"ts"}.getFloat(0.0)
+    if sid.len == 0 or epochTime() - ts > cancelFreshSeconds: continue
+    if mySession.len > 0 and sid == mySession: cancelled = true
+    else: cancelledSessions.add((sessionId: sid, at: ts))
+  cancelledSessions.keepItIf(epochTime() - it.at <= cancelFreshSeconds)
+  cancelled
+
+proc wasCancelled(sessionId: string): bool =
+  ## A queued build whose session was cancelled while another build ran:
+  ## skip the work, not run a dead turn's compile.
+  cancelledSessions.keepItIf(epochTime() - it.at <= cancelFreshSeconds)
+  for it in cancelledSessions:
+    if it.sessionId == sessionId: return true
+  false
+
+comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true,
+              "sessionId": true}):
   proc build(lang: string, name: string, source: string,
-             files: JsonNode = nil, defines: JsonNode = nil): JsonNode =
+             files: JsonNode = nil, defines: seq[string] = @[]): JsonNode =
     ## Compile a new component from source into a binary under var/bin.
     ## Use this when the harness lacks a capability that no existing tool
     ## covers: write the component source yourself (Nim: import niffler/sdk
@@ -187,13 +240,15 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
     ## - name: Lowercase-hyphen component name (also the binary name)
     ## - source: Full entrypoint source code of the component
     ## - files: Optional object of additional same-package Go filenames to source strings
-    ## - defines: Optional array of Nim compile defines, e.g. ["ssl"] for
-    ##   HTTPS-capable httpclient — appended as -d:NAME (validated; Nim
-    ##   identifier characters only)
+    ## - defines: Optional array of Nim compile defines, e.g. ["ssl"] (appended as -d:NAME; validated to Nim identifier characters)
     ##
     ## TS source-only builds intentionally contain only the SDK/base project.
     ## Packaged plugins with dependencies must use build_package and keep their
     ## package.json/package-lock.json in the cloned project.
+    let mySession = comp.sessionContext
+    if mySession.len > 0 and wasCancelled(mySession):
+      return %*{"ok": false, "cancelled": true,
+                "error": "build skipped — its session was cancelled"}
     let root = rootDir()
     let srcDir = rootVarDir("build")
     let binDir = root / "var" / "bin"
@@ -210,17 +265,18 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
       let binary = binDir / name
       let tmpBinary = binDir / (name & ".tmp-" & $getCurrentProcessId())
       var dflags = ""
-      if defines != nil and defines.kind == JArray:
-        for d in defines:
-          let dn = d.getStr("")
-          if not validDefine(dn):
-            return %*{"ok": false, "lang": lang,
-                      "error": "invalid define: " & tailBytes(dn, 64)}
-          dflags.add(" -d:" & dn)
+      for dn in defines:
+        if not validDefine(dn):
+          return %*{"ok": false, "lang": lang,
+                    "error": "invalid define: " & tailBytes(dn, 64)}
+        dflags.add(" -d:" & dn)
+      let probeSession = mySession
       let (code, output) = runCmd(
         "nim c --hints:off -d:release" & dflags & " --path:" &
         quoteShell(root / "sdk") &
-        " -o:" & quoteShell(tmpBinary) & " " & quoteShell(srcPath))
+        " -o:" & quoteShell(tmpBinary) & " " & quoteShell(srcPath),
+        300_000,
+        cancelled = proc(): bool = drainCancels(probeSession))
       if code != 0:
         removeFile(tmpBinary)
         return %*{"ok": false, "lang": lang, "error": tailBytes(output, 2000)}
