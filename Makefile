@@ -72,7 +72,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 
 .PHONY: help all build components components-inner run down down-here \
         test test-server test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
-        test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli \
+        test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke dev clean gotest \
@@ -233,6 +233,9 @@ var/bin/recall: components/recall/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/compaction: components/compaction/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/compaction/main.nim
 
+var/bin/jev: components/jev/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/jev/main.nim
+
 var/bin/fetch: components/fetch/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fetch/main.nim
 
@@ -296,7 +299,7 @@ components:
 
 components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sqlite var/bin/store-tidb var/bin/niffler-store-migrate var/bin/bash \
 	var/bin/edit var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
-	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
+	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
@@ -457,6 +460,7 @@ test-builder: build var/bin/test_t_builder ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-console: build var/bin/test_t_console ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_console
 test-plugins: build var/bin/test_t_plugins ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_plugins
 test-skills:  build var/bin/test_t_skills  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_skills
+test-jev: build var/bin/test_t_jev ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_jev
 test-fetch:   build var/bin/test_t_fetch   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fetch
 test-core:    build var/bin/test_t_core    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_core
 test-systemprompt: build var/bin/test_t_systemprompt ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_systemprompt
