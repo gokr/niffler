@@ -3,8 +3,9 @@
 This optional `jev` component provides advisory decisions over a small list of
 candidates. It does **not** alter `discover`, `skill_list`, `invoke`, the
 conversation prefix, or the approval gate. The only prompt-cache effect is
-append-only tool history when `jev_suggest` is explicitly called. An unavailable
-backend is an error result; continue with ordinary discovery.
+append-only tool history when `jev_suggest` or `jev_recommend` is explicitly
+called. An unavailable backend is an error result; continue with ordinary
+discovery.
 
 ## Local runtime
 
@@ -13,7 +14,7 @@ Run [Von](https://github.com/wfzyx/von) separately on loopback:
 ```sh
 # In a separate Python environment (model weights are downloaded by Von).
 pip install 'von-sdk>=1.1.0'
-von serve --model von-1.1 --host 127.0.0.1 --port 8000
+von serve --model von-1.1 --device cpu --host 127.0.0.1 --port 8000
 ```
 
 `make build` builds only the Niffler adapter, not the Python model/runtime.
@@ -25,7 +26,19 @@ Remote endpoints are intentionally excluded from this local-only spike.
 Kev (`jaredpalmer/kev`) and Laya's `laya.cpp` are candidates for a later
 backend, if their wire response matches the normalized contract.
 
-Example, after `discover` has given a candidate shortlist:
+`jev_recommend {task, query, kind: "tools"|"skills"}` is the usable one-call
+path inside Niffler: it fetches fresh on-demand hints from `core.discover` or
+skills from `skill_list`, limits the shortlist to 24, and asks the backend.
+Use a **narrow nonempty query**; empty or overlarge lists refuse, never
+silently omit candidates. It returns the shortlist and the suggestion, but
+**does not call discover for schemas, load a skill, or execute anything**.
+Call via `discover {component: "jev", tools: ["jev_recommend"]}` then
+`invoke {tool: "jev_recommend", arguments: {task: "…", query: "…"}}`.
+`jev_suggest` remains available for callers with their own shortlist.
+Both are opt-in, not automatic per turn. Existing core discovery and frozen
+prefix remain unchanged.
+
+Example for callers providing their own shortlist:
 
 ```json
 {"task":"Find references to the component registration in this checkout",
@@ -41,6 +54,18 @@ Never pass secrets or large file contents in `task`. The model is not an
 access-control mechanism; only Niffler's dispatch/approval path executes tools.
 
 ## Evaluation before automation
+
+CPU trial on this machine (not laptop evidence): `uv venv var/jev-venv --python
+3.12 && uv pip install --python var/jev-venv/bin/python 'von-sdk>=1.1.0'`
+installed the runtime (~5.4 GB including CUDA wheels). Von 1.1 in CPU mode
+started on loopback; the first request, including model download/load, took
+~115 s, subsequent 2-question requests took ~0.77–1.27 s with
+`OMP_NUM_THREADS=4`. Four hand-written examples chose the expected option in
+two relevant cases, but the `noul` was only 0.27 for one of them (Niffler
+skill guidance), incorrectly suppressing the recommendation at the 0.5
+threshold. A haiku task correctly returned no match. **Do not treat this as
+validated ranking accuracy**; the no-match question/threshold needs a labeled
+Niffler task set before automation. CPU RSS not yet measured.
 
 `make test-jev` uses a mock backend and a private NATS bus; it proves the
 contract, *not* Von accuracy or CPU latency. Build a held-out list of tasks

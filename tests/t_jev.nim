@@ -84,6 +84,47 @@ proc main() =
   let bad = call(nc, "jev", "jev_decide", %*{"state": "x", "questions":
     {"q": {"type": "choice", "instructions": "choose", "criteria": {}}}})
   check("invalid decision refused", not bad{"ok"}.getBool(false), $bad)
+
+  # A real component-to-core bus path: core's discover projection supplies
+  # current on-demand hints, not an invented or stale candidate list.
+  let sandbox = newCoreSandbox("jev-recommend", ["store", "jev", "skills"])
+  defer: removeDir(sandbox.root)
+  let (coreNats, coreUrl) = startNats()
+  defer: stopServer(coreNats)
+  var coreNc = waitConnect(coreUrl)
+  defer: coreNc.close()
+  let core = startComponent(sandbox.sandboxBin("niffler"), coreUrl,
+    root = sandbox.root,
+    extra = @[("NIF_JEV_URL", "http://127.0.0.1:" & readFile(portFile) & "/v1/systemone")])
+  defer: stopProcess(core)
+  var ready = false
+  for _ in 0 ..< 100:
+    let snapshot = call(coreNc, "core", "catalog", %*{"op": "snapshot"}, 2000)
+    if snapshot{"components"} != nil:
+      for c in snapshot["components"]:
+        if c{"name"}.getStr("") == "skills": ready = true
+    if ready: break
+    sleep(100)
+  check("core and skills ready", ready)
+  let tools = call(coreNc, "jev", "jev_recommend", %*{
+    "task": "find workflow skills", "query": "skill_list", "kind": "tools"})
+  check("live tool catalogue recommendation", tools{"ok"}.getBool(false) and
+    tools{"suggestion"}.getStr("").len > 0 and
+    tools{"candidates"}.len > 1 and
+    tools{"kind"}.getStr("") == "tools", $tools)
+  let skills = call(coreNc, "jev", "jev_recommend", %*{
+    "task": "read niffler guide", "query": "niffler-harness", "kind": "skills"})
+  check("live skill list recommendation", skills{"ok"}.getBool(false) and
+    skills{"suggestion"}.getStr("") == "niffler-harness", $skills)
+  let empty = call(coreNc, "jev", "jev_recommend", %*{
+    "task": "find", "query": "unlikely-jev-xyz-not-found", "kind": "tools"})
+  check("empty catalogue does not force inference", empty{"ok"}.getBool(false) and
+    empty{"suggestion"}.getStr("x") == "" and empty{"candidates"}.len == 0,
+    $empty)
+  let wide = call(coreNc, "jev", "jev_recommend", %*{
+    "task": "find", "query": "", "kind": "tools"})
+  check("empty query refused before catalogue dump", not wide{"ok"}.getBool(false), $wide)
+  stopProcess(core)
   stopProcess(http)
   let offline = call(nc, "jev", "jev_suggest",
     %*{"task": "search source", "candidates": items})
