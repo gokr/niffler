@@ -45,6 +45,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   source components remain compatible. Updates build the replacement before
   stopping the old component.
 
+### Changed
+
+- **The desktop UI moved out of this repository.** It is now the
+  [gokr/niffler-ui](https://github.com/gokr/niffler-ui) plugin, installed
+  through the plugin lifecycle: `make install-ui` boots an isolated,
+  auto-approved harness, runs `cli install gokr/niffler-ui`, and the plugin
+  manager clones that repo at its latest release tag and builds it against
+  THIS harness (an untracked `go.work` points the SDK at this clone),
+  publishing `var/bin/niffler-ui`; `make install` links it into PATH when
+  present, and desktop-launcher integration stays the plugin checkout's
+  business. The Makefile's `ui`, `ui-install` and `ui-uninstall` targets are
+  gone (`install-ui` keeps the name but installs the plugin now),
+  `make all`/`make build` build core +
+  components only, `make test` is the bus-contract suite alone (the frontend
+  tests and typecheck are the UI repo's own `make test`/`make typecheck`),
+  `make dev` now points at the UI repo, and `make clean` no longer touches
+  UI build trees.
+
 ### Fixed
 
 - **CI: the test workflow had been failing before any test ran.** Every run on

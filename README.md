@@ -54,8 +54,7 @@ See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 
 Requirements: Nim 2.2.12+ and Go. `make setup` installs those and the other
 platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies. Node.js 20+
-and npm are only needed for TypeScript components and the web UI; the optional
-desktop UI additionally needs Wails and WebKitGTK 4.1 on Linux. Niffler uses the
+and npm are only needed for TypeScript components. Niffler uses the
 pure-Nim [natsnim](https://github.com/gokr/natsnim) client; no `libnats` or
 `cnats` installation is needed.
 
@@ -79,18 +78,19 @@ asks about the plugin on a terminal instead.
 the terminal admin shell — status, catalog, sessions, not a chat UI — and
 `niffler --minimal` boots only the minimal store/bash/LLM profile.
 
-The desktop UI is optional:
+The desktop UI is a separate plugin, [gokr/niffler-ui](https://github.com/gokr/niffler-ui):
 
 ```bash
-make install-ui         # build the Wails UI, then add it to ~/.local/bin with
-                        # a launcher entry and icon (Linux; alias: make ui-install)
+make install-ui         # install the UI through the plugin lifecycle: it is
+                        # cloned, built against this harness and published as
+                        # var/bin/niffler-ui (then `make install` adds it to PATH)
 ```
 
-`make dev` runs the frontend in a browser with the bridge stubbed; `make doctor`
-inspects prerequisites; `make down-here` stops only this clone's processes.
+`make doctor` inspects prerequisites; `make down-here` stops only this
+clone's processes.
 
-Testing: `make test-ui` runs frontend tests without NATS; `make test-server`
-runs the bus-contract suite; `make test` runs the complete gate; `make gotest`
+Testing: `make test` runs the bus-contract suite (the complete gate); the
+frontend tests and typecheck live in the UI's own repository; `make gotest`
 runs the Go tests, vet and race checks.
 
 ## Documentation

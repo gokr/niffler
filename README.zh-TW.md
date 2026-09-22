@@ -50,8 +50,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 ## 快速開始
 
 需要 Nim 2.2.12+ 和 Go；`make setup` 會安裝平台依賴（Ubuntu/macOS）和
-Nimble 依賴。只有 TypeScript 元件和 Web UI 需要 Node.js 20+ 和 npm；可選的
-桌面 UI 在 Linux 上還需要 Wails 和 WebKitGTK 4.1。Niffler 使用純 Nim 的
+Nimble 依賴。只有 TypeScript 元件需要 Node.js 20+ 和 npm。Niffler 使用純 Nim 的
 [natsnim](https://github.com/gokr/natsnim)，不需要安裝 `libnats` 或 `cnats`。
 
 ```bash
@@ -77,15 +76,15 @@ shell——status、catalog、sessions，不是對話 UI；`niffler --minimal` �
 桌面 UI 是可選項：
 
 ```bash
-make install-ui         # 建置 Wails UI，複製到 ~/.local/bin，並安裝
-                        # 啟動器項目和圖示（Linux；別名 make ui-install）
+make install-ui         # 透過插件生命週期安裝 UI：clone 後針對本 harness 建置，
+                        # 產物發布為 var/bin/niffler-ui（再用 make install 加入 PATH）
 ```
 
-開發時可用 `make dev` 在瀏覽器執行前端（bridge 以樁實作）。`make doctor`
+`make doctor`
 檢查依賴，`make down-here` 只停止此 clone 的程序。
 
-測試：`make test-ui`（前端，無需 NATS）、`make test-server`（匯流排契約）、
-`make test`（完整測試門）、`make gotest`（Go 測試、vet 和 race 檢查）。
+測試：`make test` 執行匯流排契約測試套件（即完整測試門）；前端測試和
+typecheck 位於 UI 自己的倉庫；`make gotest` 執行 Go 測試、vet 和 race 檢查。
 
 ## 文件
 
