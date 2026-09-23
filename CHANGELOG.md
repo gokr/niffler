@@ -32,6 +32,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   overlapping lists, the probe total and the markdown row (no test covered
   /doctor at all before).
 
+- **The bus-contract suite runs in a bounded pool: ~15 min sequential →
+  ~2m42s with the pool on the dev box.** The ~60 test binaries each own a
+  private NATS server and a temporary `NIF_ROOT`, so they already overlap
+  safely; `scripts/run-tests.sh` now runs them with `TEST_JOBS` workers
+  (default one per core, overridable per run; the script itself honors
+  `NIF_TEST_JOBS`), captures each test's output to `var/test-logs/<name>.log`,
+  prints one `ok <time> <name> — <NAME> TEST PASSED` line per test, dumps a
+  failing test's tail immediately and keeps going — one run shows every
+  failure — then summarizes with the slowest tests. The suite's output
+  contract changes from live-streamed `OK:` lines to that summary plus
+  per-test logs: `TEST_JOBS=1` restores sequential behavior and
+  `NIF_TEST_VERBOSE=1` interleaves each test's captured output after its
+  line (`2ecec27`).
+
 ### Fixed
 
 - **`session`'s model argument updated nothing.** The model-arg block
