@@ -534,7 +534,7 @@ core 监视会话使用了模型上下文窗口的多少，并采取*朴素*行�
 - core 发出 `ev.session.<id>.status`，包含已解析的 provider/model/context 和当前
   `usedTokens`；客户端直接渲染 `usedTokens / context`。当提供商上报缓存输入
   （`prompt_tokens_details.cached_tokens`）时，status 事件还携带
-  `cacheHitTokens` 和 `cacheHitRatio`——冻结的提示词前缀意味着首次请求后大部分
+  累计缓存拆分 `cache {prompt, read, hitRate}`——冻结的提示词前缀意味着首次请求后大部分
   prompt token 应命中缓存，所以低比率是值得注意的信号（Web UI 每条消息显示
   `⚡ NN% cached`；TUI 状态行显示一个 `⚡ NN% cached` 小片）。
 - 持久化消息携带从不进入 LLM 的审计元数据：每条消息的 `createdAt`、到处都有
