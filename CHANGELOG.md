@@ -6,8 +6,136 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The desktop UI moved to its own repository and installs through the plugin
+  lifecycle.** The `ui/` sources are gone from this checkout; the UI is now the
+  interactive plugin `gokr/niffler-ui`, and `make all` / `make build` build
+  core + components only. The `ui`, `ui-install`, `ui-uninstall` and `test-ui`
+  targets are removed. `make install-ui` boots an isolated auto-approved
+  harness and installs `gokr/niffler-ui` through the plugin manager (`cli
+  install`), which clones the UI repo at its latest release tag, builds it
+  against this harness (an untracked `go.work` keeps the SDK local), publishes
+  `var/bin/niffler-ui`, and lets the user start it — it is never spawned as a
+  service. The frontend's unit tests and typecheck moved to that repository
+  too, so `make test` is the bus-contract suite alone again and `make dev`
+  points at the UI checkout.
+- **`/doctor` reports selftest coverage instead of silently omitting
+  non-implementers.** WIRE.md promised that components without a selftest are
+  reported as not implementing one, but core left them out of the fan-out.
+  The report now carries `selftestMissing` and one `selftest (not
+  implementing)` markdown row — coverage information, never a failed check.
+  Both Go store engines (`store-sqlite`, `store-tidb`) also registered the
+  hidden selftest (connect + put/get/rev/list/del roundtrip on a throwaway
+  doc), which had made "all engines register identical tools" false depending
+  on `NIF_STORE_BACKEND`. `t_core` covers the fan-out, the two never-
+  overlapping lists, the probe total and the markdown row (no test covered
+  /doctor at all before).
+
+- **The bus-contract suite runs in a bounded pool: ~15 min sequential →
+  ~2m42s with the pool on the dev box.** The ~60 test binaries each own a
+  private NATS server and a temporary `NIF_ROOT`, so they already overlap
+  safely; `scripts/run-tests.sh` now runs them with `TEST_JOBS` workers
+  (default one per core, overridable per run; the script itself honors
+  `NIF_TEST_JOBS`), captures each test's output to `var/test-logs/<name>.log`,
+  prints one `ok <time> <name> — <NAME> TEST PASSED` line per test, dumps a
+  failing test's tail immediately and keeps going — one run shows every
+  failure — then summarizes with the slowest tests. The suite's output
+  contract changes from live-streamed `OK:` lines to that summary plus
+  per-test logs: `TEST_JOBS=1` restores sequential behavior and
+  `NIF_TEST_VERBOSE=1` interleaves each test's captured output after its
+  line (`2ecec27`).
+
+### Fixed
+
+- **`session`'s model argument updated nothing.** The model-arg block
+  persisted the header's own stale value back — the argument was never
+  assigned to the entry — so a model-only session call left the previous
+  override in place and the turn resolved the global default. A dead
+  `hasModel` declaration was removed with it.
+- **`session`'s schema now publishes the arguments the handler already
+  honoured**: `discovery`, `tools`, `maxRounds`, `maxCalls` and `maxTokens`
+  (UIs had to send them schemaless), and the thinking error text names `max`
+  among the valid efforts.
+- **`store_migrate` no longer exits 0 while dropping kinds.** Its probe list
+  was stale both ways — it asserted kinds that never existed
+  (`config`/`expert`/`hooks`/`skill`) and missed five real ones (`spill`,
+  `contextreceipt`, `agentnotice`, `approval`, `mcp`) — and verification
+  compared against that list, so a migration that dropped kinds still reported
+  success. The probe list is now a verified kind census, verification compares
+  the kinds the migration actually carried, and `--force` is honoured (the
+  target is moved aside as `<name>.<timestamp>.aside`). Verified end-to-end:
+  six kinds seeded barrel→sqlite, all found, written and verified.
+- **`store`'s barrel engine answers bad-request for a `put` without
+  kind/id/value**, like the Go engines already did — previously `$` on a nil
+  `JsonNode` produced a SIGSEGV that the supervisor masked as a component
+  restart.
+- **A restarted conversation keeps a durable pointer to its trimmed span.**
+  The `trimThrough` reload path re-inserts the omission notice, so compaction
+  state survives a restart.
+- **`recall` `{mode: "search"}` refuses an explicit session that is not the
+  leased caller's own conversation.** Direct bus callers keep unrestricted
+  access; `t_recall` asserts both paths.
+- **A tolerated dotted tool name dispatches as its resolved bare name.**
+  `invokeTool` used to dispatch the dotted spelling as its literal tool name.
+  Timeout precedence is documented: the tool cap applies to unbounded callers;
+  a deadline-bounded caller keeps its own.
+- **A hooks event matching two specs fires once.** A 256-entry
+  (envelope id, command) dedup ring replaces the previous double fire.
+- **`cli`: `--timeout 5` (space form) consumes the next token**, and `wait`'s
+  positional seconds argument is guarded instead of dying on an uncaught
+  `ValueError`.
+- **builder's `defines` is a real array.** The SDK publishes the array schema
+  and decodes `argStrSeq` (the macro had no bracket-expression branch, and `$`
+  on one was invalid); the Nim branch passes its 300s budget to `runCmd`; and
+  the build tool registers an `x-harness` sessionId with a `cancel.builder`
+  side-channel (bash's pattern), so a cancelled turn no longer leaves the
+  compile running. The SDK's tool wrapper also publishes `__session.session`
+  as `comp.sessionContext` for block-form handlers.
+- **The compaction tool's transport cap is core's 600000 clamp ceiling**, so
+  `NIF_COMPACTION_TIMEOUT_MS` configurations between 121s and 600s are no
+  longer cut off by the tool's own smaller cap.
+- **console renders non-envelope boot traffic**, and result/error lines echo
+  a shortened envelope id and attribute themselves through an id→tool map,
+  instead of appearing as unattributed bare payloads.
+- **Headless dialog results are honest**: `dialog_ask` answers `no-display`
+  distinctly from `timeout`, and `dialog_show` reports `shown` from the
+  backend's real exit status (`|| true` removed) and echoes the normalized
+  kind.
+- **Opt-in selftests registered in `grep`, `logfile`, `observe` and `hooks`**
+  as WIRE.md describes: quick wiring checks, plus deep checks — a real bounded
+  rg probe, a record through the real sink, a record through the real dedup
+  ring, and the temp-file stdin pipe. `niffler`'s boot restore also says what
+  it skips (a manifest-declared stored component) instead of continuing
+  silently.
+- **tests: hermetic LLM credentials, and the notice hold pinned where it is
+  read.** Two environment-dependent failures hid behind "passes in CI":
+  `startComponent` scrubbed nothing, so a developer shell carrying
+  `NIF_OPENAI_*` into every sandbox made `t_provider`'s lifecycle checks (which
+  assert the environment fallback is absent) fail locally while CI passed —
+  the scrub runs before `extra`, so `compaction_live_smoke`'s deliberate
+  credentials still win. And six agent suites set `NIF_AGENT_NOTICE_HOLD=0` on
+  the agent component, but `noticeHoldEnabled()` is read by the runner, which
+  inherits core's env — so the hold stayed on, and on a fast machine a settling
+  job folded as one more step mid-turn, drifting the stub LLM's scripted stage
+  counter. The hold is now pinned on core in `t_agentcont`, `t_agentdepth`,
+  `t_agentfork`, `t_agent`, `t_agentnotice` and `t_agentp3`.
+
 ### Added
 
+- **docs: JEV research note** (`docs/research/JEV.md`) — a map of the Jev
+  decision-model control layer (TypeSafe's parallel question primitives
+  `noul`/`choice`/`score` and the OpenJEV reimplementation) and how each piece
+  would map onto Niffler. Explicitly a decision aid, not a plan.
+- **docs(zh): both manual banners state the sync status precisely.** The
+  Chinese manuals still reflect the pre-audit manual (9 audit-era sections
+  missing, every body stale); the vague "may lag" banner now names exactly
+  what is missing, states that the English source is authoritative, and says a
+  full re-translation is a dedicated pass (tracked as issue #74).
+- **AGENTS.md names the real prompt-cache fields.** The paragraph referenced
+  `cacheHitTokens`/`cacheHitRatio`, which exist nowhere; it now names the
+  nested `cache {prompt, read, hitRate}` and the header's
+  `cachePrompt`/`cacheRead`/`cacheHitRate`.
 - **A conversation's runner answers while it waits for a human approval.**
   `askHuman`'s wait loop used to pump nothing: a session call that arrived
   while a turn sat at an approval prompt went unanswered — not even the
@@ -44,23 +172,6 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Nim, Go, and TypeScript use the same seam, while manifest v1
   source components remain compatible. Updates build the replacement before
   stopping the old component.
-
-### Changed
-
-- **The desktop UI is installed as a plugin, not built by the Makefile.**
-  `make install-ui` no longer runs `wails build` over an in-tree `ui/`: it
-  boots an isolated, auto-approved harness and runs
-  `cli install gokr/niffler-ui`, so the plugin manager clones the package and
-  the builder builds it into `var/bin/niffler-ui`; `make install` links
-  `niffler-ui` onto PATH once that binary exists. Consequently `make all`/`make build` build core + components
-  only, the `ui`, `ui-install` and `ui-uninstall` targets are gone, `make dev`
-  only points at the SPA dev server's new home and fails, `make clean` removes
-  `var/` and `nimcache/` (no UI build tree), and `make test` is the
-  bus-contract suite alone — the frontend unit tests and typecheck moved with
-  the UI into the [gokr/niffler-ui](https://github.com/gokr/niffler-ui)
-  repository (`make test` / `make typecheck` there). Desktop launcher and icon
-  integration stays with the plugin checkout and is not part of a headless
-  install.
 
 ### Fixed
 
