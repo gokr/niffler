@@ -1,7 +1,7 @@
 # bench — harness comparison framework
 
-Compares coding-agent **harnesses** (Niffler, pi, opencode, codewhale,
-Claude Code) on the same set of coding tasks with the same models, and measures:
+Compares coding-agent **harnesses** (Niffler, DeepSeek Harness, pi, opencode,
+codewhale, Claude Code) on the same set of coding tasks with the same models, and measures:
 
 - **time to green** — wall clock from the first agent turn until `./test.sh`
   exits 0 (multi-round: failing test output is fed back to the agent, exactly
@@ -20,8 +20,8 @@ bench/
   run.mjs              # orchestrator: combos → [turn → verify] loops → results
   report.mjs           # aggregates a run dir into report.md + report.csv
   lib/                 # util + key resolution (keys never stored/logged)
-  adapters/            # pi.mjs, opencode.mjs, niffler.mjs, codewhale.mjs,
-                       # claudecode.mjs
+  adapters/            # pi.mjs, opencode.mjs, niffler.mjs, dsh.mjs,
+                       # codewhale.mjs, claudecode.mjs
   tasks/t0*/           # prompt.md, meta.json, repo/ (pristine git repo, tag `base`)
   reports/             # committed aggregates (one *-report.{md,csv} per run)
   swe/                 # SWE-bench Verified importer (see swe/README.md)
@@ -130,6 +130,10 @@ node bench/run.mjs --harness niffler,niffler-expert --model all --task all \
 # everything (3 harnesses × 2 models × 6 tasks), 2 lanes
 node bench/run.mjs --all --jobs 2 --run-id pilot1
 
+# paired first-party DeepSeek lanes (DSH is opt-in, not part of --harness all)
+node bench/run.mjs --harness niffler,dsh --model deepseek-v4-flash \
+  --thinking low --task all --rounds 1 --jobs 2 --run-id full30-direct-low
+
 # report
 node bench/report.mjs --run pilot1     # prints table, writes report.md/.csv
 node bench/report.mjs --latest         # most recent run in var/bench/results
@@ -194,6 +198,21 @@ patch instead of burning the remaining feedback rounds.
   niffler adapter uses. `firstPromptTokens` is the first assistant event's
   `input_tokens` (the first call's full prompt). Only models with a
   `claudecode` section in config.json can select this harness.
+- **dsh** — DeepSeek Harness's `sdk-minimal` JSON-RPC profile, one process
+  per task workspace. `initialize` selects `deepseek-official`, model
+  `deepseek-v4-flash` and native effort `low`; `session/prompt` retains the
+  session across feedback rounds. The adapter uses an isolated `DSH_HOME` and
+  first-party `DEEPSEEK_API_KEY`, never LLM Gateway. Usage and tool-call
+  counts come from SDK `session.event` notifications; `shape.tools` records
+  actual tool names. `run_code` with nested calls counts both the outer call
+  and its PTC dispatches. Raw JSONL sessions remain under the cell's
+  `dsh-home/sessions` for audit. An SDK startup/turn error is an error cell,
+  not a zero-token score. Requires a *built* DeepSeek Harness CLI at
+  `../harnesses/deepseek-harness/apps/cli/lib/bin.js` or an explicit
+  `DSH_BIN`/`DEEPSEEK_HARNESS_BIN`. The shipped standalone profile currently
+  exposes a lean shell toolset (not the full interactive DSH profile), so
+  this lane compares that deployment, not every DSH plugin. Pin its git hash
+  and profile when comparing its token/time/tool-call figures to Niffler.
 - **niffler** — one private harness per (model) combo: own `nats-server` on a
   free port + isolated `NIF_ROOT` (symlink farm over the bench worktree, real
   `var/`), pinned to the model gateway via `NIF_OPENAI_*` env. Each round is a
@@ -209,7 +228,7 @@ patch instead of burning the remaining feedback rounds.
     by construction, so no tool can wander into the harness root. Core
     resolves path-shaped tool args against that workspace at dispatch
     (bash `cd`, edit/grep/read windows, git `repo`).
-  - **No prompt-context asymmetry**: Niffler's own `AGENTS.md` is excluded
+  - **No prompt-context asymmetry**: Niffler's own `AGENTS.md` and `AGENTS.local.md` are excluded
     from the bench harness root, so the system prompt carries no contributor
     guidance other harnesses don't get.
   - **Errors are errors**: a parsed `turnError` (transport/LLM failure inside
@@ -241,12 +260,12 @@ Both bench models are reached through OpenAI-compatible endpoints; keys are
 resolved at run time (env → niffler `.env` → opencode `auth.json`) and never
 written anywhere:
 
-| model | endpoint | niffler | pi | opencode | claudecode |
-|-------|----------|---------|----|----------|------------|
-| deepseek-v4-flash | api.deepseek.com/v1 | `NIF_OPENAI_*` | `--provider deepseek` (models.json override) | `-m deepseek/deepseek-v4-flash` | — |
-| deepseek-v4.1-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | `--provider llmgateway` (models.json) | — | — |
-| glm-5.3-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | `--provider llmgateway` (models.json) | `-m llmgateway/glm-5.3-flash` | — |
-| syn-large (`syn:large:text`) | api.synthetic.new/openai/v1 | `NIF_OPENAI_*` | `--provider synthetic` (models.json) | — | `ANTHROPIC_BASE_URL=api.synthetic.new/anthropic` |
+| model | endpoint | niffler | dsh | pi | opencode | claudecode |
+|-------|----------|---------|-----|----|----------|------------|
+| deepseek-v4-flash | api.deepseek.com/v1 | `NIF_OPENAI_*` | SDK `deepseek-official` | `--provider deepseek` (models.json override) | `-m deepseek/deepseek-v4-flash` | — |
+| deepseek-v4.1-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | — | `--provider llmgateway` (models.json) | — | — |
+| glm-5.3-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | — | `--provider llmgateway` (models.json) | `-m llmgateway/glm-5.3-flash` | — |
+| syn-large (`syn:large:text`) | api.synthetic.new/openai/v1 | `NIF_OPENAI_*` | — | `--provider synthetic` (models.json) | — | `ANTHROPIC_BASE_URL=api.synthetic.new/anthropic` |
 
 `syn-large` is Synthetic's GLM-5.3-Flash (fp8): 512k context, 64k output,
 reasoning efforts low/high/max, $0.15/M in · $0.50/M out · $0.04/M cache-read.
