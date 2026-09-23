@@ -77,15 +77,18 @@ shell——status、catalog、sessions，不是对话 UI；`niffler --minimal` �
 桌面 UI 是可选项：
 
 ```bash
-make install-ui         # 构建 Wails UI，复制到 ~/.local/bin，并安装
-                        # 启动器条目和图标（Linux；别名 make ui-install）
+make install-ui         # 安装桌面 UI 插件（gokr/niffler-ui）：插件管理器
+                        # clone，builder 针对此 harness 构建，二进制落在
+                        # var/bin
 ```
 
-开发时可用 `make dev` 在浏览器运行前端（bridge 以桩实现）。`make doctor`
+`make install` 会在二进制存在时把 `niffler-ui` 链接到 PATH。UI 自己的
+开发服务器、单元测试和 typecheck 位于
+[niffler-ui](https://github.com/gokr/niffler-ui) 仓库。`make doctor`
 检查依赖，`make down-here` 只停止此 clone 的进程。
 
-测试：`make test-ui`（前端，无需 NATS）、`make test-server`（总线契约）、
-`make test`（完整测试门）、`make gotest`（Go 测试、vet 和 race 检查）。
+测试：`make test`（总线契约套件，每个测试一条私有总线）、
+`make gotest`（Go 测试、vet 和 race 检查）。
 
 ## 文档
 

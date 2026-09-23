@@ -121,8 +121,9 @@ The `x-harness.*` schema extensions core honors:
   direct tool schemas — must stay byte-stable for the conversation's
   lifetime; history only grows. Never splice a volatile fact (time, a file
   edit, a catalog change) into the head; append it as a new message.
-  `ev.session.context` reports `cacheHitTokens`/`cacheHitRatio`; the only
-  legitimate full miss is a trim (`reason: "reset:trim"`).
+  `ev.session.<id>.status` carries the cumulative split as
+  `cache {prompt, read, hitRate}`; the only legitimate full miss is a trim
+  (`ev.session.<id>.context` with `reason: "reset:trim"`).
 
 ## Plugins and skills
 

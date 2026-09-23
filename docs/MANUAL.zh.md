@@ -54,7 +54,7 @@
 | `var/logs/`、`var/captures/` | 轮转的结构化日志和显式 observe 探测导出（见 [Observation and logs](#observation-and-logs)） |
 | `var/nats-pid` | core 启动的总线进程 pid（仅用于崩溃清理——存活的 core 退出时会自行停止总线） |
 | `var/build/` | agent 构建组件的源文件（builder 的暂存目录） |
-| `nimcache/`、`ui/build/`、`ui/frontend/node_modules/`、`ui/frontend/dist/` | 构建产物；`make clean` 会删除它们 |
+| `nimcache/` | 构建产物；`make clean` 会将它们（连同 `var/`）删除 |
 
 ### Shipped components
 
@@ -477,12 +477,14 @@ session 调用设置（Web UI 以 `/approvals`、`/limit` 和 `/compact` 暴露�
 - **`/compact`** —— 立即运行压缩器，而不是等待自动压力阶梯：core 向已配置的
   压缩组件请求允许切点上的检查点，原子安装它，并发出通常的
   `ev.session.<id>.context {reason: "reset:compact"}`。不运行 LLM 回合，也不追加
-  用户消息。提交会把已测量的提示词大小清零（这份投影还没经提供商测量），因此
+  用户消息。辅助摘要继承会话已解析的 provider/model，不会静默跟随之后的全局
+  provider 切换。提交会把已测量的提示词大小清零（这份投影还没经提供商测量），因此
   手动路径还会发出一帧 status —— `usedTokens` 是本地估算值、`estimated: true`，
   并带上窗口大小 —— 否则上下文仪表会一直显示压缩前的数字，直到下一回合重新测量；
   下一次请求的实测值会替换该估算。回复报告 `compacted: true` 及前后 token 数，或
-  `compacted: false` 及原因（未配置压缩组件、压缩器拒绝、或还无可压缩内容）；
-  拒绝绝不静默降级为有损裁剪。
+  `compacted: false` 及确切的拒绝/失败原因（例如 `no permitted cut exists yet`、
+  `input-budget-exceeded`、`summary-output-truncated`、无效候选详情、或压缩器
+  不可用）；拒绝绝不静默降级为有损裁剪。
 
 关键区别：这些限制是*你的*，所以可以协商；作业级预算
 （`maxRounds`/`maxCalls`/`maxTokens`，`agent` 组件把它们冻结进子代理会话，
@@ -626,7 +628,7 @@ supervisor 不可移除——这种不对称正是架构（ARCHITECTURE.md）。
 | `plugin_search {query?}` | GitHub topic 搜索；返回仓库、描述、star 数 |
 | `plugin_installed` | 本 harness 已安装的包 |
 | `plugin_install {repo, version?}` | clone 到 `var/plugins/<pkg>@<ref>/`，v1 经 builder 的 `build`、v2 经 `build_package` 构建每个组件，然后 `spawn` 每个服务组件（需审批） |
-| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重装；没有 release 的包（跟踪分支）原地拉取（现有 clone 的 `git pull --ff-only`），只在拉取移动了 HEAD 时重建 |
+| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重装；没有 release 的包（跟踪分支）原地拉取（现有 clone 的 `git pull --ff-only`），在拉取移动 HEAD 或已安装构件过时/缺失时重建 |
 | `plugin_remove {package}` | `core.remove` 每个受监督组件，删除 clone，丢弃记录 |
 
 - 安装/更新/移除都带 `x-harness.approval: "always"`——它们运行第三方代码，
@@ -1919,9 +1921,9 @@ make build
 ## Testing
 
 ```bash
-make test           # 完整门：前端测试，然后是总线契约套件
+make test           # 完整门：总线契约套件（桌面 UI 的前端测试与 typecheck
+                    # 位于 gokr/niffler-ui）
 make test-server    # ... 仅服务端：每个测试一个测试自有 NATS，不用 node
-make test-ui        # ... 仅前端：lib 单元测试 + `npm run typecheck`
 make test-bash      # ... 或只跑一个：test-store、test-builder、test-console、
                  # test-plugins、test-skills、test-fetch、test-models、
                  # test-observe、test-logfile、test-core、test-cli、
@@ -1930,11 +1932,10 @@ make test-bash      # ... 或只跑一个：test-store、test-builder、test-con
 
 每个测试都引导真实组件二进制（Nim、Go *和* TypeScript——信封才是产物，所以
 一个 harness 测试每个 SDK）并通过其 loopback 端口由 NATS 分配的私有 NATS 服务器
-驱动它们。前端测试是例外：它们导入 TypeScript lib 模块
-（`ui/frontend/src/lib/*.ts`）并在纯 node 上以类型剥离运行，因此 `make test-ui`
-既不需要依赖也不需要总线（`npm run typecheck` 需要 `ui/frontend/node_modules`，
-由 `make ui` 安装）。`make test` 就是 `make test-ui` + `make test-server`；
-服务端工作用 `make test-server`，前端工作用 `make test-ui`。
+驱动它们。桌面 UI 的前端测试不在本套件内：UI 现在是
+[gokr/niffler-ui](https://github.com/gokr/niffler-ui) 插件，其 lib 单元测试和
+typecheck 在该仓库运行（那里的 `make test` / `make typecheck`），因此本门禁
+保持自包含。
 基于 core 的测试把所需二进制快照进唯一临时 `NIF_ROOT`；Barrel、插件 clone、
 生成组件、日志和缓存因此都被隔离。单独的 `make test-*` 目标可以彼此以及与运行中
 的开发 harness 并发运行。仓库构建写入被串行化，而 agent 构建的测试组件使用
@@ -1954,8 +1955,9 @@ builder 构建（npm registry）。安装管线本身由 `t_plugins` 经本地 `
   `ensureHarness`：探测 `NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222，寻找
   服务**本 root** 的 core（目录携带所属 harness 的 root；外来 clone 的 core
   绝不被采纳）；无人应答时，以 `NIF_AUTOSTART=1` 分离启动 `var/bin/niffler`。
-  仓库根在 `make ui` 时经 ldflags 烘焙进去，因此安装的图标与树内二进制一样
-  工作。
+  二进制本身由 `make install-ui` 安装——桌面 UI 是
+  [gokr/niffler-ui](https://github.com/gokr/niffler-ui) 插件，由 builder 构建
+  进 `var/bin/niffler-ui`，再由 `make install` 链接到 PATH。
 - **交互插件**（例如 `niffler-tui`）——它们**不**调用 `ensureHarness`，绝不
   启动 harness：它们探测实时总线（`NIF_NATS_URL` → `var/nats-url` →
   127.0.0.1:4222），连接并注册 `client: true`（这样 autostarted core 在它们
@@ -1979,22 +1981,24 @@ builder 构建（npm registry）。安装管线本身由 `t_plugins` 经本地 `
 niffler-ui                    # 桌面 UI；autostart 完整配置
 make build          # 重建发生变化的部分
 make install        # PATH 条目（niffler、niffler-cli、niffler-console，
-                    # + 询问后安装 niffler-tui 包装脚本——绝不含组件
-                    # 二进制，因此 PATH 不会遮蔽 grep/git/...）
+                    # + 插件二进制存在时的 niffler-ui，以及按需安装的
+                    # niffler-tui 包装脚本——绝不含组件二进制，因此 PATH
+                    # 不会遮蔽 grep/git/...）
 make install-tui    # 同上，安静地安装 niffler-tui 终端客户端
                     # (= make install WITH_TUI=1)
 make uninstall      # 再次移除这些 PATH 条目
-make install-ui     # 构建桌面 UI，然后添加启动器条目 + 图标
-                    # (Linux; = make ui-install; -uninstall 对应 ui-uninstall)
+make install-ui     # 安装桌面 UI 插件（gokr/niffler-ui）：启动一个隔离的
+                    # 自动审批 harness，插件管理器 clone、builder 构建进
+                    # var/bin/niffler-ui
 make install-lsp    # 安装 lsp 组件的默认语言服务器
-make test           # 完整门：前端测试 + 总线契约套件
+make test           # 完整门：总线契约套件（UI 仓库的前端测试位于
+                    # gokr/niffler-ui）
 make test-server    # 仅总线契约套件（每个测试拥有自己的私有总线）
-make test-ui        # 仅前端：lib 单元测试 + typecheck（无 NATS）
 make doctor         # 检查前置条件
 make ram            # 运行中各栈的 RAM（harness + 组件 + nats + 客户端）
 make down-here      # 只停掉此 checkout 的 harness、组件和 spawned 总线
                     # ——bench worktree 和其他 clone 幸存
-make clean          # 删除所有构建产物（var/、nimcache/、UI build）
+make clean          # 删除所有构建产物（var/、nimcache/）
 ```
 
 - **无头服务模式**（无 tty，供 UI/自动化）：
@@ -2006,8 +2010,9 @@ make clean          # 删除所有构建产物（var/、nimcache/、UI build）
   应答时启动自己的（构建出的 `var/bin/nats-server` 组件）。
 - **不用 LLM 探测总线**：`tests/` 中的一次性 `nim c -r` 脚本
   （见 AGENTS.md "Debugging the bus"）。
-- **Wails**：只用 `wails build -tags webkit2_41` 构建（Linux）；裸
-  `go build` 会产出桩。`make dev` 在浏览器中运行 SPA，bridge 为桩。
+- **Wails**：桌面 UI（以及任何 Wails 客户端包）通过其包配方构建，
+  配方必须运行 `wails build -tags webkit2_41`（Linux）——裸 `go build` 会产出
+  桩。UI 的 SPA 开发服务器位于 gokr/niffler-ui checkout（在那里 `make dev`）。
 - **监控 RAM**：用 `make ram`（或 `watch -n5 scripts/niffler-ram.sh`）：按栈
   统计——你的 clone、`nifflerprod` 和每个 bench 私有 harness 分开——harness +
   NATS + 所有 spawned 组件 + session runner + 客户端。成员按可执行文件路径

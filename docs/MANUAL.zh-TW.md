@@ -54,7 +54,7 @@
 | `var/logs/`、`var/captures/` | 輪轉的結構化日誌和顯式 observe 探測匯出（見 [Observation and logs](#observation-and-logs)） |
 | `var/nats-pid` | core 啟動的匯流排程序 pid（僅用於崩潰清理——存活的 core 退出時會自行停止匯流排） |
 | `var/build/` | agent 建置元件的原始檔（builder 的暫存目錄） |
-| `nimcache/`、`ui/build/`、`ui/frontend/node_modules/`、`ui/frontend/dist/` | 建置產物；`make clean` 會刪除它們 |
+| `nimcache/` | 建置產物；`make clean` 會將它們（連同 `var/`）刪除 |
 
 ### Shipped components
 
@@ -477,12 +477,13 @@ session 呼叫設定（Web UI 以 `/approvals`、`/limit` 和 `/compact` 暴露�
 - **`/compact`** —— 立即執行壓縮器，而不是等待自動壓力階梯：core 向已設定的
   壓縮元件請求允許切點上的檢查點，原子安裝它，併發出通常的
   `ev.session.<id>.context {reason: "reset:compact"}`。不執行 LLM 回合，也不追加
-  使用者訊息。提交會把已測量的提示詞大小清零（這份投影還沒經提供商測量過），因此
+  使用者訊息。輔助摘要繼承會話已解析的 provider/model，不會靜默跟隨之後的全域（這份投影還沒經提供商測量過），因此
   手動路徑還會發出一幀 status —— `usedTokens` 是本機估算值、`estimated: true`，
   並帶上視窗大小 —— 否則上下文儀表會一直顯示壓縮前的數字，直到下一回合重新測量；
   下一次請求的實測值會替換該估算。回覆報告 `compacted: true` 及前後 token 數，或
-  `compacted: false` 及原因（未設定壓縮元件、壓縮器拒絕、或還無可壓縮內容）；
-  拒絕絕不靜默降級為有損裁剪。
+  `compacted: false` 及確切的拒絕/失敗原因（例如 `no permitted cut exists yet`、
+  `input-budget-exceeded`、`summary-output-truncated`、無效候選詳情、或壓縮器
+  不可用）；拒絕絕不靜默降級為有損裁剪。
 
 關鍵區別：這些限制是*你的*，所以可以協商；作業級預算
 （`maxRounds`/`maxCalls`/`maxTokens`，`agent` 元件把它們凍結進子代理會話，
@@ -532,7 +533,7 @@ core 監視會話使用了模型上下文視窗的多少，並採取*樸素*行�
 - core 發出 `ev.session.<id>.status`，包含已解析的 provider/model/context 和當前
   `usedTokens`；客戶端直接渲染 `usedTokens / context`。當提供商上報快取輸入
   （`prompt_tokens_details.cached_tokens`）時，status 事件還攜帶
-  `cacheHitTokens` 和 `cacheHitRatio`——凍結的提示詞字首意味著首次請求後大部分
+  累計快取拆分 `cache {prompt, read, hitRate}`——凍結的提示詞字首意味著首次請求後大部分
   prompt token 應命中快取，所以低比率是值得注意的訊號（Web UI 每條訊息顯示
   `⚡ NN% cached`；TUI 狀態行顯示一個 `⚡ NN% cached` 小片）。
 - 持久化訊息攜帶從不進入 LLM 的審計後設資料：每條訊息的 `createdAt`、到處都有
@@ -626,7 +627,7 @@ supervisor 不可移除——這種不對稱正是架構（ARCHITECTURE.md）。
 | `plugin_search {query?}` | GitHub topic 搜尋；返回倉庫、描述、star 數 |
 | `plugin_installed` | 本 harness 已安裝的包 |
 | `plugin_install {repo, version?}` | clone 到 `var/plugins/<pkg>@<ref>/`，v1 經 builder 的 `build`、v2 經 `build_package` 建置每個元件，然後 `spawn` 每個服務元件（需審批） |
-| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重灌；沒有 release 的包（跟蹤分支）原地拉取（現有 clone 的 `git pull --ff-only`），只在拉取移動了 HEAD 時重建 |
+| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重灌；沒有 release 的包（跟蹤分支）原地拉取（現有 clone 的 `git pull --ff-only`），在拉取移動 HEAD 或已安裝構件過時/缺失時重建 |
 | `plugin_remove {package}` | `core.remove` 每個受監督元件，刪除 clone，丟棄記錄 |
 
 - 安裝/更新/移除都帶 `x-harness.approval: "always"`——它們執行第三方程式碼，
@@ -1919,9 +1920,9 @@ make build
 ## Testing
 
 ```bash
-make test           # 完整門：前端測試，然後是匯流排契約套件
+make test           # 完整門：匯流排契約套件（桌面 UI 的前端測試與 typecheck
+                    # 位於 gokr/niffler-ui）
 make test-server    # ... 僅服務端：每個測試一個測試自有 NATS，不用 node
-make test-ui        # ... 僅前端：lib 單元測試 + `npm run typecheck`
 make test-bash      # ... 或只跑一個：test-store、test-builder、test-console、
                  # test-plugins、test-skills、test-fetch、test-models、
                  # test-observe、test-logfile、test-core、test-cli、
@@ -1930,11 +1931,10 @@ make test-bash      # ... 或只跑一個：test-store、test-builder、test-con
 
 每個測試都引導真實元件二進位（Nim、Go *和* TypeScript——信封才是產物，所以
 一個 harness 測試每個 SDK）並透過其 loopback 埠由 NATS 分配的私有 NATS 伺服器
-驅動它們。前端測試是例外：它們匯入 TypeScript lib 模組
-（`ui/frontend/src/lib/*.ts`）並在純 node 上以型別剝離執行，因此 `make test-ui`
-既不需要依賴也不需要匯流排（`npm run typecheck` 需要 `ui/frontend/node_modules`，
-由 `make ui` 安裝）。`make test` 就是 `make test-ui` + `make test-server`；
-服務端工作用 `make test-server`，前端工作用 `make test-ui`。
+驅動它們。桌面 UI 的前端測試不在本套件內：UI 現在是
+[gokr/niffler-ui](https://github.com/gokr/niffler-ui) 外掛，其 lib 單元測試和
+typecheck 在該倉庫執行（那裡的 `make test` / `make typecheck`），因此本門檻
+保持自包含。
 基於 core 的測試把所需二進位快照進唯一臨時 `NIF_ROOT`；Barrel、外掛 clone、
 生成元件、日誌和快取因此都被隔離。單獨的 `make test-*` 目標可以彼此以及與執行中
 的開發 harness 併發執行。倉庫建置寫入被序列化，而 agent 建置的測試元件使用
@@ -1954,8 +1954,9 @@ builder 建置（npm registry）。安裝管線本身由 `t_plugins` 經本機 `
   `ensureHarness`：探測 `NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222，尋找
   服務**本 root** 的 core（目錄攜帶所屬 harness 的 root；外來 clone 的 core
   絕不被採納）；無人應答時，以 `NIF_AUTOSTART=1` 分離啟動 `var/bin/niffler`。
-  倉庫根在 `make ui` 時經 ldflags 烘焙進去，因此安裝的圖示與樹內二進位一樣
-  工作。
+  二進位本身由 `make install-ui` 安裝——桌面 UI 是
+  [gokr/niffler-ui](https://github.com/gokr/niffler-ui) 外掛，由 builder 建置
+  進 `var/bin/niffler-ui`，再由 `make install` 連結到 PATH。
 - **互動外掛**（例如 `niffler-tui`）——它們**不**呼叫 `ensureHarness`，絕不
   啟動 harness：它們探測實時匯流排（`NIF_NATS_URL` → `var/nats-url` →
   127.0.0.1:4222），連線並註冊 `client: true`（這樣 autostarted core 在它們
@@ -1979,22 +1980,24 @@ builder 建置（npm registry）。安裝管線本身由 `t_plugins` 經本機 `
 niffler-ui                    # 桌面 UI；autostart 完整設定
 make build          # 重建發生變化的部分
 make install        # PATH 條目（niffler、niffler-cli、niffler-console，
-                    # + 詢問後安裝 niffler-tui 包裝指令碼——絕不含元件
-                    # 二進位，因此 PATH 不會遮蔽 grep/git/...）
+                    # + 外掛二進位存在時的 niffler-ui，以及按需安裝的
+                    # niffler-tui 包裝指令碼——絕不含元件二進位，因此 PATH
+                    # 不會遮蔽 grep/git/...）
 make install-tui    # 同上，安靜地安裝 niffler-tui 終端客戶端
                     # (= make install WITH_TUI=1)
 make uninstall      # 再次移除這些 PATH 條目
-make install-ui     # 建置桌面 UI，然後新增啟動器條目 + 圖示
-                    # (Linux; = make ui-install; -uninstall 對應 ui-uninstall)
+make install-ui     # 安裝桌面 UI 外掛（gokr/niffler-ui）：啟動一個隔離的
+                    # 自動審批 harness，外掛管理器 clone、builder 建置進
+                    # var/bin/niffler-ui
 make install-lsp    # 安裝 lsp 元件的預設語言伺服器
-make test           # 完整門：前端測試 + 匯流排契約套件
+make test           # 完整門：匯流排契約套件（UI 倉庫的前端測試位於
+                    # gokr/niffler-ui）
 make test-server    # 僅匯流排契約套件（每個測試擁有自己的私有匯流排）
-make test-ui        # 僅前端：lib 單元測試 + typecheck（無 NATS）
 make doctor         # 檢查前置條件
 make ram            # 執行中各棧的 RAM（harness + 元件 + nats + 客戶端）
 make down-here      # 只停掉此 checkout 的 harness、元件和 spawned 匯流排
                     # ——bench worktree 和其他 clone 倖存
-make clean          # 刪除所有建置產物（var/、nimcache/、UI build）
+make clean          # 刪除所有建置產物（var/、nimcache/）
 ```
 
 - **無頭服務模式**（無 tty，供 UI/自動化）：
@@ -2006,8 +2009,9 @@ make clean          # 刪除所有建置產物（var/、nimcache/、UI build）
   應答時啟動自己的（建置出的 `var/bin/nats-server` 元件）。
 - **不用 LLM 探測匯流排**：`tests/` 中的一次性 `nim c -r` 指令碼
   （見 AGENTS.md "Debugging the bus"）。
-- **Wails**：只用 `wails build -tags webkit2_41` 建置（Linux）；裸
-  `go build` 會產出樁。`make dev` 在瀏覽器中執行 SPA，bridge 為樁。
+- **Wails**：桌面 UI（以及任何 Wails 用戶端套件）透過其套件配方建置，
+  配方必須執行 `wails build -tags webkit2_41`（Linux）——裸 `go build` 會產出
+  樁。UI 的 SPA 開發伺服器位於 gokr/niffler-ui checkout（在那裡 `make dev`）。
 - **監控 RAM**：用 `make ram`（或 `watch -n5 scripts/niffler-ram.sh`）：按棧
   統計——你的 clone、`nifflerprod` 和每個 bench 私有 harness 分開——harness +
   NATS + 所有 spawned 元件 + session runner + 客戶端。成員按可執行檔案路徑

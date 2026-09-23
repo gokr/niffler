@@ -2,7 +2,7 @@
 ##
 ## A conversation starts in one workspace, but real work spans several: a git
 ## worktree per branch, a second checkout of the same repository (the dev tree
-## and the deployed clone, side by side), a plain sibling directory. Components
+## and the deployed clone), a plain sibling directory. Components
 ## used to compare every path against the single workspace root, so anything
 ## else was "outside" — which meant no LSP diagnostics for those edits, and no
 ## way for a component to know the two trees were even related.
@@ -104,3 +104,43 @@ proc computeWorkspaceRoots*(primary: string,
     for s in siblings:
       if result.len >= maxRoots: break
       result.add(s)
+
+proc pathInWorkspace*(path: string, roots: openArray[string]): bool =
+  ## True when path is the root itself or below one of the declared roots.
+  ## Comparisons use normalized absolute spellings and a separator boundary,
+  ## so /repo2 never matches /repo.
+  let target = normalizeRoot(path)
+  if target.len == 0: return false
+  for root0 in roots:
+    let root = normalizeRoot(root0)
+    if root.len == 0: continue
+    if target == root or target.startsWith(root & "/"):
+      return true
+  false
+
+proc addWorkspaceRoot*(roots: var seq[string], path: string,
+                       maxRoots = maxWorkspaceRoots): tuple[ok: bool, root, error: string] =
+  ## Add one existing directory to a workspace set, preserving the primary
+  ## root at index zero and enforcing the global root cap.
+  let root = normalizeRoot(path)
+  if root.len == 0 or not dirExists(root):
+    return (false, "", "workspace root is not a directory: " & path)
+  if root in roots:
+    return (true, root, "")
+  if roots.len >= maxRoots:
+    return (false, "", "workspace root limit reached (" & $maxRoots & ")")
+  roots.add(root)
+  (true, root, "")
+
+proc removeWorkspaceRoot*(roots: var seq[string], path: string): tuple[ok: bool, root, error: string] =
+  ## Remove a secondary root. The primary root is intentionally immutable.
+  let root = normalizeRoot(path)
+  if roots.len == 0:
+    return (false, root, "workspace has no roots")
+  if root == roots[0]:
+    return (false, root, "cannot remove the primary workspace; use a new conversation to switch it")
+  for i in 1 ..< roots.len:
+    if roots[i] == root:
+      roots.delete(i)
+      return (true, root, "")
+  (false, root, "workspace root is not currently allowed: " & path)

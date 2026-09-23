@@ -9,9 +9,11 @@ repo is".
 
 Status: **implemented** (`components/repomap/main.nim`, `MapStats` +
 `appendCensusOk` + `appendGateReason`; tests in `tests/t_repomap*.nim`;
-`make test-repomap` green). The append remains opt-in
-(`NIF_REPOMAP_AUTOAPPEND=1`) until the verification bench below shows the
-gated append is not a regression.
+`make test-repomap` covers both admission gates and an explicit opt-out).
+The append is **gated on by default**; `NIF_REPOMAP_AUTOAPPEND=0` disables it.
+This changes only workspace-open history, never the frozen prompt prefix.
+The ungated A/Bs below were mixed; the gated-on default has not yet had a
+matched-tree quality/latency A/B on large repos.
 
 ## Why gates — what the A/Bs actually show
 
@@ -189,20 +191,17 @@ rejection, (c) tool-path immunity, (d) withheld-log emission.
 
 ## Verification plan (post-implementation)
 
-1. Unit: the new `t_repomap` cases, `make test-repomap`.
-2. Micro-repo: rerun full30 with the append force-enabled
-   (`NIF_REPOMAP_AUTOAPPEND=1`). Expected: **0 publishes** across all 30
-   (size floor), i.e. the +41% tax disappears by construction. Cheap
-   (~1h at low).
-3. Real-repo: rerun the low Multi10 A/B. Expected: publishes normally
-   (all multi10 repos clear both gates), so the low finding should
-   replicate unchanged — that is the *no-regression* check.
+1. Unit: `make test-repomap` covers default-on, both gates, opt-out and
+   explicit tool pulls; `make test-ctx-accounting` covers independent
+   map/diagnostics queue drains.
+2. Micro-repo: a future full30 run with the gated default should produce
+   **0 publishes** across all 30 (size floor); the earlier +41% tax was from
+   ungated injection, not this policy.
+3. Real-repo: a matched-tree low Multi10 A/B with gated ON/OFF remains
+   desirable. Old ungated runs differed substantially, so do not attribute
+   their outcomes to the new default.
 4. The high tail stays an open question; a second high sample on
-   jq+redis is the follow-up probe already promised in
-   `repomap-ab-multi10.md`.
-5. Only if 2–4 are clean: flip `NIF_REPOMAP_AUTOAPPEND` default and
-   update `REPOMAP.md`, `MANUAL.md`, `manifest.yaml`, and the tool
-   description's "also appended automatically" line.
+   jq+redis is the follow-up probe promised in `repomap-ab-multi10.md`.
 
 ## Open questions
 

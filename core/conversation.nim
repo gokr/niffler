@@ -1042,17 +1042,40 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     result += 1
   ct.steerStream.queue.setLen(0)
 
+proc drainMapQueue*(queue: var seq[tuple[workspace, map: string]],
+                    appended: var bool): seq[tuple[workspace, map: string]] =
+  ## Consume only the map lane. Return at most one map per conversation;
+  ## later arrivals are discarded, never touching the diagnostic lane.
+  if appended:
+    queue.setLen(0)  # stale later maps must not be retained forever
+    return
+  if queue.len > 0:
+    result.add(queue[0])
+    appended = true
+  queue.setLen(0)
+
+proc drainDiagnosticsQueue*(queue: var seq[tuple[path, text: string]]):
+                            seq[tuple[path, text: string]] =
+  ## Consume only the diagnostics lane. Newest text per path wins so five
+  ## edits to one file yield one append-only message, not five.
+  if queue.len == 0: return
+  var latest: seq[tuple[path, text: string]]
+  for (path, text) in queue:
+    var replaced = false
+    for i in 0 ..< latest.len:
+      if latest[i].path == path:
+        latest[i] = (path, text)
+        replaced = true
+        break
+    if not replaced: latest.add((path, text))
+  queue.setLen(0)
+  result = latest
+
 proc drainMap(ct: CoreTools, p: var Persister,
               messages: var seq[JsonNode],
               onEvent: proc(kind: string, data: JsonNode) {.closure.}) =
-  ## Append the conversation's repo map once (docs/research/REPOMAP.md):
-  ## a user-role message carrying the ranked workspace snapshot. One per
-  ## conversation; append-only history, never the frozen prefix. If the
-  ## compaction trims it away later, the repo_map tool re-creates it.
   if ct.mapStream == nil: return
-  if ct.mapStream.appended: return
-  for (ws, map) in ct.mapStream.queue:
-    ct.mapStream.appended = true
+  for (ws, map) in drainMapQueue(ct.mapStream.queue, ct.mapStream.appended):
     let msg = %*{"role": "user",
                  "content": "[repo map of " & ws & " — a ranked snapshot of " &
                    "this workspace when the conversation started. Edits you " &
@@ -1061,31 +1084,12 @@ proc drainMap(ct: CoreTools, p: var Persister,
     if onEvent != nil:
       onEvent("map", %*{"sessionId": p.convId, "workspace": ws,
                         "bytes": map.len})
-    break
-  ct.diagStream.queue.setLen(0)
 
 proc drainDiagnostics(ct: CoreTools, p: var Persister,
                       messages: var seq[JsonNode],
                       onEvent: proc(kind: string, data: JsonNode) {.closure.}) =
-  ## Append LSP diagnostics that arrived asynchronously for files edited this
-  ## turn. The edit tool no longer waits for a cold server (the Multilingual-10
-  ## run paid 39 such waits, ~16 minutes, for no information); the lsp
-  ## component publishes the rendered result on svc.session.<id>.diag when the
-  ## server answers and the runner folds it in here. Append-only history,
-  ## never the frozen prefix — the drainMap doctrine. Newest text per path
-  ## wins, so five edits to one file cost one message instead of five.
-  if ct.diagStream == nil or ct.diagStream.queue.len == 0: return
-  var latest: seq[tuple[path, text: string]]
-  for (path, text) in ct.diagStream.queue:
-    var replaced = false
-    for i in 0 ..< latest.len:
-      if latest[i].path == path:
-        latest[i] = (path, text)
-        replaced = true
-        break
-    if not replaced: latest.add((path, text))
-  ct.diagStream.queue.setLen(0)
-  for (path, text) in latest:
+  if ct.diagStream == nil: return
+  for (path, text) in drainDiagnosticsQueue(ct.diagStream.queue):
     ctxAppend(p, messages, %*{"role": "user",
       "content": "[lsp diagnostics for " & path & " — asynchronously " &
                  "delivered after your edit, when the server answered]\n" & text})

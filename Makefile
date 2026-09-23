@@ -428,6 +428,8 @@ var/bin/test_t_supervisor_backoff: core/supervisor.nim core/catalog.nim
 
 var/bin/test_t_ctx_accounting: core/conversation.nim
 
+var/bin/test_t_context_drains: core/conversation.nim
+
 # The full gate. The frontend half (lib unit tests + typecheck) lives in the
 # UI's own repository now (gokr/niffler-ui: make test / make typecheck) — its
 # toolchain, generated Wails bindings and node_modules are that repo's
@@ -493,6 +495,7 @@ test-approval: build var/bin/test_t_approval_manifest ; $(TEST_LOCK) env "NIF_RE
 test-controls: build var/bin/test_t_controls ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_controls
 test-retry-unit: build var/bin/test_t_retry_unit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_retry_unit
 test-ctx-accounting: build var/bin/test_t_ctx_accounting ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_ctx_accounting
+test-context-drains: build var/bin/test_t_context_drains ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_context_drains
 test-compaction: build var/bin/test_t_compaction ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction
 # §8.7 conformance runner: suite run proves the shipped component; point
 # third-party implementations at it with

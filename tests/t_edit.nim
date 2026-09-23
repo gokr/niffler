@@ -611,6 +611,34 @@ proc main() =
   check("unconfigured extension reads content as usual",
         rz.getStr("") == repeat("line\n", 8), $rz)
 
+  # --- the automatic diagnostics note: never silent for a known language ---
+  # The registry claims ".nx" (the fixture server); ".txt" is claimed by
+  # nobody. A language the registry knows must be told what happened — the
+  # check is on its way, and its verdict follows as a message — so "checked
+  # and clean" can never look like "nothing happened". Silence is reserved
+  # for extensions no registry entry claims.
+  writeFile(tmp / "note.nx", "one\ntwo\n")
+  let rDiagNote = call(nc, "edit", "edit",
+                %*{"path": "note.nx", "__session": {"session": "sess-diag"},
+                   "edits": [{"old_string": "one", "new_string": "1"}]})
+  check("known language edit names the diagnostics lane",
+        rDiagNote{"text"}.getStr("").contains("[lsp:"), $rDiagNote)
+
+  writeFile(tmp / "note.txt", "one\ntwo\n")
+  let rDiagQuiet = call(nc, "edit", "edit",
+                %*{"path": "note.txt", "__session": {"session": "sess-diag"},
+                   "edits": [{"old_string": "one", "new_string": "1"}]})
+  check("unclaimed extension keeps the edit silent",
+        not rDiagQuiet{"text"}.getStr("").contains("[lsp:"), $rDiagQuiet)
+
+  # No conversation id: no lane to report a verdict back to, so no note.
+  writeFile(tmp / "anon.nx", "one\ntwo\n")
+  let rDiagAnon = call(nc, "edit", "edit",
+                %*{"path": "anon.nx",
+                   "edits": [{"old_string": "one", "new_string": "1"}]})
+  check("session-less edit stays quiet",
+        not rDiagAnon{"text"}.getStr("").contains("[lsp:"), $rDiagAnon)
+
   # drain: the outline-configured component exits
   drain(nc)
   sleep(700)

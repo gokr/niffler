@@ -98,8 +98,12 @@ poll-loop requests on a private inbox, and every idle slot serves core's
 own `svc.core.call` surface (spawn/kill/remove/catalog) plus the live
 `ev.llm.token` stream. Without this, a component calling back into core
 during a session turn (`plugin_install` → `core.spawn`) would deadlock
-against the in-flight turn. Concurrent `session` requests are stashed,
-never nested, and drained when the turn ends.
+against the in-flight turn. Session calls never block on a runner: every
+call — turn-starting included — rides its private forwarding inbox
+(`routeSessionCall`) and is completed by `pumpSessionForwards`, so separate
+conversations overlap while each runner stays the serialization boundary
+for its own conversation (a mid-turn runner refuses further turns with
+`busy`).
 
 ## What is deliberately outside core
 
