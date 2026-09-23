@@ -12,10 +12,10 @@
 ##   (200 KB) spills to a file under $NIF_FETCH_DIR (default
 ##   $NIF_ROOT/var/fetch) that the agent reads with its own file tools,
 ##   so the tool result never blows the conversation
-## - fresh HttpClient per call: a stale pooled connection (server closed
-##   it) would hang the next read forever (see plugins' resolveTag)
+## - curl --resolve pins each validated address for Host/SNI and TLS
+##   verification; no second DNS lookup or proxy resolution per hop
 
-import std/[httpclient, json, net, nativesockets, os, osproc, streams, strutils, tempfiles,
+import std/[json, net, nativesockets, os, osproc, streams, strutils, tempfiles,
             times, uri, xmltree]
 import niffler/sdk
 import pkg/htmlparser
@@ -176,67 +176,146 @@ proc blockedAddress(ip: IpAddress): bool =
 proc privateFetchAllowed(): bool =
   getEnv("NIF_FETCH_ALLOW_PRIVATE", "") in ["1", "true", "yes"]
 
-proc validateFetchUrl(raw: string): tuple[ok: bool, error: string] =
-  ## Validate the URL and resolve every address before HttpClient connects.
-  ## Fail closed on DNS errors: otherwise a typo or a transient resolver
-  ## failure could bypass the destination policy. Redirects are validated by
-  ## the request loop below as well.
+proc curlAvailable(): bool =
+  ## fetch shells out to curl (see requestPinned): it is the only transport in
+  ## the standard library that can pin a validated address while keeping the
+  ## original hostname for Host/SNI. `make setup` installs it.
+  findExe("curl").len > 0
+
+proc validateFetchUrl(raw: string): tuple[ok: bool, error, address: string] =
+  ## Resolve once per hop and return the checked address to the transport.
+  ## The connection MUST use that address, not resolve the name a second time.
+  ## Fail closed on DNS errors and on any private address in a mixed answer.
   var parsed: Uri
   try:
     parsed = parseUri(raw)
   except ValueError:
-    return (false, "invalid URL")
+    return (false, "invalid URL", "")
   if parsed.scheme.toLowerAscii() notin ["http", "https"] or
       parsed.hostname.len == 0:
-    return (false, "url must be http(s) with a hostname")
+    return (false, "url must be http(s) with a hostname", "")
   if parsed.username.len > 0 or parsed.password.len > 0:
-    return (false, "URL credentials are not allowed")
-  if privateFetchAllowed(): return (true, "")
+    return (false, "URL credentials are not allowed", "")
+  if parsed.hostname.contains({'\c', '\L', ',', ';', '%', '/', '\\'}) or
+      parsed.hostname.startsWith('-'):
+    return (false, "invalid URL hostname", "")
+  if raw.contains({'\c', '\L'}):
+    return (false, "invalid URL", "")
+  # curl's --resolve pins the checked address while retaining the original
+  # hostname for Host, TLS SNI and certificate verification. Do not let a
+  # proxy resolve the destination instead of this transport.
+  if parsed.port.len > 0:
+    try:
+      let port = parseInt(parsed.port)
+      if port < 1 or port > 65535:
+        return (false, "invalid URL port", "")
+    except ValueError:
+      return (false, "invalid URL port", "")
   let host = parsed.hostname.strip(chars = {'.'}).toLowerAscii()
-  if host == "localhost" or host.endsWith(".localhost") or
-      host.endsWith(".local") or host.endsWith(".internal"):
-    return (false, "refusing private hostname: " & parsed.hostname)
+  if not privateFetchAllowed() and (host == "localhost" or
+      host.endsWith(".localhost") or host.endsWith(".local") or
+      host.endsWith(".internal")):
+    return (false, "refusing private hostname: " & parsed.hostname, "")
   try:
     if isIpAddress(host):
-      if blockedAddress(parseIpAddress(host)):
-        return (false, "refusing private address: " & host)
-    else:
-      let resolved = getHostByName(host)
-      if resolved.addrList.len == 0:
-        return (false, "hostname has no addresses: " & host)
-      for address in resolved.addrList:
-        if blockedAddress(parseIpAddress(address)):
-          return (false, "hostname resolves to a private address: " & host)
+      if not privateFetchAllowed() and blockedAddress(parseIpAddress(host)):
+        return (false, "refusing private address: " & host, "")
+      return (true, "", host)
+    let resolved = getHostByName(host)
+    if resolved.addrList.len == 0:
+      return (false, "hostname has no addresses: " & host, "")
+    for address in resolved.addrList:
+      if not privateFetchAllowed() and blockedAddress(parseIpAddress(address)):
+        return (false, "hostname resolves to a private address: " & host, "")
+    return (true, "", resolved.addrList[0])
   except CatchableError as e:
-    return (false, "cannot validate hostname " & host & ": " & e.msg)
-  (true, "")
+    return (false, "cannot validate hostname " & host & ": " & e.msg, "")
 
-proc responseCode(resp: Response): int =
+type FetchResponse = object
+  status: string
+  headers: seq[tuple[name, value: string]]
+  body: string
+
+proc header(resp: FetchResponse, name: string): string =
+  for h in resp.headers:
+    if h.name.toLowerAscii() == name.toLowerAscii(): return h.value
+  ""
+
+proc responseCode(resp: FetchResponse): int =
   try: parseInt(resp.status.split()[0])
   except ValueError: 0
 
-proc requestSafe(client: HttpClient, url: string, methodName: HttpMethod,
-                 body: string, headers: HttpHeaders): tuple[
-                   response: Response, finalUrl: string] =
-  ## Follow only a small, explicitly validated redirect chain. Nim's default
-  ## redirect handling validates neither DNS destinations nor redirect hops.
+proc requestPinned(url, address: string, methodName: string, body: string,
+                   headers: seq[tuple[name, value: string]], timeout,
+                   maxSize: int): FetchResponse =
+  ## One subprocess per hop: --resolve forces the TCP peer, while curl keeps
+  ## Host, SNI, CA verification, chunked encoding and HTTP parsing intact.
+  let parsed = parseUri(url)
+  let port = if parsed.port.len > 0: parsed.port
+             elif parsed.scheme.toLowerAscii() == "https": "443" else: "80"
+  createDir(fetchDir())
+  let dir = createTempDir("fetch-http-", "", fetchDir())
+  try:
+    let headerPath = dir / "headers"
+    let bodyPath = dir / "body"
+    let pinnedAddress = if address.contains(':'): "[" & address & "]"
+                        else: address
+    var args = @["--disable", "--silent", "--show-error", "--noproxy", "*", "--globoff",
+                 "--proto", "=http,https", "--max-time", $(max(1, (timeout + 999) div 1000)),
+                 "--connect-timeout", $(max(1, (timeout + 999) div 1000)),
+                 "--max-filesize", $maxSize, "--resolve",
+                 parsed.hostname & ":" & port & ":" & pinnedAddress,
+                 "--dump-header", headerPath, "--output", bodyPath]
+    # --request HEAD would make curl wait for a body the server never sends;
+    # --head is curl's own HEAD mode (no body expected).
+    if methodName == "HEAD": args.add("--head")
+    else: args.add(["--request", methodName])
+    if body.len > 0 and methodName in ["POST", "PUT", "PATCH"]:
+      let inputPath = dir / "input"
+      writeFile(inputPath, body)
+      args.add(["--data-binary", "@" & inputPath])
+    for h in headers:
+      args.add(["--header", h.name & ": " & h.value])
+    args.add(["--", url])
+    let (code, output) = runArgv("curl", args, timeout + 1000)
+    if code != 0:
+      raise newException(IOError, "request failed (curl " & $code & "): " &
+        output[0 ..< min(output.len, 500)])
+    let lines = readFile(headerPath).splitLines()
+    if lines.len == 0 or not lines[0].startsWith("HTTP/"):
+      raise newException(IOError, "invalid HTTP response")
+    result.status = lines[0].split(' ', 1)[^1]
+    for line in lines[1 .. ^1]:
+      let sep = line.find(':')
+      if sep > 0:
+        result.headers.add((line[0 ..< sep], line[sep + 1 .. ^1].strip()))
+    result.body = readFile(bodyPath)
+  finally:
+    if dirExists(dir): removeDir(dir)
+
+proc requestSafe(url: string, methodName: string, body: string,
+                 headers: seq[tuple[name, value: string]], timeout,
+                 maxSize: int): tuple[response: FetchResponse, finalUrl: string] =
+  ## Follow only a small, explicitly validated redirect chain. Each hop
+  ## connects to exactly the address validated for that hop.
   var current = url
   var currentMethod = methodName
   var currentBody = body
+  var activeHeaders = headers
   for hop in 0 .. 5:
     let checked = validateFetchUrl(current)
     if not checked.ok:
       raise newException(ValueError, checked.error)
-    result.response = if currentMethod in [HttpPost, HttpPut, HttpPatch]:
-      client.request(current, currentMethod, body = currentBody)
-    else:
-      client.request(current, currentMethod)
+    result.response = requestPinned(current, checked.address, currentMethod,
+                                    currentBody, activeHeaders, timeout, maxSize)
     result.finalUrl = current
     let status = responseCode(result.response)
+    if status >= 200 and status < 300 and result.response.body.len > maxSize:
+      raise newException(IOError, "response exceeds " & $maxSize & " byte cap")
     if status notin [301, 302, 303, 307, 308]: return
     if hop == 5:
       raise newException(ValueError, "too many redirects")
-    let location: string = result.response.headers.getOrDefault("Location")
+    let location = result.response.header("Location")
     if location.len == 0:
       raise newException(ValueError, "redirect has no Location header")
     let next = combine(parseUri(current), parseUri(location))
@@ -245,11 +324,14 @@ proc requestSafe(client: HttpClient, url: string, methodName: HttpMethod,
     current = $next
     case status
     of 301, 302, 303:
-      if currentMethod notin [HttpGet, HttpHead]: currentMethod = HttpGet
+      if currentMethod notin ["GET", "HEAD"]: currentMethod = "GET"
       currentBody = ""
-      headers.del("Content-Length")
-      headers.del("Content-Type")
-      headers.del("Transfer-Encoding")
+      # Remove entity headers on method change, as the old HttpClient did.
+      var retained: seq[tuple[name, value: string]]
+      for h in activeHeaders:
+        if h.name.toLowerAscii() notin ["content-length", "content-type", "transfer-encoding"]:
+          retained.add(h)
+      activeHeaders = retained
     else:
       discard
   raise newException(ValueError, "redirect failed")
@@ -281,7 +363,16 @@ comp.tool(%*{"onDemand": true}):
       return errResult("url is required")
     if url.len > 2048:
       return errResult("url is too long")
-    let checkedUrl = validateFetchUrl(url)
+    if not curlAvailable():
+      return errResult("curl is not installed on this machine — install it " &
+        "(e.g. `sudo apt install curl`) or fetch with bash instead")
+    # A fragment is client-side only and never sent on the wire: drop it
+    # instead of forwarding it to the transport (the original URL is still
+    # reported back in `url`).
+    var target = url
+    let hash = target.find('#')
+    if hash >= 0: target = target[0 ..< hash]
+    let checkedUrl = validateFetchUrl(target)
     if not checkedUrl.ok:
       return errResult(checkedUrl.error & ": " & url)
     let cleanMethod = `method`.toUpperAscii()
@@ -293,27 +384,17 @@ comp.tool(%*{"onDemand": true}):
       return errResult("maxSize must be 1024.." & $MaxSizeLimit & " bytes")
 
     try:
-      let client = newHttpClient("niffler-fetch/0.1", maxRedirects = 0,
-                                  timeout = timeout)
-      defer: client.close()
-      client.headers = newHttpHeaders({
-        "User-Agent": "niffler-fetch/0.1",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"})
+      var requestHeaders: seq[tuple[name, value: string]] = @[
+        ("User-Agent", "niffler-fetch/0.1"),
+        ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+        ("Accept-Language", "en-US,en;q=0.5")]
       if headers != nil and headers.kind == JObject:
         for key, value in headers:
-          client.headers[key] = value.getStr("")
-      let requestMethod = case cleanMethod
-        of "GET": HttpGet
-        of "POST": HttpPost
-        of "PUT": HttpPut
-        of "DELETE": HttpDelete
-        of "HEAD": HttpHead
-        of "OPTIONS": HttpOptions
-        of "PATCH": HttpPatch
-        else: HttpGet
-      let fetched = requestSafe(client, url, requestMethod, body,
-                                client.headers)
+          if key.contains({'\c', '\L'}) or value.getStr("").contains({'\c', '\L'}):
+            return errResult("invalid request header")
+          requestHeaders.add((key.toLowerAscii(), value.getStr("")))
+      let fetched = requestSafe(target, cleanMethod, body, requestHeaders,
+                                timeout, maxSize)
       let resp = fetched.response
       let finalUrl = fetched.finalUrl
       let statusCode = responseCode(resp)
@@ -336,9 +417,7 @@ comp.tool(%*{"onDemand": true}):
                          " bytes, over the " & $maxSize & " byte cap",
                          extra = %*{"status": statusCode})
 
-      var contentType = ""
-      if resp.headers.hasKey("Content-Type"):
-        contentType = resp.headers["Content-Type"]
+      let contentType = resp.header("Content-Type")
       var content = resp.body
       var convertedToText = false
       var extractionMethod = "none"

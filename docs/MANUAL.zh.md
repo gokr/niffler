@@ -825,6 +825,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 - 响应上限为 `maxSize`（默认 10 MiB，最小 1024 字节，最大 50 MiB）；处理后超过 200 KB 的内容会写入 `$NIF_FETCH_DIR`（默认 `$NIF_ROOT/var/fetch`）下唯一的 `fetch_<rand>.txt`，工具结果变为 `Content saved to file (over 200000 bytes after processing): <path>`，因此 agent 使用自己的文件工具读取大页面，而不是撑爆对话。没有任何东西会清理这些文件 —— 目录会一直增长直到操作员清除它，并且它还托管 trafilatura 的临时工作目录。
 - 错误（非 2xx、超时、超大响应、无效 URL/方法）以 `ok: false` 返回，并带有状态和正文片段：HTTP 错误携带 `extra.status` 和剥离后正文最多前 500 字节，超过 `maxSize` 的响应就是这样的错误，绝不是溢出。成功结果携带 `finalUrl`（重定向后）、`status`、`contentType`、`contentLength`、`convertedToText`、`extractionMethod`、`savedToFile` 和 `filePath`。
 - 请求在发送前经过验证，每个重定向跳转都会重新验证：仅限 http(s)，URL 最多 2048 个字符，无 URL 凭据，并且检查每个解析后的地址 —— 环回、私有、链路本地、CGNAT、多播、`localhost`/`.local`/`.internal`，以及空或失败的 DNS 应答都会被拒绝（故障关闭：`"hostname resolves to a private address: <host>"`、`"cannot validate hostname <host>: <msg>"`）。`NIF_FETCH_ALLOW_PRIVATE`（`1`，或 `true`/`yes`）为受信任的本地服务绕过该检查。
+- 连接使用**刚刚检查过的那个地址**：每一跳只解析一次、校验之后用 `curl --resolve` 固定，因此在检查与连接之间发生变化的 DNS 应答（重绑定）无法连到另一个对端；原始主机名仍用于 `Host`、TLS SNI 与证书校验。`curl` 因此是运行时依赖（`make setup` 会安装它）；缺失时工具返回可操作的错误，而不是静默跳过检查。URL 片段（`#anchor`）会被丢弃——它只在客户端使用，不会发送到线路上。
 - 重定向：最多 5 跳，每跳重新验证；301/302/303 变为 GET，丢弃正文和 Content-Length/Content-Type/Transfer-Encoding，307/308 保留方法和正文；缺少 `Location` 或非 http(s) 目标是错误。调用方 `headers` 覆盖默认值（`niffler-fetch/0.1` UA、类似 HTML 的 `Accept`、`Accept-Language`）。
 - 没有审批门（像 `plugin_search` 一样），但该工具不声明 `x-harness.effect`，因此 fabric 批处理主机将 `fetch` 调度为写入并独占运行它。
 

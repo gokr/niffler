@@ -148,6 +148,17 @@ proc serve(portFile: string) =
                      "Content-Length: 0\r\nConnection: close\r\n\r\n"
           if data.len > 0:
             discard send(fd, cast[pointer](data[0].addr), data.len, 0)
+        elif req.verb == "GET" and path == "/redirect-bad-host":
+          let data = "HTTP/1.1 302 Found\r\nLocation: http://" &
+                     "niffler-fetch-does-not-exist.invalid/x\r\n" &
+                     "Content-Length: 0\r\nConnection: close\r\n\r\n"
+          discard send(fd, cast[pointer](data[0].addr), data.len, 0)
+        elif req.verb == "GET" and path == "/redirect-ftp":
+          let data = "HTTP/1.1 302 Found\r\nLocation: ftp://example.com/x\r\n" &
+                     "Content-Length: 0\r\nConnection: close\r\n\r\n"
+          discard send(fd, cast[pointer](data[0].addr), data.len, 0)
+        elif req.verb == "HEAD" and path == "/page":
+          respond(conns[idx].sock, "200 OK", "text/html", "")
         elif req.verb == "GET" and path == "/slow":
           sleep(2000)
           respond(conns[idx].sock, "200 OK", "text/plain", "finally")
@@ -212,6 +223,14 @@ proc main() =
         not page{"content"}.getStr("").contains("evil") and
         page{"convertedToText"}.getBool(false) and
         page{"extractionMethod"}.getStr("") == "htmlparser", $page)
+
+  # A fragment is client-side only: it must not reach the transport, and it
+  # must not fail an otherwise valid URL either.
+  let anchored = call(nc, "fetch", "fetch", %*{"url": base & "/page#section"})
+  check("url fragment is dropped, request still succeeds",
+        anchored{"ok"}.getBool(false) and
+        anchored{"content"}.getStr("").contains("Hello Fetch") and
+        not anchored{"finalUrl"}.getStr("").contains("#"), $anchored)
 
   let raw = call(nc, "fetch", "fetch",
                  %*{"url": base & "/raw", "convertToText": false})
@@ -297,6 +316,26 @@ proc main() =
   let redir = call(nc, "fetch", "fetch", %*{"url": base & "/redirect"})
   check("redirect followed", redir{"ok"}.getBool(false) and
         redir{"content"}.getStr("").contains("Hello Fetch"), $redir)
+
+  # Every hop is resolved and checked again, not only the first URL.
+  let redirBadHost = call(nc, "fetch", "fetch",
+                          %*{"url": base & "/redirect-bad-host"})
+  check("redirect to an unresolvable host is refused at the hop",
+        not redirBadHost{"ok"}.getBool(false) and
+        redirBadHost{"error"}.getStr("").contains("does-not-exist"),
+        $redirBadHost)
+  let redirFtp = call(nc, "fetch", "fetch",
+                      %*{"url": base & "/redirect-ftp"})
+  check("redirect to a non-http scheme is refused",
+        not redirFtp{"ok"}.getBool(false) and
+        redirFtp{"error"}.getStr("").contains("http(s)"), $redirFtp)
+
+  # HEAD must not wait for a body the server never sends.
+  let head = call(nc, "fetch", "fetch",
+                  %*{"url": base & "/page", "method": "HEAD"}, 15_000)
+  check("HEAD returns headers without hanging on a body",
+        head{"ok"}.getBool(false) and head{"status"}.getInt(0) == 200,
+        $head)
 
   let hdrs = call(nc, "fetch", "fetch",
                   %*{"url": base & "/headers", "headers": {"X-Test": "yes"}})
