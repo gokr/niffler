@@ -767,4 +767,44 @@ comp.tool(%*{"approval": "always", "onDemand": true}):
                   subscriptionCount.getInt(0) > list.len}
     except CatchableError as e:
       return errResult("monitor " & url & ": " & e.msg)
+# Self test (docs/WIRE.md): quick checks its own wiring (the ring buffer,
+# the registry state); deep records one synthetic bus message through the
+# real ring and reads it back — the ring is the component's core contract
+# and never touches the workspace.
+discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
+  let deep = args{"deep"}.getBool(false)
+  let t0 = epochTime()
+  var checks = newJArray()
+  var allOk = true
+
+  proc check(name: string, ok: bool, detail: string) =
+    if not ok: allOk = false
+    checks.add(%*{"name": name, "ok": ok, "detail": detail,
+                  "ms": int((epochTime() - t0) * 1000)})
+
+  block quick:
+    check("ring buffer", ringBytes >= 0,
+          "bytes held " & $ringBytes)
+    check("component registry bounded", components.len <= MaxComponents,
+          (if components.len < MaxComponents: $components.len & " tracked"
+           else: "at cap " & $MaxComponents & " (dropped " &
+                 $droppedComponents & ")"))
+
+  if deep:
+    let marker = "niffler-observe-selftest-" & $getCurrentProcessId()
+    let at = epochTime()
+    let rec = $ %*{"component": "observe", "level": "info",
+                   "msg": marker, "at": at}
+    addRing(at, "niffler.observe.selftest", rec, wireMessage(rec))
+    var landed = false
+    for e in ring:
+      if ($e.message).contains(marker): landed = true
+    check("deep ring roundtrip", landed,
+          (if landed: "synthetic record visible through the ring"
+           else: "record NOT visible — the ring dropped it"))
+
+  return %*{"ok": allOk,
+            "summary": (if allOk: "observe wiring ok" else: "observe wiring FAILED"),
+            "checks": checks})
+
 comp.run()

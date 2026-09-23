@@ -6,8 +6,13 @@
 [ARCHITECTURE.md](ARCHITECTURE.md)；未完成工作汇总于
 [research/PLAN.md](research/PLAN.md)。
 
-> 🤖 AI 自动翻译，可能滞后于英文版；以 [English](MANUAL.md) 为准。
+> 🤖 AI 自动翻译，**滞后于英文版**；以 [English](MANUAL.md) 为准。
 > 章节标题保留英文，以便跨文档链接保持稳定。
+> 上次全文同步早于 2026-09-18 的文档审计：英文版此后新增了 9 个章节
+> （`bash`/`repomap`/`grep` 详解、Clients and the UI registry、
+> Output caps and `finish_reason`、Repository inspection (`git`)、
+> Fabric）并全篇修订，本文件尚未重新生成。需要当前行为时请直接阅读
+> 英文原文；完整重新翻译是一次独立的专项工作。
 
 [English](MANUAL.md) · 简体中文 · [繁體中文](MANUAL.zh-TW.md)
 
@@ -49,7 +54,7 @@
 | `var/logs/`、`var/captures/` | 轮转的结构化日志和显式 observe 探测导出（见 [Observation and logs](#observation-and-logs)） |
 | `var/nats-pid` | core 启动的总线进程 pid（仅用于崩溃清理——存活的 core 退出时会自行停止总线） |
 | `var/build/` | agent 构建组件的源文件（builder 的暂存目录） |
-| `nimcache/`、`ui/build/`、`ui/frontend/node_modules/`、`ui/frontend/dist/` | 构建产物；`make clean` 会删除它们 |
+| `nimcache/` | 构建产物；`make clean` 会将它们（连同 `var/`）删除 |
 
 ### Shipped components
 
@@ -59,7 +64,7 @@
 | `bash` | Nim | required | 经典工具：带超时和输出上限的 shell 命令。命令作为自身进程组的组长运行，因此超时或回合被取消会杀掉整棵进程树（退出码 124 / 130）——不会留下孤儿进程。结果携带 `text`（以 `(exit N)` 状态行开头——非零即失败；124 = 超时，130 = 已取消——其后是合并的 stdout/stderr；LLM 记录看到的就是它）以及机器字段 `exit_code`、`cancelled`，输出过大时还有 `spill {path, bytes, lines}`（溢出到临时文件，可用 `read` 分页读取）。`run_in_background: true` 把长跑命令（服务器、监视器）交给 `processes` 组件而不是阻塞——见 [Background processes](#background-processes-processes) |
 | `repomap` | Nim | optional | 排序后的工作区地图（docs/research/REPOMAP.md）：约 1KB 内给出承重文件及其关键定义，由 tree-sitter + 原生 Nim tags 图与个性化 PageRank 构建（aider repomap 的移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且为读效应——模型主动询问，不注入任何东西。工作区打开时的自动追加（在 `ev.workspace.opened` 时追加一条 append-only 条目；组件发布，runner 追加）**默认关闭**：设置 `NIF_REPOMAP_AUTOAPPEND=1` 选择开启。默认关闭是因为 A/B 没有过线（full30：约多 40% token、准确率无提升；Multi10 high 开启后 8/10 vs 9/10，尽管 low 复跑结论反转、最初的高档测试部分测的是桩地图——见 `bench/reports/repomap-ab-*.md`），而且 onDemand 工具不会自己激活。选择开启后，追加还有**门控**（`docs/research/REPOMAP-GATES.md`）：低于普查下限的工作区从不构建，桩地图（字节/符号/文件阈值）从不注入——被扣留的地图记录为 `repo map withheld`。关闭追加时，它只是一个模型想要定位时可以发现的可选组件。缓存：`var/repomap-tags/`（按 mtime 键控）。可选组件——缺失就没有地图，其他一切不变 |
 | `processes` | Nim | optional | 带归属者的长跑命令：`process_start`（脱离父进程、独立进程组，立即返回 id）、`process_poll`（增量排空输出）、`process_kill`（停止整个进程组）、`process_list`——见 [Background processes](#background-processes-processes) |
-| `builder` | Nim | required | 把 agent 编写的 Nim/Go/TypeScript 源码编译为二进制——依赖由源码声明，而不是由调用方传入：Go 走 `go mod tidy`，TS 在基础安装后扫描 entrypoint 的 import 并经 npm 安装 |
+| `builder` | Nim | required | 编译 agent 编写的 Nim/Go/TypeScript 源码，并通过 `build_package` 构建插件项目；插件保留自己的依赖文件和锁文件，builder 在隔离工作区执行受限 argv 配方并发布声明的 artifact |
 | `llm` | Go | required | 流式 chat 适配器（隐藏的 `chat` 工具；`ev.llm.token` 增量；取消）——协议：OpenAI 兼容 Chat Completions、OpenAI Codex（ChatGPT OAuth）Responses 和 Anthropic Messages；`components/llm-openai` 中的 `llm-openai` 是最小非流式示例，可通过 `manifest.yaml` 换上 |
 | `models` | Go | optional | models.dev 提供商/模型目录、原子缓存、严格解析，以及插件修正/发现层（见 [Model catalog](#model-catalog-models)） |
 | `provider` | Go | optional | store 持久化的 LLM 提供商注册表：`provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`，订阅 OAuth 登录（`provider_oauth_start`/`complete`/`cancel`），`ev.provider.switch` 通知 |
@@ -472,12 +477,14 @@ session 调用设置（Web UI 以 `/approvals`、`/limit` 和 `/compact` 暴露�
 - **`/compact`** —— 立即运行压缩器，而不是等待自动压力阶梯：core 向已配置的
   压缩组件请求允许切点上的检查点，原子安装它，并发出通常的
   `ev.session.<id>.context {reason: "reset:compact"}`。不运行 LLM 回合，也不追加
-  用户消息。提交会把已测量的提示词大小清零（这份投影还没经提供商测量），因此
+  用户消息。辅助摘要继承会话已解析的 provider/model，不会静默跟随之后的全局
+  provider 切换。提交会把已测量的提示词大小清零（这份投影还没经提供商测量），因此
   手动路径还会发出一帧 status —— `usedTokens` 是本地估算值、`estimated: true`，
   并带上窗口大小 —— 否则上下文仪表会一直显示压缩前的数字，直到下一回合重新测量；
   下一次请求的实测值会替换该估算。回复报告 `compacted: true` 及前后 token 数，或
-  `compacted: false` 及原因（未配置压缩组件、压缩器拒绝、或还无可压缩内容）；
-  拒绝绝不静默降级为有损裁剪。
+  `compacted: false` 及确切的拒绝/失败原因（例如 `no permitted cut exists yet`、
+  `input-budget-exceeded`、`summary-output-truncated`、无效候选详情、或压缩器
+  不可用）；拒绝绝不静默降级为有损裁剪。
 
 关键区别：这些限制是*你的*，所以可以协商；作业级预算
 （`maxRounds`/`maxCalls`/`maxTokens`，`agent` 组件把它们冻结进子代理会话，
@@ -611,15 +618,17 @@ supervisor 不可移除——这种不对称正是架构（ARCHITECTURE.md）。
 ## Component ecosystem (`plugins`)
 
 `plugins` 组件是生态门户——社区组件包就是根目录带 `niffler.json` manifest 的
-普通 GitHub 仓库（一个仓库 = 一个包 = N 个组件）。带 GitHub topic
+普通 GitHub 仓库（一个仓库 = 一个包 = N 个组件）。v1 manifest 保留 `main` 源码
+形式；v2 manifest 声明 `project`、argv `steps` 和 `artifact`，依赖继续由
+`package.json`/锁文件、`go.mod`/`go.sum` 或 Nimble 文件完整定义。带 GitHub topic
 `niffler-component` 的仓库无需任何注册表即可被发现：
 
 | 工具 | 做什么 |
 |---|---|
 | `plugin_search {query?}` | GitHub topic 搜索；返回仓库、描述、star 数 |
 | `plugin_installed` | 本 harness 已安装的包 |
-| `plugin_install {repo, version?}` | clone 到 `var/plugins/<pkg>@<ref>/`，经 builder 的 `build` 工具从源码构建每个组件，然后 `spawn` 每个服务组件（需审批） |
-| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重装；没有 release 的包（跟踪分支）原地拉取（现有 clone 的 `git pull --ff-only`），只在拉取移动了 HEAD 时重建 |
+| `plugin_install {repo, version?}` | clone 到 `var/plugins/<pkg>@<ref>/`，v1 经 builder 的 `build`、v2 经 `build_package` 构建每个组件，然后 `spawn` 每个服务组件（需审批） |
+| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重装；没有 release 的包（跟踪分支）原地拉取（现有 clone 的 `git pull --ff-only`），在拉取移动 HEAD 或已安装构件过时/缺失时重建 |
 | `plugin_remove {package}` | `core.remove` 每个受监督组件，删除 clone，丢弃记录 |
 
 - 安装/更新/移除都带 `x-harness.approval: "always"`——它们运行第三方代码，
@@ -631,13 +640,13 @@ supervisor 不可移除——这种不对称正是架构（ARCHITECTURE.md）。
   自己的工具链编译。Go 条目可以声明
   `"sources": ["component/helper.go", ...]`；这些必须是与 `main` 同目录、同包的
   非符号链接 `.go` 文件，builder 把它们作为一个包编译。
-- TypeScript 条目无需依赖字段：依赖写在源码自己的 import 里。基础安装后
-  builder 扫描 entrypoint 的 import 并 npm 安装外部包（≤32 个；跳过相对路径与
-  `node:` 内置模块），所以 `import sdk from "niffler-sdk"` 加
-  `import { Project } from "ts-morph"` 就是完整的依赖声明——与 Go 条目靠 import 走
-  `go mod tidy` 完全同形，安装结果会把解析出的版本范围写进生成的
-  `package.json`。TS 安装需要 npm registry（所有 TS 构建都是如此），
-  `NIF_NPM_REGISTRY` 可重定向。
+- v2 插件在自己的生态系统文件中声明依赖：TypeScript 使用
+  `package.json`/`package-lock.json`，Go 使用 `go.mod`/`go.sum`，Nim 使用
+  `.nimble`/锁文件。配方在 project 目录执行，也可以组合工具链（例如
+  `npm ci` 后执行 `wails build`）；`${NIF_SDK_ROOT}`、`${NIF_SDK_GO}`、
+  `${NIF_SDK_TS}`、`${NIF_PROJECT}` 和 `${NIF_OUTPUT}` 是唯一 builder 替换项。
+  步骤是 argv 数组而不是 shell 字符串，builder 会拒绝路径穿越、
+  符号链接输入、超大项目、错误 runner 和未声明的 artifact。
 - manifest 条目标记 `"interactive": true` 的组件会构建进 `var/bin`，但不会传给
   `core.spawn`。它是终端客户端（例如 TUI），由用户手动启动，因此不受监督、
   不会在引导时重启。移除或更新其包之前先手动停止任何运行中的客户端。
@@ -1912,9 +1921,9 @@ make build
 ## Testing
 
 ```bash
-make test           # 完整门：前端测试，然后是总线契约套件
+make test           # 完整门：总线契约套件（桌面 UI 的前端测试与 typecheck
+                    # 位于 gokr/niffler-ui）
 make test-server    # ... 仅服务端：每个测试一个测试自有 NATS，不用 node
-make test-ui        # ... 仅前端：lib 单元测试 + `npm run typecheck`
 make test-bash      # ... 或只跑一个：test-store、test-builder、test-console、
                  # test-plugins、test-skills、test-fetch、test-models、
                  # test-observe、test-logfile、test-core、test-cli、
@@ -1923,11 +1932,10 @@ make test-bash      # ... 或只跑一个：test-store、test-builder、test-con
 
 每个测试都引导真实组件二进制（Nim、Go *和* TypeScript——信封才是产物，所以
 一个 harness 测试每个 SDK）并通过其 loopback 端口由 NATS 分配的私有 NATS 服务器
-驱动它们。前端测试是例外：它们导入 TypeScript lib 模块
-（`ui/frontend/src/lib/*.ts`）并在纯 node 上以类型剥离运行，因此 `make test-ui`
-既不需要依赖也不需要总线（`npm run typecheck` 需要 `ui/frontend/node_modules`，
-由 `make ui` 安装）。`make test` 就是 `make test-ui` + `make test-server`；
-服务端工作用 `make test-server`，前端工作用 `make test-ui`。
+驱动它们。桌面 UI 的前端测试不在本套件内：UI 现在是
+[gokr/niffler-ui](https://github.com/gokr/niffler-ui) 插件，其 lib 单元测试和
+typecheck 在该仓库运行（那里的 `make test` / `make typecheck`），因此本门禁
+保持自包含。
 基于 core 的测试把所需二进制快照进唯一临时 `NIF_ROOT`；Barrel、插件 clone、
 生成组件、日志和缓存因此都被隔离。单独的 `make test-*` 目标可以彼此以及与运行中
 的开发 harness 并发运行。仓库构建写入被串行化，而 agent 构建的测试组件使用
@@ -1947,8 +1955,9 @@ builder 构建（npm registry）。安装管线本身由 `t_plugins` 经本地 `
   `ensureHarness`：探测 `NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222，寻找
   服务**本 root** 的 core（目录携带所属 harness 的 root；外来 clone 的 core
   绝不被采纳）；无人应答时，以 `NIF_AUTOSTART=1` 分离启动 `var/bin/niffler`。
-  仓库根在 `make ui` 时经 ldflags 烘焙进去，因此安装的图标与树内二进制一样
-  工作。
+  二进制本身由 `make install-ui` 安装——桌面 UI 是
+  [gokr/niffler-ui](https://github.com/gokr/niffler-ui) 插件，由 builder 构建
+  进 `var/bin/niffler-ui`，再由 `make install` 链接到 PATH。
 - **交互插件**（例如 `niffler-tui`）——它们**不**调用 `ensureHarness`，绝不
   启动 harness：它们探测实时总线（`NIF_NATS_URL` → `var/nats-url` →
   127.0.0.1:4222），连接并注册 `client: true`（这样 autostarted core 在它们
@@ -1972,22 +1981,24 @@ builder 构建（npm registry）。安装管线本身由 `t_plugins` 经本地 `
 niffler-ui                    # 桌面 UI；autostart 完整配置
 make build          # 重建发生变化的部分
 make install        # PATH 条目（niffler、niffler-cli、niffler-console，
-                    # + 询问后安装 niffler-tui 包装脚本——绝不含组件
-                    # 二进制，因此 PATH 不会遮蔽 grep/git/...）
+                    # + 插件二进制存在时的 niffler-ui，以及按需安装的
+                    # niffler-tui 包装脚本——绝不含组件二进制，因此 PATH
+                    # 不会遮蔽 grep/git/...）
 make install-tui    # 同上，安静地安装 niffler-tui 终端客户端
                     # (= make install WITH_TUI=1)
 make uninstall      # 再次移除这些 PATH 条目
-make install-ui     # 构建桌面 UI，然后添加启动器条目 + 图标
-                    # (Linux; = make ui-install; -uninstall 对应 ui-uninstall)
+make install-ui     # 安装桌面 UI 插件（gokr/niffler-ui）：启动一个隔离的
+                    # 自动审批 harness，插件管理器 clone、builder 构建进
+                    # var/bin/niffler-ui
 make install-lsp    # 安装 lsp 组件的默认语言服务器
-make test           # 完整门：前端测试 + 总线契约套件
+make test           # 完整门：总线契约套件（UI 仓库的前端测试位于
+                    # gokr/niffler-ui）
 make test-server    # 仅总线契约套件（每个测试拥有自己的私有总线）
-make test-ui        # 仅前端：lib 单元测试 + typecheck（无 NATS）
 make doctor         # 检查前置条件
 make ram            # 运行中各栈的 RAM（harness + 组件 + nats + 客户端）
 make down-here      # 只停掉此 checkout 的 harness、组件和 spawned 总线
                     # ——bench worktree 和其他 clone 幸存
-make clean          # 删除所有构建产物（var/、nimcache/、UI build）
+make clean          # 删除所有构建产物（var/、nimcache/）
 ```
 
 - **无头服务模式**（无 tty，供 UI/自动化）：
@@ -1999,8 +2010,9 @@ make clean          # 删除所有构建产物（var/、nimcache/、UI build）
   应答时启动自己的（构建出的 `var/bin/nats-server` 组件）。
 - **不用 LLM 探测总线**：`tests/` 中的一次性 `nim c -r` 脚本
   （见 AGENTS.md "Debugging the bus"）。
-- **Wails**：只用 `wails build -tags webkit2_41` 构建（Linux）；裸
-  `go build` 会产出桩。`make dev` 在浏览器中运行 SPA，bridge 为桩。
+- **Wails**：桌面 UI（以及任何 Wails 客户端包）通过其包配方构建，
+  配方必须运行 `wails build -tags webkit2_41`（Linux）——裸 `go build` 会产出
+  桩。UI 的 SPA 开发服务器位于 gokr/niffler-ui checkout（在那里 `make dev`）。
 - **监控 RAM**：用 `make ram`（或 `watch -n5 scripts/niffler-ram.sh`）：按栈
   统计——你的 clone、`nifflerprod` 和每个 bench 私有 harness 分开——harness +
   NATS + 所有 spawned 组件 + session runner + 客户端。成员按可执行文件路径

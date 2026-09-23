@@ -217,6 +217,15 @@ proc startComponent*(bin: string, url: string, root = "",
   env["NIF_OBSERVE_CAPTURE_DIR"] = root2 / "var" / "captures"
   env["XDG_CONFIG_HOME"] = root2 / "var" / "xdg-config"
   env["XDG_CACHE_HOME"] = root2 / "var" / "xdg-cache"
+  # Hermetic LLM credentials: the suite assumes no NIF_OPENAI_* in the test
+  # env (t_provider's lifecycle checks assert the environment fallback is
+  # ABSENT), but a developer shell — or a harness-spawned bash with the
+  # repo's .env exported — carries them. Scrub before `extra` so a test
+  # that deliberately sets its own credentials (compaction_live_smoke)
+  # still wins.
+  for k in ["NIF_OPENAI_API_KEY", "NIF_OPENAI_BASE_URL", "NIF_OPENAI_MODEL",
+            "NIF_OPENAI_PROVIDER", "NIF_OPENAI_CONTEXT", "NIF_LLM_PROVIDERS"]:
+    env[k] = ""
   for (k, v) in extra:
     env[k] = v
   if logFile.len > 0:

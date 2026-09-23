@@ -5,9 +5,8 @@
 ## NIF_ROOT so scratch sources and binaries never pollute the real
 ## var/build and var/bin.
 
-import std/[json, os, osproc, sequtils, strutils]
+import std/[json, os, osproc, strutils]
 import natsnim
-import envelope
 import helpers
 
 proc main() =
@@ -132,6 +131,37 @@ proc main() =
                 %*{"lang": "python", "name": "x", "source": "print(1)"})
   check("builder rejects unknown lang", not r4{"ok"}.getBool(false), $r4)
 
+  # Manifest-v2 package builds copy the project, execute its argv recipe and
+  # publish the declared artifact without mutating the clone.
+  let packageRoot = tmp / "var" / "plugins" / "v2nim"
+  createDir(packageRoot)
+  writeFile(packageRoot / "main.nim", nimSrc)
+  let packageBuild = call(nc, "builder", "build_package", %*{
+    "name": "v2nim", "lang": "nim", "sourceRoot": packageRoot,
+    "project": ".",
+    "steps": [["nim", "c", "--hints:off", "-d:release",
+                "--path:${NIF_SDK_ROOT}", "-o:${NIF_OUTPUT}", "main.nim"]],
+    "artifact": {"path": "v2nim", "runner": "executable"}
+  }, 400_000)
+  check("builder package recipe compiles", packageBuild{"ok"}.getBool(false),
+        $packageBuild)
+  check("builder package publishes declared artifact",
+        fileExists(tmp / "var" / "bin" / "v2nim"), $packageBuild)
+  let shellBuild = call(nc, "builder", "build_package", %*{
+    "name": "shellrecipe", "lang": "go", "sourceRoot": packageRoot,
+    "project": ".", "steps": [["sh", "-c", "echo hidden"]],
+    "artifact": {"path": "v2nim", "runner": "executable"}
+  })
+  check("builder rejects shell recipe wrappers",
+        not shellBuild{"ok"}.getBool(false), $shellBuild)
+  let outsideBuild = call(nc, "builder", "build_package", %*{
+    "name": "outside", "lang": "nim", "sourceRoot": tmp,
+    "project": ".", "steps": [["nim", "c", "main.nim"]],
+    "artifact": {"path": "v2nim", "runner": "executable"}
+  })
+  check("builder package rejects a source root outside plugins",
+        not outsideBuild{"ok"}.getBool(false), $outsideBuild)
+
   # TypeScript build (npm registry — network-gated)
   if getEnv("NIF_TEST_NETWORK") == "1":
     const tsSrc = """
@@ -151,30 +181,8 @@ proc main() =
     check("builder ts binary exists",
           fileExists(tmp / "var" / "bin" / "tcompts"), $r5)
 
-    # Imports are the dependency declaration (no build parameter): the source
-    # requires a package that nothing else installed, and the builder has to
-    # resolve and install it from the import alone.
-    const tsSrcDeps = """
-      import sdk from "niffler-sdk";
-      const pad = require("left-pad") as (s: string, n: number) => string;
-      const comp = sdk.newComponent("tcomptsdeps", "0.1.0");
-      comp.tool("ts_ping_deps", {
-        type: "object",
-        description: "Ping the TypeScript deps test component",
-        properties: {},
-      }, async () => ({ pong: pad("ab", 5) }));
-      comp.run();
-      """.dedent()
-    let r6 = call(nc, "builder", "build",
-                  %*{"lang": "ts", "name": "tcomptsdeps", "source": tsSrcDeps},
-                  400_000)
-    check("builder ts build resolves an import", r6{"ok"}.getBool(false), $r6)
-    check("builder reports the resolved dependency",
-          r6{"deps"}.kind == JArray and
-          "left-pad" in r6{"deps"}.getElems().mapIt(it.getStr("")), $r6)
-    check("builder records the dep in package.json",
-          readFile(tmp / "var" / "build" / "tcomptsdeps" / "package.json")
-            .contains("left-pad"), $r6)
+    # Packaged dependencies are not inferred from source imports. They are
+    # exercised below through build_package and the plugin manifest contract.
   else:
     echo "NOTE: set NIF_TEST_NETWORK=1 to run the TypeScript build test"
 

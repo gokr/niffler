@@ -418,6 +418,22 @@ proc hKill(c: Component, args: JsonNode): JsonNode =
   okResult(%*{"id": id, "label": e.label, "status": statusText(e),
               "text": e.id & " (" & e.label & "): " & statusText(e)})
 
+proc evictFinished() =
+  ## KEEP_FINISHED: finished entries live only for process_list — drop the
+  ## oldest beyond the cap so the registry cannot grow for the component's
+  ## whole lifetime. Registry persistence is unaffected: only RUNNING
+  ## entries are saved, so eviction is purely an in-memory list edit.
+  while gProcs.len > MAX_LIVE + KEEP_FINISHED:
+    var evicted = false
+    for id, e in gProcs:
+      if e.status != stRunning:
+        gProcs.del(id)
+        evicted = true
+        break
+    if not evicted:
+      # nothing finished to evict (gProcs should be <= MAX_LIVE then)
+      break
+
 proc hList(c: Component, args: JsonNode): JsonNode =
   var lines: seq[string]
   var items = newJArray()
@@ -429,6 +445,7 @@ proc hList(c: Component, args: JsonNode): JsonNode =
                  "status": statusText(e),
                  "exit_code": (if e.status != stRunning: e.exitCode else: 0),
                  "started_at": e.startedAt})
+  evictFinished()
   let text = if lines.len == 0:
                "No background processes this component lifetime."
              else: lines.join("\n")
@@ -480,6 +497,7 @@ discard comp.onIdle(500) do (c: Component):
     if e.status == stRunning:
       refreshStatus(e)             # publishes the notice on transition
       markTerminal(e)
+  evictFinished()                  # the registry cap holds without callers
 
 discard comp.onDrain do (c: Component):
   for e in gProcs.values:

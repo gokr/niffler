@@ -119,7 +119,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "doctor", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Machine-readable one-shot health report: bus and store reachability, llm availability (component registered + active provider/model), systemprompt component presence, catalog size, conversation count, plus a self-test fan-out — every component that registers the standard selftest tool (docs/WIRE.md) is asked to check itself and its checks are collected here. All probes are read-only (deep lsp selftest spawns real language servers against throwaway fixtures). Use it to diagnose a harness before debugging anything else, or from scripts/CI as a cheap liveness gate.",
+      "description": "Machine-readable one-shot health report: bus and store reachability, llm availability (component registered + active provider/model), systemprompt component presence, catalog size, conversation count, plus a self-test fan-out — every component that registers the standard selftest tool (docs/WIRE.md) is asked to check itself and its checks are collected here, with the components that register none listed under selftestMissing (coverage, not a failure). All probes are read-only (deep lsp selftest spawns real language servers against throwaway fixtures). Use it to diagnose a harness before debugging anything else, or from scripts/CI as a cheap liveness gate.",
       "properties": {
         "deep": {"type": "boolean", "description": "Thorough mode: components run live end-to-end probes (lsp boots every configured language server). Slower — minutes are normal"},
         "ask": {"type": "boolean", "description": "After producing the report, ask the conversation's LLM to interpret it. The report is appended as a user message; default false"}
@@ -200,7 +200,16 @@ proc newCatalog*(nc: NatsConnection): Catalog =
                      "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default). Values: low, medium, high, max (deepest)"},
         "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"},
         "profile": {"type": "string", "description": "Named tool profile resolved into the direct toolset when the conversation is first built; ignored on resume (the snapshot is byte-stable)"},
-        "wake": {"type": "boolean", "description": "Wake a dormant conversation: run a turn that folds pending background-settlement notices in, so a parent learns its subagents finished without the human asking. Declined (no turn) when wakes are disabled via NIF_AGENT_WAKES=0, when the consecutive-wake budget (NIF_AGENT_WAKES, default 3) is spent, or when nothing is pending. Used by the agent component, not UIs."}
+        "wake": {"type": "boolean", "description": "Wake a dormant conversation: run a turn that folds pending background-settlement notices in, so a parent learns its subagents finished without the human asking. Declined (no turn) when wakes are disabled via NIF_AGENT_WAKES=0, when the consecutive-wake budget (NIF_AGENT_WAKES, default 3) is spent, or when nothing is pending. Used by the agent component, not UIs."},
+        "discovery": {"type": "object", "description": "Per-call discovery projection passed to the discover tool ({include?, exclude?, components?}); presence of the key replaces the turn's default projection. The handler honours it; the argument was omitted from this schema (A124 — UIs sent it schemaless)"},
+        "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 16,
+                  "description": "Per-conversation tool allowlist frozen at first call (the header carries it); empty/absent leaves the fundamental direct set"},
+        "maxRounds": {"type": "integer", "minimum": 1,
+                      "description": "Per-turn LLM round budget (frozen at first call with the value 1..NIF_MAX_TURN_ROUNDS); ignored on resume"},
+        "maxCalls": {"type": "integer", "minimum": 1, "maximum": 500,
+                     "description": "Per-turn total tool-dispatch budget (frozen at first call); ignored on resume"},
+        "maxTokens": {"type": "integer", "minimum": 1,
+                      "description": "Per-turn cumulative token budget (frozen at first call); ignored on resume"}
       },
       "required": ["sessionId"],
       "x-harness": {"hidden": true}

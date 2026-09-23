@@ -19,6 +19,7 @@ import * as oc from "./adapters/opencode.mjs";
 import * as cw from "./adapters/codewhale.mjs";
 import * as cc from "./adapters/claudecode.mjs";
 import * as niffler from "./adapters/niffler.mjs";
+import * as dsh from "./adapters/dsh.mjs";
 
 const BENCH_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const BENCH_DIR = path.join(BENCH_ROOT, "bench");
@@ -169,6 +170,7 @@ async function preflight() {
   for (const model of models) {
     const mc = cfg.models[model];
     if (mc?.niffler) add(mc.niffler.baseUrl, mc.niffler.apiKeyEnv);
+    if (harnesses.includes("dsh") && mc?.dsh) add(mc.dsh.baseUrl, mc.dsh.apiKeyEnv);
     if (mc?.claudecode) add(mc.claudecode.baseUrl, mc.claudecode.apiKeyEnv);
   }
   if (harnessArg.split(",").includes("niffler-expert") && cfg.expertJudge) {
@@ -342,7 +344,7 @@ function feedbackPrompt(meta, testOut) {
 // the prompt points at the working directory instead of an absolute path —
 // relative paths keep every tool inside the workspace by construction.
 function fillPrompt(template, combo, repo) {
-  if (isNifflerHarness(combo.harness)) {
+  if (isWorkspaceHarness(combo.harness)) {
     return template.replaceAll("{{REPO}}", "your current working directory");
   }
   return template.replaceAll("{{REPO}}", repo);
@@ -368,6 +370,11 @@ const ADAPTERS = {
     needsKeys: [],
     isService: true, // harness lifecycle per combo
   },
+  dsh: {
+    mod: dsh,
+    needsKeys: [],
+    isService: true, // one runtime per task workspace
+  },
   "niffler-expert": {
     mod: niffler,
     needsKeys: [],
@@ -376,6 +383,8 @@ const ADAPTERS = {
 };
 
 const isNifflerHarness = (name) => name === "niffler" || name === "niffler-expert";
+const isDshHarness = (name) => name === "dsh";
+const isWorkspaceHarness = (name) => isNifflerHarness(name) || isDshHarness(name);
 
 // ---------- one task run ----------
 async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
@@ -506,6 +515,13 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             turnTimeoutMs,
             cwd: shared.niffler.workspaceFor(repo),
           });
+        } else if (isDshHarness(combo.harness)) {
+          res = await shared.dsh.round({
+            sessionId,
+            prompt,
+            turnTimeoutMs,
+            repo,
+          });
         }
         const agentS = (Date.now() - r0) / 1000;
         let transportFail = res.error && isTransportError(res.error);
@@ -594,6 +610,12 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
         fatalProviderError = res.error;
         break;
       }
+      if (isDshHarness(combo.harness) && res.error) {
+        // A failed SDK turn is not a graded solution attempt. Preserve its
+        // error and partial patch, rather than calling zero-usage a loss.
+        verdict = "error";
+        break;
+      }
       if (Date.now() - t0 > taskTimeoutMs) {
         verdict = "timeout";
         break;
@@ -617,6 +639,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
     else if (combo.harness === "codewhale") usage = cw.usageFromRounds(roundUsages);
     else if (combo.harness === "claudecode") usage = cc.usageFromRounds(roundUsages);
+    else if (combo.harness === "dsh") usage = dsh.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
       transcript = await shared.niffler.transcript(sessionId);
       writeJson(path.join(workdir, "transcript.json"), { sessionId, items: transcript });
@@ -631,6 +654,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   try {
     if (combo.harness === "pi") shape = pi.sessionShape(adapterState.sessionFile);
     else if (combo.harness === "claudecode") shape = cc.shapeFromRounds(roundUsages);
+    else if (combo.harness === "dsh") shape = dsh.shapeFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness) && transcript)
       shape = niffler.transcriptShape(transcript);
   } catch (e) {
@@ -643,6 +667,9 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   if (combo.harness === "claudecode") {
     // First API call's full prompt (system + tools + task), captured from
     // the round-1 stream by the adapter — the cross-harness footprint proxy.
+    firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
+  }
+  if (combo.harness === "dsh") {
     firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
   }
   if (transcript) {
@@ -704,7 +731,9 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     sessionId,
     workspace: isNifflerHarness(combo.harness)
       ? shared.niffler.workspaceFor(repo)
-      : null,
+      : isDshHarness(combo.harness)
+        ? repo
+        : null,
     harness: combo.harness,
     model: combo.model,
     modelLabel: combo.modelCfg.label || combo.model,
@@ -809,6 +838,20 @@ async function ensureCombo(combo) {
           st.booting = null;
           try { await shared.niffler.stop(); } catch {}
         }
+      } else if (isDshHarness(combo.harness)) {
+        shared.dsh = new dsh.DshHarness({
+          benchRoot: BENCH_ROOT,
+          runRoot: comboRoot,
+          modelCfg: combo.modelCfg.dsh,
+          provider: combo.modelCfg.dsh.provider,
+          model: combo.modelCfg.dsh.model,
+          baseUrl: combo.modelCfg.dsh.baseUrl,
+          apiKey: keys[combo.modelCfg.dsh.apiKeyEnv],
+          thinking: thinkingByHarness ? thinkingFor("dsh") : combo.modelCfg.dsh.thinking || "",
+          bin: combo.modelCfg.dsh.bin,
+          profile: combo.modelCfg.dsh.profile,
+          maxTokens: combo.modelCfg.dsh.maxTokens,
+        });
       }
       st.shared = shared;
     })();
@@ -840,6 +883,12 @@ async function main() {
       if (harness === "claudecode" && !cfg.models[model].claudecode) {
         console.error(
           `bench: model '${model}' has no claudecode section in config.json`,
+        );
+        process.exit(1);
+      }
+      if (harness === "dsh" && !cfg.models[model].dsh) {
+        console.error(
+          `bench: model '${model}' has no dsh section in config.json`,
         );
         process.exit(1);
       }
@@ -942,6 +991,10 @@ async function main() {
     if (st.shared?.niffler) {
       console.log(`stopping niffler harness (${st.combo.model})…`);
       await st.shared.niffler.stop();
+    }
+    if (st.shared?.dsh) {
+      console.log(`stopping dsh harness (${st.combo.model})…`);
+      await st.shared.dsh.close();
     }
   }
   console.log(`bench: done — results in ${RESULTS}`);

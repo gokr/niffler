@@ -67,6 +67,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // pure Go, no cgo — keeps the zero-prereq build story
@@ -113,10 +114,107 @@ func main() {
 		Tool("get", getSchema(), getHandler(db.DB)).
 		Tool("list", listSchema(), listHandler(db.DB)).
 		Tool("del", delSchema(), delHandler(db.DB)).
+		Tool("selftest", selfTestSchema(), selfTestHandler(db.DB, "sqlite")).
 		OnDrain(func(c *sdk.Component) { _ = db.Close() })
 	if err := comp.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "store-sqlite:", err)
 		os.Exit(1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// self test (docs/WIRE.md "Self tests"): the hidden tool /doctor fans out to.
+// A real put/get/rev/list/del roundtrip on a throwaway document, deleted
+// afterwards — the same shape the barrel engine's selftest uses, so every
+// store engine advertises identical tools (docs/MANUAL.md "Store engines").
+
+func selfTestSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"deep": map[string]any{"type": "boolean",
+				"description": "Thorough mode: live end-to-end probes (may spawn processes)"},
+		},
+		"description": "Component self test (hidden — used by /doctor): check the component's own wiring and report per-check results",
+		"x-harness":   map[string]any{"hidden": true},
+	}
+}
+
+func selfTestHandler(db *sql.DB, engine string) sdk.ToolHandler {
+	return func(c *sdk.Component, args json.RawMessage) (any, error) {
+		checks := make([]map[string]any, 0, 4)
+		allOK := true
+		check := func(name string, ok bool, detail string, t0 time.Time) {
+			if !ok {
+				allOK = false
+			}
+			checks = append(checks, map[string]any{
+				"name": name, "ok": ok, "detail": detail,
+				"ms": int(time.Since(t0).Milliseconds()),
+			})
+		}
+		kind := "selftest"
+		id := fmt.Sprintf("probe-%d-%d", os.Getpid(), time.Now().UnixNano())
+		value := `{"hello":"selftest","n":42}`
+
+		t := time.Now()
+		if err := db.Ping(); err != nil {
+			check("connect", false, err.Error(), t)
+		} else {
+			check("connect", true, "database reachable ("+engine+")", t)
+		}
+
+		t = time.Now()
+		inserted := false
+		if _, err := db.Exec(
+			`INSERT INTO docs (kind, id, rev, value, updated_at)
+			 VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)
+			 ON CONFLICT(kind, id) DO UPDATE SET
+			   rev = docs.rev + 1, value = excluded.value,
+			   updated_at = CURRENT_TIMESTAMP`, kind, id, value); err == nil {
+			inserted = true
+			check("put", true, "throwaway document written at rev 1", t)
+		} else {
+			check("put", false, err.Error(), t)
+		}
+
+		t = time.Now()
+		var got string
+		var rev int64
+		if err := db.QueryRow(`SELECT rev, value FROM docs WHERE kind = ? AND id = ?`,
+			kind, id).Scan(&rev, &got); err == nil {
+			check("get+rev", got == value && rev == 1,
+				fmt.Sprintf("read back verbatim at rev %d", rev), t)
+		} else {
+			check("get+rev", false, err.Error(), t)
+		}
+
+		t = time.Now()
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM docs WHERE kind = ?`, kind).
+			Scan(&n); err == nil {
+			check("list prefix", n >= 1 && inserted,
+				fmt.Sprintf("%d document(s) visible under the kind prefix", n), t)
+		} else {
+			check("list prefix", false, err.Error(), t)
+		}
+
+		t = time.Now()
+		if _, err := db.Exec(`DELETE FROM docs WHERE kind = ? AND id = ?`,
+			kind, id); err != nil {
+			check("del", false, err.Error(), t)
+		} else {
+			var left int
+			_ = db.QueryRow(`SELECT COUNT(*) FROM docs WHERE kind = ? AND id = ?`,
+				kind, id).Scan(&left)
+			check("del", left == 0, "document and revision gone", t)
+		}
+
+		summary := "engine roundtrip ok (" + engine + ")"
+		if !allOK {
+			summary = "engine roundtrip FAILED (" + engine + ")"
+		}
+		return map[string]any{"ok": allOK, "summary": summary, "checks": checks}, nil
 	}
 }
 

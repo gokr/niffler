@@ -235,6 +235,14 @@ proc main() =
     "tool": "fixture_demand_alpha", "arguments": {"value": "through-core"}})
   check("invoke dispatches an on-demand tool",
         invoked == %*{"value": "through-core", "via": "invoke"}, $invoked)
+  # The tolerant dotted spelling (`component.tool`) is resolved for the
+  # lookup — and must ALSO be dispatched as the resolved bare name, not
+  # sent to the component as its literal tool name (A632).
+  let dotted = call(nc, "core", "invoke", %*{
+    "tool": "discover-fixture.fixture_demand_alpha",
+    "arguments": {"value": "dotted-through-core"}})
+  check("invoke resolves the dotted spelling to the bare tool name",
+        dotted == %*{"value": "dotted-through-core", "via": "invoke"}, $dotted)
   let denied = call(nc, "core", "invoke", %*{
     "tool": "fixture_needs_approval", "arguments": {}})
   check("invoke preserves target approval policy",

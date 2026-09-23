@@ -63,7 +63,8 @@ proc main() =
 
   var coreProc = startComponent(coreBin, url, root = root,
                                 extra = [("NIF_AUTO_APPROVE", "1"),
-                                         ("NIF_RUNNER_IDLE_S", "2")],
+                                         ("NIF_RUNNER_IDLE_S", "2"),
+                                         ("NIF_AGENT_NOTICE_HOLD", "0")],
                                 logFile = root / "var" / "test-logs" / "core.log")
   defer:
     if coreProc != nil and coreProc.running():

@@ -4,19 +4,20 @@
 ##
 ## - tool `repo_map {workspace?, focus?, mentionedIdents?, budget?}`:
 ##   onDemand, read-effect. The ranked, budget-capped map — the model's
-##   explicit pull, and the only surface on by default.
-## - auto-append (**opt-in**, NIF_REPOMAP_AUTOAPPEND=1, and gated): core
-##   announces every conversation workspace on ev.workspace.opened (already
-##   carries the conversation id). We build the map and publish it to
-##   svc.session.<id>.map, where the session runner drains it
-##   (core/dispatch.nim pumpMap) and appends it to history once. The map
-##   arrives rather than being sought, because onDemand tools never activate
-##   on their own (zero discover calls in 58 Multi10 cells) — but the A/B
-##   says paying for it up front is net-negative on average and the sign is
-##   regime-shaped, hence opt-in (bench/reports/repomap-ab-*.md). Admission
-##   gates (docs/research/REPOMAP-GATES.md): a workspace below the census
-##   floor never builds; a rendered stub (byte/symbol/file counts) never
-##   publishes. Withheld maps are logged; the tool path is never gated.
+##   explicit pull, available regardless of the append gates.
+## - auto-append (**on by default**, NIF_REPOMAP_AUTOAPPEND=0 opts out,
+##   and gated): core announces every conversation workspace on
+##   ev.workspace.opened (already carries the conversation id). We build
+##   the map and publish it to svc.session.<id>.map, where the session
+##   runner drains it (core/dispatch.nim pumpMap) and appends it to history
+##   once. The map arrives rather than being sought, because onDemand tools
+##   never activate on their own (zero discover calls in 58 Multi10 cells).
+##   The A/B found that unconditional injection was regime-shaped and could
+##   cost more tokens; gates now withhold micro repos and stub maps.
+##   Admission gates (docs/research/REPOMAP-GATES.md): a workspace below
+##   the census floor never builds; a rendered stub (byte/symbol/file
+##   counts) never publishes. Withheld maps are logged; the tool path is
+##   never gated.
 ##
 ## Every failure is silent or a structured error: no language server, no
 ## grammars for the languages present, an unreadable file — none of it may
@@ -35,7 +36,10 @@ const
   MAP_MAX_BUDGET = 4096
   WALK_MAX_FILES = 5000        # census cap (same as lsp warmup)
   WALK_BUDGET_SECS = 5.0       # census wall-clock budget
-  BUILD_TIMEOUT_MS = 90_000    # per-build cap inside the tool's 120s
+  # No per-build cap: the build is parse-on-miss per file (mtime-keyed,
+  # never re-parsing an unchanged file), so the tool call's x-harness
+  # timeoutMs is the per-build cap. A separate 90s constant would be a
+  # second clock nobody reads — deleted rather than wired (A495).
   TAGS_CACHE_DIR = "var" / "repomap-tags"   # CACHE_VERSION lives in the dir
                                              # name when the format changes
 
@@ -110,7 +114,9 @@ proc saveCachedTags(absFile: string, mtime: float, rel: string,
 
 proc census(ws: string): seq[string] =
   ## Bounded source-file census of the workspace (extension coverage of the
-  ## tags tiers: .nim/.nims/.go/.py/.ts). Hidden dirs and known junk are
+  ## tags tiers: .nim/.nims, .go, .py, .ts, .js, .c/.h, .cpp/.hpp/.cc/.hh/
+  ## .cxx/.hxx, .rs, .rb — see main.nim's walk below). Hidden dirs and known
+  ## junk are
   ## skipped; caps keep huge trees O(budget).
   var deadline = epochTime() + WALK_BUDGET_SECS
   var stack = @[ws]
@@ -231,7 +237,9 @@ proc hRepoMap(c: Component, args: JsonNode): JsonNode =
   if map.len == 0:
     return %*{"ok": true,
               "text": "No map: no supported source files found in " &
-                      ws & " (tiers cover .nim/.nims/.go/.py/.ts).",
+                      ws & " (tiers cover .nim/.nims, .go, .py, .ts, .js, " &
+                      ".c/.h, .cpp/.hpp/.cc/.hh/.cxx/.hxx, .rs, .rb — " &
+                      "tree-sitter for the non-Nim tiers, native tagger for Nim).",
               "files": 0}
   return %*{"ok": true, "text": map, "budget": budget, "buildMs": ms,
             "note": "snapshot of the workspace now — files you edit change it; call again for a fresh one"}
@@ -251,7 +259,7 @@ discard comp.tool("repo_map", toolSchema(%*{
   "budget": {"type": "integer", "minimum": 32, "maximum": 4096,
            "description": "Map size in tokens (default 1024, max 4096)"}
 }, @[],
-  "A ranked map of a workspace: the load-bearing files and their key definitions, in ~1KB. Use it to orient in an unfamiliar repo or to re-orient after a big refactor — it answers what the repo contains and what matters, before any grep or read. Pass focus (files you are working on) to rank around your work; pass mentionedIdents for symbols the task names. The map is a snapshot: it does not track your edits — call again for a fresh one. The workspace-open auto-append is opt-in and gated, so do not rely on seeing it: call this when you need orientation."), hRepoMap,
+  "A ranked map of a workspace: the load-bearing files and their key definitions, in ~1KB. Use it to orient in an unfamiliar repo or to re-orient after a big refactor — it answers what the repo contains and what matters, before any grep or read. Pass focus (files you are working on) to rank around your work; pass mentionedIdents for symbols the task names. The map is a snapshot: it does not track your edits — call again for a fresh one. The workspace-open auto-append is gated, so do not rely on seeing it: call this when you need orientation."), hRepoMap,
   %*{"timeoutMs": 300000, "onDemand": true, "effect": "read",
      "workspace": {"pathFields": ["workspace"]}})
 
@@ -265,26 +273,20 @@ discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
   # runner's private .map subject; the runner drains it and appends once
   # (core/dispatch.nim pumpMap -> conversation drainMap).
   #
-  # OFF BY DEFAULT: the A/B did not clear the bar in either suite. full30
-  # (the regression gate) stayed 30/30 but cost ~40% more tokens; Multi10 on
-  # real OSS repos (the value probe) scored 8/10 with the map against 9/10
-  # without, at 3.7x the tokens (252k vs 68k per cell) — the one flipped cell
-  # was a redis timeout at 7.0M tokens. See bench/reports/repomap-ab-full30.md
-  # and repomap-ab-multi10.md.
+  # ON BY DEFAULT, still gated: the full30 micro repos were 30/30 both
+  # ways but paid ~40% more tokens without the size floor. The Multi10 A/Bs
+  # disagreed by regime, and early maps were stubs (see REPOMAP-GATES.md).
+  # A qualifying large workspace now receives a substantive map once; set
+  # NIF_REPOMAP_AUTOAPPEND=0 to opt out. The onDemand repo_map tool is
+  # available regardless of this switch or the append gates.
   #
-  # Set NIF_REPOMAP_AUTOAPPEND=1 to turn the append back on. Nothing about the
-  # component is disabled either way: repo_map stays registered, onDemand and
-  # read-effect, so the map is a tool the model discovers when a large
-  # unfamiliar repo warrants it rather than context injected into every
-  # conversation (the model asks, nothing is injected).
-  #
-  # Admission gates (docs/research/REPOMAP-GATES.md): even opted in, the
+  # Admission gates (docs/research/REPOMAP-GATES.md): even on by default, the
   # append is withheld unless the workspace is big enough (size floor,
   # decided by the census before any parsing) and the rendered map is
   # substantive (content gate). The tool path below/alone is never gated —
   # a small map is a fine answer to an explicit question, just not worth
   # injecting unasked. Thresholds are env-overridable for the bench.
-  if getEnv("NIF_REPOMAP_AUTOAPPEND", "0") notin ["1", "true", "yes"]:
+  if getEnv("NIF_REPOMAP_AUTOAPPEND", "1") notin ["1", "true", "yes"]:
     return
   let ws = payload{"workspace"}.getStr("")
   let convId = payload{"conversationId"}.getStr("")

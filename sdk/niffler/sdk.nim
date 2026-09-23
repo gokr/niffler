@@ -84,6 +84,12 @@ type
     idleHandler: IdleHandler
     idleEveryMs: int
     nc*: NatsConnection
+    sessionContext*: string  ## calling conversation when the runner injects
+                             ## {__session: {session}} private context
+                             ## (x-harness sessionId: true); "" otherwise.
+                             ## Set by every tool wrapper before the handler
+                             ## runs — block-form tools read it to match
+                             ## cancel.<component> without raw-args access.
     bindings: seq[SubscriptionBinding]
     shuttingDown*: bool
 
@@ -158,8 +164,8 @@ proc selfTest*(c: Component, handler: ToolHandler): Component =
   ## checks: [{name, ok, detail, ms}]}. Quick mode must stay cheap (no
   ## spawns, < ~10s); deep may run real end-to-end probes and take
   ## correspondingly longer — callers pick the timeout. /doctor fans out to
-  ## every component that registers one; components without it are
-  ## reported as not implementing a self test.
+  ## every component that registers one and lists the rest under
+  ## `selftestMissing` (coverage information, never a failed check).
   let schema = toolSchema(
     %*{"deep": {"type": "boolean",
                 "description": "Thorough mode: live end-to-end probes (may spawn processes)"}},
@@ -1076,41 +1082,65 @@ proc toolImpl(c, procDefArg, xharness: NimNode): NimNode =
   var body = newStmtList()
   let handlerComp = genSym(nskParam, "component")
   let handlerArgs = genSym(nskParam, "toolArgs")
+  # Publish the calling conversation to the component (private context,
+  # x-harness sessionId: true): the wrapper is the only site with raw-args
+  # access, and block-form handlers need the session for cancel matching
+  # (bash/builder side-channels). Reads args{"__session"}{"session"}; "" for
+  # direct callers. Session-context leases live in core/dispatch, never here.
+  proc jsonIndex(node: NimNode, key: string): NimNode =
+    ## node{"key"} — the []-index overload on std/json, nil-guarded so a
+    ## caller without private context reads as "" (direct bus calls carry
+    ## no __session; a raised KeyError there would fail the whole call).
+    newCall(bindSym("getOrDefault"), node, newLit(key))
+  body.add(newStmtList(newAssignment(
+    newDotExpr(handlerComp, ident("sessionContext")),
+    newCall(ident("getStr"),
+      jsonIndex(jsonIndex(handlerArgs, "__session"), "session"),
+      newLit("")))))
   for b in bindings:
     let name = ident(b.name)
     let extractCall =
-      case $b.typ
-      of "string":
-        if b.hasDefault:
-          newCall(ident("argStringD"), handlerArgs, newLit(b.name), b.default)
-        else:
-          newCall(ident("argString"), handlerArgs, newLit(b.name))
-      of "int", "int8", "int16", "int32", "int64",
-         "uint", "uint8", "uint16", "uint32", "uint64":
-        if b.hasDefault:
-          newCall(ident("argIntD"), handlerArgs, newLit(b.name), b.default)
-        else:
-          newCall(ident("argInt"), handlerArgs, newLit(b.name))
-      of "float", "float32", "float64":
-        if b.hasDefault:
-          newCall(ident("argFloatD"), handlerArgs, newLit(b.name), b.default)
-        else:
-          newCall(ident("argFloat"), handlerArgs, newLit(b.name))
-      of "bool":
-        if b.hasDefault:
-          newCall(ident("argBoolD"), handlerArgs, newLit(b.name), b.default)
-        else:
-          newCall(ident("argBool"), handlerArgs, newLit(b.name))
-      of "JsonNode":
-        if b.hasDefault:
-          newCall(ident("argJsonD"), handlerArgs, newLit(b.name), b.default)
-        else:
-          newCall(ident("argJson"), handlerArgs, newLit(b.name))
-      else:
+      # seq[T] parameters (nnkBracketExpr) decode through the str-seq
+      # helpers below; `$` on a bracket node is invalid, so branch on the
+      # node kind before the type-name case.
+      if b.typ.kind == nnkBracketExpr:
         if b.hasDefault:
           newCall(ident("argStrSeqD"), handlerArgs, newLit(b.name), b.default)
         else:
           newCall(ident("argStrSeq"), handlerArgs, newLit(b.name))
+      else:
+        case $b.typ
+        of "string":
+          if b.hasDefault:
+            newCall(ident("argStringD"), handlerArgs, newLit(b.name), b.default)
+          else:
+            newCall(ident("argString"), handlerArgs, newLit(b.name))
+        of "int", "int8", "int16", "int32", "int64",
+           "uint", "uint8", "uint16", "uint32", "uint64":
+          if b.hasDefault:
+            newCall(ident("argIntD"), handlerArgs, newLit(b.name), b.default)
+          else:
+            newCall(ident("argInt"), handlerArgs, newLit(b.name))
+        of "float", "float32", "float64":
+          if b.hasDefault:
+            newCall(ident("argFloatD"), handlerArgs, newLit(b.name), b.default)
+          else:
+            newCall(ident("argFloat"), handlerArgs, newLit(b.name))
+        of "bool":
+          if b.hasDefault:
+            newCall(ident("argBoolD"), handlerArgs, newLit(b.name), b.default)
+          else:
+            newCall(ident("argBool"), handlerArgs, newLit(b.name))
+        of "JsonNode":
+          if b.hasDefault:
+            newCall(ident("argJsonD"), handlerArgs, newLit(b.name), b.default)
+          else:
+            newCall(ident("argJson"), handlerArgs, newLit(b.name))
+        else:
+          if b.hasDefault:
+            newCall(ident("argStrSeqD"), handlerArgs, newLit(b.name), b.default)
+          else:
+            newCall(ident("argStrSeq"), handlerArgs, newLit(b.name))
     body.add(newLetStmt(name, extractCall))
     argExprs.add(name)
 

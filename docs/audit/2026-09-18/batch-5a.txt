@@ -1,3 +1,0 @@
-component-edit	16
-environment-variables	14
-the-env-file	1

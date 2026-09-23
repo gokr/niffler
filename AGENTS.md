@@ -135,7 +135,8 @@ working in every language.
   schema to the persisted direct set, changing the request prefix once; the
   append is durable and never removes or rewrites earlier tools.
   Cache hits are surfaced per turn in `ev.session.<id>.context` status events
-  (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full misses are a
+  (the nested `cache {prompt, read, hitRate}`, plus the header's
+  `cachePrompt`/`cacheRead`/`cacheHitRate`); the only legitimate full misses are a
   trim (`reason: "reset:trim"`) and a sticky `invoke` promotion
   (`reason: "reset:tools"`, emitted only when the direct set actually grew).
 - **Subagent continuation is append-only by construction**
@@ -165,17 +166,22 @@ working in every language.
 The Makefile is the front door (it wraps the nimble tasks below):
 
 ```bash
-make all              # build core + all components + desktop UI
-make build            # core + components only (var/bin, no UI)
+make all              # build core + all components (the desktop UI is a plugin,
+                      # gokr/niffler-ui — `make install-ui` installs it)
+make build            # core + components into var/bin
 make install          # PATH entries: niffler, niffler-cli, niffler-console
-                      # + niffler-tui wrapper (asks; WITH_TUI=1 to force,
+                      # + niffler-ui (when installed) and the niffler-tui
+                      # wrapper (asks; WITH_TUI=1 to force,
                       # NIF_BIN_DIR=~/bin to override the bin dir)
 make uninstall        # remove those PATH entries again
 make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler     # the harness itself (admin shell) — UIs autostart it too
 ./var/bin/niffler --minimal  # boot only store + bash + llm; skip persisted extras
 niffler-ui            # the desktop app: autostarts core; the last UI stops it
-make test             # the full gate: `make test-ui` then `make test-server`
+                      # (installed by `make install-ui` as the gokr/niffler-ui
+                      # plugin; `make install` links it when present)
+make test             # the full gate: the bus-contract suite (the UI repo's
+                      # frontend tests + typecheck live in gokr/niffler-ui)
 make test-server      # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_skills, t_fetch,
                       # t_models, t_provider, t_observe, t_logfile, t_core,
@@ -184,9 +190,6 @@ make test-server      # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_fabric, t_nested, t_mcp —
                       # each owns a private NATS server + temporary NIF_ROOT,
                       # so component targets can overlap a live harness
-make test-ui          # frontend only: `npm test` (lib unit tests, run on plain
-                      # node — no dependencies or NATS) + `npm run typecheck`
-                      # (needs ui/frontend/node_modules; `make ui` installs it)
 make gotest           # Go unit tests + vet (+ `-race` for sdk/go, mcp,
                       # mcp-bridge): sdk/go, components/models, provider,
                       # llm, llm-openai, mcp, mcp-bridge (also part of make test)
@@ -206,7 +209,12 @@ make install-lsp      # idempotent installer for the lsp component's default
                       # language servers (failures non-fatal per language)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
 make doctor           # check prerequisites, report what's missing
-make dev              # Svelte dev server in a browser (bridge stubbed)
+make install-ui       # install the desktop UI plugin (gokr/niffler-ui) through
+                      # the plugin lifecycle: boots an isolated, auto-approved
+                      # harness, `cli install gokr/niffler-ui` builds it via
+                      # the builder into var/bin/niffler-ui
+make dev              # retired: the SPA dev server lives in gokr/niffler-ui
+                      # (make dev there); the target only prints that and fails
 ```
 
 Underlying nimble tasks (same thing, one level down):
@@ -228,20 +236,20 @@ nimble smoke          # legacy: the original end-to-end script (bash + store).
   core, else spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`.
   Interactive frontends register `client: true`; an autostarted core exits
   when the last one departs (idle 10s) or none arrives (boot grace 60s).
-  Manually started cores never self-terminate. `niffler-ui` gets the repo
-  root baked via `make ui` ldflags (`main.nifRoot`); to debug a failed
-  autostart, run `./var/bin/niffler` by hand and watch boot.
+  Manually started cores never self-terminate. To debug a failed autostart,
+  run `./var/bin/niffler` by hand and watch boot.
 
-### UI (Wails v2 + Svelte 5, `ui/`)
+### Desktop UI (gokr/niffler-ui, a plugin)
 
-```bash
-make ui                          # = cd ui && ~/go/bin/wails build -tags webkit2_41
-cd ui/frontend && npm run dev    # browser-only dev (bridge stubbed)
-cd ui/frontend && npm run typecheck              # tsc --noEmit
-```
+The desktop UI is no longer built by this Makefile: it is an **interactive
+plugin** installed with `make install-ui` (an isolated auto-approved harness
+boots, `cli install gokr/niffler-ui` runs, the builder compiles the package
+into `var/bin/niffler-ui`, and `make install` links it onto PATH when
+present). Its source, SPA dev server, unit tests and typecheck live in that
+repository — `make dev`, `make test` and `make typecheck` there.
 
-The SPA is a NATS client, not a Wails client: it only talks to
-`frontend/src/nats.ts`; Wails is hosting, not architecture.
+The SPA is a NATS client, not a Wails client: it only talks to its
+`nats.ts`; Wails is hosting, not architecture.
 
 ## Environment and gotchas
 
@@ -321,16 +329,11 @@ The SPA is a NATS client, not a Wails client: it only talks to
   with "session runner binary missing — run `make build`". Runners resume
   conversations from the store, so they are disposable; a runner whose
   conversation id came from a killed runner is recreated automatically.
-- **`wails build`, never `go build`, for the UI.** `go build ./...` or
-  `go build -o build/bin/niffler-ui .` overwrites the binary with a stub that
-  prints "Wails applications will not build without the correct build tags."
-  `go vet` is fine; only `~/go/bin/wails build -tags webkit2_41` produces the
-  real desktop app.
-- **`nats.ts` must match the Go struct name.** `frontend/wailsjs/go/main/<Struct>.js`
-  and `window.go.main.<Struct>` are generated from the bound **Go struct**
-  (`Bridge`), not the `Bind: []interface{}{ app }` variable. `nats.ts` checks
-  `window.go.main.Bridge`; after a renaming `wails build`, update the import
-  + `isWails()` check or the SPA shows "Running in a browser" inside the shell.
+- **Wails plugins build with `wails build`, never `go build`.** The desktop
+  UI (and any Wails client package) is built through its package recipe; a
+  plain `go build` overwrites the binary with a stub that prints "Wails
+  applications will not build without the correct build tags." `go vet` is
+  fine; only `wails build -tags webkit2_41` (Linux) produces the real app.
 - **Go SDK is `package sdk`.** `import sdk "niffler.dev/sdk"` → identifier
   `sdk` (`sdk.New`, `sdk.Component`). That's the alias the builder/LLM
   naturally writes; don't write `niffler.New` — Go will say

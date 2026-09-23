@@ -27,6 +27,15 @@
     "provider": "deepseek",
     "model": "deepseek-v4-flash",
     "apiKeyEnv": "DEEPSEEK_API_KEY"
+   },
+   "dsh": {
+    "baseUrl": "https://api.deepseek.com/v1",
+    "model": "deepseek-v4-flash",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "thinking": "low",
+    "profile": "sdk-minimal",
+    "provider": "deepseek-official",
+    "maxTokens": 256000
    }
   },
   "deepseek-v4.1-flash": {
@@ -129,11 +138,9 @@
  },
  "thinking": {
   "$comment": [
-   "Uniform reasoning-effort control across harnesses: `bench/run.mjs --thinking <profile>`",
-   "maps each harness to the strongest effort its own CLI can express. pi needs a",
-   "thinkingLevelMap on the model entries (adapters/pi.mjs) to send a real \"max\"; opencode uses --variant; codewhale writes reasoning_effort into its isolated",
-   "config.toml; niffler forwards it as the session's reasoning_effort. DeepSeek maps",
-   "low/medium to high server-side, so every harness's \"low\" lane is equivalent."
+   "Uniform reasoning effort across harnesses: `bench/run.mjs --thinking <profile>`",
+   "maps each harness to the closest effort it supports. DSH supports DeepSeek's",
+   "native off/low/high/max levels; other harnesses use their configured mappings."
   ],
   "default": "low",
   "profiles": {
@@ -142,28 +149,32 @@
     "pi": "low",
     "opencode": "low",
     "codewhale": "low",
-    "claudecode": "low"
+    "claudecode": "low",
+    "dsh": "low"
    },
    "medium": {
     "niffler": "medium",
     "pi": "medium",
     "opencode": "medium",
     "codewhale": "medium",
-    "claudecode": "medium"
+    "claudecode": "medium",
+    "dsh": "medium"
    },
    "high": {
     "niffler": "high",
     "pi": "high",
     "opencode": "high",
     "codewhale": "high",
-    "claudecode": "high"
+    "claudecode": "high",
+    "dsh": "high"
    },
    "max": {
     "niffler": "max",
     "pi": "max",
     "opencode": "max",
     "codewhale": "max",
-    "claudecode": "max"
+    "claudecode": "max",
+    "dsh": "max"
    }
   }
  },

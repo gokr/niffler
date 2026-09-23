@@ -112,10 +112,10 @@ link niffler-console console
 if [ -x "$ROOT/var/bin/niffler-ui" ]; then
   link niffler-ui niffler-ui
 else
-  log "desktop UI not built — 'make ui && make ui-install' adds the launcher + icon"
+  log "desktop UI not built — run 'make install-ui' to install the web UI plugin"
 fi
 
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # niffler-tui plugin (separate repo, gokr/niffler-tui — an example of how
 # anyone can build a UI for Niffler). Opt-in: the wrapper is installed only
 # once the plugin binary exists; installing it needs a short harness dance.

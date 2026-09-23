@@ -84,7 +84,7 @@ export class NifflerHarness {
     // sessions would be prompt-context no other harness gets (fairness).
     const skip = new Set([
       ".git", "var", "bench", "results", ".env", ".niffler-build.lock",
-      "AGENTS.md",
+      "AGENTS.md", "AGENTS.local.md",
     ]);
     for (const entry of fs.readdirSync(this.benchRoot)) {
       if (skip.has(entry)) continue;

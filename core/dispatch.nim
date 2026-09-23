@@ -287,7 +287,11 @@ proc invokeTool(ct: CoreTools, args: JsonNode,
   if name == "invoke" or schema == nil or schema.isHidden():
     raise newException(ValueError,
       "tool is not available through invoke — discover lists the exact names")
-  return ct.dispatchToolCall(target, arguments, defaultTimeoutMs)
+  # Dispatch the RESOLVED bare name: the dotted spelling is accepted at the
+  # lookup, but the tool namespace is flat — dispatching the raw string sent
+  # the tolerated `component.tool` spelling to the component as its literal
+  # tool name (A632).
+  return ct.dispatchToolCall(name, arguments, defaultTimeoutMs)
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   # the self-extension / destructive tools change the harness — human gate first
@@ -848,13 +852,23 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let stTimeout = if deep: 120_000 else: 10_000
     doc{"selftest"} = newJArray()
     var stNames: seq[string]
+    var stMissing: seq[string]
     for name, reg in ct.cat.components:
       if name == "core" or reg.client: continue
+      var implements = false
       for t in reg.tools:
         if t.name == "selftest":
-          stNames.add(name)
+          implements = true
           break
+      if implements: stNames.add(name)
+      else: stMissing.add(name)
     stNames.sort()
+    stMissing.sort()
+    # Docs/WIRE.md promises the report NAMES the components without a self
+    # test (the mechanism is opt-in, so this is coverage information, never a
+    # failure): keeping it silent made the promise false and hid the gaps
+    # four components were found to have.
+    doc["selftestMissing"] = %stMissing
     var stFailed = 0
     for name in stNames:
       let t0 = epochTime()
@@ -892,6 +906,11 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
       let detail = item{"summary"}.getStr("").replace("|", "\\|").replace("\n", " ")
       markdown.add("| selftest/" & name & " | " & state & " | " & detail & " |")
+    if stMissing.len > 0:
+      # Named gaps, never a failure: the self-test seam is opt-in (WIRE.md),
+      # and this is the coverage report the docs promise.
+      markdown.add("| selftest (not implementing) | ℹ️ info | " &
+        stMissing.join(", ") & " |")
     let report = markdown.join("\n")
     doc["text"] = %report
     if args{"ask"}.getBool(false):
@@ -1624,10 +1643,17 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       raise newException(IOError,
         "tool '" & tool & "' deadline expired while awaiting approval")
 
-  # per-tool timeout from its schema (x-harness.timeoutMs)
+  # per-tool timeout from its schema (x-harness.timeoutMs): the tool's OWN
+  # transport cap. A deadline-bounded caller keeps its bound (min of the
+  # remaining budget and the cap) — the schema value never RAISES a caller's
+  # explicit deadline; an unbounded caller (deadlineMs 0) gets the schema
+  # value, defaulting only when the tool declares none. Long operations that
+  # need more than the schema cap declare it in their schema (A614).
   var timeoutMs = defaultTimeoutMs
   if schema != nil:
-    timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+    let toolCap = schema{"x-harness"}{"timeoutMs"}.getInt(0)
+    if toolCap > 0:
+      timeoutMs = if hasDeadline: min(timeoutMs, toolCap) else: toolCap
   if hasDeadline:
     timeoutMs = min(timeoutMs,
       (deadline - getMonoTime()).inMilliseconds.int)

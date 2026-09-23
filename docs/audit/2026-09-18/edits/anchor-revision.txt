@@ -1,7 +1,0 @@
-MANUAL.md revision this round verified against
-sha256: e04ebe504edc3b730e0dcd2285dccc1337f616d64e55750f13ea257a42889325
-lines:  3082
-frozen: 2026-09-19 01:41 (conv-4f031541ca72 parked)
-round:  open2 (batches batch-open2-1..8, verdicts edits/batch-open2-*.json)
-apply:  re-check this hash before applying; anchors are what matter, and a
-        changed MANUAL means re-validate every old_string (apply_edits.py does).

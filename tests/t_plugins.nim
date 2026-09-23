@@ -131,17 +131,112 @@ proc main() =
   commitRepo(repoDir)
   commitRepo(interactiveRepo)
 
-  # TS packages declare their dependencies in their own source: this entry
-  # imports a package that only the builder's import scan can discover, and
-  # the manifest carries no dependency field at all.
+  # A v2 package gives builder the complete project and its own argv recipes.
+  # No language-specific dependency logic lives in plugins: both projects use
+  # the same build_package seam and keep their source manifests untouched.
+  let recipeRepo = pkgDir / "reciperepo"
+  createDir(recipeRepo / "nimcomp")
+  createDir(recipeRepo / "gocomp")
+  writeFile(recipeRepo / "niffler.json", """
+  {
+    "manifestVersion": 2,
+    "name": "testrecipes",
+    "version": "1.0.0",
+    "components": [
+      {"name": "nimcomp", "lang": "nim", "project": "nimcomp",
+       "build": {
+         "steps": [["printf", "recipe preflight\\n"],
+                   ["nim", "c", "--hints:off", "-d:release",
+                    "--path:${NIF_SDK_ROOT}", "-o:${NIF_OUTPUT}", "main.nim"]],
+         "artifact": {"path": "nimcomp-bin", "runner": "executable"}
+       }},
+      {"name": "gocomp", "lang": "go", "project": "gocomp",
+       "build": {
+         "steps": [["go", "build", "-o", "${NIF_OUTPUT}", "."]],
+         "artifact": {"path": "gocomp-bin", "runner": "executable"}
+       }}
+    ]
+  }
+  """)
+  writeFile(recipeRepo / "nimcomp" / "main.nim", """
+    import niffler/sdk
+    let comp = newComponent("nimcomp", "0.1.0")
+    comp.tool:
+      proc recipe_nim_ping(): JsonNode =
+        ## Ping the v2 Nim recipe component
+        %*{"pong": true, "lang": "nim"}
+    comp.run()
+    """.dedent())
+  writeFile(recipeRepo / "gocomp" / "go.mod", """
+    module gocomp
+
+    go 1.24
+
+    require niffler.dev/sdk v0.0.0
+  """.dedent())
+  writeFile(recipeRepo / "gocomp" / "main.go", """
+    package main
+    import (
+      "encoding/json"
+      sdk "niffler.dev/sdk"
+    )
+    func main() {
+      comp := sdk.New("gocomp", "0.1.0")
+      comp.Tool("recipe_go_ping", map[string]any{
+        "type": "object", "description": "Ping the v2 Go recipe component",
+        "properties": map[string]any{},
+      }, func(_ *sdk.Component, _ json.RawMessage) (any, error) {
+        return map[string]any{"pong": true, "lang": "go"}, nil
+      })
+      _ = comp.Run()
+    }
+  """.dedent())
+  commitRepo(recipeRepo)
+
+  # TS packages carry their real npm project and dependency declaration.
+  # The builder receives the clone and recipe; it does not infer packages from
+  # source imports.
   let tsRepo = pkgDir / "tsdepsrepo"
   createDir(tsRepo / "tsdep")
   writeFile(tsRepo / "niffler.json", """{
+    "manifestVersion": 2,
     "name": "testtsdeps",
     "version": "1.0.0",
     "components": [
-      {"name": "tsdep", "lang": "ts", "main": "tsdep/main.ts"}
+      {"name": "tsdep", "lang": "ts", "project": ".",
+       "build": {
+         "steps": [["npm", "install", "--no-audit", "--no-fund"],
+                   ["npm", "run", "build"]],
+         "artifact": {"path": "dist/main.js", "runner": "node"}
+       }}
     ]
+  }
+  """)
+  writeFile(tsRepo / "package.json", """
+  {
+    "name": "testtsdeps",
+    "private": true,
+    "version": "1.0.0",
+    "scripts": {"build": "tsc"},
+    "dependencies": {
+      "niffler-sdk": "file:../sdk/ts",
+      "nats": "^2.29.0",
+      "left-pad": "^1.3.0"
+    },
+    "devDependencies": {
+      "@types/node": "^22.0.0",
+      "typescript": "^5.5.0"
+    }
+  }
+  """)
+  writeFile(tsRepo / "tsconfig.json", """
+  {
+    "compilerOptions": {
+      "target": "ES2022", "module": "commonjs",
+      "moduleResolution": "node", "outDir": "dist",
+      "strict": true, "esModuleInterop": true, "skipLibCheck": true
+    },
+    "include": ["tsdep/main.ts"]
   }
   """)
   writeFile(tsRepo / "tsdep" / "main.ts", """
@@ -150,7 +245,7 @@ proc main() =
     const comp = sdk.newComponent("tsdep", "0.1.0");
     comp.tool("tsdep_pad", {
       type: "object",
-      description: "Pads a string using the package's left-pad import",
+      description: "Pads a string using the package's declared left-pad dependency",
       properties: { s: { type: "string" }, n: { type: "number" } },
       required: ["s", "n"],
     }, async (_c: unknown, args: any) =>
@@ -274,7 +369,26 @@ proc main() =
         ilist.output.contains("testinteractive") and
         ilist.output.contains("\"interactive\":true"), ilist.output)
 
-  # deps pass-through is gone: a TS entry's imports are the declaration, and
+  let rinst = runCli(cliBin, url, @["install", "file://" & recipeRepo],
+                     600_000, root = root)
+  check("manifest-v2 recipe package install ok",
+        rinst.code == 0 and rinst.output.contains("INSTALL OK"), rinst.output)
+  let rnim = runCli(cliBin, url,
+                    @["call", "recipe_nim_ping", "{}"], 30_000, root = root)
+  check("manifest-v2 Nim component callable",
+        rnim.code == 0 and rnim.output.contains("\"lang\":\"nim\""), rnim.output)
+  let rgo = runCli(cliBin, url,
+                   @["call", "recipe_go_ping", "{}"], 30_000, root = root)
+  check("manifest-v2 Go component callable",
+        rgo.code == 0 and rgo.output.contains("\"lang\":\"go\""), rgo.output)
+  let rremove = runCli(cliBin, url,
+                       @["call", "plugin_remove", "{\"package\":\"testrecipes\"}"],
+                       120_000, root = root)
+  check("manifest-v2 recipe package removable",
+        rremove.code == 0 and rremove.output.contains("\"ok\":true"),
+        rremove.output)
+
+  # TS packages carry their real npm project and dependency declaration.
   # the manifest reader never sees a dependency field.
   if getEnv("NIF_TEST_NETWORK") == "1":
     let tinst = runCli(cliBin, url, @["install", "file://" & tsRepo], 600_000,
@@ -349,6 +463,20 @@ proc main() =
   check("manual make in plugin clone builds",
         manualMake.exitCode == 0 and fileExists(upClone / "bin" / "itup"),
         manualMake.output)
+
+  # A no-op pull must still repair an old/stale install record or a missing
+  # interactive artifact. This models a plugin installed before builtCommit
+  # metadata existed, and also catches a manually deleted var/bin artifact.
+  let installedItup = root / "var" / "bin" / "itup"
+  if fileExists(installedItup): removeFile(installedItup)
+  let upRepair = runCli(cliBin, url,
+                         @["call", "plugin_update", "{\"package\":\"updatepkg\"}"],
+                         600_000, root = root)
+  check("no-op plugin_update repairs missing artifact",
+        upRepair.code == 0 and
+        upRepair.output.contains("\"updated\":false") and
+        upRepair.output.contains("\"rebuilt\":true") and
+        fileExists(installedItup), upRepair.output)
 
   # a second commit: plugin_update must pull it in place and rebuild
   writeFile(upRepo / "niffler.json", readFile(upRepo / "niffler.json")

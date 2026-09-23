@@ -1,9 +1,10 @@
 # hooks — event-driven shell commands
 
 Runs a shell command when a selected bus event fires. The event payload
-arrives as **pretty JSON on stdin**; the firing subject is in
-`$NIF_HOOK_SUBJECT`... actually just stdin — the command itself never sees
-interpolation, which is what keeps it argv-safe. Output of a failing hook
+arrives as **pretty JSON on stdin** — the firing subject is visible only
+through the spec that selected the hook: the component passes no subject
+variable to the hook, and the command itself never sees interpolation,
+which is what keeps it argv-safe. Output of a failing hook
 goes to the supervisor log (`var/logs/hooks.log`); a failing hook never
 affects the harness.
 
@@ -37,8 +38,8 @@ call. The session id rides the payload (`sessionId`) and the subject
 
 | Subject | Fires | Payload highlights |
 |---|---|---|
-| `ev.session.*.turn` | finished user turn (any conversation) | `sessionId`, `turnId`, `phase: "done"`, `reply` |
-| `ev.session.*.status` | per LLM round | `model`, `provider`, `promptTokens`, `usedTokens`, `usage`, `cacheHitTokens`, `cacheHitRatio` |
+| `ev.session.*.turn` | finished user turn (any conversation) | `sessionId`, `turnId`, `phase: "done"`, `reply` — the payload arrives UNWRAPPED, so a hook reads `.reply`, never `.payload.reply` |
+| `ev.session.*.status` | per LLM round | `model`, `provider`, `promptTokens`, `usedTokens`, `usage`, `cache {prompt, read, hitRate}` |
 | `ev.session.*.context` | warn/trim | `reason` (`"reset:trim"`), `trimmed`, `warning` |
 | `ev.log.error` (via `ev.log.>`) | component logged error | `level`, `msg`, `component` |
 
@@ -70,14 +71,14 @@ the session so long agent runs ping but quick chats don't:
 
 ```bash
 # Only ping for replies longer than 200 chars (jq does the JSON parsing):
-NIF_HOOKS_EV_SESSION_TURN='jq -r ".payload.reply // empty" | awk "length(\$0) > 200 { exit 0 } /^[[:space:]]*$/ { exit 1 }" && paplay /usr/share/sounds/freedesktop/stereo/complete.oga'
+NIF_HOOKS_EV_SESSION_TURN='jq -r ".reply // empty" | awk "length(\$0) > 200 { exit 0 } /^[[:space:]]*$/ { exit 1 }" && paplay /usr/share/sounds/freedesktop/stereo/complete.oga'
 ```
 
 ### Email on error (sendmail or msmtp)
 
 ```bash
 NIF_HOOKS_EVENTS="ev.log.error"
-NIF_HOOKS_EV_LOG_ERROR='{ jq -r ".payload.msg // \"(no message)\"" | mail -s "Niffler error" you@example.com ; }'
+NIF_HOOKS_EV_LOG_ERROR='{ jq -r ".msg // \"(no message)\"" | mail -s "Niffler error" you@example.com ; }'
 ```
 
 The subshell braces keep the pipeline together when `sh -c` wraps the
@@ -86,7 +87,7 @@ command. For msmtp, substitute `msmtp -t` with a To: header in the body.
 ### Email a session summary when a turn completes
 
 ```bash
-NIF_HOOKS_EV_SESSION_TURN='jq -r "\"Session: \" + .payload.sessionId + \"\n\n\" + (.payload.reply // \"\")" | mail -s "Niffler turn done" you@example.com'
+NIF_HOOKS_EV_SESSION_TURN='jq -r "\"Session: \" + .sessionId + \"\n\n\" + (.reply // \"\")" | mail -s "Niffler turn done" you@example.com'
 ```
 
 ### Webhook (curl) — pipe into Slack/Discord/generic
@@ -112,7 +113,7 @@ NIF_HOOKS_EV_LOG_='tee -a /tmp/niffler-errors.jsonl >/dev/null'
 The hook contract is trivial — JSON on stdin, exit code noted:
 
 ```bash
-echo '{"payload":{"reply":"hello"}}' | sh -c 'jq -r .payload.reply'   # → hello
+echo '{"reply":"hello"}' | sh -c 'jq -r .reply'   # → hello
 ```
 
 ## Manifest

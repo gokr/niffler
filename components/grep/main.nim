@@ -10,7 +10,7 @@
 ## need no escaping by the model — the main reliability win over bash
 ## one-liners.
 
-import std/[json, os, strutils]
+import std/[json, os, strutils, tempfiles, times]
 import niffler/sdk
 
 let comp = newComponent("grep", "0.1.0")
@@ -127,5 +127,48 @@ comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
     if code == 0 and output.strip().len == 0:
       return %*{"exit_code": 0, "text": "[no files]"}
     return finish(code, output, min(max(1, max_results), 10_000))
+
+# Self test (docs/WIRE.md): quick checks its own wiring (rg resolution, the
+# shared result caps); deep runs one real bounded rg probe against a
+# throwaway temp file (no workspace mutation). /doctor fans out to this.
+discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
+  let deep = args{"deep"}.getBool(false)
+  let t0 = epochTime()
+  var checks = newJArray()
+  var allOk = true
+
+  proc check(name: string, ok: bool, detail: string) =
+    if not ok: allOk = false
+    checks.add(%*{"name": name, "ok": ok, "detail": detail,
+                  "ms": int((epochTime() - t0) * 1000)})
+
+  block quick:
+    let rg = findExe("rg")
+    check("ripgrep resolution", rg.len > 0,
+          (if rg.len > 0: "resolved: " & rg
+           else: "rg not on PATH — grep falls back with exit 127"))
+    check("output caps configured", maxOutputBytes == 32_000,
+          "byte cap " & $maxOutputBytes & " per result")
+
+  if deep:
+    let dir = getTempDir() / ("niffler-grep-selftest-" & $getCurrentProcessId())
+    try:
+      createDir(dir)
+      writeFile(dir / "probe.txt", "deep-hits-zebrafish\nplain line\n")
+      let (code, output) = runRg(@["--color", "never", "-n", "--",
+                                   "deep-hits-zebrafish", dir / "probe.txt"],
+                                 10_000)
+      check("deep rg probe", code == 0 and output.contains("deep-hits-zebrafish"),
+            (if code == 0: "real search matched its fixture"
+             else: "exit " & $code & ": " & output.strip()))
+    except CatchableError as e:
+      check("deep rg probe", false, e.msg)
+    finally:
+      try: removeDir(dir)
+      except CatchableError: discard
+
+  return %*{"ok": allOk,
+            "summary": (if allOk: "grep wiring ok" else: "grep wiring FAILED"),
+            "checks": checks})
 
 comp.run()

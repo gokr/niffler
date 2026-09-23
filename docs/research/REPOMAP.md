@@ -142,9 +142,12 @@ repomap component (feat/repomap)
 The designed entry was an auto-append: on `ev.workspace.opened` the component
 builds the workspace's map once and the session runner appends it to history
 (append-only, cache-safe — never the frozen prefix), orienting the model from
-turn one with zero discovery. That is implemented and works — but **the A/B
-did not clear the bar, so it ships off by default**
-(`NIF_REPOMAP_AUTOAPPEND=1` opts in). Results, all from this branch:
+turn one with zero discovery. The original A/Bs below did **not** justify
+unconditional injection. The later census/content gates
+([REPOMAP-GATES.md](REPOMAP-GATES.md)) now admit only substantial maps from
+workspaces with at least 50 covered files, so the append is **on by default**
+(`NIF_REPOMAP_AUTOAPPEND=0` opts out). The onDemand tool is unaffected.
+The original A/B results (from before this gated-default change):
 
 | suite | map ON | map OFF | tokens |
 |---|---|---|---|
@@ -158,32 +161,30 @@ and cost one (redis timing out at 7.0M tokens against 1.5M without it). On the
 matched-tree low rerun the sign inverted (jq passing at 720k where OFF stuck
 1.74M and timed out; redis 38k/5 turns against 850k/37). Both directions are
 decided by the same two cells (jq, redis), so the honest reading is that the
-map's effect is task-shaped and regime-shaped, not a flat win or loss — the
-opt-in default stands until a probe on those cells separates signal from noise.
+map's effect is task-shaped and regime-shaped, not a flat win or loss — those
+old ungated lanes alone do not establish the impact of the gated-on default.
 Reports: `bench/reports/repomap-ab-full30.md`, `repomap-ab-multi10.md`,
 `repomap-ab-multi10-low.md`.
 
-So the shipped shape inverts the original plan: the map is **sought, not
-sent**. `repo_map` is onDemand and read-effect — the model asks when a large
-unfamiliar repo warrants orientation. The tension the plan named is real and
-unresolved (onDemand tools never activate on their own: zero discover calls
-across 58 Multi10 cells), so the honest summary is that **the map is not worth
-injecting, and may not be found either** — it is a capability that is there
-when the model looks. Keeping the append behind a flag makes the question
-re-openable with one env var if a workload appears where
-orientation-time dominates.
+So the shipped shape is **gated, not unconditional**. `repo_map` remains
+onDemand and read-effect — the model can ask when an unfamiliar repo warrants
+orientation even if its automatic map was withheld. The gates avoid paying
+for micro repos and stub maps; the conflicting A/Bs above are historical,
+not a measurement of the gated-on default. An operator can still opt out with
+`NIF_REPOMAP_AUTOAPPEND=0`, without changing the tool path.
 
 The full surface:
 
 | Path | When | Cost |
 |---|---|---|
-| auto-append on `ev.workspace.opened` (**opt-in**) | once per conversation | ~300–1k tokens, once — the A/Bs disagree on sign (task/regime-shaped) |
-| `repo_map {workspace?, focus?, budget?}` (onDemand tool) | explicit pulls; the only path on by default | same, model-initiated |
+| auto-append on `ev.workspace.opened` (**gated on by default**) | once per qualifying conversation | ~300–1k tokens, once; census/content gates withhold tiny/stub maps |
+| `repo_map {workspace?, focus?, budget?}` (onDemand tool) | explicit pulls, gated or not | same, model-initiated |
 | personalization | files the conversation read/edited (store seen-state, recency-decayed) + grep-hit idents | free — we know, aider guesses |
 
 Rules: empty/failed map appends nothing; subagents excluded in v1; a trim
 may drop the map — re-requestable (compaction should treat it as a keeper);
-the baseprompt mentions only the refresh tool, not "use the map".
+the baseprompt mentions only the refresh tool, not "use the map". Set
+`NIF_REPOMAP_AUTOAPPEND=0` to opt out; no setting affects explicit pulls.
 Admission gates (content + size) are specified in
 [REPOMAP-GATES.md](REPOMAP-GATES.md) — they apply to the append only, never
 to the tool.

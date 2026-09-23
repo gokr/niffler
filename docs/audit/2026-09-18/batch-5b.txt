@@ -1,4 +1,0 @@
-component-fabric	11
-provider-registry-provider	8
-wrong-claims-summary	6
-y-missing-capability	3

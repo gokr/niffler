@@ -22,7 +22,7 @@ import { resolveKeys } from "./lib/keys.mjs";
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "bench", "config.json"), "utf8"));
 const MODELS = Object.keys(cfg.models || {});
-const HARNESS_CHOICES = ["niffler", "pi", "opencode", "codewhale"];
+const HARNESS_CHOICES = ["niffler", "dsh", "pi", "opencode", "codewhale"];
 const WOW = { host: "gokr@wowbagger.krampe.se", dir: "~/niffler" };
 
 // ---------- tiny flag parser (--key value) ----------

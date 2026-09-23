@@ -207,7 +207,6 @@ proc main() =
       var count = 0
       var dir = cwd
       while true:
-        let f = loadContextFileFromDir(dir)
         var candidatesHere: seq[tuple[path, content: string]] = @[]
         let primary = loadContextFileFromDir(dir)
         if primary.path.len > 0: candidatesHere.add(primary)
