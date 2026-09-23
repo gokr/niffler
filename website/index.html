@@ -52,7 +52,7 @@
     tools while you talk to it.
   </p>
   <div class="hero-cta">
-    <a class="btn btn-primary" href="#quickstart" data-i18n="hero.ctaMake">make && ui/build/bin/niffler-ui</a>
+    <a class="btn btn-primary" href="#quickstart" data-i18n="hero.ctaMake">make install-tui && niffler-tui</a>
     <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener" data-i18n="hero.ctaGithub">github →</a>
     <a class="btn" href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener" data-i18n="hero.ctaDiscord">discord →</a>
   </div>
@@ -69,7 +69,7 @@
       <a class="shot-frame" href="img/niffler-ui.png" target="_blank" rel="noopener" data-lightbox="niffler-ui — the desktop chat interface">
         <img src="img/niffler-ui.png" alt="niffler-ui — the desktop chat interface" width="1200" height="934">
       </a>
-      <figcaption><span class="shot-name" data-i18n="screens.ui.name">niffler-ui</span> — <span data-i18n="screens.ui.desc">the desktop chat UI: sessions, streaming tokens, tool runs, approvals, model controls</span></figcaption>
+      <figcaption><span class="shot-name" data-i18n="screens.ui.name">niffler-ui</span> — <span data-i18n="screens.ui.desc">the desktop chat UI: sessions, streaming tokens, tool runs, approvals, model controls (a plugin — make install-ui installs gokr/niffler-ui)</span></figcaption>
     </figure>
     <figure class="shot">
       <a class="shot-frame" href="img/niffler-tui.png" target="_blank" rel="noopener" data-lightbox="niffler-tui — the terminal chat client">
@@ -89,8 +89,8 @@
       <span class="term-title">gokr@dev: ~/niffler</span>
     </div>
     <div class="term-body">
-      <p><span class="p">$</span> make && ui/build/bin/niffler-ui</p>
-      <p class="dim" data-i18n="term.build">build core + components + desktop UI · the UI autostarts the harness</p>
+      <p><span class="p">$</span> make install-tui && niffler-tui</p>
+      <p class="dim" data-i18n="term.build">install the niffler-tui terminal client (a plugin) · the client boots the harness on demand</p>
       <p class="dim" data-i18n="term.l1">→ home bus: claimed nats://127.0.0.1:4222 · root ~/niffler @ 8094748</p>
       <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
       <p class="dim">→ catalog: store, bash, builder, plugins, skills, systemprompt, recall, compaction, fetch, models, provider, llm, grep, mcp, edit, lsp, repomap, processes, git, observe, logfile, agent, expert, fabric</p>
@@ -288,15 +288,15 @@
         <p><span class="p">$</span> <span data-i18n="qs.clone">git clone git@github.com:gokr/niffler.git && cd niffler</span></p>
         <p><span class="p">$</span> make setup        <span class="dim" data-i18n="qs.setup"># prerequisites (Ubuntu / macOS)</span></p>
         <p><span class="p">$</span> cp .env.example .env <span class="dim" data-i18n="qs.env"># add an LLM API key; edit other settings as needed</span></p>
-        <p><span class="p">$</span> make              <span class="dim" data-i18n="qs.make"># build core + components + desktop UI, once</span></p>
-        <p><span class="p">$</span> make install      <span class="dim" data-i18n="qs.install"># niffler / niffler-cli / niffler-console on PATH (+ niffler-tui on request)</span></p>
-        <p><span class="p">$</span> make install-lsp  <span class="dim" data-i18n="qs.installlsp"># idempotent installer for the lsp component's default language servers</span></p>
+        <p><span class="p">$</span> make build        <span class="dim" data-i18n="qs.make"># core + components (no UI toolchain), once</span></p>
+        <p><span class="p">$</span> make install      <span class="dim" data-i18n="qs.install"># niffler / niffler-cli / niffler-console on PATH (+ niffler-ui once its plugin is installed; niffler-tui on request)</span></p>
+        <p><span class="p">$</span> make install-tui  <span class="dim" data-i18n="qs.installtui"># same, installing the niffler-tui terminal client quietly</span></p>
         <p><span class="p">$</span> niffler-tui        <span class="dim" data-i18n="qs.tui"># terminal chat — boots the harness on demand if none runs</span></p>
-        <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim" data-i18n="qs.run"># the desktop UI — autostarts the harness</span></p>
-        <p><span class="p">$</span> make ui-install    <span class="dim" data-i18n="qs.uiinstall"># optional: puts niffler-ui on PATH + launcher/app icon (Linux)</span></p>
-        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># full gate — frontend suite first, then the bus-contract server suite</span></p>
+        <p><span class="p">$</span> make install-ui   <span class="dim" data-i18n="qs.installdesktop"># the desktop UI — installs the gokr/niffler-ui plugin and builds var/bin/niffler-ui</span></p>
+        <p><span class="p">$</span> make install-lsp  <span class="dim" data-i18n="qs.installlsp"># idempotent installer for the lsp component's default language servers</span></p>
+        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># the bus-contract suite — the full gate, isolated per-test NATS + temp root</span></p>
         <p class="dim">│</p>
-        <p class="dim" data-i18n="qs.see">└─ make run / recover / down / down-here / ram / uninstall / dev · see docs/MANUAL.md</p>
+        <p class="dim" data-i18n="qs.see">└─ make run / recover / down / down-here / ram / uninstall · see docs/MANUAL.md</p>
       </div>
     </div>
     <div class="qs-side">
@@ -306,7 +306,7 @@
         <li><span class="check">✓</span> <span data-i18n="qs.req.go">go</span></li>
         <li><span class="check">✓</span> <span data-i18n="qs.req.nats">nats-server (built from source)</span></li>
         <li><span class="check">✓</span> <span data-i18n="qs.req.node">node / npm</span></li>
-        <li><span class="check">✓</span> <span data-i18n-html="qs.req.wails">wails cli <span class="dim">(UI only)</span></span></li>
+        <li><span class="check">✓</span> <span data-i18n-html="qs.req.wails">wails cli <span class="dim">(only to build the niffler-ui plugin)</span></span></li>
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
       </ul>
       <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, checksums, natsnim, bitbarrel — installed automatically on first build.</p>
