@@ -82,16 +82,18 @@ the terminal admin shell — status, catalog, sessions, not a chat UI — and
 The desktop UI is optional:
 
 ```bash
-make install-ui         # build the Wails UI, then add it to ~/.local/bin with
-                        # a launcher entry and icon (Linux; alias: make ui-install)
+make install-ui         # install the desktop UI plugin (gokr/niffler-ui): the
+                        # plugin manager clones it, the builder builds it against
+                        # this harness, and the binary lands in var/bin
 ```
 
-`make dev` runs the frontend in a browser with the bridge stubbed; `make doctor`
+`make install` then links `niffler-ui` onto PATH when it is present. The UI's
+own dev server, unit tests and typecheck live in the
+[niffler-ui](https://github.com/gokr/niffler-ui) repository. `make doctor`
 inspects prerequisites; `make down-here` stops only this clone's processes.
 
-Testing: `make test-ui` runs frontend tests without NATS; `make test-server`
-runs the bus-contract suite; `make test` runs the complete gate; `make gotest`
-runs the Go tests, vet and race checks.
+Testing: `make test` runs the bus-contract suite (one private bus per test);
+`make gotest` runs the Go tests, vet and race checks.
 
 ## Documentation
 

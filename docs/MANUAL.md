@@ -50,7 +50,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `var/models/`, `var/processes/`, `var/repomap-tags/`, `var/fetch/` | component state: the models.dev catalog cache, background-process records, the repomap tag cache, spilled fetch bodies |
 | `var/nats-pid` | pid of the bus core spawned (crash cleanup only — a live core stops its own bus on exit) |
 | `var/build/` | source files of agent-built components (builder's scratch dir): one `<name>.nim` for Nim, a whole project directory for Go and TypeScript (`go.mod`, `package.json`/`tsconfig.json`, `node_modules/`, `dist/`). It is the **only** copy of an agent-built component's source — the persisted `component` record carries none, so `make clean` orphans it |
-| `nimcache/`, `ui/build/`, `ui/frontend/node_modules/`, `ui/frontend/dist/` | build artifacts; `make clean` removes them |
+| `nimcache/` | build artifacts; `make clean` removes them (together with `var/`) |
 
 ### Shipped components
 
@@ -3315,9 +3315,9 @@ a single capped `list` silently truncated long transcripts on resume.
 ## Testing
 
 ```bash
-make test           # the full gate: frontend tests, then the bus-contract suite
+make test           # the full gate: the bus-contract suite (the desktop UI's
+                    # frontend tests + typecheck live in gokr/niffler-ui)
 make test-server    # ... server side only: one test-owned NATS per test, no node
-make test-ui        # ... frontend side only: lib unit tests + `npm run typecheck`
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`
@@ -3335,12 +3335,10 @@ is the old sequential run, and the logs remain per-test either way.
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
 the envelope is the artifact, so one harness tests every SDK) and drives
 them over a private nats-server each test starts for itself (`NIF_NATS_SPAWN`-style isolation).
-The frontend tests are the exception: they import the TypeScript lib modules
-(`ui/frontend/src/lib/*.ts`) and run on plain node with type stripping, so
-`make test-ui` needs neither dependencies nor a bus (`npm run typecheck`
-does need `ui/frontend/node_modules`, which `make ui` installs). `make test`
-is simply `make test-ui` + `make test-server`; use `make test-server` for
-server-side work and `make test-ui` for frontend work.
+The desktop UI's frontend tests are not part of this suite: the UI is the
+[gokr/niffler-ui](https://github.com/gokr/niffler-ui) plugin now, and its lib
+unit tests and typecheck run in that repository (`make test` /
+`make typecheck` there), so this gate stays self-contained.
 Core-based tests snapshot their required binaries into a unique temporary
 `NIF_ROOT`; Barrel, plugin clones, generated components, logs, and caches are
 therefore isolated. Individual `make test-*` targets may run concurrently
@@ -3400,8 +3398,9 @@ There is no launcher script — the binaries own the lifecycle:
   127.0.0.1:4222 for a core serving **this root** (the catalog carries the
   owning harness's root; a foreign clone's core is never adopted); if none
   answers, spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`. The
-  repo root is baked in at `make ui` time (ldflags), so the installed icon
-  works as well as the in-tree binary.
+  binary itself is installed by `make install-ui` — the desktop UI is the
+  [gokr/niffler-ui](https://github.com/gokr/niffler-ui) plugin, built by the
+  builder into `var/bin/niffler-ui` and linked onto PATH by `make install`.
   The probes are patient: attaching retries for ~10 s at 200 ms, and a spawned
   core must answer within 20 s or `ensureHarness` fails with `spawned core did
   not answer within 20s — check <root>` (the Nim SDK first reaps a core it
@@ -3463,23 +3462,25 @@ happens (see Troubleshooting).
 niffler-ui                    # desktop UI; autostarts the full profile
 make build          # rebuild what changed
 make install        # PATH entries (niffler, niffler-cli, niffler-console,
-                    # + niffler-tui wrapper on request — never component
+                    # + niffler-ui when its plugin binary exists and the
+                    # niffler-tui wrapper on request — never component
                     # binaries such as the `grep` tool (`var/bin/grep`, which
                     # shells out to `rg`), so PATH cannot shadow grep/git/...)
 make install-tui    # same, installing the niffler-tui terminal client quietly
                     # (= make install WITH_TUI=1)
 make uninstall      # remove those PATH entries again
-make install-ui     # build the desktop UI, then add the launcher entry + icon
-                    # (Linux; = make ui-install; -uninstall counterpart ui-uninstall)
+make install-ui     # install the desktop UI plugin (gokr/niffler-ui): an
+                    # isolated auto-approved harness boots, the plugin manager
+                    # clones + the builder builds it into var/bin/niffler-ui
 make install-lsp    # install the lsp component's default language servers
-make test           # the full gate: frontend tests + the bus-contract suite
+make test           # the full gate: the bus-contract suite (the UI repo's
+                    # frontend tests live in gokr/niffler-ui)
 make test-server    # the bus-contract suite alone (each test owns a private bus)
-make test-ui        # frontend alone: lib unit tests + typecheck (no NATS)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
 make down-here      # stop this checkout's harness, components and spawned bus
                     # only — bench worktrees and other clones survive
-make clean          # remove all build artifacts (var/, nimcache/, UI build)
+make clean          # remove all build artifacts (var/, nimcache/)
 ```
 
 - **Headless service mode** (no tty, for UIs/automation):
@@ -3495,9 +3496,10 @@ make clean          # remove all build artifacts (var/, nimcache/, UI build)
   deliberately, set `NIF_NATS_URL`.
 - **Probe the bus** without the LLM: one-shot `nim c -r` scripts in
   `tests/` (see AGENTS.md "Debugging the bus").
-- **Wails**: build only with `wails build -tags webkit2_41` (Linux);
-  plain `go build` produces a stub. `make dev` runs the SPA in a browser
-  with the bridge stubbed.
+- **Wails**: the desktop UI (and any Wails client package) builds through
+  its package recipe, which must run `wails build -tags webkit2_41`
+  (Linux) — a plain `go build` produces a stub. The UI's SPA dev server
+  lives in the gokr/niffler-ui checkout (`make dev` there).
 - **Monitor RAM** of a running system with `make ram` (or
   `watch -n5 scripts/niffler-ram.sh`): totals per stack — your clone,
   `nifflerprod`, and each bench private harness separately — over harness +
