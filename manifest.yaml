@@ -161,10 +161,9 @@ components:
     restart: on-failure
 
   # Ranked repo map (docs/research/REPOMAP.md): repo_map is the onDemand,
-  # read-effect tool. The workspace-open auto-append is OPT-IN via
-  # NIF_REPOMAP_AUTOAPPEND — off by default because the A/B showed it costing
-  # ~40% more tokens with no accuracy gain, and onDemand tools never activate
-  # themselves. Off, this is simply a component the model can discover.
+  # read-effect tool. Workspace-open auto-append is gated on by default:
+  # fewer than 50 covered files or a stub render gets no map. Set
+  # NIF_REPOMAP_AUTOAPPEND=0 to opt out; the onDemand tool is unaffected.
   # Optional: an absent component means no map, nothing else changes.
   - name: repomap
     build: {lang: nim, src: components/repomap/main.nim}

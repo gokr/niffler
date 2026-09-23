@@ -80,32 +80,15 @@ proc main() =
   check("missing workspace refused", miss.hasKey("error") and
         miss{"error"}.getStr("").contains("[E_NOT_FOUND]"), $miss)
 
-  # --- auto-append is OPT-IN (default off) ------------------------------------
-  # The append is gated on NIF_REPOMAP_AUTOAPPEND: the tool above works either
-  # way, but nothing is injected unless the operator opts in. This process
-  # started without the env var, so publishing the event must produce silence.
-  block:
-    var offSub: ptr natsSubscription
-    discard natsConnection_SubscribeSync(addr offSub, nc.conn,
-                                         "svc.session.sess-off.map".cstring)
-    let offEv = Envelope(v: 1, id: newId(), kind: ekEvent,
-                         payload: %*{"workspace": ws,
-                                     "conversationId": "sess-off"})
-    nc.publish("ev.workspace.opened", offEv.encode())
-    var leaked = false
-    for i in 0 ..< 6:
-      var msg: ptr natsMsg
-      if natsSubscription_NextMsg(addr msg, offSub, 500) == NATS_OK:
-        natsMsg_Destroy(msg)
-        leaked = true
-        break
-    check("auto-append stays silent without NIF_REPOMAP_AUTOAPPEND", not leaked)
+  # --- auto-append is ON by default (the admission gates still apply) ------
+  # A tiny fixture must be withheld by the census floor. A padded workspace
+  # below proves that an unset switch does publish a qualifying map.
 
   # --- append gates (docs/research/REPOMAP-GATES.md) --------------------------
   # The append admits a map only when the workspace clears the census floor
   # and the rendered map clears the content gate. The fixture `ws` above is
-  # tiny (4 files, ~10 syms), so the gate tests below run the component with
-  # both opt-in AND floor overrides; the happy path uses a padded workspace.
+  # tiny (4 files, ~10 syms), so the content-gate test below overrides only
+  # the census floor; the default-on happy path uses a padded workspace.
   proc recvMap(mapSub: ptr natsSubscription, secs = 60): JsonNode =
     ## wait for a map event (or return nil on timeout)
     for i in 0 ..< secs * 2:
@@ -132,22 +115,14 @@ proc main() =
   var sub1: ptr natsSubscription
   discard natsConnection_SubscribeSync(addr sub1, nc.conn,
                                        "svc.session.sess-small.map".cstring)
-  if rmProc.peekExitCode() == -1: rmProc.terminate()
-  sleep(300)
-  let rmOn = startComponent(bin, url, root = tmp,
-                            extra = [("NIF_REPOMAP_AUTOAPPEND", "1")])
-  defer:
-    if rmOn.peekExitCode() == -1: rmOn.terminate()
-    rmOn.close()
-  check("repomap re-registers with auto-append on", waitRegistered(nc, "repomap"))
   nc.publish("ev.workspace.opened",
     Envelope(v: 1, id: newId(), kind: ekEvent,
              payload: %*{"workspace": ws,
                          "conversationId": "sess-small"}).encode())
-  check("size floor withholds the tiny workspace",
+  check("default-on size floor withholds the tiny workspace",
         recvMap(sub1, 3) == nil)
 
-  # append ON, padded workspace: must publish
+  # default-on append, padded workspace: must publish
   var mapSub: ptr natsSubscription
   let sst = natsConnection_SubscribeSync(addr mapSub, nc.conn,
                                          "svc.session.sess-big.map".cstring)
@@ -157,18 +132,39 @@ proc main() =
              payload: %*{"workspace": bigWs,
                          "conversationId": "sess-big"}).encode())
   var got = recvMap(mapSub)
-  check("auto-append publishes a substantive map",
+  check("auto-append publishes a substantive map by default",
         got != nil and got{"conversationId"}.getStr("") == "sess-big" and
         got{"map"}.getStr("").contains("fn0x0"),
         (if got != nil: $got{"map"}.getStr("")[0 ..< 120] else: "nothing arrived"))
 
+  # Restart with the switch explicitly OFF: even the padded workspace must
+  # remain silent, while the onDemand tool continues to work.
+  if rmProc.peekExitCode() == -1: rmProc.terminate()
+  sleep(300)
+  let rmOff = startComponent(bin, url, root = tmp,
+                             extra = [("NIF_REPOMAP_AUTOAPPEND", "0")])
+  defer:
+    if rmOff.peekExitCode() == -1: rmOff.terminate()
+    rmOff.close()
+  check("repomap re-registers with auto-append off", waitRegistered(nc, "repomap"))
+  var offBigSub: ptr natsSubscription
+  discard natsConnection_SubscribeSync(addr offBigSub, nc.conn,
+                                       "svc.session.sess-big-off.map".cstring)
+  nc.publish("ev.workspace.opened",
+    Envelope(v: 1, id: newId(), kind: ekEvent,
+             payload: %*{"workspace": bigWs,
+                         "conversationId": "sess-big-off"}).encode())
+  check("explicit opt-out withholds a qualifying map", recvMap(offBigSub, 3) == nil)
+  let mOff = mapCall(%*{"workspace": "ws"})
+  check("tool remains available with append disabled",
+        mOff{"ok"}.getBool(false) and mOff{"text"}.getStr("").contains("resolveBinIn"), $mOff)
+  if rmOff.peekExitCode() == -1: rmOff.terminate()
+  sleep(300)
+
   # content gate: floor overridden to 1, tiny ws builds but is a stub — the
   # component must withhold it (its map is ~10 syms / 4 files / <800B).
-  if rmOn.peekExitCode() == -1: rmOn.terminate()
-  sleep(300)
   let rmTiny = startComponent(bin, url, root = tmp,
-                              extra = [("NIF_REPOMAP_AUTOAPPEND", "1"),
-                                       ("NIF_REPOMAP_MIN_CENSUS", "1")])
+                              extra = [("NIF_REPOMAP_MIN_CENSUS", "1")])
   defer:
     if rmTiny.peekExitCode() == -1: rmTiny.terminate()
     rmTiny.close()

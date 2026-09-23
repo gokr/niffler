@@ -93,8 +93,9 @@ svc.session.<id>.map    # fire-and-forget event envelope {workspace, conversatio
                         #   map} from the repomap component: a finished workspace map
                         #   the runner appends to history once (append-only, never
                         #   the frozen prefix — a later trim lets the repo_map tool
-                        #   re-create it). Opt-in (NIF_REPOMAP_AUTOAPPEND=1) and gated
-                        #   (research/REPOMAP-GATES.md); a map that never arrives
+                        #   re-create it). Gated on by default
+                        #   (NIF_REPOMAP_AUTOAPPEND=0 opts out;
+                        #   research/REPOMAP-GATES.md); a map that never arrives
                         #   never fails a conversation
 svc.session.<id>.diag   # fire-and-forget event envelope {conversationId, path, text}
                         #   from the lsp component: rendered diagnostics for a file
