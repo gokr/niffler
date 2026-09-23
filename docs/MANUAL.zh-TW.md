@@ -62,7 +62,7 @@
 |---|---|---|---|
 | `store` | Nim/Go | required | 匯流排上的文件儲存（`put/get/list/del`，基於 rev 的併發控制）。各引擎以同一名稱註冊並提供相同工具：`store-sqlite`（Go，SQLite + goose 遷移，`var/store.db`）是**預設**；`barrel`（`var/bin/store`）和 `tidb` 仍可透過 `NIF_STORE_BACKEND` 選用——見 [Store engines](#store-engines) |
 | `bash` | Nim | required | 經典工具：帶超時和輸出上限的 shell 命令。命令作為自身程序組的組長執行，因此超時或回合被取消會殺掉整棵程序樹（退出碼 124 / 130）——不會留下孤兒程序。結果攜帶 `text`（以 `(exit N)` 狀態行開頭——非零即失敗；124 = 超時，130 = 已取消——其後是合併的 stdout/stderr；LLM 記錄看到的就是它）以及機器欄位 `exit_code`、`cancelled`，輸出過大時還有 `spill {path, bytes, lines}`（溢位到臨時檔案，可用 `read` 分頁讀取）。`run_in_background: true` 把長跑命令（伺服器、監視器）交給 `processes` 元件而不是阻塞——見 [Background processes](#background-processes-processes) |
-| `repomap` | Nim | optional | 排序後的工作區地圖（docs/research/REPOMAP.md）：約 1KB 內給出承重檔案及其關鍵定義，由 tree-sitter + 原生 Nim tags 圖與個性化 PageRank 建置（aider repomap 的移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且為讀效應——模型主動詢問，不注入任何東西。工作區開啟時的自動追加（在 `ev.workspace.opened` 時追加一條 append-only 條目；元件釋出，runner 追加）**預設關閉**：設定 `NIF_REPOMAP_AUTOAPPEND=1` 選擇開啟。預設關閉是因為 A/B 沒有過線（full30：約多 40% token、準確率無提升；Multi10 high 開啟後 8/10 vs 9/10，儘管 low 復跑結論反轉、最初的高檔測試部分測的是樁地圖——見 `bench/reports/repomap-ab-*.md`），而且 onDemand 工具不會自己啟用。選擇開啟後，追加還有**門控**（`docs/research/REPOMAP-GATES.md`）：低於普查下限的工作區從不建置，樁地圖（位元組/符號/檔案閾值）從不注入——被扣留的地圖記錄為 `repo map withheld`。關閉追加時，它只是一個模型想要定位時可以發現的可選元件。快取：`var/repomap-tags/`（按 mtime 鍵控）。可選元件——缺失就沒有地圖，其他一切不變 |
+| `repomap` | Nim | optional | 排序後的工作區地圖（docs/research/REPOMAP.md）：約 1KB 內給出承重檔案及其關鍵定義，由 tree-sitter + 原生 Nim tags 圖與個性化 PageRank 建置（aider repomap 的移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且為讀效應。工作區開啟時的自動追加（在 `ev.workspace.opened` 時追加一條 append-only 歷史條目）**預設開啟但受門控**（`docs/research/REPOMAP-GATES.md`）：工作區至少要有 50 個被涵蓋的原始檔，且渲染出的地圖至少 800 位元組、25 個符號、5 個帶符號的檔案。過小的樁地圖會被扣留並記為 `repo map withheld`；設 `NIF_REPOMAP_AUTOAPPEND=0` 可關閉該追加。顯式的 `repo_map` 工具不受這些門控影響。快取：`var/repomap-tags/`（按 mtime 鍵控）。可選元件——缺失就沒有地圖，其他一切不變。參數、標籤分層與追加負載見 [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | 帶歸屬者的長跑命令：`process_start`（脫離父程序、獨立程序組，立即返回 id）、`process_poll`（增量排空輸出）、`process_kill`（停止整個程序組）、`process_list`——見 [Background processes](#background-processes-processes) |
 | `builder` | Nim | required | 編譯 agent 編寫的 Nim/Go/TypeScript 原始碼，並透過 `build_package` 建置外掛專案；外掛保留自己的依賴檔與鎖檔，builder 在隔離工作區執行受限 argv 配方並發布宣告的 artifact |
 | `llm` | Go | required | 流式 chat 介面卡（隱藏的 `chat` 工具；`ev.llm.token` 增量；取消）——協議：OpenAI 相容 Chat Completions、OpenAI Codex（ChatGPT OAuth）Responses 和 Anthropic Messages；`components/llm-openai` 中的 `llm-openai` 是最小非流式示例，可透過 `manifest.yaml` 換上 |
@@ -327,7 +327,7 @@ Niffler 沒有單一設定檔。狀態分佈在五處，按生命週期選擇：
 | `NIF_MCP_REGISTRY_URL` | 外部 MCP 伺服器目錄的基址（氣隙/代理環境） | `registry.modelcontextprotocol.io` |
 | `NIF_MCP_PROBE_TIMEOUT_MS` | `mcp_add` 中一次真實連線探測的超時（覆蓋 30s 預設值，並在呼叫自身的 `timeoutMs` 更高時覆蓋它） | `30000` |
 | `NIF_READ_OUTLINE_LINES` | 超過該整讀行數閾值時，read 返回語言伺服器符號大綱而不是原始視窗；`0` 禁用大綱 | `1000` |
-| `NIF_REPOMAP_AUTOAPPEND` | `1` 選擇開啟 repomap 元件的工作區開啟自動追加（每個新會話注入一次地圖）。預設關閉——各 A/B 的符號隨區間反轉，最初的高檔測試部分測的是樁地圖（`bench/reports/repomap-ab-*.md`）。`repo_map` onDemand 工具不受影響 | unset |
+| `NIF_REPOMAP_AUTOAPPEND` | 工作區開啟時的 repo-map 自動追加預設開啟，仍要通過普查/內容准入門控（`docs/research/REPOMAP-GATES.md`）。`0` 關閉；`1` 顯式開啟。`repo_map` onDemand 工具不受影響 | `1` |
 | `NIF_REPOMAP_MIN_CENSUS` | 追加的普查檔案下限：覆蓋原始檔更少的工作區從不建圖（docs/research/REPOMAP-GATES.md） | `50` |
 | `NIF_REPOMAP_MIN_BYTES` | 追加內容門控：渲染出的地圖小於該位元組數即視為樁，予以扣留 | `800` |
 | `NIF_REPOMAP_MIN_SYMBOLS` | 追加內容門控：渲染符號行數下限 | `25` |
@@ -863,6 +863,13 @@ Status: **implemented**（Nim 元件；確定性的 fixture 測試；niffler-tui
 `E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_NOT_FOUND`）讓呼叫方按 code 路由而不是解析
 散文——超時和協議錯誤會附上伺服器最後一行 stderr，指明實際失敗原因（缺二進位、
 崩潰、索引中）。
+
+**對於已知語言，edit 工具的自動推送絕不靜默。** 每次成功編輯後它都會非同步
+排隊診斷——檢查執行在 lsp 元件的閒置縫裡，結論投遞到會話的 `.diag` 通道——
+而且編輯結果會指名該通道，因此「檢查過且乾淨」絕不可能看起來像「什麼都沒
+發生」。當檢查無法排隊時（檔案在會話工作區之外，或聯繫不到 lsp 元件），編輯
+結果會說明這一點並給出原因。只有副檔名沒有任何註冊表條目認領的檔案才保持
+靜默：`.md` 檔案不是任何語言伺服器的事務。
 
 三個工具都是 **on-demand**（`discover`/`invoke`——見 [Progressive tool
 discovery](#progressive-tool-discovery)），保持凍結工具集精簡；工具描述就是
