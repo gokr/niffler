@@ -626,7 +626,7 @@ supervisor 不可移除——这种不对称正是架构（ARCHITECTURE.md）。
 | `plugin_search {query?}` | GitHub topic 搜索；返回仓库、描述、star 数 |
 | `plugin_installed` | 本 harness 已安装的包 |
 | `plugin_install {repo, version?}` | clone 到 `var/plugins/<pkg>@<ref>/`，v1 经 builder 的 `build`、v2 经 `build_package` 构建每个组件，然后 `spawn` 每个服务组件（需审批） |
-| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重装；没有 release 的包（跟踪分支）原地拉取（现有 clone 的 `git pull --ff-only`），只在拉取移动了 HEAD 时重建 |
+| `plugin_update {package}` | 更新到最新 release tag：移除、按新 ref 重装；没有 release 的包（跟踪分支）原地拉取（现有 clone 的 `git pull --ff-only`），在拉取移动 HEAD 或已安装构件过时/缺失时重建 |
 | `plugin_remove {package}` | `core.remove` 每个受监督组件，删除 clone，丢弃记录 |
 
 - 安装/更新/移除都带 `x-harness.approval: "always"`——它们运行第三方代码，

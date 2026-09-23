@@ -464,6 +464,20 @@ proc main() =
         manualMake.exitCode == 0 and fileExists(upClone / "bin" / "itup"),
         manualMake.output)
 
+  # A no-op pull must still repair an old/stale install record or a missing
+  # interactive artifact. This models a plugin installed before builtCommit
+  # metadata existed, and also catches a manually deleted var/bin artifact.
+  let installedItup = root / "var" / "bin" / "itup"
+  if fileExists(installedItup): removeFile(installedItup)
+  let upRepair = runCli(cliBin, url,
+                         @["call", "plugin_update", "{\"package\":\"updatepkg\"}"],
+                         600_000, root = root)
+  check("no-op plugin_update repairs missing artifact",
+        upRepair.code == 0 and
+        upRepair.output.contains("\"updated\":false") and
+        upRepair.output.contains("\"rebuilt\":true") and
+        fileExists(installedItup), upRepair.output)
+
   # a second commit: plugin_update must pull it in place and rebuild
   writeFile(upRepo / "niffler.json", readFile(upRepo / "niffler.json")
             .replace("\"version\": \"1.0.0\"", "\"version\": \"2.0.0\""))

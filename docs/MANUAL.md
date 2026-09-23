@@ -1188,7 +1188,7 @@ topic `niffler-component` are discoverable without any registry:
 | `plugin_search {query?}` | GitHub topic search; returns repo, description, stars, plus the winning `query` and per-attempt diagnostics — GitHub ANDs the words, so a zero-hit query is retried with fewer of them |
 | `plugin_installed` | the packages installed on this harness |
 | `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component via the builder (`build` for v1, `build_package` for v2), then `spawn` each service component (approved). Installing a package that already has a record is an error, not a re-install — use `plugin_update`, or `plugin_remove` first; the clone is shallow (`--depth 1`) and v1 Go packages carry an untracked `go.work` for manual builds |
-| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt only when the pull moved HEAD |
+| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt when the pull moves HEAD or the installed artifacts are stale/missing |
 | `plugin_remove {package}` | `core.remove` every supervised component, delete the clone, drop the record |
 
 - Install/update/remove all carry `x-harness.approval: "always"` — they
