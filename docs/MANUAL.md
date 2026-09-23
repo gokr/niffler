@@ -1666,6 +1666,16 @@ file outright was tried and was actively harmful: the edit tool's diagnostics
 push swallowed the refusal as "no server configured", so an agent working in
 another checkout got no diagnostics and no signal that it had none.
 
+**The edit tool's automatic push is never silent for a known language.**
+After every successful edit it queues diagnostics asynchronously — the check
+runs in the lsp component's idle seam and the verdict is delivered on the
+conversation's `.diag` lane — and the edit result names that lane, so
+"checked and clean" can never look like "nothing happened". When the check
+cannot be queued (a file outside the conversation workspace, or a failure to
+reach the lsp component) the edit result says so instead, with the reason.
+Silence is reserved for files whose extension no registry entry claims: a
+`.md` file is nobody's language-server business.
+
 All three tools are **on-demand** (`discover`/`invoke` — see [Progressive tool
 discovery](#progressive-tool-discovery)), keeping the frozen
 toolset small; the tool description is the model's when-to-use guide. The
