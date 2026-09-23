@@ -477,12 +477,14 @@ session 调用设置（Web UI 以 `/approvals`、`/limit` 和 `/compact` 暴露�
 - **`/compact`** —— 立即运行压缩器，而不是等待自动压力阶梯：core 向已配置的
   压缩组件请求允许切点上的检查点，原子安装它，并发出通常的
   `ev.session.<id>.context {reason: "reset:compact"}`。不运行 LLM 回合，也不追加
-  用户消息。提交会把已测量的提示词大小清零（这份投影还没经提供商测量），因此
+  用户消息。辅助摘要继承会话已解析的 provider/model，不会静默跟随之后的全局
+  provider 切换。提交会把已测量的提示词大小清零（这份投影还没经提供商测量），因此
   手动路径还会发出一帧 status —— `usedTokens` 是本地估算值、`estimated: true`，
   并带上窗口大小 —— 否则上下文仪表会一直显示压缩前的数字，直到下一回合重新测量；
   下一次请求的实测值会替换该估算。回复报告 `compacted: true` 及前后 token 数，或
-  `compacted: false` 及原因（未配置压缩组件、压缩器拒绝、或还无可压缩内容）；
-  拒绝绝不静默降级为有损裁剪。
+  `compacted: false` 及确切的拒绝/失败原因（例如 `no permitted cut exists yet`、
+  `input-budget-exceeded`、`summary-output-truncated`、无效候选详情、或压缩器
+  不可用）；拒绝绝不静默降级为有损裁剪。
 
 关键区别：这些限制是*你的*，所以可以协商；作业级预算
 （`maxRounds`/`maxCalls`/`maxTokens`，`agent` 组件把它们冻结进子代理会话，

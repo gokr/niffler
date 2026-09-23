@@ -293,8 +293,10 @@ its direct toolset from — see docs/MANUAL.md, section
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
 calling `core.spawn`) are served from the dispatch's idle slot, and
-concurrent `session` requests are stashed and answered when the turn
-ends — turns never nest.
+`session` calls never block core — each rides its private forwarding inbox
+(`routeSessionCall`) and is completed by `pumpSessionForwards`, so separate
+conversations' turns overlap while a mid-turn conversation refuses further
+turns with `busy` — turns never nest.
 
 - Presence = connection; component death detected by core via NATS disconnect
   plus `reg.depart` (graceful) vs silence (crash).
@@ -481,7 +483,10 @@ pull drain.
 ## Subagent continuation (`agent_run`/`agent_spawn {session}`)
 
 Both drivers accept `session`: a previously returned `sessionId` gives that
-EXISTING child another turn instead of minting a fresh one. Design and
+EXISTING child another turn instead of minting a fresh one. On a fresh
+spawn (no `session`) an omitted `model` inherits the parent conversation's
+persisted effective model — the override first, the provider default only
+when the parent never resolved one. Design and
 testing: docs/research/SUBAGENTS-PLAN.md P1.3.
 
 - **Authorization is the durable lineage relation**: the child's
@@ -684,15 +689,15 @@ with a deadline report a generic timeout ten seconds in (`/export` waits 10s
 and looked like a hang).
 
 The refusal is answered by whichever layer the caller reaches, and the two
-layers split by what losing the call would cost:
+layers differ only in the hop:
 
 - **`svc.core.call` (what UIs use)** — core is mid-dispatch for the running
-turn, so its idle-slot pump (`pumpCoreWhileBusy`) sees the call first. A
-**content-less** session call (the status readback, `/export`, a control
-change) is refused `busy` on the spot: it is cheap to retry, and stashing it
-only produces the client-side timeout. A **turn-starting** call (content
-present) is still *stashed* and drained once the turn ends, because a user's
-message must never be dropped, and the runner would refuse it anyway.
+turn, so its idle-slot pump (`pumpCoreWhileBusy`) cannot serve the call
+inline; it forwards the session call — control and turn-starting alike —
+through a private inbox (`routeSessionCall`) to the conversation's runner,
+which serves it now or refuses it `busy` when the conversation is mid-turn.
+Nothing is stashed: the forward either reaches a runner or the caller gets
+an explicit error reply.
 - **`svc.session.<id>.call` (a client addressing the runner directly)** — the
 runner's own idle-slot pump (`pumpBusyCall`, `ct.callSub`) refuses everything
 it sees mid-turn with the same `busy`, since serving any of it would mean

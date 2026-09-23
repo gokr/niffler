@@ -209,7 +209,7 @@ components:
     restart: on-failure
 
   # Event hooks (components/hooks/README.md): run operator shell commands on
-  # selected bus events (ev.session.turn, ev.log.>) — observe-only, JSON on
+  # selected bus events (ev.session.*.turn, ev.log.>) — observe-only, JSON on
   # stdin. Disabled by default: enable via NIF_HOOKS_* env + autostart, or
   # spawn after boot.
   - name: hooks

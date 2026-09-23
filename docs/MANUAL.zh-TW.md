@@ -477,12 +477,13 @@ session 呼叫設定（Web UI 以 `/approvals`、`/limit` 和 `/compact` 暴露�
 - **`/compact`** —— 立即執行壓縮器，而不是等待自動壓力階梯：core 向已設定的
   壓縮元件請求允許切點上的檢查點，原子安裝它，併發出通常的
   `ev.session.<id>.context {reason: "reset:compact"}`。不執行 LLM 回合，也不追加
-  使用者訊息。提交會把已測量的提示詞大小清零（這份投影還沒經提供商測量過），因此
+  使用者訊息。輔助摘要繼承會話已解析的 provider/model，不會靜默跟隨之後的全域（這份投影還沒經提供商測量過），因此
   手動路徑還會發出一幀 status —— `usedTokens` 是本機估算值、`estimated: true`，
   並帶上視窗大小 —— 否則上下文儀表會一直顯示壓縮前的數字，直到下一回合重新測量；
   下一次請求的實測值會替換該估算。回覆報告 `compacted: true` 及前後 token 數，或
-  `compacted: false` 及原因（未設定壓縮元件、壓縮器拒絕、或還無可壓縮內容）；
-  拒絕絕不靜默降級為有損裁剪。
+  `compacted: false` 及確切的拒絕/失敗原因（例如 `no permitted cut exists yet`、
+  `input-budget-exceeded`、`summary-output-truncated`、無效候選詳情、或壓縮器
+  不可用）；拒絕絕不靜默降級為有損裁剪。
 
 關鍵區別：這些限制是*你的*，所以可以協商；作業級預算
 （`maxRounds`/`maxCalls`/`maxTokens`，`agent` 元件把它們凍結進子代理會話，
@@ -532,7 +533,7 @@ core 監視會話使用了模型上下文視窗的多少，並採取*樸素*行�
 - core 發出 `ev.session.<id>.status`，包含已解析的 provider/model/context 和當前
   `usedTokens`；客戶端直接渲染 `usedTokens / context`。當提供商上報快取輸入
   （`prompt_tokens_details.cached_tokens`）時，status 事件還攜帶
-  `cacheHitTokens` 和 `cacheHitRatio`——凍結的提示詞字首意味著首次請求後大部分
+  累計快取拆分 `cache {prompt, read, hitRate}`——凍結的提示詞字首意味著首次請求後大部分
   prompt token 應命中快取，所以低比率是值得注意的訊號（Web UI 每條訊息顯示
   `⚡ NN% cached`；TUI 狀態行顯示一個 `⚡ NN% cached` 小片）。
 - 持久化訊息攜帶從不進入 LLM 的審計後設資料：每條訊息的 `createdAt`、到處都有
