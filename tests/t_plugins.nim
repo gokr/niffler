@@ -314,12 +314,18 @@ proc main() =
         slash.output.contains("plugin_installed"), slash.output)
 
   # A successful build/spawn is not a successful registration. This real
-  # install broadcasts while CLI is running and must fail its verification.
+  # install broadcasts while CLI is running and must fail its verification —
+  # and now plugin_install's own result is the failure (core.spawn refuses
+  # the colliding registration), so the CLI names the reason it got back
+  # instead of only a generic marker.
   let conflict = runCli(cliBin, url, @["install", "file://" & conflictRepo],
                          300_000, root = root)
   check("cli install rejects a tool-name conflict", conflict.code != 0 and
         conflict.output.contains("INSTALL FAILED") and
         not conflict.output.contains("INSTALL OK"), conflict.output)
+  check("cli install reports the refused registration's reason",
+        conflict.output.contains("conflict") and
+        conflict.output.contains("already provided by"), conflict.output)
   let accepted = call(nc, "core", "catalog", %*{"op": "components"})
   check("conflicting plugin absent from core catalog",
         accepted{"components"} != nil and

@@ -46,11 +46,16 @@ type
     slash*: seq[SlashCommand]
     registeredAt*: float  ## epochTime of reg.publish (uptime for UIs)
 
+  Rejection* = object
+    reason*: string      ## the refusal text, as echoed on core's stdout
+    at*: float           ## epochTime of the refusal
+
   Catalog* = ref object
     nc*: NatsConnection
     components*: Table[string, ComponentReg]
     toolIndex*: Table[string, string]   ## tool name -> component name
     slashIndex*: Table[string, string]  ## slash command name -> component name
+    rejections*: Table[string, Rejection] ## recent fatal refusals: name -> reason
     ## onChange fires before ev.catalog.updated is published; the system core
     ## uses it to checkpoint the merged slash table into the store.
     onChange*: proc (cat: Catalog)
@@ -60,7 +65,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   result = Catalog(nc: nc,
                    components: initTable[string, ComponentReg](),
                    toolIndex: initTable[string, string](),
-                   slashIndex: initTable[string, string]())
+                   slashIndex: initTable[string, string](),
+                   rejections: initTable[string, Rejection]())
   # Core's tools are handled locally in dispatch. discover/invoke stay direct;
   # lifecycle controls remain in the full catalog as on-demand capabilities.
   let corePid = getCurrentProcessId()
@@ -70,7 +76,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "spawn", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Start a compiled component binary (optionally as identical stateless process replicas); it registers and becomes available through discover/invoke. To stop the logical group: core.kill (restored on next boot) or core.remove (forgotten permanently)",
+      "description": "Start a compiled component binary (optionally as identical stateless process replicas). Core waits until the component is registered in the catalog (NIF_SPAWN_WAIT_MS, default 5000) and reports ok only then; a refused registration (e.g. a tool name that already exists — names are globally unique, prefix yours) or a timeout fails the call with the catalog's reason and a bounded tail of var/logs/<name>.log, and rolls the attempt back (replicas stopped, nothing persisted), so the name is free for an immediate corrected re-spawn. To stop the logical group: core.kill (restored on next boot) or core.remove (forgotten permanently)",
       "properties": {
         "name": {"type": "string", "description": "Component name (must match its registration)"},
         "binary": {"type": "string", "description": "Path to the compiled binary (relative to the Niffler root or absolute)"},
@@ -615,8 +621,43 @@ proc announce(cat: Catalog) =
       discard  # checkpointing is best effort
   cat.nc.publish("ev.catalog.updated", env.encode())
 
+const RejectionFreshSeconds = 60.0
+
+proc clearRejection*(cat: Catalog, name: string) =
+  ## Forget a recorded refusal of `name`. Called when the component registers
+  ## (the refusal is history) and by core.spawn before starting a group, so a
+  ## corrected re-spawn under the same name is not failed by the previous
+  ## attempt's refusal.
+  if cat.rejections.hasKey(name): cat.rejections.del(name)
+
+proc noteRejection(cat: Catalog, name, reason: string, label = "") =
+  ## Record one FATAL registration refusal for `name` (still echoed as
+  ## before) so a spawn waiter can report the real cause instead of a
+  ## timeout. Slash-command refusals are non-fatal (the component still
+  ## registers) and are not recorded here.
+  echo "catalog: rejecting " & (if label.len > 0: label else: name) &
+       " — " & reason
+  if cat.rejections.len >= 128:
+    var stale: seq[string]
+    for k, v in cat.rejections:
+      if epochTime() - v.at > RejectionFreshSeconds: stale.add(k)
+    for k in stale: cat.rejections.del(k)
+    if cat.rejections.len >= 128: cat.rejections.clear()
+  cat.rejections[name] = Rejection(reason: reason, at: epochTime())
+
+proc lastRejection*(cat: Catalog, name: string): string =
+  ## Reason of a recent fatal refusal of `name` ("" when none) — how
+  ## core.spawn explains a failed spawn without parsing core's stdout.
+  if not cat.rejections.hasKey(name): return ""
+  let r = cat.rejections[name]
+  if epochTime() - r.at > RejectionFreshSeconds: return ""
+  r.reason
+
 proc dropRegistration(cat: Catalog, name, reason: string) =
   ## Remove one logical component and its tool/slash indexes.
+  # clear unconditionally: a name that never registered (a refused spawn's
+  # rollback) still has a recorded refusal to forget.
+  cat.clearRejection(name)
   if not cat.components.hasKey(name): return
   for t in cat.components[name].tools:
     if cat.toolIndex.getOrDefault(t.name) == name:
@@ -640,7 +681,7 @@ proc handle(cat: Catalog, subject, data: string) =
   # "core" is the control plane itself — its tools are seeded above and
   # must not be spoofable or replaceable by a bus citizen (docs/ARCHITECTURE.md)
   if name == "core":
-    echo "catalog: rejecting " & name & " — reserved component name"
+    cat.noteRejection(name, "reserved component name")
     return
 
   if subject == "reg.publish":
@@ -667,20 +708,20 @@ proc handle(cat: Catalog, subject, data: string) =
     let tools = node{"tools"}
     if tools != nil:
       if tools.kind != JArray:
-        echo "catalog: rejecting " & name & " — tools must be an array"
+        cat.noteRejection(name, "tools must be an array")
         return
       var names = initHashSet[string]()
       for t in tools:
         let tname = t{"name"}.getStr("")
         if tname.len == 0 or tname in names:
-          echo "catalog: rejecting " & name & " — missing or duplicate tool name"
+          cat.noteRejection(name, "missing or duplicate tool name")
           return
         names.incl(tname)
         let owner = cat.toolIndex.getOrDefault(tname)
         if owner.len > 0 and owner != name and tname != "selftest":
-          echo "catalog: rejecting " & name & " — tool '" & tname &
+          cat.noteRejection(name, "tool '" & tname &
                "' already provided by " & owner &
-               " (refused; use component-prefixed tool names)"
+               " (refused; use component-prefixed tool names)")
           return
         reg.tools.add(ToolReg(name: tname,
                               schema: normalizeToolSchema(t{"schema"}),
@@ -706,8 +747,9 @@ proc handle(cat: Catalog, subject, data: string) =
             compatible = false
             break
       if not compatible:
-        echo "catalog: rejecting replica " & name &
-             " — registration contract differs from the live group"
+        cat.noteRejection(name,
+          "registration contract differs from the live group",
+          label = "replica " & name)
         return
       for pid in reg.pids:
         if pid notin current.pids: current.pids.add(pid)
@@ -715,6 +757,7 @@ proc handle(cat: Catalog, subject, data: string) =
         current.pid = current.pids[0]
       current.version = reg.version
       cat.components[name] = current
+      cat.clearRejection(name)
       echo "catalog: " & name & " replica registered (" &
            $current.pids.len & " live)"
       cat.announce()
@@ -773,6 +816,7 @@ proc handle(cat: Catalog, subject, data: string) =
         reg.slash.add(cmd)
         cat.slashIndex[sname] = name
     cat.components[name] = reg
+    cat.clearRejection(name)
     echo "catalog: " & name & " v" & reg.version & " registered (" &
          $reg.tools.len & " tools, " & $reg.slash.len & " slash commands)"
     cat.announce()

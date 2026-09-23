@@ -48,6 +48,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`core.spawn` answered `ok` for a component whose registration the catalog
+  refused.** The supervisor started the process and the call returned
+  immediately, so a component whose tool name clashed with an existing one (the
+  classic first-component mistake — the namespace is flat and globally unique)
+  looked spawned: the model saw `ok`, the component stayed alive and online, and
+  nothing in the tool result said the registration had been rejected — core's
+  stdout carried the reason, which no caller reads. A spawn of a duplicate tool
+  name also left a supervised process behind, so the corrected re-spawn hit
+  `component already supervised: <name>` on top of it. `spawn` now waits for the
+  registration to be accepted (`NIF_SPAWN_WAIT_MS`, default 5000 ms, clamped
+  250–120000) and fails the call when it is refused or never arrives: the result
+  carries the catalog's refusal text (recorded by the catalog, not parsed from
+  stdout — `catalog.lastRejection`) or the timeout, plus a bounded tail of
+  `var/logs/<name>.log` as `logTail`, and the attempt is rolled back — replicas
+  stopped, catalog entry dropped, nothing persisted — so the name is free for an
+  immediate corrected re-spawn. A spawn whose component registered but whose
+  store record could not be written (store down) now fails with `registered:
+  true` and says the shape will not survive a restart, instead of a warning on
+  core's stdout while the caller saw `ok`. `t_core` pins the refusal path
+  (duplicate tool name), the rollback (no supervised leftovers, the name
+  reusable) and the successful path's reported `tools`. `cli install` keeps its `INSTALL FAILED`
+  marker for a whole-install refusal and now names the reason plugin_install
+  returned (the refused component and core's text), `t_plugins` pins that.
 - **`session`'s model argument updated nothing.** The model-arg block
   persisted the header's own stale value back — the argument was never
   assigned to the entry — so a model-only session call left the previous

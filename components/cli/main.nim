@@ -179,6 +179,19 @@ proc cmdInstall(nc: NatsConnection, repoRef: string): int =
     return 1
   echo "cli: plugin_install -> " & $inst
   if not inst{"ok"}.getBool(false):
+    # plugin_install refused as a whole (no component could be installed —
+    # e.g. a spawn whose registration core rejected). Name the reason(s)
+    # before the marker, so a CI log says why instead of only that it did.
+    let why = inst{"error"}.getStr("plugin_install failed")
+    echo "cli: FAIL — " & why
+    let comps = inst{"components"}
+    if comps != nil and comps.kind == JArray:
+      for c in comps:
+        let name = c{"name"}.getStr("")
+        let err = c{"error"}.getStr("")
+        if name.len > 0 and err.len > 0:
+          echo "cli: FAIL — " & name & ": " & err
+    echo "cli: INSTALL FAILED"
     return 1
   var failed = 0
   for c in inst{"components"}:

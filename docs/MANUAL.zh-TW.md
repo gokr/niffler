@@ -337,6 +337,7 @@ Niffler 沒有單一設定檔。狀態分佈在五處，按生命週期選擇：
 | `NIF_OAUTH_CALLBACK_HOST` | 本機 OAuth 回撥監聽的主機（埠固定為 1455/53692） | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core 在 `var/logs` 中保留子程序日誌的上限（MB） | `200` |
 | `NIF_LOG_RETENTION_DAYS` | core 清理子程序日誌前的保留天數 | `7` |
+| `NIF_SPAWN_WAIT_MS` | `core.spawn` 等待新元件在 catalog 中註冊多久後判定呼叫失敗（夾在 250–120000）；catalog 記錄到拒絕時提前結束等待，因此該值只約束保持沉默的元件 | `5000` |
 
 每個 Niffler 變數都帶 `NIF_` 字首，因此 harness 絕不會與採用裸約定的工具
 （`NATS_URL`、`OPENAI_API_KEY`）衝突。
@@ -594,7 +595,13 @@ agent 在對話中途、執行時新增能力：
 2. `build {lang, name, source}`（`builder` 元件）把它編譯進 `var/bin/`
 3. `spawn {name, binary, replicas?}`（core）啟動它；它自行註冊；新會話直接
    暴露它的工具（非 on-demand 時），已有會話透過 `discover` + `invoke` 觸達
-   （見 [Progressive tool discovery](#progressive-tool-discovery)）
+   （見 [Progressive tool discovery](#progressive-tool-discovery)）。
+   只有在註冊落入 catalog 之後 `spawn` 才回報 ok：註冊被拒絕（給出 catalog
+   的原因）或元件在 `NIF_SPAWN_WAIT_MS` 內保持沉默都會讓呼叫失敗並帶上原因
+   和子程序日誌的有界尾端，同時回滾本次嘗試——副本停止、什麼都不持久化
+   ——因此該名稱可立即用於修正後重新 spawn。元件已註冊但其 store 記錄寫不
+   進去（store 掛了）同樣會讓呼叫失敗，並帶 `registered: true`：它現在在執行，
+   下次引導後就會消失，這不是乾淨的成功
 4. `kill {name}` 臨時停止每個副本（下次引導恢復）；`remove {name}` 停止整個組
    並刪除其持久化記錄
 

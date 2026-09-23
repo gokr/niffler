@@ -337,6 +337,7 @@ Niffler 没有单一配置文件。状态分布在五处，按生命周期选择
 | `NIF_OAUTH_CALLBACK_HOST` | 本地 OAuth 回调监听的主机（端口固定为 1455/53692） | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core 在 `var/logs` 中保留子进程日志的上限（MB） | `200` |
 | `NIF_LOG_RETENTION_DAYS` | core 清理子进程日志前的保留天数 | `7` |
+| `NIF_SPAWN_WAIT_MS` | `core.spawn` 等待新组件在 catalog 中注册多久后判定调用失败（夹在 250–120000）；catalog 记录到拒绝时提前结束等待，因此该值只约束保持沉默的组件 | `5000` |
 
 每个 Niffler 变量都带 `NIF_` 前缀，因此 harness 绝不会与采用裸约定的工具
 （`NATS_URL`、`OPENAI_API_KEY`）冲突。
@@ -595,7 +596,13 @@ agent 在对话中途、运行时添加能力：
 2. `build {lang, name, source}`（`builder` 组件）把它编译进 `var/bin/`
 3. `spawn {name, binary, replicas?}`（core）启动它；它自行注册；新会话直接
    暴露它的工具（非 on-demand 时），已有会话通过 `discover` + `invoke` 触达
-   （见 [Progressive tool discovery](#progressive-tool-discovery)）
+   （见 [Progressive tool discovery](#progressive-tool-discovery)）。
+   只有在注册落入 catalog 之后 `spawn` 才报告 ok：注册被拒绝（给出 catalog
+   的原因）或组件在 `NIF_SPAWN_WAIT_MS` 内保持沉默都会让调用失败并带上原因
+   和子进程日志的有界尾部，同时回滚本次尝试——副本停止、什么都不持久化
+   ——因此该名字可立即用于修正后的重新 spawn。组件已注册但其 store 记录写不
+   进去（store 宕了）同样会让调用失败，并带 `registered: true`：它现在在运行，
+   下次引导后就会消失，这不是干净的成功
 4. `kill {name}` 临时停止每个副本（下次引导恢复）；`remove {name}` 停止整个组
    并删除其持久化记录
 

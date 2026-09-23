@@ -111,6 +111,19 @@ proc logTail(path: string, maxLines: int): string =
   except CatchableError:
     return ""
 
+proc childLogTail*(sup: Supervisor, name: string, replicas = 1,
+                   maxLines = 20): string =
+  ## Bounded tail of a child group's log file(s), for failure reports (a
+  ## refused or timed-out core.spawn). First replica logs to <name>.log;
+  ## siblings add #2, #3, … Truncated to 2000 chars — evidence, not a dump.
+  var parts: seq[string]
+  for i in 1 .. max(1, replicas):
+    let label = if i <= 1: name else: name & "#" & $i
+    let tail = logTail(sup.root / "var" / "logs" / (label & ".log"), maxLines)
+    if tail.len > 0: parts.add(tail)
+  result = parts.join(" || ")
+  if result.len > 2000: result = result[0 ..< 2000] & "…"
+
 proc childLabel(c: Child): string =
   if c.instance <= 1: c.name else: c.name & "#" & $c.instance
 

@@ -293,6 +293,17 @@ proc invokeTool(ct: CoreTools, args: JsonNode,
   # tool name (A632).
   return ct.dispatchToolCall(name, arguments, defaultTimeoutMs)
 
+proc spawnWaitMs(): int =
+  ## core.spawn's registration wait (NIF_SPAWN_WAIT_MS, default 5000 ms,
+  ## clamped to 250..120000). The wait ends early on a recorded refusal —
+  ## the knob only bounds how long a silent component may take to register.
+  let raw = getEnv("NIF_SPAWN_WAIT_MS", "5000").strip()
+  try: result = parseInt(raw)
+  except CatchableError: result = 5000
+  result = max(250, min(result, 120_000))
+
+proc awaitSpawnRegistration(ct: CoreTools, name: string, waitMs: int): bool
+
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   # the self-extension / destructive tools change the harness — human gate first
   if tool in ["spawn", "kill", "remove", "conversation_delete"] and
@@ -312,6 +323,10 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     ## Register and start a built component binary; it announces itself on
     ## connect and becomes available through discover/invoke. Persisted via
     ## the store component so it survives restarts (persistence of shape).
+    ## The call reports ok only after the registration landed in the catalog
+    ## (#79): a refused registration or a timeout fails the call with the
+    ## catalog's reason and a log tail, and rolls the attempt back — no
+    ## false success, no poisoned name, no persisted broken shape.
     let name = args{"name"}.getStr("")
     let binary = args{"binary"}.getStr("")
     let replicas = args{"replicas"}.getInt(1)
@@ -336,17 +351,61 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let abs = if binary.startsWith("/"): binary else: ct.sup.root / binary
     if not fileExists(abs):
       return %*{"error": "binary not found: " & abs}
+    # A previous attempt's refusal must not fail this one: the wait below
+    # ends early on a recorded rejection, so a stale record would report the
+    # old reason for a corrected component that is registering fine (the
+    # documented fix-the-name-and-spawn-again flow).
+    ct.cat.clearRejection(name)
     for i in 0 ..< replicas:
       discard ct.sup.addChild(name, abs, rpOnFailure, spawnArgs)
       ct.sup.startChild(ct.sup.children[^1])
+    let waitMs = spawnWaitMs()
+    if not awaitSpawnRegistration(ct, name, waitMs):
+      let refusal = ct.cat.lastRejection(name)
+      let timedOut = refusal.len == 0
+      # Roll back before reading the logs: stopping the replicas flushes
+      # their last lines. Nothing is persisted and no catalog entry remains,
+      # so the name is free for an immediate corrected re-spawn.
+      discard ct.sup.removeChild(name)
+      ct.cat.dropComponent(name)
+      let tail = ct.sup.childLogTail(name, replicas, 20)
+      let detail = if timedOut:
+                     "did not register within " & $waitMs &
+                     " ms (raise NIF_SPAWN_WAIT_MS for slow components)"
+                   else: refusal & " — fix the name, rebuild and spawn again"
+      # The MESSAGE is the only channel a bus caller has: core tools reached
+      # through svc.core.call (the model via its runner, the cli, an
+      # operator) come back as an error envelope, which keeps `error` and
+      # drops the rest of the payload. So the evidence rides the text; the
+      # structured fields are for in-process callers.
+      var msg = "spawn failed — " & detail
+      if tail.len > 0:
+        var t = tail.replace("\n", " | ")
+        if t.len > 1200: t = t[0 ..< 1200] & "…"
+        msg &= " (log tail: " & t & ")"
+      return %*{"ok": false, "name": name, "replicas": replicas,
+                "error": msg, "logTail": tail}
     try:
       discard ct.storePutRev("component", name,
         %*{"name": name, "binary": abs, "policy": "on-failure",
            "replicas": replicas, "args": spawnArgs,
            "addedAt": epochTime()})
     except CatchableError as e:
-      echo "core: warning — component not persisted (store down?): " & e.msg
-    return %*{"ok": true, "name": name, "replicas": replicas}
+      # Honest failure: the component runs and is registered, but the shape
+      # will not survive a restart — the caller must know (a store outage
+      # is not a plain success).
+      return %*{"ok": false, "name": name, "replicas": replicas,
+                "registered": true,
+                "error": "spawn started component '" & name &
+                  "' and it is registered, but its record was not persisted " &
+                  "(store unreachable): " & e.msg &
+                  " — it will not be restored on the next boot; kill it and " &
+                  "spawn again once the store is back, or core.remove it"}
+    var toolNames = newJArray()
+    for t in ct.cat.components[name].tools:
+      if t.name != "selftest": toolNames.add(%t.name)
+    return %*{"ok": true, "name": name, "replicas": replicas,
+              "tools": toolNames}
   of "kill":
     ## Stop a running component: drain, then terminate. It stays persisted
     ## in the store and is restored on the next boot.
@@ -1016,6 +1075,21 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
     except CatchableError as e:
       resp = errorEnvelope(env.id, "boom", e.msg)
     ct.nc.publish(reply, resp.encode())
+
+proc awaitSpawnRegistration(ct: CoreTools, name: string, waitMs: int): bool =
+  ## Bounded wait for a spawn's registration (core.spawn). Pumps while
+  ## waiting: a blocked core would delay unrelated conversations (session
+  ## forwards ride pumpSessionForwards) and any nested plugin_install →
+  ## spawn. Ends early on a recorded FATAL refusal so the caller gets the
+  ## catalog's reason instead of a timeout.
+  let deadline = epochTime() + float(max(0, waitMs)) / 1000.0
+  while true:
+    ct.cat.pump()
+    if ct.cat.components.hasKey(name): return true
+    if ct.cat.lastRejection(name).len > 0: return false
+    if epochTime() >= deadline: return false
+    pumpCoreWhileBusy(ct)
+    sleep(10)
 
 proc pumpBusyCall*(ct: CoreTools) =
   ## Refuse session calls that arrive while a turn is running.

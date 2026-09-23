@@ -560,6 +560,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_OAUTH_CALLBACK_HOST` | host for the local OAuth callback listener (ports stay fixed at 1455/53692) | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core's child-log retention cap in `var/logs` (MB) | `200` |
 | `NIF_LOG_RETENTION_DAYS` | days core retains child logs before sweeping | `7` |
+| `NIF_SPAWN_WAIT_MS` | how long `core.spawn` waits for the new component to register in the catalog before failing the call (clamped 250–120000); the wait ends early when the catalog records a refusal, so the knob only bounds a silent component | `5000` |
 
 **Build and script knobs** — read by the scripts around the harness, never by
 components: `NIF_BIN_DIR` (bin directory `scripts/install.sh` links the PATH
@@ -1119,7 +1120,15 @@ The agent adds capabilities at runtime, mid-conversation:
    compile error with whatever output it had produced
 3. `spawn {name, binary, replicas?}` (core) starts it; it registers itself;
    new conversations expose its tools directly (when not on demand), existing
-   ones reach them via `discover` + `invoke` (see [Progressive tool discovery](#progressive-tool-discovery))
+   ones reach them via `discover` + `invoke` (see [Progressive tool discovery](#progressive-tool-discovery)).
+   `spawn` reports ok only once that registration landed in the catalog: a
+   refused registration (the catalog's reason) or a silent component past
+   `NIF_SPAWN_WAIT_MS` fails the call with the reason and a bounded tail of
+   the child's log, and rolls the attempt back — replicas stopped, nothing
+   persisted — so the name is free for an immediate corrected re-spawn. A
+   component that registered but whose store record could not be written
+   (store down) also fails, with `registered: true`: it runs now and is gone
+   after the next boot, which is not a plain success
 4. `kill {name}` stops every replica temporarily (restored on next boot);
    `remove {name}` stops the group and deletes its persisted record. A runner
    is killed the same way (`kill {name: "session-<id>"}`) but comes back on
@@ -3527,4 +3536,5 @@ make clean          # remove all build artifacts (var/, nimcache/)
 | agent-modified sources | `git restore components/ core/ sdk/ manifest.yaml Makefile` then `make build` (see Recovery) |
 | a turn was cancelled but a compile keeps running | `build` declares no `x-harness.sessionId` and `builder` subscribes no `cancel.build`, so the cancel is dropped: the compiler runs to its own deadline and only the reply is abandoned. Wait for the tool result before cancelling, or `core.kill {name: "builder"}` |
 | session call fails: "session runner binary missing" | `var/bin/session` was never built — `make build` |
-| `spawn` returned ok, but the component never appears in the catalog | its registration was refused — almost always a tool name that already exists (names are globally unique; prefix yours with the component name). The process stays alive and logs `<name> v<ver> online on <url>`, and core's stdout carries the reason (`catalog: rejecting <name> — tool '<t>' already provided by <owner>`); nothing about it reaches your tool output. Fix the name, rebuild, `core.kill {name}`, then `core.spawn` again |
+| `spawn` fails: "spawn failed — tool '<t>' already provided by <owner>" | the registration was refused — almost always a tool name that already exists (names are globally unique; prefix yours with the component name). Fix the name, rebuild and `spawn` again: the failed attempt was rolled back (replicas stopped, nothing persisted), so the name is free immediately. On core's stdout the same refusal reads `catalog: rejecting <name> — …` |
+| `spawn` fails: "did not register within <n> ms" | the component never announced itself in time — a slow-starting one, or a binary that died on the way (core appends a bounded tail of `var/logs/<name>.log` to the error). Fix the cause and `spawn` again (the attempt was rolled back), or raise `NIF_SPAWN_WAIT_MS` for a genuinely slow component |

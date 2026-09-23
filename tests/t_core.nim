@@ -32,7 +32,8 @@ proc main() =
   var nc = waitConnect(url)
   defer: nc.close()
   var coreProc = startComponent(coreBin, url, root = root,
-                                extra = [("NIF_AUTO_APPROVE", "1")])
+                                extra = [("NIF_AUTO_APPROVE", "1"),
+                                         ("NIF_SPAWN_WAIT_MS", "4000")])
   defer:
     if coreProc != nil and coreProc.running():
       coreProc.terminate()
@@ -141,6 +142,13 @@ proc main() =
                       %*{"name": "lifec",
                          "binary": built{"binary"}.getStr("")}, 60_000)
   check("core.spawn ok", spawned{"ok"}.getBool(false), $spawned)
+  # ok means REGISTERED: the call waits for the catalog's acceptance and
+  # reports the tools that actually landed. The old spawn returned before
+  # the registration, so a component that was refused looked spawned.
+  var lifecTools: seq[string]
+  for t in spawned{"tools"}: lifecTools.add(t.getStr(""))
+  check("core.spawn reports the tools that registered",
+        "lifec_ping" in lifecTools, $spawned)
 
   let reg = runCli(cliBin, url, @["wait", "lifec", "15"], root = root)
   check("lifec registers", reg.code == 0, reg.output)
@@ -187,8 +195,26 @@ proc main() =
   let built2 = call(nc, "builder", "build",
                     %*{"lang": "nim", "name": "rogue", "source": rogue}, 300_000)
   check("builder builds rogue", built2{"ok"}.getBool(false), $built2)
-  discard call(nc, "core", "spawn",
+  let rogueTried = call(nc, "core", "spawn",
                %*{"name": "rogue", "binary": built2{"binary"}.getStr("")}, 60_000)
+  # the refusal is REPORTED, not swallowed: the call fails (an error
+  # envelope to a bus caller) naming the catalog's reason, never a timeout —
+  # and no supervised process is left behind
+  check("spawn fails with the catalog's refusal reason",
+        rogueTried{"error"}.getStr("").contains("spawn failed") and
+        rogueTried{"error"}.getStr("").contains("already provided by bash"),
+        $rogueTried)
+  var rogueSupervised = false
+  let stRogue = call(nc, "core", "status", newJObject(), 10_000)
+  for c in stRogue{"components"}:
+    if c{"name"}.getStr("") == "rogue": rogueSupervised = true
+  check("the refused spawn leaves no supervised replicas",
+        not rogueSupervised, $stRogue)
+  let storedRogue = call(nc, "store", "list", %*{"kind": "component"})
+  var rogueRecord = false
+  for item in storedRogue{"items"}:
+    if item{"id"}.getStr("") == "rogue": rogueRecord = true
+  check("the refused spawn persists nothing", not rogueRecord, $storedRogue)
   # the whole registration is refused — a component that joins minus its
   # colliding tool would show up "installed" while silently doing nothing
   let rogueRefused = runCli(cliBin, url, @["wait", "rogue", "3"], root = root)
@@ -204,7 +230,37 @@ proc main() =
   let rogueTool = runCli(cliBin, url, @["call", "rogue_tool", "{}"], 15_000,
                          root = root)
   check("rogue tool not registered", rogueTool.code != 0, rogueTool.output)
+
+  # the rollback frees the name: the same spawn is immediately retried and
+  # reaches the same refusal — never "component already supervised", which is
+  # what a leftover process would answer (a stale refusal record must not
+  # fail it either)
+  let rogueRetried = call(nc, "core", "spawn",
+               %*{"name": "rogue", "binary": built2{"binary"}.getStr("")}, 60_000)
+  check("a refused spawn frees the name for an immediate retry",
+        rogueRetried{"error"}.getStr("").contains("already provided by") and
+        not rogueRetried{"error"}.getStr("").contains("already supervised"),
+        $rogueRetried)
   discard call(nc, "core", "remove", %*{"name": "rogue"}, 60_000)
+
+  # a component that never registers: the wait is bounded by the sandbox's
+  # NIF_SPAWN_WAIT_MS (4000), the call fails with the timeout and carries the
+  # child's log tail as evidence, and this attempt is rolled back too
+  let silent = call(nc, "core", "spawn",
+                    %*{"name": "silentsh", "binary": "/bin/sh",
+                       "args": ["-c", "echo starting-up; exec sleep 30"]},
+                    60_000)
+  check("spawn fails when nothing registers within the wait",
+        silent{"error"}.getStr("").contains("did not register within") and
+        silent{"error"}.getStr("").contains("NIF_SPAWN_WAIT_MS"), $silent)
+  check("the timed-out spawn reports the child's log tail",
+        silent{"error"}.getStr("").contains("log tail") and
+        silent{"error"}.getStr("").contains("starting-up"), $silent)
+  let storedSilent = call(nc, "store", "list", %*{"kind": "component"})
+  var silentRecord = false
+  for item in storedSilent{"items"}:
+    if item{"id"}.getStr("") == "silentsh": silentRecord = true
+  check("the timed-out spawn persists nothing", not silentRecord, $storedSilent)
 
   # --- session_info: conversation introspection -----------------------------
   # Self-introspection is a core tool, but an on-demand one: the direct

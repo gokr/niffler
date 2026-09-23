@@ -310,7 +310,12 @@ turns with `busy` — turns never nest.
   `edit`, `bash`, ...); **plugin/third-party components prefix every tool with
   the component name** (`stocks_quote`, `weather_current`, `git_status`) so
   independently published packages never collide. Core rejects a clashing
-  registration instead of letting two components share a name.
+  registration instead of letting two components share a name, and
+  `core.spawn` waits for that acceptance before answering `ok`
+  (`NIF_SPAWN_WAIT_MS`): a refused registration comes back to the spawn
+  caller with the catalog's reason and a bounded child-log tail, and the
+  attempt is rolled back (replicas stopped, nothing persisted) so the name
+  is free for a corrected re-spawn.
 - `ev.sys.drain` (core → component): stop taking new calls, finish in-flight,
   then exit. `ev.sys.shutdown` (component → core): I'm leaving.
 
