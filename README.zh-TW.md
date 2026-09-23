@@ -3,128 +3,77 @@
 [English](README.md) · [简体中文](README.zh.md) · 繁體中文 ·
 [網站](https://gokr.github.io/niffler/) · [Discord](https://discord.gg/ThJFEAJUAk)
 
-> 🤖 AI 自動翻譯，可能落後於英文版；以 [English](README.md) 為準。
+> 🤖 AI 自動翻譯，可能與英文版存在偏差；以 [English](README.md) 為準。
+> 章節標題保留英文，以便跨文檔錨點保持有效。
 
 Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能力都是獨立
 程序，透過 NATS 上的 JSON 信封通訊。Agent 可以在對話進行期間編譯並啟動
 新的元件。專案應從自己的 clone 執行，該 clone 是實例的 home。
 
-## 為什麼選擇 Niffler
+## Why Niffler
 
-- **模組化直達程序邊界。** 像 Pi 和 DeepSeek Harness，但更深入一層：每項能力
-  都是獨立的作業系統程序，透過統一的 wire 協議（NATS 上的 JSON 信封）通訊；
-  Agent 可以在對話中編譯、啟動和移除元件，無需清理程式碼，也不會留下孤兒
-  程序。見 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
-- **開箱即用。** `fabric`（可程式化工具編排）、`agent`/`expert`（子代理與
-  顧問）、`git`、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank
-  移植）、`skills`、`plugins`、`processes`、`observe`/`logfile`——其他 harness
-  通常交給第三方外掛的功能。見[內建元件](docs/MANUAL.md#shipped-components)。
-- **開放模型，所有 Provider。** 任何 OpenAI 相容端點——本機、開放權重或
-  託管——透過 `.env` 或 store 持久化的 Provider 註冊表接入；也支援
-  ChatGPT/Claude 訂閱 OAuth 和 models.dev 模型目錄。見
-  [Provider](docs/MANUAL.md#provider-registry-provider) 和
-  [模型目錄](docs/MANUAL.md#model-catalog-models)。
-- **工具漸進揭露。** 每個對話只有一個小而凍結的直接工具集，其餘工具都在
-  `discover`/`invoke` 一步之內，作為歷史追加而不是提示詞膨脹。見
-  [手冊](docs/MANUAL.md#progressive-tool-discovery)。
-- **人在迴路中。** 工具可要求審批，帶 manifest 摘要和每對話的 `ask`/`auto`
-  門控模式；無人可達時直接拒絕，絕不悄悄放行。見
-  [審批](docs/MANUAL.md#approvals)。
-- **多語言。** 主體是 Nim 和 Go，但架構不綁定任何語言：提供 Nim、Go 和
-  TypeScript SDK，還有一個不用 SDK 的 bash 範例。見
-  [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
-- **匯流排就是 API。** `niffler-tui`、桌面 UI、`cli` 和 `console` 都是平等的
-  匯流排客戶端；可以同時連接多個，各自獨立建置和安裝（TUI 本身就是外掛）。見
-  [啟動與停止](docs/MANUAL.md#starting-and-stopping)。
-- **為長時間執行而設計。** 凍結的提示詞/工具前綴讓 provider 快取持續命中；
-  持久化壓縮和有界溢位復原讓對話不中斷；軟性 `/limit` 預算之外還有硬性失控
-  保護。見[上下文視窗](docs/MANUAL.md#context-window)。
-- **本機優先，clone 即實例。** 對話和元件狀態保存在 `var/`（預設 SQLite），
-  harness 自行執行 NATS 匯流排，不依賴中心服務。見
-  [佈局](docs/MANUAL.md#layout-of-a-running-system)。
+- **模組化到行程邊界。** 就像 Pi 和 DeepSeek Harness，但再低一層：每個能力都是自己的 OS 行程，位於單一線路協定之後（透過 NATS 傳遞 JSON 封套），而代理會在對話中途建置、生成與移除元件——不需拆除程式碼，也不會有洩漏的子行程。請參閱 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- **電池內含。** `fabric`（可程式化的工具呼叫）、`agent`/`expert`（子代理與諮詢同儕）、`git`、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank 移植）、`skills`、`plugins`、`processes`、`observe`/`logfile`——這些是其他 harness 留給外掛的工作。請參閱[隨附元件](docs/MANUAL.md#shipped-components)。
+- **開放模型，所有供應商。** 任何 OpenAI 相容端點——本機、開放權重或代管——透過 `.env` 或由儲存支援的供應商登錄檔；ChatGPT/Claude 訂閱 OAuth 以及由 models.dev 支援的目錄。請參閱[供應商](docs/MANUAL.md#provider-registry-provider)與[模型目錄](docs/MANUAL.md#model-catalog-models)。
+- **漸進式工具揭露。** 一組小型、凍結的直接工具集；其他一切只需一次 `discover`/`invoke`，以歷史形式附加，而非提示詞膨脹。請參閱 [MANUAL](docs/MANUAL.md#progressive-tool-discovery)。
+- **人類保持在迴圈中。** 需核准的工具，附帶 manifest 摘要與每個會話的 `ask`/`auto` 模式；在無法觸及人類時，呼叫會被拒絕，絕不會默默允許。請參閱[核准](docs/MANUAL.md#approvals)。
+- **多語言。** 主要是 Nim 和 Go，但沒有元件被綁定到特定語言：Nim、Go 和 TypeScript 的 SDK，以及一個完全沒有 SDK 的隨附 bash 示範。請參閱 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- **匯流排就是 API。** `niffler-tui`、桌面 UI、`cli` 和 `console` 是平等的匯流排用戶端；數個可以同時連接，且各自獨立建置與安裝（TUI 是自己的外掛）。請參閱[啟動與停止](docs/MANUAL.md#starting-and-stopping)。
+- **為長時間執行而打造。** 凍結的提示詞/工具前綴讓提示詞快取保持溫熱；耐久的壓縮與有界的溢位復原讓會話保持存活；軟性 `/limit` 預算與硬性失控防護並存。請參閱[上下文視窗](docs/MANUAL.md#context-window)。
+- **本機優先，複製即實例。** 對話與元件狀態位於 `var/`（預設為 SQLite），且 harness 執行自己的 NATS 匯流排，沒有中央服務。請參閱[佈局](docs/MANUAL.md#layout-of-a-running-system)。
 
-目前版本是 [v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0)，
-變更記錄見 [CHANGELOG.md](CHANGELOG.md)。完整操作說明請參閱
-[docs/MANUAL.md](docs/MANUAL.md)。
+目前版本是 [v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0)。請參閱 [CHANGELOG.md](CHANGELOG.md) 了解該版本以來的變更。
 
-## 快速開始
+## Quick start
 
-需要 Nim 2.2.12+ 和 Go；`make setup` 會安裝平台依賴（Ubuntu/macOS）和
-Nimble 依賴。只有 TypeScript 元件和 Web UI 需要 Node.js 20+ 和 npm；可選的
-桌面 UI 在 Linux 上還需要 Wails 和 WebKitGTK 4.1。Niffler 使用純 Nim 的
-[natsnim](https://github.com/gokr/natsnim)，不需要安裝 `libnats` 或 `cnats`。
+需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 僅在 TypeScript 元件與網頁 UI 時需要；選用的桌面 UI 在 Linux 上還需要 Wails 與 WebKitGTK 4.1。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
 
 ```bash
 git clone https://github.com/gokr/niffler.git
 cd niffler
-make setup                    # Ubuntu/macOS 依賴和 Nimble 套件
-cp .env.example .env          # 填入 LLM API key
-make build                    # 建置核心和元件（不含 UI 工具鏈）
-make install-tui              # 寫入 PATH 並安裝 niffler-tui 終端客戶端
-niffler-tui                   # 終端聊天，視需要啟動此 clone 的 harness
+make setup                    # Ubuntu/macOS prerequisites and Nimble deps
+cp .env.example .env          # add an LLM API key; edit other settings as needed
+make build                    # core + components (no UI toolchain)
+make install-tui              # PATH entries + the niffler-tui terminal client
+niffler-tui                   # terminal chat; boots this clone's harness
 ```
 
-`make install-tui` 等同於 `make install WITH_TUI=1`：把 `niffler`、
-`niffler-cli`、`niffler-console` 和 `niffler-tui` 包裝腳本連結到使用者 bin
-目錄（可用 `NIF_BIN_DIR=~/bin` 指定），並安裝
-[niffler-tui](https://github.com/gokr/niffler-tui) 外掛。直接執行
-`make install` 則會在終端詢問是否安裝該外掛。
+`make install-tui` 就是 `make install WITH_TUI=1`：它會將 `niffler`、`niffler-cli`、`niffler-console` 以及 `niffler-tui` 包裝程式連結到使用者 bin 目錄（`NIF_BIN_DIR=~/bin` 可覆寫位置），並安裝 [niffler-tui](https://github.com/gokr/niffler-tui) 外掛。單純的 `make install` 會在終端機上詢問外掛事宜。
 
-`niffler-tui` 是對話客戶端；`niffler`（或 `./var/bin/niffler`）是終端管理
-shell——status、catalog、sessions，不是對話 UI；`niffler --minimal` 只啟動
-最小的 store/bash/LLM 組態。
+`niffler-tui` 是對話用戶端；`niffler`（或 `./var/bin/niffler`）是終端機管理殼層——狀態、目錄、會話，不是聊天 UI——而 `niffler --minimal` 只啟動最小化的 store/bash/LLM 設定檔。
 
-桌面 UI 是可選項：
+桌面 UI 是選用的：
 
 ```bash
-make install-ui         # 安裝桌面 UI 外掛（gokr/niffler-ui）：外掛管理器
-                        # clone，builder 針對此 harness 建置，二進位落在
-                        # var/bin
+make install-ui         # install the desktop UI plugin (gokr/niffler-ui): the
+                        # plugin manager clones it, the builder builds it against
+                        # this harness, and the binary lands in var/bin
 ```
 
-`make install` 會在二進位存在時把 `niffler-ui` 連結到 PATH。UI 自己的
-開發伺服器、單元測試和 typecheck 位於
-[niffler-ui](https://github.com/gokr/niffler-ui) 倉庫。`make doctor`
-檢查依賴，`make down-here` 只停止此 clone 的程序。
+當 `niffler-ui` 存在時，`make install` 會將其連結到 PATH。UI 自己的開發伺服器、單元測試與型別檢查位於 [niffler-ui](https://github.com/gokr/niffler-ui) 儲存庫。`make doctor` 會檢查先決條件；`make down-here` 只會停止此複本的行程。
 
-測試：`make test`（匯流排契約套件，每個測試一條私有匯流排）、
-`make gotest`（Go 測試、vet 和 race 檢查）。
+測試：`make test` 執行匯流排合約測試套件（每個測試一個私有匯流排）；`make gotest` 執行 Go 測試、vet 與競態檢查。
 
-## 文件
+## Documentation
 
-- [操作手冊](docs/MANUAL.md) — 安裝、設定、工具、Provider、UI、復原、測試和排錯（也有
-  [English](docs/MANUAL.md) · [简体中文](docs/MANUAL.zh.md)）。
-- [Wire 協議](docs/WIRE.md) — JSON 信封、subject、錯誤、取消和 session context。
-- [架構](docs/ARCHITECTURE.md) — core、元件和 NATS 的邊界及貢獻者須遵守的約束。
-- [目前計畫](docs/research/PLAN.md) — 尚未完成的工作。
-- [研究索引](docs/research/README.md) — 設計歷史和先例研究，不是操作手冊。
-- [Fabric 指南](docs/FABRIC_GUIDE.md) — 可程式化編排和 subagent。
-- [模型來源外掛](docs/MODEL_SOURCES.md) — 修正模型目錄的元件範例。
-- [設定設計](docs/research/SETTINGS.md) — 尚未發布的設定方案。
+- [手冊](docs/MANUAL.md) — 安裝細節、設定、工具、供應商、UI、復原、測試與疑難排解（另有[简体中文](docs/MANUAL.zh.md) · [繁體中文](docs/MANUAL.zh-TW.md)）。
+- [線路協定](docs/WIRE.md) — JSON 封套、主體、錯誤、取消與會話上下文。
+- [架構](docs/ARCHITECTURE.md) — 為何核心、元件與 NATS 是分開的，以及貢獻者必須保留的不變條件。
+- [開放工作](docs/research/PLAN.md) — 目前延後的工作。
+- [研究索引](docs/research/README.md) — 設計歷史與先前技術研究；研究筆記不是操作指示。
+- [Fabric 指南](docs/FABRIC_GUIDE.md) — 可程式化協調與子代理。
+- [模型來源外掛](docs/MODEL_SOURCES.md) — 目錄修正元件的實作範例。
+- [設定設計](docs/research/SETTINGS.md) — 尚未隨附的設定工作。
 
-## 開發元件
+## Developing components
 
-Nim、Go 和 TypeScript 元件使用 `sdk/` 中的 SDK。正常擴充流程是：寫原始碼，呼叫
-`build`，再呼叫 `spawn`。修改架構前請閱讀
-[AGENTS.md](AGENTS.md)、[元件生命週期](docs/MANUAL.md#self-extension-and-component-lifecycle)
-和 [WIRE.md](docs/WIRE.md)。社群元件透過 `plugins` 安裝，詳見
-[手冊中的外掛章節](docs/MANUAL.md#component-ecosystem-plugins)。
+Nim、Go 與 TypeScript 元件使用 `sdk/` 中的 SDK。正常的擴充路徑是：撰寫原始碼、呼叫 `build`，然後呼叫 `spawn`。在變更架構或新增元件之前，請閱讀[元件生命週期](docs/MANUAL.md#self-extension-and-component-lifecycle)、[線路合約](docs/WIRE.md)與 [AGENTS.md](AGENTS.md)。
 
-## 專案理念
+社群元件透過 `plugins` 元件安裝；請參閱[手冊的外掛章節](docs/MANUAL.md#component-ecosystem-plugins)。
 
-- **開放模型，所有 Provider。** 本地、開放權重和託管模型走同一條一等路徑：
-  預設使用 OpenAI 相容協議，廠商只提供訂閱登入時用 OAuth，模型中介資料由
-  models.dev 目錄提供；限額、能力和價格都是資料。加入一個 OpenAI 相容的
-  Provider 只需一筆設定，而不是一段程式碼。
-- **改進靠度量，不靠口號。** `bench/` 用相同的任務和模型，把 Niffler 與
-  pi、opencode、CodeWhale、Claude Code 放在一起比較達標時間、token 成本和
-  補丁品質（full30、SWE-bench Verified、DeepSWE 任務）。功能要有證據才
-  落地——有時也要靠證據才能保持關閉，例如 repo map 的自動注入就因 A/B 結果
-  不一致而預設關閉——報告提交在 `bench/reports/`。
-- **中文是我們的一等語言。** README 提供英文、簡體中文和繁體中文，Web UI
-  完整本地化（`en`/`zh`/`zh-TW`），字典是強型別的——漏譯會讓型別檢查失敗。
-- **帶著自豪與感激地「偷」。** 我們從能找到的最好的 harness 中吸收想法——
-  Pi、DeepSeek Harness、CodeWhale、OpenCode、Reasonix、Aider、OpenHands
-  等等——再逐條對照 Niffler 的設計約束；研究文件會標註來源和固定的提交，
-  內建的第三方程式碼保留其授權條款，全部記錄在
-  [docs/research/](docs/research/)。
+## Philosophies
+
+- **開放模型，所有供應商。** 本機、開放權重與代管模型獲得相同的一流路徑：OpenAI 相容的預設、在供應商不提供其他選擇時的訂閱 OAuth，以及由 models.dev 支援、將限制、能力與價格視為資料的目錄。新增 OpenAI 相容供應商是設定項目，而非程式碼路徑。
+- **改進是被測量的，而非被斷言的。** `bench/` 在相同任務與模型上讓 Niffler 對上 pi、opencode、CodeWhale 與 Claude Code，在 full30、SWE-bench Verified 與 DeepSWE 套件中比較達到綠燈的時間、token 成本與修補品質。功能以該證據為依據上線——有時也因證據而保持關閉，例如 repo map 的自動附加，因為 A/B 測試結果不一致而隨附為停用——報告則提交於 `bench/reports/` 之下。
+- **中文在這裡是一流語言。** README 有英文、簡體中文與繁體中文，且網頁 UI 完全在地化（`en`/`zh`/`zh-TW`），附帶具型別的目錄——缺少翻譯會導致型別檢查失敗。
+- **帶著驕傲與感激地借鏡。** 我們從其他 harness 中汲取能找到的最佳想法——Pi、DeepSeek Harness、CodeWhale、OpenCode、Reasonix、Aider、OpenHands……——並在隨附前逐一對照 Niffler 的不變條件重新檢查。這些研究會標明其來源與鎖定的 commit，內嵌的程式碼保留其授權，且一切都在 [docs/research/](docs/research/) 中。
