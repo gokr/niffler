@@ -45,6 +45,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   source components remain compatible. Updates build the replacement before
   stopping the old component.
 
+### Changed
+
+- **The desktop UI is installed as a plugin, not built by the Makefile.**
+  `make install-ui` no longer runs `wails build` over an in-tree `ui/`: it
+  boots an isolated, auto-approved harness and runs
+  `cli install gokr/niffler-ui`, so the plugin manager clones the package and
+  the builder builds it into `var/bin/niffler-ui`; `make install` links
+  `niffler-ui` onto PATH once that binary exists. Consequently `make all`/`make build` build core + components
+  only, the `ui`, `ui-install` and `ui-uninstall` targets are gone, `make dev`
+  only points at the SPA dev server's new home and fails, `make clean` removes
+  `var/` and `nimcache/` (no UI build tree), and `make test` is the
+  bus-contract suite alone — the frontend unit tests and typecheck moved with
+  the UI into the [gokr/niffler-ui](https://github.com/gokr/niffler-ui)
+  repository (`make test` / `make typecheck` there). Desktop launcher and icon
+  integration stays with the plugin checkout and is not part of a headless
+  install.
+
 ### Fixed
 
 - **CI: the test workflow had been failing before any test ran.** Every run on
