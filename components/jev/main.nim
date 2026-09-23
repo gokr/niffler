@@ -2,8 +2,24 @@
 ## or approve tools. Backends implement the System One JSON HTTP contract;
 ## Von is the first local runtime. No Python/model dependency in the harness.
 
-import std/[httpclient, json, os, strutils, uri]
+import std/[httpclient, json, os, osproc, strutils, tables, times, uri]
 import niffler/sdk
+
+let shadowMode = getEnv("NIF_JEV_SHADOW", "1").toLowerAscii() notin
+  ["0", "false", "no", "off"]
+let shadowKind = getEnv("NIF_JEV_SHADOW_KIND", "both").strip()
+let legacyShadowQuery = getEnv("NIF_JEV_SHADOW_QUERY", "").strip()
+let shadowSkillQuery = getEnv("NIF_JEV_SHADOW_SKILL_QUERY", legacyShadowQuery).strip()
+let shadowToolQuery = getEnv("NIF_JEV_SHADOW_TOOL_QUERY", legacyShadowQuery).strip()
+
+proc taskSearchQuery(task: string): string =
+  ## Derive a bounded lexical query when operators have not configured one.
+  for word in task.toLowerAscii().splitWhitespace():
+    var cleaned = word
+    for ch in [',', '.', ':', ';', '!', '?', '"', '\'', '(', ')', '[', ']']:
+      cleaned = cleaned.replace($ch, "")
+    if cleaned.len > result.len and cleaned.len <= 200:
+      result = cleaned
 
 let comp = newComponent("jev", "0.1.0")
 
@@ -11,6 +27,20 @@ const
   MaxStateBytes = 12_000
   MaxOptions = 24  # bounded shortlist, not the full catalog
   MaxBodyBytes = 128_000
+  MaxShadowPending = 32  # 16 turn pairs, each with skills + tools
+  MaxShadowTaskBytes = 2000
+  ShadowHardTimeoutS = 12.0
+
+type ShadowJob = object
+  sessionId, turnId, task, kind, query: string
+  startedAt, launchedAt: float
+  process: Process
+  resultPath, inputPath: string
+  candidates: JsonNode
+
+var pending: seq[ShadowJob]
+var activeTurns = initTable[string, string]()
+var running: ShadowJob
 
 proc backend(): string = getEnv("NIF_JEV_BACKEND", "von").strip()
 
@@ -41,7 +71,8 @@ proc askBackend(state, questions: JsonNode): JsonNode =
     defer: client.close()
     client.headers = newHttpHeaders({"Content-Type": "application/json"})
     let response = client.request(url, httpMethod = HttpPost, body = body)
-    if response.code != Http200: return errResult("decision backend HTTP " & $response.code)
+    if response.code != Http200:
+      return errResult("decision backend HTTP " & $response.code)
     if response.body.len > MaxBodyBytes:
       return errResult("decision backend response too large")
     let data = parseJson(response.body)
@@ -138,6 +169,35 @@ comp.tool(%*{"onDemand": true, "effect": "read", "timeoutMs": 7000}):
     if answers{"error"} != nil: return answers
     %*{"ok": true, "backend": backend(), "answers": answers}
 
+proc addCandidate(candidates: var JsonNode, name, description: string) =
+  ## Retain one sentinel past the shortlist cap to detect overflow.
+  if candidates.len <= MaxOptions:
+    candidates.add(%*{"name": name, "description": description})
+
+proc candidatesFor(kind, query, task: string): JsonNode =
+  result = newJArray()
+  if kind == "tools":
+    let effectiveQuery = if query.len > 0: query else: taskSearchQuery(task)
+    if effectiveQuery.len == 0: return
+    let found = comp.request("core", "discover", %*{"query": effectiveQuery}, 3000)
+    let components = found{"components"}
+    if components == nil or components.kind != JArray:
+      raise newException(IOError, "discover unavailable")
+    for component in components:
+      let hints = component{"onDemand"}
+      if hints == nil or hints.kind != JArray: continue
+      for hint in hints:
+        let name = hint{"name"}.getStr("")
+        if name in ["jev_recommend", "jev_suggest", "jev_decide"]: continue
+        addCandidate(result, name, hint{"description"}.getStr(""))
+  else:
+    let found = comp.request("skills", "skill_list", %*{"query": query}, 3000)
+    if not found{"ok"}.getBool(false) or found{"skills"} == nil or
+        found["skills"].kind != JArray:
+      raise newException(IOError, "skill_list unavailable")
+    for skill in found["skills"]:
+      addCandidate(result, skill{"name"}.getStr(""), skill{"description"}.getStr(""))
+
 proc recommend(task, kind, query: string): JsonNode =
   ## Pull fresh bus metadata; never persist or cache catalogue state. Core's
   ## discover omits hidden tools. The caller decides whether to discover/load.
@@ -147,29 +207,9 @@ proc recommend(task, kind, query: string): JsonNode =
     return errResult("query must be 1..200 characters")
   if task.strip().len == 0 or task.len > MaxStateBytes:
     return errResult("task must be 1..12000 bytes")
-  var candidates = newJArray()
+  var candidates: JsonNode
   try:
-    if kind == "tools":
-      let found = comp.request("core", "discover", %*{"query": query}, 3000)
-      let components = found{"components"}
-      if components == nil or components.kind != JArray:
-        return errResult("discover unavailable")
-      for component in components:
-        let hints = component{"onDemand"}
-        if hints == nil or hints.kind != JArray: continue
-        for hint in hints:
-          let name = hint{"name"}.getStr("")
-          if name in ["jev_recommend", "jev_suggest", "jev_decide"]: continue
-          candidates.add(%*{"name": name,
-                            "description": hint{"description"}.getStr("")})
-    else:
-      let found = comp.request("skills", "skill_list", %*{"query": query}, 3000)
-      if not found{"ok"}.getBool(false) or found{"skills"} == nil or
-          found{"skills"}.kind != JArray:
-        return errResult("skill_list unavailable")
-      for skill in found["skills"]:
-        candidates.add(%*{"name": skill{"name"}.getStr(""),
-                          "description": skill{"description"}.getStr("")})
+    candidates = candidatesFor(kind, query, task)
   except CatchableError as e:
     return errResult("discovery unavailable: " & e.msg)
   if candidates.len == 0:
@@ -201,4 +241,140 @@ comp.tool(%*{"onDemand": true, "effect": "read", "timeoutMs": 12000}):
     ## - kind: "tools" (on-demand only) or "skills"
     recommend(task, kind, query)
 
-comp.run()
+proc persistShadow(job: ShadowJob, status: string, verdict: JsonNode = nil) =
+  let id = job.sessionId & ":" & job.turnId & ":" & job.kind
+  var doc = %*{"sessionId": job.sessionId, "turnId": job.turnId,
+    "kind": job.kind, "query": job.query, "backend": backend(),
+    "task": job.task, "candidates": job.candidates,
+    "startedAt": job.startedAt, "status": status}
+  if verdict != nil:
+    let finishedAt = epochTime()
+    doc["result"] = verdict
+    doc["finishedAt"] = %finishedAt
+    doc["turnClosed"] = %(activeTurns.getOrDefault(job.sessionId) != job.turnId)
+    if doc["turnClosed"].getBool(false):
+      doc["status"] = %"stale"
+    if job.launchedAt > 0:
+      doc["elapsedMs"] = %int((finishedAt - job.launchedAt) * 1000)
+      doc["queueMs"] = %int((job.launchedAt - job.startedAt) * 1000)
+    else:
+      doc["elapsedMs"] = %int((finishedAt - job.startedAt) * 1000)
+  try:
+    discard comp.storePut("jevshadow", id, doc, timeoutMs = 1500)
+  except CatchableError as e:
+    comp.log("warn", "jev shadow persistence failed", %*{"error": e.msg})
+
+proc judgeProcess() =
+  try:
+    let arg = parseJson(readFile(paramStr(2)))
+    removeFile(paramStr(2))
+    let resultPath = paramStr(3)
+    let judged = suggest(arg{"task"}.getStr(""), arg{"candidates"})
+    writeFile(resultPath, $judged)
+  except CatchableError as e:
+    try: writeFile(paramStr(3), $(errResult("judge failed: " & e.msg)))
+    except CatchableError: discard
+
+proc completeShadow() =
+  if running.process == nil: return
+  if running.process.peekExitCode() == -1:
+    if epochTime() - running.launchedAt > ShadowHardTimeoutS:
+      let timedOut = running
+      running = ShadowJob()
+      timedOut.process.terminate()
+      sleep(10)
+      if timedOut.process.running(): timedOut.process.kill()
+      timedOut.process.close()
+      if fileExists(timedOut.inputPath): removeFile(timedOut.inputPath)
+      if fileExists(timedOut.resultPath): removeFile(timedOut.resultPath)
+      persistShadow(timedOut, "error", errResult("judge timed out"))
+    return
+  let job = running
+  running = ShadowJob()
+  let exitCode = job.process.peekExitCode()
+  job.process.close()
+  var verdict = errResult("judge exited " & $exitCode)
+  try:
+    if exitCode == 0 and fileExists(job.resultPath): verdict = parseFile(job.resultPath)
+  except CatchableError as e:
+    verdict = errResult("judge output unreadable: " & e.msg)
+  if fileExists(job.resultPath): removeFile(job.resultPath)
+  if fileExists(job.inputPath): removeFile(job.inputPath)
+  let failed = not verdict{"ok"}.getBool(false)
+  persistShadow(job, if failed: "error" else: "done", verdict)
+
+proc startShadow(job: ShadowJob) =
+  var task = job
+  task.launchedAt = epochTime()
+  let dir = rootVarDir("jev-shadow")
+  createDir(dir)
+  let key = newId()
+  task.inputPath = dir / (key & ".input.json")
+  task.resultPath = dir / (key & ".result.json")
+  try:
+    writeFile(task.inputPath, $(%*{"task": task.task, "candidates": task.candidates}))
+    task.process = startProcess(getAppFilename(), args = ["--judge", task.inputPath,
+      task.resultPath], options = {poParentStreams})
+    running = task
+  except CatchableError as e:
+    if fileExists(task.inputPath): removeFile(task.inputPath)
+    persistShadow(task, "error", errResult("judge start failed: " & e.msg))
+
+proc onTurn(comp: Component, subject, raw: string) =
+  if not shadowMode or not subject.endsWith(".turn"): return
+  var env: Envelope
+  try: env = decode(raw)
+  except CatchableError: return
+  if env.kind != ekEvent: return
+  let p = env.payload
+  let sid = p{"sessionId"}.getStr("")
+  let tid = p{"turnId"}.getStr("")
+  if sid.len == 0 or tid.len == 0 or subject != "ev.session." & sid & ".turn": return
+  let phase = p{"phase"}.getStr("")
+  if phase == "done":
+    if activeTurns.getOrDefault(sid) == tid: activeTurns.del(sid)
+    return
+  if phase != "start": return
+  activeTurns[sid] = tid
+  let task = p{"content"}.getStr("").strip()
+  if task.len == 0 or task.len > MaxShadowTaskBytes or
+      shadowKind notin ["tools", "skills", "both"] or
+      shadowSkillQuery.len > 200 or shadowToolQuery.len > 200:
+    return
+  let kinds = if shadowKind == "both": @[("skills", shadowSkillQuery),
+                                            ("tools", shadowToolQuery)]
+              else: @[(shadowKind, if shadowKind == "skills": shadowSkillQuery
+                                    else: shadowToolQuery)]
+  if pending.len + kinds.len > MaxShadowPending: return
+  for (kind, query) in kinds:
+    pending.add(ShadowJob(sessionId: sid, turnId: tid, task: task,
+      kind: kind, query: query, startedAt: epochTime()))
+
+discard comp.tap("ev.session.>", onTurn)
+discard comp.onIdle(250) do (c: Component):
+  completeShadow()
+  if running.process != nil or pending.len == 0: return
+  let job = pending[0]
+  pending.delete(0)
+  if activeTurns.getOrDefault(job.sessionId) != job.turnId:
+    persistShadow(job, "stale")
+    return
+  try:
+    let query = if job.kind == "tools" and job.query.len == 0:
+      taskSearchQuery(job.task)
+      else: job.query
+    var completed = job
+    completed.query = query
+    completed.candidates = candidatesFor(completed.kind, query, completed.task)
+    if completed.candidates.len == 0 or completed.candidates.len > MaxOptions or
+        validCandidates(completed.candidates).len > 0:
+      persistShadow(completed, "no-candidates")
+      return
+    persistShadow(completed, "pending")
+    startShadow(completed)
+  except CatchableError as e:
+    persistShadow(job, "error", errResult("discovery failed: " & e.msg))
+
+when isMainModule:
+  if paramCount() == 3 and paramStr(1) == "--judge": judgeProcess()
+  else: comp.run()

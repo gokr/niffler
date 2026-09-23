@@ -53,6 +53,32 @@ request. It returns the raw answers and a suggestion (empty on no-match).
 Never pass secrets or large file contents in `task`. The model is not an
 access-control mechanism; only Niffler's dispatch/approval path executes tools.
 
+## Shadow experiment
+
+Shadow judging is enabled by default for both installed skills and discoverable
+on-demand tools. Set `NIF_JEV_SHADOW=0` to disable it. At turn start, Jev
+queues up to two independent observations using the turn's request (limited to
+2,000 bytes): one uses the complete current skill list; the other searches
+`core.discover` using the longest word in the request as its lexical query.
+Set `NIF_JEV_SHADOW_SKILL_QUERY` or `NIF_JEV_SHADOW_TOOL_QUERY` to override;
+the legacy `NIF_JEV_SHADOW_QUERY` sets both. Each candidate set is capped at
+24; oversized sets are recorded as `no-candidates`, not truncated. Jev does
+not load or invoke tools/skills or send its recommendation into the
+conversation. The default tool query is a lexical query from the task text, so
+inspect the persisted query and candidates when assessing its coverage.
+
+A separate local judge process handles each inference, one at a time, keeping
+the NATS pump responsive. Results store `sessionId`, `turnId`, candidate
+snapshot, raw answers, and inference/queue timings in kind `jevshadow`; join
+by `(sessionId, turnId)` with the transcript and tool-call events. The record
+carries `status` (`done` when the answer parsed, `error` for a failed/timed-out
+judge, `no-candidates`, `pending` while queued/in flight, `stale` when the
+answer arrived after its turn closed) and `turnClosed`. Killing the component
+mid-flight leaves its in-flight `pending` record behind; the judge process
+carries PDEATHSIG and dies with it. Records contain the task and candidate
+descriptions; treat them as sensitive. Tasks over 2,000 bytes and turns
+skipped because the bounded queue is full are not judged.
+
 ## Evaluation before automation
 
 CPU trial on this machine (not laptop evidence): `uv venv var/jev-venv --python

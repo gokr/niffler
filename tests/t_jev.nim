@@ -3,6 +3,7 @@
 ## shape, fail-open result, and no-match handling on a private bus.
 import std/[json, net, os, osproc, sequtils, strutils]
 import natsnim
+import envelope
 import helpers
 
 proc serve(portFile: string) =
@@ -85,8 +86,6 @@ proc main() =
     {"q": {"type": "choice", "instructions": "choose", "criteria": {}}}})
   check("invalid decision refused", not bad{"ok"}.getBool(false), $bad)
 
-  # A real component-to-core bus path: core's discover projection supplies
-  # current on-demand hints, not an invented or stale candidate list.
   let sandbox = newCoreSandbox("jev-recommend", ["store", "jev", "skills"])
   defer: removeDir(sandbox.root)
   let (coreNats, coreUrl) = startNats()
@@ -95,7 +94,10 @@ proc main() =
   defer: coreNc.close()
   let core = startComponent(sandbox.sandboxBin("niffler"), coreUrl,
     root = sandbox.root,
-    extra = @[("NIF_JEV_URL", "http://127.0.0.1:" & readFile(portFile) & "/v1/systemone")])
+    extra = @[("NIF_JEV_URL", "http://127.0.0.1:" & readFile(portFile) & "/v1/systemone"),
+              ("NIF_JEV_SHADOW", "1"), ("NIF_JEV_SHADOW_KIND", "both"),
+              ("NIF_JEV_SHADOW_SKILL_QUERY", "niffler-harness"),
+              ("NIF_JEV_SHADOW_TOOL_QUERY", "skill_list")])
   defer: stopProcess(core)
   var ready = false
   for _ in 0 ..< 100:
@@ -124,8 +126,52 @@ proc main() =
   let wide = call(coreNc, "jev", "jev_recommend", %*{
     "task": "find", "query": "", "kind": "tools"})
   check("empty query refused before catalogue dump", not wide{"ok"}.getBool(false), $wide)
-  stopProcess(core)
+
+  let sid = "shadow-probe"
+  let tid = "turn-shadow-1"
+  proc turn(phase, id, content: string) =
+    coreNc.publish("ev.session." & sid & ".turn",
+      Envelope(v: 1, id: newId(), kind: ekEvent, payload: %*{
+        "sessionId": sid, "turnId": id, "phase": phase,
+        "content": content}).encode())
+  turn("start", tid, "read the Niffler harness guide")
+  for kind in ["skills", "tools"]:
+    let key = sid & ":" & tid & ":" & kind
+    var shadowDoc: JsonNode
+    for _ in 0 ..< 60:
+      shadowDoc = call(coreNc, "store", "get", %*{
+        "kind": "jevshadow", "id": key}){"value"}
+      if shadowDoc{"status"}.getStr("") in ["done", "stale", "error", "no-candidates"]: break
+      sleep(100)
+    check("shadow " & kind & " result stored with turn and candidates",
+      shadowDoc{"status"}.getStr("") == "done" and
+      shadowDoc{"sessionId"}.getStr("") == sid and
+      shadowDoc{"turnId"}.getStr("") == tid and
+      shadowDoc{"kind"}.getStr("") == kind and
+      shadowDoc{"candidates"}.len > 0 and
+      shadowDoc{"result"}{"answers"}{"pick"}{"choice"}.getStr("").len > 0 and
+      shadowDoc{"elapsedMs"} != nil and shadowDoc{"queueMs"} != nil,
+      $shadowDoc)
+  turn("done", tid, "")
   stopProcess(http)
+  let tid2 = "turn-shadow-2"
+  turn("start", tid2, "read the Niffler harness guide")
+  var failures = 0
+  for _ in 0 ..< 100:
+    failures = 0
+    for kind in ["skills", "tools"]:
+      let failed = call(coreNc, "store", "get", %*{
+        "kind": "jevshadow", "id": sid & ":" & tid2 & ":" & kind}){"value"}
+      if failed{"status"}.getStr("") == "error" and
+          failed{"result"}{"ok"}.getBool(true) == false:
+        inc failures
+    if failures == 2: break
+    sleep(100)
+  check("shadow outage is recorded for both candidate sets", failures == 2, $failures)
+  turn("done", tid2, "")
+  let messages = call(coreNc, "store", "list", %*{
+    "kind": "message", "idPrefix": sid & ":"})
+  check("shadow never modifies transcript", messages{"items"}.len == 0, $messages)
   let offline = call(nc, "jev", "jev_suggest",
     %*{"task": "search source", "candidates": items})
   check("backend outage is advisory failure, not a suggestion",
