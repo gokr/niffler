@@ -85,6 +85,7 @@ func main() {
 		Tool("put", putSchema(), putHandler(db)).
 		Tool("get", getSchema(), getHandler(db)).
 		Tool("list", listSchema(), listHandler(db)).
+		Tool("search", searchSchema(), searchHandler(db)).
 		Tool("del", delSchema(), delHandler(db)).
 		Tool("selftest", selfTestSchema(), selfTestHandler(db, "tidb")).
 		OnDrain(func(c *sdk.Component) { _ = db.Close() })

@@ -126,14 +126,14 @@ var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # STORE_V2.md M3). Same component name/tools; the DEFAULT engine, selected
 # at boot via NIF_STORE_BACKEND=sqlite (unset means sqlite). Pure-Go driver:
 # no cgo, no build prerequisites.
-var/bin/store-sqlite: components/store-sqlite/main.go components/store-sqlite/go.mod components/store-sqlite/go.sum \
+var/bin/store-sqlite: $(wildcard components/store-sqlite/*.go) components/store-sqlite/go.mod components/store-sqlite/go.sum \
     $(wildcard components/store-sqlite/migrations/*.sql) $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/store-sqlite && go build -o ../../var/bin/store-sqlite .'
 
 # store-tidb — the TiDB/MySQL engine of the store contract (M4): a network-
 # shared store, many harnesses can serve from one cluster. Selected at boot
 # via NIF_STORE_BACKEND=tidb; needs NIF_STORE_TIDB_DSN. Pure Go, no cgo.
-var/bin/store-tidb: components/store-tidb/main.go components/store-tidb/go.mod components/store-tidb/go.sum \
+var/bin/store-tidb: $(wildcard components/store-tidb/*.go) components/store-tidb/go.mod components/store-tidb/go.sum \
     $(wildcard components/store-tidb/migrations/*.sql) $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/store-tidb && go build -o ../../var/bin/store-tidb .'
 

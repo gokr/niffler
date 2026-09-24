@@ -56,7 +56,7 @@ reference chapters for the shipped components. Design rationale lives in
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim/Go | required | document store over the bus (`put/get/list/del`, rev-based concurrency). All four tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with the same four tools (`put`/`get`/`list`/`del`; the barrel engine additionally registers a hidden `selftest` — the one `/doctor` fans out to — that the Go engines do not implement): `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
+| `store` | Nim/Go | required | document store over the bus (`put/get/list/search/del`, rev-based concurrency). All five tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with the same five tools (`put`/`get`/`list`/`search`/`del`; the barrel engine additionally registers a hidden `selftest` — the one `/doctor` fans out to — that the Go engines do not implement): `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled, 126 = cwd not enterable (the tool also uses 126 for found-but-not-executable), 127 = `bash` not on `PATH`, 128 + signal when the command killed itself (139 = SIGSEGV, 143 = SIGTERM) — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a file under `var/toolout/` (the absolute path is in `spill.path`; pageable with `read`, swept after 1 h). `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes) |
 | `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect. Workspace-open auto-append (one append-only history entry on `ev.workspace.opened`) is **on by default but gated** (`docs/research/REPOMAP-GATES.md`): the workspace must have at least 50 covered files, and its rendered map must have at least 800 bytes, 25 symbols and 5 symbol-bearing files. A small/stub map is withheld and logged as `repo map withheld`; set `NIF_REPOMAP_AUTOAPPEND=0` to disable the append. The explicit `repo_map` tool is available regardless of these gates. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes. Parameters, tag tiers and append payload: [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
@@ -302,7 +302,7 @@ workspace), so the conversation and its "Niffler N" label survive.
 
 ### Store engines
 
-The store's **bus contract is the artifact**: `put/get/list/del`,
+The store's **bus contract is the artifact**: `put/get/list/search/del`,
 `expectRev` optimistic concurrency, id-ordered lists (docs/WIRE.md).
 Multiple engines implement it and register as component `store` with
 identical tools — consumers never learn which engine is live. Selection is
@@ -313,6 +313,20 @@ not a demand: when `var/bin/store-sqlite` was never built, core warns and boots
 the manifest binary (`var/bin/store`, barrel) instead. An explicit value is a
 demand — a missing binary is only warned about, never silently swapped for
 another engine's database.
+
+**`search`** is the server-side filter (`{kind, query, limit?, after?}` —
+find conversations by id/title or messages by content without downloading
+the whole kind; niffler-tui's `/sessions` uses it). Semantics are contract
+in every engine: per-kind indexed fields (conversation = id + title,
+message = id + content text capped at 16KB, others = id only),
+case-insensitive **prefix** matching of every query word (AND), everything
+non-alphanumeric inert so user input needs no escaping, and `list`'s
+ordering/cursor/cap. Engines differ only in how they answer: **sqlite**
+keeps an FTS5 index (`docs_fts`, rowids shared with `docs`, maintained in
+the same transaction as the document and rebuilt from `docs` at startup
+whenever the two disagree — derived state, safe to drop), while **barrel**
+and **tidb** have no index and scan the kind in id order with the same
+matcher (equivalent results, O(documents of the kind) per call).
 
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
   contract on SQLite. Documents live verbatim as JSON TEXT; `put` is one
@@ -3334,7 +3348,10 @@ use a temp `NIF_ROOT` copy for experiments).
 
 `list` is a page, not a complete view (see [Store engines](#store-engines)):
 everything in core that must see a whole kind goes through `storeListAll` —
-a single capped `list` silently truncated long transcripts on resume.
+a single capped `list` silently truncated long transcripts on resume. And
+`search` turns “which sessions mention …” into a server query instead of a
+download-then-filter: `cli call search '{"kind":"conversation","query":"…"}'`
+(or `message` for transcript text) returns the same paged shape as `list`.
 
 ## Testing
 

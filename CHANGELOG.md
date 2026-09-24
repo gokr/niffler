@@ -6,6 +6,33 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The store answers `search`: server-side full-text search over stored
+  documents — sessions without the download (issues #77, #51).** `search
+  {kind, query, limit?, after?}` returns exactly `list`'s shape and ordering
+  (`{items, hasMore, nextAfter?}`, ascending id, same exclusive cursor, limit
+  default 100 / cap 1000), so a client filters conversations on the store
+  instead of paging the whole `conversation` kind and filtering locally.
+  Indexed fields are documented per kind: `conversation` = id + title,
+  `message` = id + the strings under `content` (capped at 16KB), any other
+  kind = id only. Matching is contract across engines: the query and the
+  indexed text tokenize into runs of letters/digits (everything else is a
+  separator), and every query word must be a case-insensitive **prefix** of
+  some indexed word (AND) — no escaping to define, `OR` is just a word, a
+  punctuation-only query is `bad-request`, no match is `ok` with an empty
+  page. Engines differ only in mechanism: `store-sqlite` (default) keeps an
+  FTS5 index (`docs_fts`) whose rowids are `docs`' — put/del maintain it in
+  the same transaction and startup rebuilds it from `docs` whenever the two
+  disagree (derived state, safe to drop) — while `store` (barrel) and
+  `store-tidb` scan the kind in id order with the same matcher. `t_store`
+  pins the contract against every engine (matches, no-match, kind
+  isolation, special characters, cursor paging, a 1050-result set past the
+  1000 cap, restart); `store-sqlite`/`store-tidb` gain unit tests for
+  tokenization, per-kind fields, index maintenance and the rebuild
+  self-heal. Docs: WIRE store contract, MANUAL store engines + transcript
+  reading.
+
 ### Changed
 
 - **The desktop UI moved to its own repository and installs through the plugin

@@ -866,6 +866,36 @@ exposes the same helper) rather than a single call, because a capped read
 silently truncated a resumed transcript at 1000 messages and the next
 write then targeted an existing id.
 
+`search` takes `{kind, query, limit?, after?}` and returns exactly `list`'s
+shape — `{ok, items: [{id, rev, value}], hasMore, nextAfter?}` — for the
+documents of `kind` whose indexed text matches `query`. It is the
+server-side filter for session browsers (niffler-tui, niffler-ui): find
+conversations by title/id, or messages by content, without downloading the
+whole kind and filtering locally.
+
+- **Indexed fields** (documented, per kind): `conversation` = id +
+  `value.title`; `message` = id + every string under `value.content`
+  (capped at 16KB per document); any other kind = id only.
+- **Matching** is contract, identical in every engine: query and indexed
+  text tokenize the same way — runs of unicode letters/digits are tokens,
+  every other character is a separator — and *every* query token must
+  match as a case-insensitive **prefix** of some token in the document's
+  text (AND). There is nothing to escape: no user character can act as an
+  operator (`OR` is just a word, `kind:` is just two words). A query that
+  tokenizes to nothing fails `bad-request`; a query that matches nothing
+  is `ok: true` with an empty `items`.
+- **Ordering and paging** are `list`'s: ascending id, `after` exclusive,
+  `nextAfter` = last returned id when `hasMore`, `limit` default 100 /
+  cap 1000. Page until `hasMore` is false — `search` never silently
+  truncates a result set.
+- **Engines**: the sqlite engine (default) answers from an FTS5 index
+  (`docs_fts`) whose rowids are `docs`' rowids — put/del maintain it in
+  the same transaction, and startup rebuilds it from `docs` whenever the
+  two disagree (derived state: dropping it loses nothing). The barrel and
+  tidb engines have no index and apply the same matcher by scanning the
+  kind in id order: equivalent behavior, O(documents of the kind) per
+  call — engine-private detail, consumers see the same contract.
+
 ## Conventions
 
 - Component names: lowercase, hyphens (`hashline-edit`). Tool names: lowercase,

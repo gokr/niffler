@@ -113,6 +113,7 @@ func main() {
 		Tool("put", putSchema(), putHandler(db.DB)).
 		Tool("get", getSchema(), getHandler(db.DB)).
 		Tool("list", listSchema(), listHandler(db.DB)).
+		Tool("search", searchSchema(), searchHandler(db.DB)).
 		Tool("del", delSchema(), delHandler(db.DB)).
 		Tool("selftest", selfTestSchema(), selfTestHandler(db.DB, "sqlite")).
 		OnDrain(func(c *sdk.Component) { _ = db.Close() })
@@ -254,6 +255,19 @@ func openStore() (*storeDB, error) {
 		_ = syscall.Close(fd)
 		return nil, err
 	}
+	// Derived search index: self-heal when it disagrees with `docs` (a
+	// crash, a manual DB edit, rows written around put). Cheap when in
+	// sync — count + max(rowid) — so a normal start does not re-tokenize
+	// the store (docs/WIRE.md "Store contract").
+	rebuilt, err := syncSearchIndex(db)
+	if err != nil {
+		_ = db.Close()
+		_ = syscall.Close(fd)
+		return nil, fmt.Errorf("search index: %w", err)
+	}
+	if rebuilt {
+		fmt.Println("store-sqlite: rebuilt search index from docs")
+	}
 	return &storeDB{DB: db, lockFd: fd}, nil
 }
 
@@ -393,19 +407,26 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 			return nil, fmt.Errorf("put value must be valid JSON")
 		}
 
-		// Doc and revision move in ONE atomic statement each branch —
-		// closing the barrel engine's two-step (doc key + rev key) crash
-		// window. BEGIN IMMEDIATE (via _txlock) + the serialized handler
-		// keep read-modify-write safe.
+		// Doc, revision AND search index move in ONE transaction — the index
+		// (docs_fts) is derived from the same write, so a search can never
+		// observe a document the store has not committed (or vice versa).
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("put: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }() // no-op once committed
+
 		if expectRev > 0 {
-			res, err := db.Exec(
+			res, err := tx.Exec(
 				`UPDATE docs SET rev = rev + 1, value = ?, updated_at = CURRENT_TIMESTAMP
 				 WHERE kind = ? AND id = ? AND rev = ?`,
 				string(value), kind, id, expectRev)
 			if err != nil {
+				_ = tx.Rollback()
 				return nil, fmt.Errorf("put: %w", err)
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
+				_ = tx.Rollback()
 				var cur int64
 				switch err := db.QueryRow(
 					`SELECT rev FROM docs WHERE kind = ? AND id = ?`, kind, id).Scan(&cur); err {
@@ -418,12 +439,19 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 					return nil, fmt.Errorf("put: %w", err)
 				}
 			}
+			if err := indexDoc(tx, kind, id, value); err != nil {
+				_ = tx.Rollback()
+				return nil, err
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, fmt.Errorf("put: %w", err)
+			}
 			return sdk.OK(map[string]any{"rev": expectRev + 1}), nil
 		}
 
 		// Upsert: rev starts at 1 on insert, increments on update.
 		var rev int64
-		if err := db.QueryRow(
+		if err := tx.QueryRow(
 			`INSERT INTO docs (kind, id, rev, value, updated_at)
 			 VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)
 			 ON CONFLICT(kind, id) DO UPDATE SET
@@ -431,6 +459,14 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 			   updated_at = CURRENT_TIMESTAMP
 			 RETURNING rev`,
 			kind, id, string(value)).Scan(&rev); err != nil {
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("put: %w", err)
+		}
+		if err := indexDoc(tx, kind, id, value); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("put: %w", err)
 		}
 		return sdk.OK(map[string]any{"rev": rev}), nil
@@ -603,11 +639,35 @@ func delHandler(db *sql.DB) sdk.ToolHandler {
 		if err != nil {
 			return nil, fmt.Errorf("bad del args: %w", err)
 		}
-		// Idempotent, as in the barrel engine. The row (doc + rev) goes as
-		// one — a re-put starts fresh at rev 1, exactly like deleting both
-		// barrel keys did.
-		if _, err := db.Exec(`DELETE FROM docs WHERE kind = ? AND id = ?`,
+		// Idempotent, as in the barrel engine. Doc, revision AND index row
+		// go in one transaction — a deleted document is unfindable by
+		// `search` the moment `del` answers.
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("del: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }() // no-op once committed
+		var rowid int64
+		switch err := tx.QueryRow(`SELECT rowid FROM docs WHERE kind = ? AND id = ?`,
+			rawString(m, "kind"), rawString(m, "id")).Scan(&rowid); err {
+		case sql.ErrNoRows:
+			_ = tx.Rollback()
+			return sdk.OK(nil), nil // already gone
+		case nil:
+		default:
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("del: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM docs WHERE kind = ? AND id = ?`,
 			rawString(m, "kind"), rawString(m, "id")); err != nil {
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("del: %w", err)
+		}
+		if err := unindexDocIn(tx, rowid); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("del: %w", err)
 		}
 		return sdk.OK(nil), nil

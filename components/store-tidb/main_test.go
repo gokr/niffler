@@ -227,3 +227,53 @@ func TestRawJSONFidelity(t *testing.T) {
 	}
 	mustOK(t, call(t, delHandler(db), `{"kind":"tidbraw","id":"r1"}`))
 }
+
+func TestSearchContract(t *testing.T) {
+	// The scan-based search: match by title/id token prefix, kind
+	// isolation, no-match = empty ok, bad-request on a punctuation-only
+	// query, and cursor paging — the same contract t_store pins on the
+	// bus (docs/WIRE.md "Store contract").
+	db := newTestDB(t)
+	put := putHandler(db)
+	search := searchHandler(db)
+	ids := func(args string) []string {
+		t.Helper()
+		out := mustOK(t, call(t, search, args))
+		items, _ := out["items"].([]map[string]any)
+		got := make([]string, 0, len(items))
+		for _, it := range items {
+			got = append(got, it["id"].(string))
+		}
+		return got
+	}
+	t.Cleanup(func() {
+		for _, id := range []string{"tidsrch-a", "tidsrch-b"} {
+			_ = call(t, delHandler(db), `{"kind":"conversation","id":"`+id+`"}`)
+		}
+	})
+	mustOK(t, call(t, put, `{"kind":"conversation","id":"tidsrch-a","value":{"title":"Spike solution for JEV"}}`))
+	mustOK(t, call(t, put, `{"kind":"conversation","id":"tidsrch-b","value":{"title":"Check the PRs"}}`))
+
+	got := ids(`{"kind":"conversation","query":"spike"}`)
+	if len(got) != 1 || got[0] != "tidsrch-a" {
+		t.Fatalf("title search = %v, want [tidsrch-a]", got)
+	}
+	got = ids(`{"kind":"conversation","query":"tidsrch-b"}`)
+	if len(got) != 1 || got[0] != "tidsrch-b" {
+		t.Fatalf("id search = %v, want [tidsrch-b]", got)
+	}
+	got = ids(`{"kind":"conversation","query":"check prs"}`)
+	if len(got) != 1 || got[0] != "tidsrch-b" {
+		t.Fatalf("AND search = %v, want [tidsrch-b]", got)
+	}
+	out := mustOK(t, call(t, search, `{"kind":"conversation","query":"nothingmatchesthis"}`))
+	if items, _ := out["items"].([]map[string]any); len(items) != 0 || out["hasMore"] != false {
+		t.Fatalf("no-match = %v, want empty + hasMore false", out)
+	}
+	mustFail(t, call(t, search, `{"kind":"conversation","query":"%;_\"'"}`), "bad-request")
+	// a conversation search never sees another kind's rows
+	got = ids(`{"kind":"component","query":"spike"}`)
+	if len(got) != 0 {
+		t.Fatalf("kind filter leaked: %v", got)
+	}
+}

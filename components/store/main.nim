@@ -22,7 +22,7 @@
 ##                                  checkpoint of the merged slash-command
 ##                                  table (docs/WIRE.md); UIs read it first
 
-import std/[json, os, strutils, times]
+import std/[json, os, strutils, times, unicode]
 when defined(posix):
   import std/posix
   proc flock(fd: cint, operation: cint): cint {.importc: "flock", header: "<sys/file.h>".}
@@ -171,6 +171,159 @@ comp.tool(%*{"onDemand": true}):
     var reply = %*{"items": items, "hasMore": hasMore}
     if hasMore and keys.len > 0:
       reply["nextAfter"] = %keys[^1][len("d:" & kind & ":" ) .. ^1]
+    return okResult(reply)
+
+# ---------------------------------------------------------------------------
+# Server-side search — the `search` tool of the store contract
+# (docs/WIRE.md "Store contract", issue #77). This barrel engine has no FTS
+# index, so it implements the contract's documented fallback: scan the kind
+# in id order and apply the SAME matcher the sqlite engine gets from FTS5.
+# Matching semantics are contract, not engine — see the identical
+# searchTokens/indexedText in components/store-sqlite/search.go.
+
+const
+  SearchCap = 1000        ## limit cap, as `list`
+  SearchTextCap = 16384   ## per-document indexed text budget
+  SearchScanBatch = 500   ## keys read per scan batch
+
+proc searchTokens(s: string): seq[string] =
+  ## Tokenize the way every engine does for `search`: runs of unicode
+  ## letters and ASCII digits are tokens, every other rune is a separator,
+  ## tokens lowercased. (The Go engines use unicode.IsDigit for the digit
+  ## test — only non-ASCII numerals differ, which is engine-private.)
+  var cur = ""
+  for r in s.runes:
+    if r.isAlpha or (r.int32 >= 48 and r.int32 <= 57):
+      cur.add($r)
+    elif cur.len > 0:
+      result.add(cur.toLower())
+      cur = ""
+  if cur.len > 0:
+    result.add(cur.toLower())
+
+proc addCapped(dest: var string, s: string) =
+  ## Append without passing SearchTextCap, never splitting a rune (a
+  ## truncated prefix still matches; a split rune would put invalid UTF-8
+  ## into the text we match against).
+  if s.len == 0 or dest.len >= SearchTextCap: return
+  let room = SearchTextCap - dest.len
+  if s.len <= room:
+    dest.add(s)
+    return
+  var cut = room
+  while cut > 0 and (s[cut].uint8 and 0xC0) == 0x80:
+    dec cut
+  dest.add(s[0 ..< cut])
+
+proc addContentStrings(dest: var string, node: JsonNode) =
+  ## Walk a message's `content` collecting every string scalar — content
+  ## is either a string or an array of typed blocks ({type, text, ...}),
+  ## so a recursive walk covers both shapes.
+  if node == nil or dest.len >= SearchTextCap: return
+  case node.kind
+  of JString:
+    addCapped(dest, " ")
+    addCapped(dest, node.getStr())
+  of JArray:
+    for x in node.items:
+      addContentStrings(dest, x)
+      if dest.len >= SearchTextCap: return
+  of JObject:
+    for _, v in node.pairs:
+      addContentStrings(dest, v)
+      if dest.len >= SearchTextCap: return
+  else:
+    discard
+
+proc indexedText(kind, id: string, value: JsonNode): string =
+  ## The documented, per-kind indexed field list (docs/WIRE.md "Store
+  ## contract" / the search tool's schema):
+  ##   conversation: id + value.title
+  ##   message:      id + every string under value.content (capped)
+  ##   any other kind: id only
+  ## Malformed stored JSON degrades to indexing the id alone.
+  result = id
+  if value == nil or value.kind != JObject: return
+  case kind
+  of "conversation":
+    addCapped(result, " ")
+    addCapped(result, value{"title"}.getStr(""))
+  of "message":
+    addCapped(result, " ")
+    addContentStrings(result, value{"content"})
+  else:
+    discard
+
+proc matchesTerms(text: string, terms: seq[string]): bool =
+  ## The contract matcher: every term must be a case-insensitive PREFIX of
+  ## some token in text (terms arrive lowercased from searchTokens).
+  if terms.len == 0: return false
+  let toks = searchTokens(text)
+  for term in terms:
+    var found = false
+    for tok in toks:
+      if tok.startsWith(term):
+        found = true
+        break
+    if not found: return false
+  result = true
+
+comp.tool(%*{"onDemand": true}):
+  proc search(kind: string, query: string, limit: int = 100,
+              after: string = ""): JsonNode =
+    ## Search stored documents of a kind by text — the server-side filter
+    ## for session browsers: finds conversations whose id or title matches,
+    ## or messages whose content matches, without downloading the whole
+    ## kind. Returns the same shape and ordering as `list` ({items,
+    ## hasMore, nextAfter?}, ascending id) — pass `nextAfter` back as
+    ## `after` to page past the cap.
+    ##
+    ## Indexed fields per kind: conversation = id + title; message = id +
+    ## content text (capped at 16KB); other kinds = id only. Matching: the
+    ## query is split into words of letters/digits, each must be a
+    ## case-insensitive PREFIX of a word in the indexed text, all must
+    ## match (AND); any other character is just a separator, so user input
+    ## needs no escaping. A query with no letters or digits is
+    ## bad-request; a query matching nothing is ok with an empty `items`.
+    ## - kind: Document kind to search (e.g. conversation, message)
+    ## - query: Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)
+    ## - limit: Max items (default 100, cap 1000)
+    ## - after: Exclusive id cursor from a previous page (default = first page)
+    let terms = searchTokens(query)
+    if terms.len == 0:
+      return errResult("search needs at least one letter or digit in the query",
+                       "bad-request")
+    let lim = max(1, min(limit, SearchCap))
+    let prefix = "d:" & kind & ":"
+    var cursor = if after.len == 0: "" else: prefix & after
+    var items = newJArray()
+    # Scan in id order from the cursor — the documented no-index fallback:
+    # batches of keys, each read after the last key of the previous batch
+    # (strictly exclusive cursor, as `list`), stopping when the page is
+    # full. Nothing is silently truncated: the caller pages by cursor.
+    while items.len < lim:
+      let (keys, _, _) = db.keysByPrefix(prefix, SearchScanBatch, cursor)
+      if keys.len == 0: break
+      for key in keys:
+        if items.len >= lim: break
+        cursor = key
+        let id = key[len(prefix) .. ^1]
+        let rev = getRev(kind, id)
+        if rev == 0: continue  # tombstoned
+        var value: JsonNode
+        try:
+          value = parseJson(db.get(docKey(kind, id)))
+        except CatchableError:
+          continue  # unreadable doc: skip, never fail the search
+        if matchesTerms(indexedText(kind, id, value), terms):
+          items.add(%*{"id": id, "rev": rev, "value": value})
+      if keys.len < SearchScanBatch: break  # kind exhausted
+    # Same hasMore rule as `list`: a full page may have successors, so the
+    # caller asks for one more page and stops when it comes back empty.
+    let hasMore = items.len >= lim
+    var reply = %*{"items": items, "hasMore": hasMore}
+    if hasMore and items.len > 0:
+      reply["nextAfter"] = items[items.len - 1]{"id"}
     return okResult(reply)
 
 comp.tool(%*{"hidden": true}):
