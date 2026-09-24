@@ -69,6 +69,8 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   controls; compact? runs the compactor now (no turn);
                        #   export? returns the exact provider request (no turn);
                        #   wake? runs a notice-only turn — see "Autonomous wake".
+                       #   attachments? is a turn's dropped images — see
+                       #   "Attachments (images in a turn)".
                        #   profile names a stored tool profile resolved into the
                        #   direct toolset once, at the first call (unknown names
                        #   fail the call; resumes ignore the argument — the
@@ -689,6 +691,45 @@ header (`approvals`, `limits`), so a resumed runner re-applies exactly what
 the human last chose, and both are echoed by the status readback and the turn
 result (`approvals`, `limits`) for UIs. Invalid values are refused with a
 clear error (unknown mode, unknown limit key, out-of-range value).
+
+### Attachments (images in a turn)
+
+`svc.session.<id>.call` accepts `attachments` beside `content`: an array of
+`{type:"image", name?, mimeType, data, width?, height?}` where `data` is the
+base64 pixels. A dropped image IS content — a call with attachments and no
+`content` runs a turn, not a control call — and the turn's text is the
+caption (a caption-less drop gets a `(image attached)` placeholder so the
+model has an anchor and protocols without an image-only user message still
+accept the request).
+
+Core validates every claim (base64 decodes, magic bytes match the MIME
+allowlist `image/png|jpeg|gif|webp|bmp`, per-image ≤ 4 MB base64, ≤ 8 per
+turn, ≤ 4.5 MB per turn): a refusal fails the call with a reason naming the
+image, and nothing is persisted — there is no half-attached turn.
+
+**Pixels are stored apart from the message.** The `message` document keeps
+the text plus small `attachments` refs; the bytes live in their own
+`attachment` documents (kind `attachment`, id `<messageId>:a<i>`, carrying
+`data` plus the message id, MIME, dimensions and original name). This is not
+an optimization: a `list` reply is bounded by the bus `max_payload` (8 MiB),
+so two or three screenshots inline in a page would make resume's read never
+arrive — the failure mode that already clobbered conversations once. Refs
+also keep fork-copy, search and recall cheap.
+
+**The projection is deterministic.** The in-memory context materializes each
+message's refs into the provider shape — text parts first, then `image_url`
+data-URL parts — and keeps the newest images that fit the projection budget
+(`NIF_ATTACH_BUDGET`, default 5 MB of base64); older images become an honest
+text marker naming the file and its size. The rule is greedy-newest at
+whole-message granularity and a pure function of the refs, so a resume
+(including a runner restart) rebuilds exactly the projection the previous
+turn sent. Compaction digests a elision-independent `snapshotForm` of each
+message, so a new drop eliding an older image cannot invalidate an in-flight
+compaction with a spurious "snapshot became stale", and the summarizer
+receives text only — never image bytes.
+
+`conversation_delete` sweeps the conversation's `attachment` documents with
+its messages.
 
 ### Provider/model pins are one selection
 

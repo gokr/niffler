@@ -15,6 +15,9 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         request = json.loads(self.rfile.read(length))
         model = request.get("model", "")
+        # The request body is recorded in full: those JSON lines are the
+        # only place a test can see what the provider actually received
+        # (the messages array as sent, tool definitions and all).
         with open(self.server.request_path, "a", encoding="utf-8") as output:
             output.write(
                 json.dumps(
@@ -22,6 +25,7 @@ class Handler(BaseHTTPRequestHandler):
                         "path": self.path,
                         "model": model,
                         "stream": request.get("stream", False),
+                        "messages": request.get("messages", []),
                     }
                 )
                 + "\n"

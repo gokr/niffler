@@ -33,6 +33,26 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   self-heal. Docs: WIRE store contract, MANUAL store engines + transcript
   reading.
 
+### Added
+
+- **Dropped images now reach the model (multimodal turns).** A UI can send
+  `attachments` on a session call — `{type:"image", name?, mimeType,
+  data(base64), width?, height?}` — and core validates every claim (base64,
+  magic bytes against the MIME allowlist, 4 MB/image, 4.5 MB/turn, max 8),
+  runs a turn when images are present even with no caption, and materializes
+  them into the provider request as the OpenAI multimodal content array.
+  Anthropic gets the base64 `source` blocks its API requires and Codex the
+  Responses API's `input_image` items, so images work on all three protocols;
+  `fitOutput` bills an image by pixel area instead of by its base64 length, so
+  an attached screenshot no longer collapses a turn's output budget to the
+  floor. Pixels are stored in their own `attachment` documents — never inline
+  in the message — because a `list` page carrying two or three screenshots
+  would exceed the bus payload ceiling that already truncated a resume once;
+  the message keeps refs, the projection keeps the newest images within
+  `NIF_ATTACH_BUDGET` (older ones degrade to an honest text marker), and the
+  rule is a pure function of the refs so a restart rebuilds the same request.
+  `conversation_delete` sweeps the pixels with the conversation.
+
 ### Changed
 
 - **The desktop UI moved to its own repository and installs through the plugin

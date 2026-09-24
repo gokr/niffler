@@ -218,3 +218,143 @@ func TestProtocolURLHelpers(t *testing.T) {
 		t.Fatalf("anthropicToolID = %q", got)
 	}
 }
+
+// --- image attachments across protocols -------------------------------------
+
+const testPNGDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+
+func multimodalUserMessage() chatMessage {
+	return chatMessage(openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleUser,
+		MultiContent: []openai.ChatMessagePart{
+			{Type: openai.ChatMessagePartTypeText, Text: "what is this?"},
+			{Type: openai.ChatMessagePartTypeImageURL,
+				ImageURL: &openai.ChatMessageImageURL{URL: testPNGDataURL}},
+		},
+	})
+}
+
+func TestSplitDataURL(t *testing.T) {
+	media, payload, ok := splitDataURL(testPNGDataURL)
+	if !ok || media != "image/png" || payload == "" {
+		t.Fatalf("splitDataURL = %q %q %v", media, payload, ok)
+	}
+	if _, _, ok := splitDataURL("https://example.test/a.png"); ok {
+		t.Fatal("a remote URL is not a data URL")
+	}
+	if _, _, ok := splitDataURL("data:image/png,plain"); ok {
+		t.Fatal("a non-base64 data URL must be refused")
+	}
+}
+
+func TestAnthropicUserBlocksCarryImagesAsBase64Source(t *testing.T) {
+	blocks := anthropicUserBlocks(openai.ChatCompletionMessage(multimodalUserMessage()))
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %#v", blocks)
+	}
+	text, _ := blocks[0].(map[string]any)
+	if text["type"] != "text" || text["text"] != "what is this?" {
+		t.Fatalf("text block = %#v", blocks[0])
+	}
+	image, _ := blocks[1].(map[string]any)
+	if image["type"] != "image" {
+		t.Fatalf("image block = %#v", blocks[1])
+	}
+	source, _ := image["source"].(map[string]any)
+	if source["type"] != "base64" || source["media_type"] != "image/png" ||
+		source["data"] == "" {
+		t.Fatalf("source = %#v", source)
+	}
+	// The OpenAI data URL must NOT survive into the Anthropic source: the
+	// API takes media_type and data as separate fields and rejects a URL.
+	if strings.Contains(source["data"].(string), "data:") {
+		t.Fatalf("data still carries the data URL: %q", source["data"])
+	}
+
+	// A text-only message produces no blocks at all: the translator keeps
+	// the plain-string content form for it (asserted through the whole
+	// message list below).
+	if blocks := anthropicUserBlocks(openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleUser, Content: "hello"}); blocks != nil {
+		t.Fatalf("text-only blocks = %#v", blocks)
+	}
+	_, plain := anthropicMessages([]chatMessage{chatMessage(
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser,
+			Content: "hello"})}, false)
+	if len(plain) != 1 {
+		t.Fatalf("plain messages = %#v", plain)
+	}
+	if entry, _ := plain[0].(map[string]any); entry["content"] != "hello" {
+		t.Fatalf("a text-only user message must stay a plain string: %#v", plain[0])
+	}
+	// The multimodal turn, through the same translator, is a block array.
+	_, multi := anthropicMessages([]chatMessage{multimodalUserMessage()}, false)
+	if len(multi) != 1 {
+		t.Fatalf("multi messages = %#v", multi)
+	}
+	if entry, _ := multi[0].(map[string]any); entry["content"] == nil {
+		t.Fatalf("multimodal content missing: %#v", multi[0])
+	}
+
+	// A non-data URL (or an elided marker) must not vanish silently.
+	odd := anthropicUserBlocks(openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleUser,
+		MultiContent: []openai.ChatMessagePart{
+			{Type: openai.ChatMessagePartTypeImageURL,
+				ImageURL: &openai.ChatMessageImageURL{URL: "https://example.test/a.png"}},
+		}})
+	if len(odd) != 1 {
+		t.Fatalf("odd blocks = %#v", odd)
+	}
+	if block, _ := odd[0].(map[string]any); block["type"] != "text" {
+		t.Fatalf("an unsupported reference must degrade to a note: %#v", odd[0])
+	}
+}
+
+func TestCodexUserContentCarriesInputImage(t *testing.T) {
+	content := codexUserContent(openai.ChatCompletionMessage(multimodalUserMessage()))
+	if len(content) != 2 {
+		t.Fatalf("content = %#v", content)
+	}
+	text, _ := content[0].(map[string]any)
+	if text["type"] != "input_text" || text["text"] != "what is this?" {
+		t.Fatalf("text item = %#v", content[0])
+	}
+	image, _ := content[1].(map[string]any)
+	if image["type"] != "input_image" || image["image_url"] != testPNGDataURL {
+		t.Fatalf("image item = %#v", content[1])
+	}
+
+	// A text-only message keeps the single input_text item.
+	plain := codexUserContent(openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleUser, Content: "hello"})
+	if len(plain) != 1 {
+		t.Fatalf("plain content = %#v", plain)
+	}
+}
+
+func TestFitOutputDoesNotBillImagesAsBase64Text(t *testing.T) {
+	// 1x1 PNG data URL is tiny, so scale the point up: an image whose data
+	// URL is huge must not consume the output budget the way raw text would.
+	huge := strings.Repeat("A", 2_000_000)
+	args := chatArgs{Messages: []chatMessage{chatMessage(openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleUser,
+		MultiContent: []openai.ChatMessagePart{
+			{Type: openai.ChatMessagePartTypeText, Text: "look"},
+			{Type: openai.ChatMessagePartTypeImageURL,
+				ImageURL: &openai.ChatMessageImageURL{
+					URL: "data:image/png;base64," + huge}},
+		},
+	})}}
+	got := fitOutput(8192, 128000, args)
+	if got != 8192 {
+		t.Fatalf("fitOutput clamped an image turn to %d; the base64 was billed as text", got)
+	}
+	// Sanity: a genuinely oversized TEXT prompt still clamps.
+	textArgs := chatArgs{Messages: []chatMessage{chatMessage(openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleUser, Content: strings.Repeat("word ", 600_000),
+	})}}
+	if fitOutput(8192, 128000, textArgs) >= 8192 {
+		t.Fatal("a huge text prompt did not clamp the output budget")
+	}
+}

@@ -428,6 +428,14 @@ var/bin/test_t_supervisor_backoff: core/supervisor.nim core/catalog.nim
 
 var/bin/test_t_ctx_accounting: core/conversation.nim
 
+# The attachment contract is pure (core/attachments.nim); the end-to-end
+# suite drives a full core, and its runner is a separate binary — rebuild
+# both before either test binary so a stale runner cannot pass a stale test.
+var/bin/test_t_attachments_unit: core/attachments.nim
+
+var/bin/test_t_attachments: core/conversation.nim core/attachments.nim \
+    var/bin/session var/bin/niffler
+
 var/bin/test_t_context_drains: core/conversation.nim
 
 # The full gate. The frontend half (lib unit tests + typecheck) lives in the

@@ -519,6 +519,20 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           discard
     except CatchableError as e:
       echo "core: warning — conversation messages not deleted: " & e.msg
+    # Attachment pixels are their own docs (kind "attachment", ids under the
+    # session's message keys — see core/attachments.nim). Deleting the
+    # messages leaves them orphaned and permanently unreferenced, so sweep
+    # them with the rest of the conversation. The store helpers live here
+    # (attachments.nim is deliberately pure, like compaction.nim), so the
+    # kind name is the only thing shared — keep it in step with the writer.
+    try:
+      for item in ct.storeListAll("attachment", sessionId & ":"):
+        try:
+          ct.storeDel("attachment", item{"id"}.getStr(""))
+        except CatchableError:
+          discard
+    except CatchableError as e:
+      echo "core: warning — conversation attachments not deleted: " & e.msg
     for rec in [("session", sessionId & ":tools"),
                 ("sessionmeta", sessionId)]:
       try:

@@ -256,9 +256,18 @@ func anthropicMessages(messages []chatMessage, isOAuth bool) ([]any, []any) {
 			}
 			lastWasTool = false
 		case openai.ChatMessageRoleUser:
-			text := messageText(message)
-			if strings.TrimSpace(text) != "" {
-				result = append(result, map[string]any{"role": "user", "content": text})
+			if len(message.MultiContent) == 0 {
+				// Text-only turns keep the plain-string content form: the
+				// shape existing sessions already send (byte-identical
+				// requests, no prompt-prefix churn) and the cheaper wire form.
+				text := messageText(message)
+				if strings.TrimSpace(text) != "" {
+					result = append(result, map[string]any{"role": "user", "content": text})
+				}
+			} else {
+				if blocks := anthropicUserBlocks(message); len(blocks) > 0 {
+					result = append(result, map[string]any{"role": "user", "content": blocks})
+				}
 			}
 			lastWasTool = false
 		case openai.ChatMessageRoleAssistant:
@@ -296,6 +305,71 @@ func anthropicMessages(messages []chatMessage, isOAuth bool) ([]any, []any) {
 		}
 	}
 	return system, result
+}
+
+// anthropicUserBlocks converts one user message into Anthropic content
+// blocks. Image parts become the base64 source shape Anthropic requires —
+// NOT the OpenAI data URL, which it would reject: the media type and the
+// payload are separate fields there. A message with no images keeps the
+// plain-string form (cheaper on the wire, and the shape Anthropic prefers
+// for text-only turns).
+func anthropicUserBlocks(message openai.ChatCompletionMessage) []any {
+	if len(message.MultiContent) == 0 {
+		return nil // the caller keeps the plain-string form
+	}
+	blocks := make([]any, 0, len(message.MultiContent))
+	for _, part := range message.MultiContent {
+		switch part.Type {
+		case openai.ChatMessagePartTypeText:
+			if strings.TrimSpace(part.Text) != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": part.Text})
+			}
+		case openai.ChatMessagePartTypeImageURL:
+			if part.ImageURL == nil {
+				continue
+			}
+			mediaType, payload, ok := splitDataURL(part.ImageURL.URL)
+			if !ok {
+				// Not a data URL (a remote http URL, or an elided marker):
+				// pass it through as text rather than dropping the image
+				// silently — a wrong image is worse than an honest note.
+				blocks = append(blocks, map[string]any{"type": "text",
+					"text": "[image attachment could not be sent to Anthropic: " +
+						"unsupported reference]"})
+				continue
+			}
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type": "base64", "media_type": mediaType, "data": payload,
+				},
+			})
+		}
+	}
+	return blocks
+}
+
+// splitDataURL splits an OpenAI-style data URL into its media type and
+// base64 payload. ok=false for anything that is not "data:<mime>;base64,".
+func splitDataURL(url string) (mediaType, payload string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(url, prefix) {
+		return "", "", false
+	}
+	rest := url[len(prefix):]
+	comma := strings.IndexByte(rest, ',')
+	if comma < 0 {
+		return "", "", false
+	}
+	header := rest[:comma]
+	if !strings.HasSuffix(header, ";base64") {
+		return "", "", false
+	}
+	mime := strings.TrimSuffix(header, ";base64")
+	if mime == "" {
+		return "", "", false
+	}
+	return mime, rest[comma+1:], true
 }
 
 func readAnthropicSSE(reader io.Reader, consume func(anthropicEvent) error) error {

@@ -200,6 +200,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "properties": {
         "sessionId": {"type": "string"},
         "content": {"type": "string"},
+        "attachments": {"type": "array", "maxItems": 8,
+          "description": "Dropped images for this turn: an array of {type:\"image\", name?, mimeType, data (base64), width?, height?}. Validated in core (MIME allowlist checked against the magic bytes, 4MB per image, 4.5MB per turn, max 8); a refusal fails the call and persists nothing. Attachments ARE content: a call with images and no content runs a turn. Pixels are stored apart from the message (kind \"attachment\") so resume and list stay under the bus payload limit; the provider request gets text plus image_url parts, newest-first within NIF_ATTACH_BUDGET."},
         "title": {"type": "string", "description": "Rename the conversation (shown in session lists); non-empty updates the title, empty/absent leaves it"},
         "provider": {"type": "string", "description": "Conversation provider pin (stored nickname); empty clears it back to the harness-global default. A non-empty model pins the provider it resolves under when this is absent, so model and provider always travel together"},
         "model": {"type": "string", "description": "Conversation model override; empty clears it"},

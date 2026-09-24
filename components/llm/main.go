@@ -644,14 +644,18 @@ func fitOutput(output, contextSize int, args chatArgs) int {
 	if output <= 0 || contextSize <= 0 {
 		return output
 	}
-	serialized, err := json.Marshal(struct {
-		Messages []chatMessage `json:"messages"`
-		Tools    []openai.Tool `json:"tools,omitempty"`
-	}{Messages: args.Messages, Tools: args.Tools})
-	if err != nil {
-		return output
+	// Count the prompt the way a provider bills it. Marshaling the request
+	// would count an attached image's base64 data URL as ~1 token per 4
+	// characters, so one screenshot would read as ~1M prompt tokens against
+	// a 200k window and clamp every image turn's completion to the floor.
+	// Text is still chars/4; each image part costs by pixel area.
+	promptEst := 0
+	for _, message := range args.Messages {
+		promptEst += messagePromptTokens(message)
 	}
-	promptEst := len(serialized) / 4
+	if serialized, err := json.Marshal(args.Tools); err == nil {
+		promptEst += len(serialized) / 4
+	}
 	margin := contextSize/128 + 512 // ~0.8% + flat safety, scales with window
 	budget := contextSize - promptEst - margin
 	const floor = 512
@@ -662,6 +666,43 @@ func fitOutput(output, contextSize int, args chatArgs) int {
 		return budget
 	}
 	return output
+}
+
+// messagePromptTokens estimates one message's prompt cost the way providers
+// bill it: text and tool-call payloads at chars/4, image parts by pixel area
+// (not by the base64 payload they are carried in). Falls back to the text
+// length when a part carries no dimensions.
+func messagePromptTokens(message chatMessage) int {
+	total := 8 // role/formatting overhead, mirroring core's proxy
+	if message.Content != "" {
+		total += len(message.Content) / 4
+	}
+	for _, part := range message.MultiContent {
+		switch part.Type {
+		case openai.ChatMessagePartTypeText:
+			total += len(part.Text) / 4
+		case openai.ChatMessagePartTypeImageURL:
+			total += imageTokens(part.ImageURL)
+		}
+	}
+	for _, call := range message.ToolCalls {
+		total += len(call.Function.Name)/4 + len(call.Function.Arguments)/4 + 4
+	}
+	return total
+}
+
+// imageTokens approximates one image's prompt cost from the dimensions
+// carried in its data URL when known (the harness embeds none, so the
+// caller's size cap bounds it): the same (w*h)/750 rule core uses, floored
+// and capped so a small image still costs something and a huge one cannot
+// dominate the estimate.
+func imageTokens(url *openai.ChatMessageImageURL) int {
+	if url == nil || url.Detail == "" && len(url.URL) == 0 {
+		return 0
+	}
+	// The provider's own usage re-calibrates every response (core carries
+	// the measured offset), so a flat conservative estimate is enough here.
+	return 1100
 }
 
 // stripModelPrefix returns the model id after the last "/" — the canonical

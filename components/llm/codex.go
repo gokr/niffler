@@ -226,9 +226,7 @@ func codexInput(messages []chatMessage) (string, []any) {
 			}
 		case openai.ChatMessageRoleUser:
 			input = append(input, map[string]any{
-				"role": "user", "content": []any{map[string]any{
-					"type": "input_text", "text": messageText(message),
-				}},
+				"role": "user", "content": codexUserContent(message),
 			})
 		case openai.ChatMessageRoleAssistant:
 			if message.Content != "" {
@@ -263,6 +261,42 @@ func codexInput(messages []chatMessage) (string, []any) {
 		}
 	}
 	return strings.Join(system, "\n\n"), input
+}
+
+// codexUserContent converts one user message into the Responses API's
+// input content items. An image rides as its own input_image item (the
+// data URL is passed through — the Responses API accepts remote URLs and
+// data URLs alike, unlike Anthropic), and a text part stays its own
+// input_text item so a caption and its images keep their order.
+func codexUserContent(message openai.ChatCompletionMessage) []any {
+	if len(message.MultiContent) == 0 {
+		return []any{map[string]any{
+			"type": "input_text", "text": messageText(message),
+		}}
+	}
+	content := make([]any, 0, len(message.MultiContent))
+	for _, part := range message.MultiContent {
+		switch part.Type {
+		case openai.ChatMessagePartTypeText:
+			if strings.TrimSpace(part.Text) != "" {
+				content = append(content, map[string]any{
+					"type": "input_text", "text": part.Text,
+				})
+			}
+		case openai.ChatMessagePartTypeImageURL:
+			if part.ImageURL == nil || part.ImageURL.URL == "" {
+				continue
+			}
+			content = append(content, map[string]any{
+				"type": "input_image", "image_url": part.ImageURL.URL,
+			})
+		}
+	}
+	if len(content) == 0 {
+		content = append(content, map[string]any{"type": "input_text",
+			"text": messageText(message)})
+	}
+	return content
 }
 
 func consumeCodexItem(index int, item openai.ResponseOutputItem, content *strings.Builder,

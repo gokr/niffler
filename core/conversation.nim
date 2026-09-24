@@ -21,6 +21,7 @@ import ../sdk/niffler/jsonx
 import catalog
 import compaction
 import dispatch
+import attachments
 import approval
 import supervisor
 import retry
@@ -348,11 +349,17 @@ proc canonicalSeqOf(id: string): int =
 
 proc providerMessage(v: JsonNode): JsonNode =
   ## Strip storage-only telemetry from a canonical message before replay.
+  ## A message carrying image refs keeps its text and its refs; the pixels
+  ## are materialized later, once the whole projection is known (the budget
+  ## rule needs to see every message before deciding what stays).
   result = newJObject()
   result["role"] = v{"role"}
   result["content"] = v{"content"}
   for field in ["tool_call_id", "name", "tool_calls", "reasoning"]:
     if v{field} != nil: result[field] = v{field}
+  if hasAttachments(v):
+    result["attachments"] = v{"attachments"}
+    result["attachText"] = v{"attachText"}
 
 proc recoverUsage(v: JsonNode, promptTokens: var int,
                   contextUsed: var int, ctxSize: var int) =
@@ -681,7 +688,10 @@ proc estimateTokens*(messages: seq[JsonNode]): int =
   const overheadPerMessage = 8  ## role/formatting tokens, conservatively
   for m in messages:
     inc result, overheadPerMessage
-    result += m{"content"}.getStr("").len div 4
+    # contentTokens handles both shapes: the plain string and the
+    # multimodal array an image-carrying user turn materializes into
+    # (image parts cost by pixel area, like the provider's own estimate).
+    result += contentTokens(m)
     result += m{"reasoning"}.getStr("").len div 4
     let toolCalls = m{"tool_calls"}
     if toolCalls != nil:  # iterating a nil JArray SIGSEGVs (json.nim trap)
@@ -1327,6 +1337,77 @@ proc promoteSpill(ct: CoreTools, p: Persister, sessionId: string,
     echo "core: WARNING spill promotion failed (keeping the file pointer): " &
          e.msg
 
+proc materializeMessage*(ct: CoreTools, message: var JsonNode,
+                         retain: bool) =
+  ## Convert one stored/projection message that carries refs into the
+  ## provider shape: text + image_url parts, keeping the refs (so a later
+  ## elision can rebuild) and the original text (`attachText`) so the shape
+  ## is a pure function of the refs. A retained message that is already
+  ## materialized is left alone (no refetch). Best-effort: an unreadable
+  ## attachment doc degrades to the text marker instead of failing the turn.
+  if not hasAttachments(message): return
+  let hadImages = contentHasImages(message{"content"})
+  if retain and hadImages: return
+  let text =
+    if message{"attachText"} != nil: message{"attachText"}.getStr("")
+    else: message{"content"}.getStr("")
+  let refs = message{"attachments"}
+  var payloads: seq[string] = @[]
+  if retain:
+    for att in refs.elems:
+      var payload = ""
+      try:
+        let item = ct.storeGetItem("attachment", att{"id"}.getStr(""))
+        if item.value != nil:
+          payload = item.value{"data"}.getStr("")
+      except CatchableError:
+        payload = ""
+      payloads.add(payload)
+  message["attachText"] = %text
+  message["content"] = buildContent(text, refs.elems, payloads, retain)
+
+proc materializeProjection*(ct: CoreTools, messages: var seq[JsonNode]) =
+  ## Apply the projection rule to a whole message list. Idempotent: called
+  ## once after a resume load, and after each append so a new image can
+  ## elide the oldest one (the window only ever slides toward newer, so an
+  ## elided image is never re-materialized mid-session).
+  let retained = retainedMessages(messages, projectionBudget())
+  for i in 0 ..< messages.len:
+    if not hasAttachments(messages[i]): continue
+    materializeMessage(ct, messages[i], retained[i])
+
+# --- attachment storage (the pixels; the contract lives in attachments.nim) --
+
+proc storeAttachments*(ct: CoreTools, messageKey: string,
+                       refs: var seq[JsonNode],
+                       payloads: seq[string], convId: string) =
+  ## Persist one turn's attachment bytes under the message they belong to,
+  ## stamping each ref with its derived id. Ids are derived from the message
+  ## key, so a message and its pixels are addressable together and a
+  ## conversation delete can sweep both by id prefix. Best-effort like
+  ## message persistence: a store failure means a resume shows the text
+  ## marker instead of the image, never a lost turn.
+  for i in 0 ..< refs.len:
+    if i >= payloads.len or payloads[i].len == 0: continue
+    let id = messageKey & ":a" & $i
+    refs[i]["id"] = %id
+    try:
+      discard ct.storePutRev("attachment", id, %*{
+        "conversationId": convId,
+        "messageId": messageKey,
+        "index": i,
+        "name": refs[i]{"name"}.getStr(""),
+        "mimeType": refs[i]{"mimeType"}.getStr(""),
+        "bytes": refs[i]{"bytes"}.getInt(0),
+        "width": refs[i]{"width"}.getInt(0),
+        "height": refs[i]{"height"}.getInt(0),
+        "data": payloads[i],
+        "createdAt": epochTime(),
+      })
+    except CatchableError as e:
+      echo "core: WARNING attachment store failed (keeping the text " &
+           "marker): " & e.msg
+
 proc commitToolItem(ct: CoreTools, p: var Persister,
                     messages: var seq[JsonNode],
                     exposure: var ToolExposure,
@@ -1490,7 +1571,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     var mn = %*{"index": i, "source": sourceName(n.source), "id": n.id,
                 "role": m{"role"}.getStr(""),
                 "tokens": estimateTokens(@[m]),
-                "contentHash": contentDigest($m)}
+                "contentHash": contentDigest($snapshotForm(m))}
     if n.source == nsCanonical: mn["canonicalSeq"] = %n.canonicalSeq
     manifest.add(mn)
   let cuts = permittedCuts(ids, sources, roles, callIds, answerIds)
@@ -1503,7 +1584,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   var contentRows = newJArray()
   for i in 1 .. lastCovered:
     contentRows.add(%*{"index": i, "source": sources[i], "id": ids[i],
-                       "message": messages[i]})
+                       "message": snapshotForm(messages[i])})
   let contentJson = $contentRows
   let pages = chunkSnapshotContent(contentJson)
   let attemptId = newId()
@@ -1665,7 +1746,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   # A concurrent steer may append outside the cut, but replacement never
   # installs over a changed covered span (§6.1).
   for i in coveredFrom ..< cutIdx:
-    if manifest[i]{"contentHash"}.getStr("") != contentDigest($messages[i]):
+    if manifest[i]{"contentHash"}.getStr("") !=
+        contentDigest($snapshotForm(messages[i])):
       if onEvent != nil:
         onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                               "reason": "compact:stale"})
@@ -2605,6 +2687,27 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # turn and persists nothing.
   let isWake = args{"wake"}.getBool(false)
   var turnContent = content
+  # Dropped-image attachments (docs/WIRE.md "Attachments"): validated here,
+  # stored beside the message, and materialized into the provider content
+  # array below. Validation is strict — core never trusts a client's claim
+  # about MIME or size — and a failure fails the call BEFORE anything is
+  # persisted, so a half-attached turn is impossible.
+  let attachmentsArg = args{"attachments"}
+  let hasAttachmentsArg = attachmentsArg != nil and
+                          attachmentsArg.jkind == JArray
+  var attachRefs: seq[JsonNode] = @[]
+  var attachPayloads: seq[string] = @[]
+  if hasAttachmentsArg and attachmentsArg.len > 0:
+    let validated = validateAttachments(attachmentsArg)
+    if not validated.ok:
+      return %*{"error": "attachment rejected: " & validated.error}
+    attachRefs = validated.refs
+    attachPayloads = validated.payloads
+    if content.len == 0 and not isWake:
+      # An image with no caption is still a turn; the model needs something
+      # to anchor the image to, and providers reject an image-only user
+      # message on some protocols.
+      turnContent = "(image attached)"
   let hasThinking = args.kind == JObject and args.hasKey("thinking")
   let hasTitle = args.kind == JObject and args.hasKey("title")
   let hasCwd = args.kind == JObject and args.hasKey("cwd")
@@ -2878,6 +2981,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
           stored = keptM
           storedNodes = keptN
     for m in stored: entry.messages.add(m)
+    # Image attachments: rebuild the provider projection from the refs. The
+    # rule is greedy-newest within the budget and a pure function of the
+    # refs, so this reproduces exactly the projection the previous turn
+    # sent — a resumed conversation must not silently lose or re-add pixels.
+    materializeProjection(ct, entry.messages)
     # A2/A3: usage and cumulative cache counters persist in the header
     # (written by persistConversationRuntime), so the context meter and
     # cache metrics survive a runner restart. seqNo continues after the
@@ -3086,7 +3194,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     if turnContent.len == 0:
       turnContent = "[wake] background subagents settled"
 
-  if content.len == 0 and not isWake:
+  # A caption-less image drop is still a TURN: the attachments ARE the
+  # content. Without this guard the call fell into the control/status branch
+  # below, answered ok, and ran no turn at all — the dropped image vanished
+  # while every client saw success.
+  if content.len == 0 and attachRefs.len == 0 and not isWake:
     if hasCompact:
       # Manual compaction: run the §6.3 replaceable-compactor rung now, with
       # no LLM turn and no user message. The attempt installs a checkpoint
@@ -3216,6 +3328,13 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     status["modelOverride"] = %entry.modelOverride
     return status
 
+  if attachRefs.len > 0:
+    # Stamp the refs with the key persistMsg will allocate for this message
+    # (nextMsgKey peeks it) and store the bytes under it BEFORE the append,
+    # so the message is born with its final refs — no rewrite, and no window
+    # where a stored message names pixels that do not exist.
+    storeAttachments(ct, nextMsgKey(entry.persister), attachRefs,
+                     attachPayloads, sessionId)
   let userMsg =
     if isWake:
       # Marked as runtime machinery so rendering, trimming and compaction
@@ -3223,9 +3342,22 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       # human typed (the same structural lane as subagent-settled notices).
       %*{"role": "user", "content": turnContent,
          "notice": {"kind": "wake"}}
+    elif attachRefs.len > 0:
+      # The stored message keeps the text and the small refs, never the
+      # base64: a `list` page carrying inline images outgrows the bus
+      # max_payload and resume silently truncates. The pixels live in their
+      # own docs (kind "attachment", id = this message's key + ":a<i>").
+      %*{"role": "user", "content": turnContent,
+         "attachText": turnContent,
+         "attachments": %attachRefs, "attachmentCount": attachRefs.len}
     else:
       %*{"role": "user", "content": turnContent}
   ctxAppend(entry.persister, entry.messages, userMsg)
+  if attachRefs.len > 0:
+    # Materialize into the projection: the newest images within the budget
+    # carry their data URL, older ones an honest text marker. Deterministic
+    # from the refs, so every resume rebuilds the same projection.
+    materializeProjection(ct, entry.messages)
   if entry.persister.seqNo == 1 and not hasTitle and not isWake:
     # first message of a fresh conversation: title it from the message so
     # session lists are descriptive instead of conv-<epoch>. An explicit
