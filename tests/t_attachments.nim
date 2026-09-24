@@ -176,12 +176,28 @@ proc main() =
   if attachmentId.len > 0:
     let doc = call(nc, "store", "get", %*{
       "kind": "attachment", "id": attachmentId})
-    check("the pixels live in their own attachment document",
+    check("the attachment metadata doc records its message and dimensions",
           doc{"ok"}.getBool(false) and
-          doc{"value"}{"data"}.getStr("") == pngB64, $doc)
-    check("the attachment doc records its message and dimensions",
           doc{"value"}{"messageId"}.getStr("").startsWith("attach-basic:") and
           doc{"value"}{"width"}.getInt(0) == 1, $doc)
+    check("the metadata doc carries NO pixels (a list page must stay small)",
+          not ($doc).contains(pngB64), "the metadata doc inlines the pixels")
+    let pixels = call(nc, "store", "get", %*{
+      "kind": "attachmentdata", "id": attachmentId})
+    check("the pixels live in their own attachmentdata document",
+          pixels{"ok"}.getBool(false) and
+          pixels{"value"}{"data"}.getStr("") == pngB64, $pixels)
+
+    # The enumeration the delete sweep depends on must stay under the bus
+    # payload limit even with MANY images. Listing pixels here (the original
+    # design) silently broke at two images; assert the metadata page is
+    # small enough to page at the count cap.
+    let listed = call(nc, "store", "list", %*{
+      "kind": "attachment", "idPrefix": "attach-"}, 10_000)
+    check("the attachment metadata kind is listable",
+          listed{"ok"}.getBool(true), $listed)
+    check("a metadata page is far under the bus payload limit",
+          ($listed).len < 512_000, $($listed).len)
 
   # --- a resume rebuilds the projection ------------------------------------
   # The runner is killed; the next session call resumes from the store and
@@ -226,6 +242,48 @@ proc main() =
             ($userMsg{"content"}).contains("image attached"), $userMsg)
       check("the jpeg was sent as image/jpeg",
             ($req3).contains("data:image/jpeg;base64,"), "")
+
+  # --- three images in one turn (a multi-file drop) ------------------------
+  let beforeMulti = requestCount()
+  let multi = call(nc, "core", "session", %*{
+    "sessionId": "attach-multi", "content": "compare these",
+    "attachments": [
+      %*{"type": "image", "name": "a.png", "mimeType": "image/png",
+         "data": pngB64, "width": 1, "height": 1},
+      %*{"type": "image", "name": "b.jpg", "mimeType": "image/jpeg",
+         "data": jpegB64, "width": 1, "height": 1},
+      %*{"type": "image", "name": "c.png", "mimeType": "image/png",
+         "data": pngB64, "width": 1, "height": 1}]}, 120_000)
+  check("a three-image turn succeeds", multi{"ok"}.getBool(false), $multi)
+  let req4 = waitRequest(beforeMulti)
+  check("the multi-image turn reached the provider", req4 != nil, "")
+  if req4 != nil:
+    var userMsg: JsonNode = nil
+    for m in req4{"messages"}:
+      if m{"role"}.getStr("") == "user": userMsg = m
+    if userMsg != nil:
+      var images = 0
+      var names = 0
+      for part in userMsg{"content"}.listOf:
+        if part{"type"}.getStr("") == "image_url":
+          inc images
+          let url = part{"image_url"}{"url"}.getStr("")
+          if url.endsWith(jpegB64): inc names
+      check("all three images reached the provider, in order", images == 3,
+            $images)
+      check("each image kept its own bytes and MIME", names == 1, $names)
+  let multiStored = call(nc, "store", "list", %*{
+    "kind": "message", "idPrefix": "attach-multi:"})
+  for item in multiStored{"items"}:
+    if item{"value"}{"role"}.getStr("") == "user":
+      check("the multi-image message stored all three refs",
+            item{"value"}{"attachments"}.len == 3 and
+            item{"value"}{"attachmentCount"}.getInt(0) == 3,
+            $item{"value"}{"attachments"})
+      check("each ref got its own attachment document id",
+            item{"value"}{"attachments"}[0]{"id"}.getStr("") !=
+            item{"value"}{"attachments"}[1]{"id"}.getStr(""),
+            $item{"value"}{"attachments"})
 
   # --- refusals persist nothing --------------------------------------------
   let messagesBefore = call(nc, "store", "list", %*{
@@ -273,8 +331,12 @@ proc main() =
           not gone{"ok"}.getBool(true) or gone{"error"} != nil, $gone)
   let left = call(nc, "store", "list", %*{
     "kind": "attachment", "idPrefix": "attach-basic:"})
-  check("no attachment document survives the conversation",
+  check("no attachment metadata survives the conversation",
         left{"items"}.len == 0, $left)
+  let leftPixels = call(nc, "store", "list", %*{
+    "kind": "attachmentdata", "idPrefix": "attach-basic:"})
+  check("no attachment pixels survive the conversation",
+        leftPixels{"items"}.len == 0, $leftPixels)
 
   report("ATTACHMENTS TEST")
 

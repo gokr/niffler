@@ -1357,7 +1357,7 @@ proc materializeMessage*(ct: CoreTools, message: var JsonNode,
     for att in refs.elems:
       var payload = ""
       try:
-        let item = ct.storeGetItem("attachment", att{"id"}.getStr(""))
+        let item = ct.storeGetItem("attachmentdata", att{"id"}.getStr(""))
         if item.value != nil:
           payload = item.value{"data"}.getStr("")
       except CatchableError:
@@ -1382,16 +1382,29 @@ proc storeAttachments*(ct: CoreTools, messageKey: string,
                        refs: var seq[JsonNode],
                        payloads: seq[string], convId: string) =
   ## Persist one turn's attachment bytes under the message they belong to,
-  ## stamping each ref with its derived id. Ids are derived from the message
-  ## key, so a message and its pixels are addressable together and a
-  ## conversation delete can sweep both by id prefix. Best-effort like
-  ## message persistence: a store failure means a resume shows the text
-  ## marker instead of the image, never a lost turn.
+  ## stamping each ref with its derived id.
+  ##
+  ## Two documents per image, deliberately: a tiny `attachment` metadata doc
+  ## and the pixels in a separate `attachmentdata` doc. A `list` reply is
+  ## bounded by the bus max_payload (8MiB) and there is no field projection
+  ## in the store contract, so ONE metadata doc per image is what keeps
+  ## enumeration (the conversation-delete sweep, any future UI listing)
+  ## possible at all: pixels in the listed docs meant two images in a page
+  ## already exceeded the limit and the reply silently never arrived — the
+  ## exact failure that truncated a resume before.
+  ##
+  ## Ids are derived from the message key, so a message and its pixels are
+  ## addressable together and a delete can sweep both by id prefix.
+  ## Best-effort like message persistence: a store failure means a resume
+  ## shows the text marker instead of the image, never a lost turn.
   for i in 0 ..< refs.len:
     if i >= payloads.len or payloads[i].len == 0: continue
     let id = messageKey & ":a" & $i
     refs[i]["id"] = %id
     try:
+      discard ct.storePutRev("attachmentdata", id,
+        %*{"data": payloads[i], "bytes": payloads[i].len,
+           "createdAt": epochTime()})
       discard ct.storePutRev("attachment", id, %*{
         "conversationId": convId,
         "messageId": messageKey,
@@ -1401,7 +1414,6 @@ proc storeAttachments*(ct: CoreTools, messageKey: string,
         "bytes": refs[i]{"bytes"}.getInt(0),
         "width": refs[i]{"width"}.getInt(0),
         "height": refs[i]{"height"}.getInt(0),
-        "data": payloads[i],
         "createdAt": epochTime(),
       })
     except CatchableError as e:

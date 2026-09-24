@@ -45,10 +45,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Responses API's `input_image` items, so images work on all three protocols;
   `fitOutput` bills an image by pixel area instead of by its base64 length, so
   an attached screenshot no longer collapses a turn's output budget to the
-  floor. Pixels are stored in their own `attachment` documents — never inline
-  in the message — because a `list` page carrying two or three screenshots
-  would exceed the bus payload ceiling that already truncated a resume once;
-  the message keeps refs, the projection keeps the newest images within
+  floor. Pixels are stored apart from the message — a pixel-free
+  `attachment` metadata doc plus an `attachmentdata` doc per image — because
+  a `list` page carrying two or three screenshots exceeds the bus payload
+  ceiling that already truncated a resume once, and the metadata kind is what
+  enumeration reads; the message keeps refs, the projection keeps the newest
+  images within
   `NIF_ATTACH_BUDGET` (older ones degrade to an honest text marker), and the
   rule is a pure function of the refs so a restart rebuilds the same request.
   `conversation_delete` sweeps the pixels with the conversation.

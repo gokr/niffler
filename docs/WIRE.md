@@ -708,13 +708,17 @@ turn, ≤ 4.5 MB per turn): a refusal fails the call with a reason naming the
 image, and nothing is persisted — there is no half-attached turn.
 
 **Pixels are stored apart from the message.** The `message` document keeps
-the text plus small `attachments` refs; the bytes live in their own
-`attachment` documents (kind `attachment`, id `<messageId>:a<i>`, carrying
-`data` plus the message id, MIME, dimensions and original name). This is not
-an optimization: a `list` reply is bounded by the bus `max_payload` (8 MiB),
-so two or three screenshots inline in a page would make resume's read never
-arrive — the failure mode that already clobbered conversations once. Refs
-also keep fork-copy, search and recall cheap.
+the text plus small `attachments` refs. The bytes live in TWO documents per
+image, both with id `<messageId>:a<i>`: kind `attachment` holds only metadata
+(message id, MIME, dimensions, original name) and kind `attachmentdata`
+holds the base64 pixels. The split is not an optimization. A `list` reply is
+bounded by the bus `max_payload` (8 MiB), the store contract has no field
+projection, and the metadata kind is what enumeration reads — so pixels in
+the listed documents meant a page of two screenshots could never be
+delivered (the failure mode that already truncated a resume). Keep the
+metadata kind pixel-free; that is the property that lets a delete sweep, or
+any future listing, see every attachment at all. Refs also keep fork-copy,
+search and recall cheap.
 
 **The projection is deterministic.** The in-memory context materializes each
 message's refs into the provider shape — text parts first, then `image_url`

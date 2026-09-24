@@ -519,18 +519,27 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           discard
     except CatchableError as e:
       echo "core: warning — conversation messages not deleted: " & e.msg
-    # Attachment pixels are their own docs (kind "attachment", ids under the
-    # session's message keys — see core/attachments.nim). Deleting the
-    # messages leaves them orphaned and permanently unreferenced, so sweep
-    # them with the rest of the conversation. The store helpers live here
-    # (attachments.nim is deliberately pure, like compaction.nim), so the
-    # kind name is the only thing shared — keep it in step with the writer.
+    # Attachment pixels are their own docs (kinds "attachment" metadata +
+    # "attachmentdata" pixels, ids under the session's message keys — see
+    # core/attachments.nim). Deleting the messages leaves them orphaned and
+    # permanently unreferenced, so sweep them with the rest of the
+    # conversation. Enumerating the METADATA kind is what makes this work:
+    # a `list` page of pixel docs would exceed the bus max_payload after two
+    # images and the reply would never arrive. Both kinds are swept by the
+    # same derived id, and the pixels kind is swept by prefix too, so a
+    # metadata write that failed cannot strand an orphan. The kind names live
+    # here (attachments.nim is deliberately pure, like compaction.nim) beside
+    # the writer that uses them — keep the two in step.
     try:
-      for item in ct.storeListAll("attachment", sessionId & ":"):
+      for kind in ["attachment", "attachmentdata"]:
         try:
-          ct.storeDel("attachment", item{"id"}.getStr(""))
-        except CatchableError:
-          discard
+          for item in ct.storeListAll(kind, sessionId & ":"):
+            try:
+              ct.storeDel(kind, item{"id"}.getStr(""))
+            except CatchableError:
+              discard
+        except CatchableError as e:
+          echo "core: warning — conversation " & kind & " docs not deleted: " & e.msg
     except CatchableError as e:
       echo "core: warning — conversation attachments not deleted: " & e.msg
     for rec in [("session", sessionId & ":tools"),
