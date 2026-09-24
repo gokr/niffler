@@ -90,7 +90,7 @@ func main() {
 		shutdownCancel()
 	})
 
-	comp.Tool("models_providers", map[string]any{
+	comp.ToolConcurrent("models_providers", map[string]any{
 		"type":        "object",
 		"description": "List known LLM providers and their connection metadata without exposing credentials. Use this before choosing a provider or checking which providers are configured.",
 		"properties": map[string]any{
@@ -110,7 +110,7 @@ func main() {
 		return fitListResult("providers", providers, len(providers)), nil
 	})
 
-	comp.Tool("models_list", map[string]any{
+	comp.ToolConcurrent("models_list", map[string]any{
 		"type":        "object",
 		"description": "Search the effective model catalog after models.dev, plugin corrections, and local overrides are merged. Use this to compare model capabilities, limits, modalities, and prices before selection.",
 		"properties": map[string]any{
@@ -133,7 +133,7 @@ func main() {
 		return fitListResult("models", models, total), nil
 	})
 
-	comp.Tool("models_get", map[string]any{
+	comp.ToolConcurrent("models_get", map[string]any{
 		"type":        "object",
 		"description": "Get one exact provider/model descriptor, including connection metadata, capabilities, limits, and pricing. Use this for runtime model configuration; use models_resolve first when the provider is unknown.",
 		"properties": map[string]any{
@@ -160,7 +160,7 @@ func main() {
 		return result, nil
 	})
 
-	comp.Tool("models_resolve", map[string]any{
+	comp.ToolConcurrent("models_resolve", map[string]any{
 		"type":        "object",
 		"description": "Resolve an exact provider/model reference without silently choosing among ambiguous providers. Use this for user-supplied model names; a bare id is accepted only when it is globally unique.",
 		"properties": map[string]any{
@@ -180,7 +180,7 @@ func main() {
 		return catalog.resolve(args.Reference, args.Provider), nil
 	})
 
-	comp.Tool("models_refresh", map[string]any{
+	comp.ToolConcurrent("models_refresh", map[string]any{
 		"type":        "object",
 		"description": "Queue a refresh of models.dev and every registered model-source plugin, retaining each last-known-good result on failure. Use when the user asks for newly released models or after installing a catalog extension.",
 		"properties": map[string]any{
@@ -201,7 +201,7 @@ func main() {
 		return report, nil
 	})
 
-	comp.Tool("models_sources", map[string]any{
+	comp.ToolConcurrent("models_sources", map[string]any{
 		"type":        "object",
 		"description": "Show catalog provenance and health: models.dev baseline, registered plugin patches, stale fallbacks, and the optional local override. Use this to diagnose questionable model metadata.",
 		"properties":  map[string]any{},

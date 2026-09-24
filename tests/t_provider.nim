@@ -221,6 +221,55 @@ proc main() =
         configuredMessages{"items"}.len == 0,
         $configuredHeader & " " & $configuredMessages)
 
+  # Provider and model are ONE pin: a model-only call must also pin the
+  # provider the model resolves under (deepseek is active here), so a later
+  # harness-global provider switch cannot send the model to a provider that
+  # does not serve it. The response and the header must agree.
+  check("model-only session call pins the provider it resolved under",
+        configured{"providerOverride"}.getStr("") == "openrouter" and
+        configuredHeader{"value"}{"providerOverride"}.getStr("") == "openrouter",
+        $configured & " " & $configuredHeader)
+
+  # An explicit provider pin is respected as-is: it must NOT be re-pinned to
+  # the harness-active provider, and it must keep the model override chosen
+  # for it (model and provider stay one selection, whichever half moves).
+  let crossPin = call(nc, "core", "session", %*{
+    "sessionId": "provider-model-config", "provider": "deepseek"
+  }, 30_000)
+  check("provider-only session call keeps the model override and pins the provider",
+        crossPin{"ok"}.getBool(false) and
+        crossPin{"providerOverride"}.getStr("") == "deepseek" and
+        crossPin{"modelOverride"}.getStr("") == "custom-session-model", $crossPin)
+  # A later harness-global switch to a different provider must not move this
+  # conversation's pin: the status readback still resolves under deepseek.
+  let stillPinned = call(nc, "core", "session", %*{
+    "sessionId": "provider-model-config"
+  }, 30_000)
+  check("explicit provider pin survives the harness-global provider",
+        stillPinned{"provider"}.getStr("") == "deepseek" and
+        stillPinned{"providerOverride"}.getStr("") == "deepseek", $stillPinned)
+
+  # A legacy conversation (model pin, no provider pin) is healed on the
+  # runner's first load: the model was chosen under some provider, and that
+  # provider must be pinned so a global switch cannot move it later.
+  discard call(nc, "store", "put", %*{
+    "kind": "conversation", "id": "provider-legacy-halfpin",
+    "value": %*{"createdAt": epochTime(), "modelOverride": "legacy-model"}
+  })
+  let healed = call(nc, "core", "session", %*{
+    "sessionId": "provider-legacy-halfpin"
+  }, 30_000)
+  check("legacy model-only pin is healed to the resolved provider",
+        healed{"ok"}.getBool(false) and
+        healed{"providerOverride"}.getStr("") == "openrouter" and
+        healed{"modelOverride"}.getStr("") == "legacy-model", $healed)
+  let healedHeader = call(nc, "store", "get", %*{
+    "kind": "conversation", "id": "provider-legacy-halfpin"
+  })
+  check("healed provider pin is persisted",
+        healedHeader{"value"}{"providerOverride"}.getStr("") == "openrouter",
+        $healedHeader)
+
   # --- session config: persist a thinking-effort selection (the TUI's
   # ctrl+g cycle) without inference and without being rejected as a
   # malformed session call.

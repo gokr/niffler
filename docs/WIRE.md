@@ -49,13 +49,19 @@ reg.depart             # {name, pid, ...}, graceful process departure; the logic
                        #   component remains while another replica PID is live
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
-                       #   tool "session" {sessionId, content?, model?, thinking?,
-                       #   title?, cwd?, profile?, discovery?, tools?, maxRounds?,
-                       #   maxCalls?, maxTokens?, approvals?, limits?, compact?,
-                       #   export?, wake?};
+                       #   tool "session" {sessionId, content?, provider?, model?,
+                       #   thinking?, title?, cwd?, profile?, discovery?, tools?,
+                       #   maxRounds?, maxCalls?, maxTokens?, approvals?, limits?,
+                       #   compact?, export?, wake?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
-                       #   the conversation override. thinking (low|medium|high|max,
+                       #   the conversation override. provider pins the conversation
+                       #   to a stored nickname (empty clears to the harness-global
+                       #   default); a model-only call pins the provider the model
+                       #   resolves under in the same header write — provider and
+                       #   model are one selection, never separate halves (see
+                       #   "Provider/model pins are one selection"). thinking
+                       #   (low|medium|high|max,
                        #   empty clears) persists a per-conversation thinking-effort
                        #   selection forwarded to the LLM as reasoning_effort
                        #   (provider-dependent; providers without support never see it).
@@ -683,6 +689,39 @@ header (`approvals`, `limits`), so a resumed runner re-applies exactly what
 the human last chose, and both are echoed by the status readback and the turn
 result (`approvals`, `limits`) for UIs. Invalid values are refused with a
 clear error (unknown mode, unknown limit key, out-of-range value).
+
+### Provider/model pins are one selection
+
+A conversation's provider and model are pinned **together**, never
+separately, because a model id is only meaningful under the provider it was
+chosen from:
+
+- `provider` (a stored nickname; empty clears it) and `model` (empty clears
+  it) are the two halves of one pin, persisted in the conversation header as
+  `providerOverride`/`modelOverride`.
+- **A model-only call pins the provider it resolves under.** When `model`
+  arrives without `provider`, core resolves the effective provider
+  (`llm_resolve`) at that moment and persists both fields in one header
+  write. This is what makes `/model` in a UI safe: the model cannot later be
+  sent to a provider that does not serve it because another UI switched the
+  harness-global active provider.
+- **The turn result and status readback always report the effective pair**
+  (`provider`, `providerSource`, `model`, `catalog`, `context`,
+  `providerOverride`, `modelOverride`), so a UI can show what a turn will
+  actually use rather than what was selected earlier.
+- **A legacy half-pin is healed on resume.** A conversation stored before
+  this invariant (a model override with no provider pin) gets the provider
+  it currently resolves under pinned to it on the runner's first load, so
+  old subagents and conversations stop following global provider switches.
+- **Explicit failures are loud.** An explicit `provider` that cannot be
+  resolved is an error naming it; it never silently falls through to the
+  harness-global default (which would send the model to a foreign provider).
+  The no-provider case still resolves through the active provider, by design.
+
+Agents inherit the whole pin: a fresh subagent gets the parent's provider
+pin alongside its effective model, so the child cannot drift under a later
+global switch either. `session_info` and the status readback expose
+`provider`/`model` so a caller can read back the effective pair.
 
 ### Session calls during a turn
 

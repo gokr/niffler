@@ -503,3 +503,100 @@ func TestSlashRegistrationPublishesSpec(t *testing.T) {
 		t.Fatalf("second param = %v, want force/bool/false", params[1])
 	}
 }
+
+// TestSerialToolDoesNotStallConcurrentDelivery pins the fix for the stall
+// where a serialized background call (the models refresh's llm_models_source)
+// held the writer barrier behind a streaming chat, and the blocked NATS
+// subscription callback then stopped delivery of llm_resolve and every new
+// chat for the length of a turn. A serialized handler waiting for a concurrent
+// handler must not delay an unrelated concurrent call that can run now.
+func TestSerialToolDoesNotStallConcurrentDelivery(t *testing.T) {
+	url := startTestNATS(t)
+	client, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	t.Setenv("NIF_NATS_URL", url)
+
+	chatStarted := make(chan struct{})
+	releaseChat := make(chan struct{})
+	serialStarted := make(chan struct{})
+	resolveStarted := make(chan struct{})
+	c := New("llm-stall", "0.1.0").
+		ToolConcurrent("chat", map[string]any{"type": "object", "properties": map[string]any{}},
+			func(_ *Component, _ json.RawMessage) (any, error) {
+				close(chatStarted)
+				<-releaseChat
+				return map[string]any{"ok": true}, nil
+			}).
+		Tool("models_source", map[string]any{"type": "object", "properties": map[string]any{}},
+			func(_ *Component, _ json.RawMessage) (any, error) {
+				close(serialStarted)
+				return map[string]any{"ok": true}, nil
+			}).
+		ToolConcurrent("resolve", map[string]any{"type": "object", "properties": map[string]any{}},
+			func(_ *Component, _ json.RawMessage) (any, error) {
+				close(resolveStarted)
+				return map[string]any{"ok": true}, nil
+			})
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseChat) }) }
+	defer release()
+
+	request := func(tool string) chan error {
+		done := make(chan error, 1)
+		go func() {
+			env := Envelope{V: 1, ID: NewID(), Kind: KindCall,
+				Tool: tool, Args: json.RawMessage(`{}`)}
+			data, marshalErr := env.Marshal()
+			if marshalErr != nil {
+				done <- marshalErr
+				return
+			}
+			_, requestErr := client.Request("svc.llm-stall.call", data, 5*time.Second)
+			done <- requestErr
+		}()
+		return done
+	}
+
+	chatDone := request("chat")
+	select {
+	case <-chatStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent chat did not start")
+	}
+	serialDone := request("models_source")
+	select {
+	case <-serialStarted:
+		t.Fatal("serialized tool overlapped the running concurrent handler")
+	case <-time.After(200 * time.Millisecond):
+	}
+	// The serialized call must be queued, not blocking delivery: an unrelated
+	// concurrent call (llm_resolve) must start and finish while chat runs and
+	// models_source waits.
+	resolveDone := request("resolve")
+	select {
+	case <-resolveStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent resolve was stalled behind the queued serialized call")
+	}
+	if err := <-resolveDone; err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	release()
+	select {
+	case <-serialStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("serialized tool did not run after the concurrent handler finished")
+	}
+	for _, done := range []chan error{chatDone, serialDone} {
+		if err := <-done; err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+	}
+}

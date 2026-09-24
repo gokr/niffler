@@ -1154,8 +1154,13 @@ use `taskpools` for isolated jobs, and never use `asyncdispatch`. In Go,
 ordinary `Tool` handlers remain exclusive; an audited handler can use
 `ToolConcurrent` (bounded to 16 in flight by default, configurable through
 `ConcurrentLimit`). Concurrent handlers must synchronize shared state and must
-not synchronously call a serialized tool on their own component. This
-server-side choice is independent of the runner-facing `x-harness.parallel`
+not synchronously call a serialized tool on their own component. Dispatch is
+scheduled by a per-component delivery loop: a NATS callback only enqueues, so
+a long handler (a streaming chat) can never stall delivery of unrelated
+calls, and a serialized handler starts only when no concurrent handler is
+running rather than parking a writer lock that would block the readers behind
+it too. This server-side choice is independent of the runner-facing
+`x-harness.parallel`
 hint: a tool that declares `parallel: true` may be dispatched
 concurrently with other parallel-marked tools in the same assistant
 message (`grep` and `read` do; `files`, though read-only, does not, so

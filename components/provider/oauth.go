@@ -116,6 +116,11 @@ type oauthManager struct {
 	comp   *sdk.Component
 	now    func() time.Time
 	randID func() (string, error)
+	// refreshMu serializes OAuth token refreshes across concurrent read
+	// tools (provider_get/provider_active are concurrent so a slow model
+	// probe cannot delay them). Without it, two readers could both refresh
+	// the same token and race the store's revision check.
+	refreshMu sync.Mutex
 }
 
 func newOAuthManager(sc *storeClient, comp *sdk.Component) *oauthManager {
@@ -722,6 +727,21 @@ func (m *oauthManager) ensureFresh(p Provider, rev int) (Provider, error) {
 	}
 	if p.OAuth.Expires > m.now().Add(oauthRefreshAhead).UnixMilli() {
 		return p, nil
+	}
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+	// Re-read under the refresh lock: a concurrent reader may have refreshed
+	// the token while this caller waited, in which case its own refresh would
+	// race the store's expectRev and fail a live chat.
+	if raw, rev2, err := m.sc.get(kindProvider, p.Nickname); err == nil && raw != nil && rev2 != nil {
+		var current Provider
+		if json.Unmarshal(raw, &current) == nil && current.OAuth != nil &&
+			current.OAuth.Expires > m.now().Add(oauthRefreshAhead).UnixMilli() {
+			return current.withDefaults(), nil
+		}
+		if rev2 != nil {
+			rev = *rev2
+		}
 	}
 	spec, ok := m.specs[p.Protocol]
 	if !ok {

@@ -580,7 +580,7 @@ func main() {
 	})
 
 	// --------------------------------------------------------------- list
-	comp.Tool("provider_list", map[string]any{
+	comp.ToolConcurrent("provider_list", map[string]any{
 		"type":        "object",
 		"description": "List all configured providers and which one is active. API keys are redacted.",
 		"properties":  map[string]any{},
@@ -607,7 +607,7 @@ func main() {
 	})
 
 	// ------------------------------------------------------------- status
-	comp.Tool("provider_status", map[string]any{
+	comp.ToolConcurrent("provider_status", map[string]any{
 		"type":        "object",
 		"description": "Return the effective active provider without exposing its API key.",
 		"properties":  map[string]any{},
@@ -680,7 +680,7 @@ func main() {
 	})
 
 	// ------------------------------------------------------------- active
-	comp.Tool("provider_active", map[string]any{
+	comp.ToolConcurrent("provider_active", map[string]any{
 		"type":        "object",
 		"description": "Return the currently active provider config (API key included for programmatic use).",
 		"properties":  map[string]any{},
@@ -700,7 +700,7 @@ func main() {
 	})
 
 	// --------------------------------------------------------------- get
-	comp.Tool("provider_get", map[string]any{
+	comp.ToolConcurrent("provider_get", map[string]any{
 		"type":        "object",
 		"description": "Return one stored provider config by nickname, including its API key, for internal routing.",
 		"properties": map[string]any{
@@ -744,7 +744,7 @@ func main() {
 	// (e.g. Synthetic's "hf:zai-org/GLM-5.3-Flash"). The credential stays
 	// inside this component: callers name a stored provider (nickname), or
 	// pass an explicit key for the connect form before it is saved.
-	comp.Tool("provider_models", map[string]any{
+	comp.ToolConcurrent("provider_models", map[string]any{
 		"type":        "object",
 		"description": "List model ids a provider currently serves, from its /models endpoint. Use providerListModel (stored credential, default) or providerExplicitModel (explicit base URL + key, e.g. while connecting a new provider). Falls back to the models.dev catalog ids when the endpoint fails or the provider has none.",
 		"properties": map[string]any{

@@ -683,16 +683,23 @@ proc parentTier(model: string): int =
   defaultAgentTier()
 
 proc childModel(c: Component, parentSession, requested, requestedTier: string): tuple[
-    ok: bool, model, error: string] =
-  ## Resolve a fresh child's model. An explicit exact model remains supported;
-  ## `modelTier` selects from the configured weak/medium/strong ladder and is
-  ## clamped to the parent's effective tier. Both controls together are
-  ## rejected so a caller cannot mistake a silently ignored tier for policy.
-  ## Continuations never call this: their model is frozen at birth.
+    ok: bool, model, provider, error: string] =
+  ## Resolve a fresh child's model, and the provider pin it belongs to.
+  ## An explicit exact model remains supported; `modelTier` selects from the
+  ## configured weak/medium/strong ladder and is clamped to the parent's
+  ## effective tier. Both controls together are rejected so a caller cannot
+  ## mistake a silently ignored tier for policy. Continuations never call
+  ## this: their model is frozen at birth.
+  ##
+  ## The provider travels with the model: a child inheriting only a model id
+  ## would resolve it against the harness-global active provider, so a
+  ## provider switch in another UI could send the child's model to a provider
+  ## that does not serve it. An explicit requested model carries no provider
+  ## (core pins the provider it resolves under at the child's birth).
   if requested.len > 0 and requestedTier.len > 0:
-    return (false, "", "model and modelTier are mutually exclusive")
+    return (false, "", "", "model and modelTier are mutually exclusive")
   if requested.len > 0:
-    return (true, requested, "")
+    return (true, requested, "", "")
   try:
     let info = c.request("core", "session_info",
                          %*{"sessionId": parentSession}, 10_000)
@@ -701,29 +708,41 @@ proc childModel(c: Component, parentSession, requested, requestedTier: string): 
       # with no conversation of its own). Degrade, don't fail: inheritance
       # is a default, not a requirement — the requested model (possibly
       # empty, meaning the provider's default) stands alone.
-      return (true, requested, "")
+      return (true, requested, "", "")
     let override = info{"modelOverride"}.getStr("").strip()
     let inherited = if override.len > 0: override
                     else: info{"model"}.getStr("").strip()
+    # The provider pin that makes the inherited model coherent. session_info
+    # does not carry it today, so read the conversation header directly (the
+    # same best-effort read the effective-model reporter uses below).
+    var parentProvider = ""
+    try:
+      let header = comp.storeGet("conversation", parentSession, 10_000).value
+      if header != nil:
+        parentProvider = header{"providerOverride"}.getStr("").strip()
+        if parentProvider.len == 0:
+          parentProvider = header{"provider"}.getStr("").strip()
+    except CatchableError:
+      discard
     if requestedTier.len > 0:
       let requestedRank = tierRank(requestedTier)
       if requestedRank < 0:
-        return (false, "", "modelTier must be weak, medium, or strong")
+        return (false, "", "", "modelTier must be weak, medium, or strong")
       let effectiveRank = min(requestedRank, parentTier(inherited))
       let selected = tierModel(effectiveRank)
       if selected.len == 0:
-        return (false, "", "model tier '" & agentTiers[effectiveRank] &
+        return (false, "", "", "model tier '" & agentTiers[effectiveRank] &
           "' is not configured (set NIF_AGENT_MODEL_" &
           agentTiers[effectiveRank].toUpperAscii() & ")")
-      return (true, selected, "")
-    return (true, inherited, "")
+      return (true, selected, parentProvider, "")
+    return (true, inherited, parentProvider, "")
   except CatchableError as e:
     # Same degradation as above, and note that core RAISES on an error
     # result (an unknown session reaches here as an exception, not an
     # {"error": ...} envelope). Inheritance is a default: degrade quietly.
     stderr.writeLine("agent: parent model inheritance unavailable (" &
                      e.msg & ") — using the requested model as-is")
-    return (true, requested, "")
+    return (true, requested, "", "")
 
 # --- continuation ------------------------------------------------------------
 # A continuation is a NEW TURN in an EXISTING child conversation, not a new
@@ -858,7 +877,8 @@ proc effectiveControls(child: string): JsonNode =
     discard
 
 proc childSessArgs(child, task, model, thinking: string,
-                   toolArgs: JsonNode = nil; fresh = true): JsonNode =
+                   toolArgs: JsonNode = nil; fresh = true;
+                   provider = ""): JsonNode =
   ## The child session call.
   ##
   ## `fresh` is a BIRTH: task preamble, optional model/thinking, optional
@@ -887,6 +907,11 @@ proc childSessArgs(child, task, model, thinking: string,
       discard
     if model.len > 0:
       result["model"] = %model
+      # Provider and model are one pin: without the provider the child's
+      # model would follow whatever the harness-global active provider is
+      # later (core also pins the resolved provider when this is empty).
+      if provider.len > 0:
+        result["provider"] = %provider
     if thinking.len > 0:
       result["thinking"] = %thinking
     if toolArgs != nil:
@@ -1076,7 +1101,7 @@ discard comp.tool("agent_run", runSchema,
                        extra = %*{"sessionId": target})
     # Model inheritance on the fresh path only: a continuation's model was
     # frozen at its first turn (the result's effectiveControls reports it).
-    var resolvedModel = (ok: true, model: "", error: "")
+    var resolvedModel = (ok: true, model: "", provider: "", error: "")
     if isFresh:
       let requestedModel = toolArgs{"model"}.getStr("").strip()
       let requestedTier = toolArgs{"modelTier"}.getStr("").strip()
@@ -1124,7 +1149,7 @@ discard comp.tool("agent_run", runSchema,
     let env = callEnvelope("session",
       childSessArgs(child, task, resolvedModel.model,
                     toolArgs{"thinking"}.getStr(""), toolArgs,
-                    fresh = isFresh),
+                    fresh = isFresh, provider = resolvedModel.provider),
       originalCaller(toolArgs))
     let resp = requestChildTurn(c, subject, env, timeoutMs,
                                 parentSession, child)
@@ -1220,7 +1245,7 @@ discard comp.tool("agent_spawn", spawnSchema,
                        "continuing an existing session",
                        extra = %*{"sessionId": target})
     # Model inheritance on the fresh path only (see agent_run).
-    var resolvedModel = (ok: true, model: "", error: "")
+    var resolvedModel = (ok: true, model: "", provider: "", error: "")
     if isFresh:
       let requestedModel = toolArgs{"model"}.getStr("").strip()
       let requestedTier = toolArgs{"modelTier"}.getStr("").strip()
@@ -1274,7 +1299,7 @@ discard comp.tool("agent_spawn", spawnSchema,
     let env = callEnvelope("session",
       childSessArgs(child, task, resolvedModel.model,
                     toolArgs{"thinking"}.getStr(""), toolArgs,
-                    fresh = isFresh),
+                    fresh = isFresh, provider = resolvedModel.provider),
       originalCaller(toolArgs))
     let data = env.encode()
     let inbox = "_INBOX.agentjob." & jobId

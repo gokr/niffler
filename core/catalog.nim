@@ -201,6 +201,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "sessionId": {"type": "string"},
         "content": {"type": "string"},
         "title": {"type": "string", "description": "Rename the conversation (shown in session lists); non-empty updates the title, empty/absent leaves it"},
+        "provider": {"type": "string", "description": "Conversation provider pin (stored nickname); empty clears it back to the harness-global default. A non-empty model pins the provider it resolves under when this is absent, so model and provider always travel together"},
         "model": {"type": "string", "description": "Conversation model override; empty clears it"},
         "thinking": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default). Values: low, medium, high, max (deepest)"},

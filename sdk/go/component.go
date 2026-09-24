@@ -111,16 +111,29 @@ type Component struct {
 	drainHandlers []func(*Component)
 	subs          []*nats.Subscription
 	handlerMu     sync.RWMutex // serial handlers are exclusive; concurrent tools share
-	concurrentWG  sync.WaitGroup
-	concurrentSem chan struct{}
-	closeMu       sync.Mutex
-	shutdown      chan struct{}
-	shutdownOnce  sync.Once
-	owner         *Component
-	inHandler     bool
-	deferAnnounce bool
-	contractMu    sync.RWMutex // protects setup while deferred calls/events can arrive
-	ready         bool
+	// Call dispatch. The NATS subscription callback only enqueues; deliverLoop
+	// owns all scheduling state and spawns handler goroutines. A serialized
+	// tool must never stall delivery of unrelated calls behind it (a background
+	// models refresh held llm_resolve and every chat for the length of a
+	// streaming turn), so nothing here ever waits on handlerMu inside a
+	// callback. handlerDone reports a finished handler back to deliverLoop;
+	// dispatchStop/dispatchDone bound Close to accepted-but-unfinished work.
+	callQueue        chan *nats.Msg
+	handlerDone      chan bool // true = a serialized handler finished
+	dispatchStop     chan struct{}
+	dispatchDone     chan struct{}
+	dispatchMu       sync.Mutex // guards dispatchStarted (lifecycle, not scheduling)
+	dispatchStarted  bool
+	dispatchStopOnce sync.Once
+	concurrentLimit  int
+	closeMu          sync.Mutex
+	shutdown         chan struct{}
+	shutdownOnce     sync.Once
+	owner            *Component
+	inHandler        bool
+	deferAnnounce    bool
+	contractMu       sync.RWMutex // protects setup while deferred calls/events can arrive
+	ready            bool
 	// Idle work (see OnIdle): registered before Connect, run by its own
 	// ticker goroutine under the serial handler lock.
 	idleEvery   time.Duration
@@ -130,13 +143,23 @@ type Component struct {
 
 const defaultConcurrentLimit = 16
 
+// defaultCallQueueLimit bounds accepted-but-not-yet-running calls. The queue
+// only ever holds work waiting on the serial worker or a free concurrent slot;
+// a full queue makes the NATS callback block instead of growing without bound,
+// which is still far better than blocking on a multi-minute handler.
+const defaultCallQueueLimit = 128
+
 // New creates a component with the given bus identity.
 func New(name, version string) *Component {
 	c := &Component{
-		Name:          name,
-		Version:       version,
-		shutdown:      make(chan struct{}),
-		concurrentSem: make(chan struct{}, defaultConcurrentLimit),
+		Name:            name,
+		Version:         version,
+		shutdown:        make(chan struct{}),
+		concurrentLimit: defaultConcurrentLimit,
+		callQueue:       make(chan *nats.Msg, defaultCallQueueLimit),
+		handlerDone:     make(chan bool),
+		dispatchStop:    make(chan struct{}),
+		dispatchDone:    make(chan struct{}),
 	}
 	c.owner = c
 	return c
@@ -151,6 +174,193 @@ func (c *Component) handlerView() *Component {
 		drainHandlers: c.drainHandlers,
 		owner:         c, inHandler: true,
 	}
+}
+
+// startDispatch launches the delivery loop that owns call scheduling. It runs
+// for the life of the connection; NATS callbacks only enqueue, so a long
+// handler (a streaming chat) can never stall delivery of unrelated calls.
+func (c *Component) startDispatch() {
+	c.dispatchMu.Lock()
+	defer c.dispatchMu.Unlock()
+	if c.dispatchStarted {
+		return
+	}
+	c.dispatchStarted = true
+	go c.deliverLoop()
+}
+
+// stopDispatch ends the delivery loop and waits for every running handler to
+// finish, so replies owed to callers are preserved across Close. Calls that
+// were accepted but never started are refused instead of dropped silently.
+// Close serializes callers through closeMu, so this runs once per component.
+func (c *Component) stopDispatch() {
+	c.dispatchMu.Lock()
+	started := c.dispatchStarted
+	c.dispatchStarted = false
+	c.dispatchMu.Unlock()
+	if !started {
+		return
+	}
+	c.dispatchStopOnce.Do(func() { close(c.dispatchStop) })
+	<-c.dispatchDone
+}
+
+// pendingCall is one resolved call waiting for a handler slot.
+type pendingCall struct {
+	m    *nats.Msg
+	env  *Envelope
+	tool *Tool
+}
+
+// deliverLoop is the single scheduler for accepted calls. It never runs a
+// handler itself and never parses or waits inside a NATS callback; the
+// callback only enqueues, so a long handler (a streaming chat) can never
+// stall delivery of unrelated calls. That is the fix for the stall where the
+// models refresh's serialized llm_models_source held the writer barrier
+// behind a streaming chat and the blocked callback stopped llm_resolve and
+// every new chat for the length of the turn.
+//
+// Scheduling:
+//   - concurrent calls drain up to ConcurrentLimit, independent of a waiting
+//     serialized call (a serialized tool must not block later concurrent
+//     work);
+//   - one serialized call at a time, started only when no concurrent handler
+//     is running, so the handlerMu write lock is acquired, never parked (a
+//     parked writer would block the readers behind it too);
+//   - event handlers and taps keep taking handlerMu exclusively, exactly as
+//     before; they may hold a serialized call back briefly, never the reverse.
+func (c *Component) deliverLoop() {
+	defer close(c.dispatchDone)
+	var (
+		serialQueue     []*pendingCall
+		concurrentQueue []*pendingCall
+		serialRunning   bool
+		concurrent      int
+	)
+	startSerial := func(pc *pendingCall) {
+		serialRunning = true
+		go func() {
+			// Acquired, not waited on: concurrent == 0 held this decision.
+			c.handlerMu.Lock()
+			c.invokeTool(pc.m, pc.env, pc.tool)
+			c.handlerMu.Unlock()
+			c.handlerDone <- true
+		}()
+	}
+	startConcurrent := func(pc *pendingCall) {
+		concurrent++
+		go func() {
+			c.handlerMu.RLock()
+			c.invokeTool(pc.m, pc.env, pc.tool)
+			c.handlerMu.RUnlock()
+			c.handlerDone <- false
+		}()
+	}
+	tryStart := func() {
+		// Serialized calls first when the barrier is free: a continuous
+		// concurrent queue must not starve a waiting writer (events and taps
+		// need that barrier too).
+		if !serialRunning && concurrent == 0 && len(serialQueue) > 0 {
+			pc := serialQueue[0]
+			serialQueue = serialQueue[1:]
+			startSerial(pc)
+			return
+		}
+		for len(concurrentQueue) > 0 && concurrent < c.concurrentLimit {
+			pc := concurrentQueue[0]
+			concurrentQueue = concurrentQueue[1:]
+			startConcurrent(pc)
+		}
+	}
+	refuse := func(pc *pendingCall) {
+		c.respond(pc.m, Envelope{V: 1, ID: pc.env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "shutting-down",
+				Message: "component is shutting down"}})
+	}
+	for {
+		tryStart()
+		select {
+		case m := <-c.callQueue:
+			if pc, ok := c.resolveCall(m); ok {
+				if pc.tool.concurrent {
+					concurrentQueue = append(concurrentQueue, pc)
+				} else {
+					serialQueue = append(serialQueue, pc)
+				}
+			}
+		case isSerial := <-c.handlerDone:
+			if isSerial {
+				serialRunning = false
+			} else {
+				concurrent--
+			}
+		case <-c.dispatchStop:
+			// Drain running handlers, then refuse every accepted-but-unstarted
+			// call so no caller is left without a reply.
+			for serialRunning || concurrent > 0 {
+				if <-c.handlerDone {
+					serialRunning = false
+				} else {
+					concurrent--
+				}
+			}
+			for {
+				select {
+				case m := <-c.callQueue:
+					if pc, ok := c.resolveCall(m); ok {
+						refuse(pc)
+					}
+				default:
+					goto drained
+				}
+			}
+		drained:
+			for _, pc := range serialQueue {
+				refuse(pc)
+			}
+			for _, pc := range concurrentQueue {
+				refuse(pc)
+			}
+			return
+		}
+	}
+}
+
+// resolveCall parses and validates one accepted call, answering malformed,
+// not-ready and unknown-tool calls directly. ok=false means the caller has
+// already been answered.
+func (c *Component) resolveCall(m *nats.Msg) (*pendingCall, bool) {
+	env := ParseEnvelope(m.Data)
+	if env.Kind != KindCall {
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "bad-envelope", Message: "expected call envelope"}})
+		return nil, false
+	}
+	c.contractMu.RLock()
+	ready := c.ready
+	var tool *Tool
+	if ready {
+		for i := range c.tools {
+			if c.tools[i].Name == env.Tool {
+				copy := c.tools[i]
+				tool = &copy
+				break
+			}
+		}
+	}
+	c.contractMu.RUnlock()
+	if !ready {
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "not-ready", Message: "component contract is not ready"}})
+		return nil, false
+	}
+	if tool == nil {
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "no-tool",
+				Message: fmt.Sprintf("component %s has no tool %q", c.Name, env.Tool)}})
+		return nil, false
+	}
+	return &pendingCall{m: m, env: env, tool: tool}, true
 }
 
 // Tool registers a serialized tool. It runs exclusively with respect to all
@@ -185,14 +395,14 @@ func (c *Component) ToolConcurrent(name string, schema map[string]any, h ToolHan
 	return c
 }
 
-// ConcurrentLimit sets the maximum number of ToolConcurrent handlers in
-// flight. It must be called before Connect or Run; values below one become one.
-// The default is 16.
+// ConcurrentLimit sets the maximum number of ToolConcurrent handlers running
+// at once. It must be called before Connect or Run; values below one become
+// one. The default is 16.
 func (c *Component) ConcurrentLimit(limit int) *Component {
 	if limit < 1 {
 		limit = 1
 	}
-	c.concurrentSem = make(chan struct{}, limit)
+	c.concurrentLimit = limit
 	return c
 }
 
@@ -427,9 +637,12 @@ func (c *Component) Connect() error {
 	if c.shutdown == nil {
 		c.shutdown = make(chan struct{})
 	}
-	if c.concurrentSem == nil {
-		c.concurrentSem = make(chan struct{}, defaultConcurrentLimit)
-	}
+	// concurrentLimit is initialized in New and only mutated by
+	// ConcurrentLimit (documented before Connect); the delivery loop reads it
+	// after this point, so no write happens here.
+	// The delivery loop starts with the connection: callbacks enqueue, the
+	// loop schedules serialized and concurrent handlers.
+	c.startDispatch()
 	// Idle work starts with the connection (registered before Connect) and
 	// stops in Close.
 	c.startIdle()
@@ -530,10 +743,10 @@ func (c *Component) Close() {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
-	// Concurrent callbacks return immediately after handing work to a
-	// goroutine, so subscription Drain alone cannot observe those handlers.
-	// Wait before closing the shared NATS connection to preserve their replies.
-	c.concurrentWG.Wait()
+	// Stop scheduling and wait for every accepted handler to finish before
+	// closing the shared NATS connection, so replies owed to callers are
+	// preserved (a handler may still be streaming its response).
+	c.stopDispatch()
 	c.stopIdle()
 	_ = c.nc.FlushTimeout(time.Second)
 	c.nc.Close()
@@ -686,61 +899,25 @@ func (c *Component) announceLocked(subject string) error {
 }
 
 func (c *Component) handleCall(m *nats.Msg) {
+	// Enqueue only: never run a handler (or wait for one) inside the NATS
+	// subscription callback. nats.go invokes one subscription's callbacks
+	// serially, so a callback blocked on a handler would also stop delivery
+	// of every call queued behind it — the failure mode where a background
+	// models-source call held llm_resolve and every chat off for minutes.
+	select {
+	case c.callQueue <- m:
+	case <-c.dispatchStop:
+		// Shutting down: refuse rather than enqueue work nobody will serve.
+		c.replyNoTool(m)
+	}
+}
+
+// replyNoTool refuses a call the delivery loop will not run (shutdown path).
+func (c *Component) replyNoTool(m *nats.Msg) {
 	env := ParseEnvelope(m.Data)
-	if env.Kind != KindCall {
-		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
-			Error: &ErrorInfo{Code: "bad-envelope", Message: "expected call envelope"}})
-		return
-	}
-
-	c.contractMu.RLock()
-	ready := c.ready
-	var tool *Tool
-	if ready {
-		for i := range c.tools {
-			if c.tools[i].Name == env.Tool {
-				copy := c.tools[i]
-				tool = &copy
-				break
-			}
-		}
-	}
-	c.contractMu.RUnlock()
-	if !ready {
-		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
-			Error: &ErrorInfo{Code: "not-ready", Message: "component contract is not ready"}})
-		return
-	}
-	if tool == nil {
-		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
-			Error: &ErrorInfo{Code: "no-tool",
-				Message: fmt.Sprintf("component %s has no tool %q", c.Name, env.Tool)}})
-		return
-	}
-
-	if !tool.concurrent {
-		c.handlerMu.Lock()
-		defer c.handlerMu.Unlock()
-		c.invokeTool(m, env, tool)
-		return
-	}
-
-	// nats.go invokes one subscription's callbacks serially. Reserve both a
-	// bounded slot and the shared/read side of the handler barrier before
-	// returning from this callback, then execute asynchronously. Acquiring the
-	// RLock here preserves delivery order around a later serialized tool: that
-	// writer cannot leapfrog this accepted call, and later calls cannot leapfrog
-	// the waiting writer because this subscription callback is blocked there.
-	sem := c.concurrentSem
-	sem <- struct{}{}
-	c.handlerMu.RLock()
-	c.concurrentWG.Add(1)
-	go func() {
-		defer c.concurrentWG.Done()
-		defer c.handlerMu.RUnlock()
-		defer func() { <-sem }()
-		c.invokeTool(m, env, tool)
-	}()
+	c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+		Error: &ErrorInfo{Code: "shutting-down",
+			Message: "component is shutting down"}})
 }
 
 func (c *Component) invokeTool(m *nats.Msg, env *Envelope, tool *Tool) {

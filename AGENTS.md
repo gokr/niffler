@@ -56,7 +56,12 @@ working in every language.
   handler. Stateless process replicas are the other same-component option; do
   not replicate single-writer or process-local mutable state (`store`, current
   `edit` undo state). Go tools serialize by default but may explicitly use the
-  SDK's `ToolConcurrent` after a shared-state audit.
+  SDK's `ToolConcurrent` after a shared-state audit. Go dispatch is queued, not
+  callback-blocking: a NATS callback only enqueues, the per-component delivery
+  loop starts serialized handlers only when no concurrent handler runs, and a
+  background/management tool must never be the serial lane's head-of-line
+  blocker for hot reads — register audited read tools `ToolConcurrent`
+  (`llm`, `provider` and `models` do).
   Periodic work that no request can carry goes through the SDKs' **idle seam**
   (`onIdle`, all three SDKs — docs/MANUAL.md "Idle work"): Nim runs it in the
   pump loop, serialized like a handler, TS on the promise chain, Go on a ticker

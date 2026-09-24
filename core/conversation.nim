@@ -2681,6 +2681,26 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     entry.providerOverride = header{"providerOverride"}.getStr("")
     entry.modelOverride = header{"modelOverride"}.getStr("")
     entry.thinkingEffort = header{"thinkingEffort"}.getStr("")
+    # Heal a legacy half-pin: a model override stored before provider/model
+    # pinning existed has no provider pin, so its model would follow whatever
+    # the harness-global active provider becomes later — an unrelated UI's
+    # provider switch then sends the model to a provider that may not serve
+    # it. Pin the provider the model resolves under NOW, once, and persist it:
+    # the model was chosen under this provider, and a later global switch must
+    # not move it. Best-effort: an unresolvable pin still reads as the global
+    # default (the turn surfaces the error), it just doesn't get a fabricated
+    # one.
+    if entry.providerOverride.len == 0 and entry.modelOverride.len > 0:
+      try:
+        let healed = ct.dispatchToolCall("llm_resolve",
+          %*{"model": entry.modelOverride}, 10_000)
+        let resolvedProvider = healed{"provider"}.getStr("").strip()
+        if resolvedProvider.len > 0:
+          entry.providerOverride = resolvedProvider
+          ct.updateConversationHeader(sessionId,
+            %*{"providerOverride": entry.providerOverride})
+      except CatchableError:
+        discard
     # Frozen per-session controls (subagent scoping): the header carries
     # them across runner resumes; the first session call's args win while
     # the header is unset. The allowlist is enforced at the dispatch gate
@@ -2934,17 +2954,36 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
 
   # Presence of the key means "set/clear the override"; omission preserves
   # the conversation's previous selection.
+  #
+  # Provider and model form ONE pin. A model id is only meaningful under the
+  # provider it was chosen from, so a model-only selection (the TUI's /model,
+  # an agent child's inherited model) resolves the effective provider at the
+  # moment of selection and persists both fields in the same header write.
+  # Without this, `modelOverride` alone kept resolving against whatever the
+  # harness-global active provider happened to be later: another UI's
+  # provider switch silently sent the model to a provider that may not serve
+  # it, while the conversation still displayed the old provider.
   if args.kind == JObject and args.hasKey("provider"):
     entry.providerOverride = args{"provider"}.getStr("").strip()
     ct.updateConversationHeader(sessionId,
       %*{"providerOverride": entry.providerOverride})
   if args.kind == JObject and args.hasKey("model"):
-    # The arg was never assigned to the entry: the block persisted the
-    # header's own (stale) value back — a model-only session call updated
-    # nothing and the turn resolved the global default (t_provider).
     entry.modelOverride = args{"model"}.getStr("").strip()
-    ct.updateConversationHeader(sessionId,
-      %*{"modelOverride": entry.modelOverride})
+    if entry.modelOverride.len > 0 and entry.providerOverride.len == 0:
+      # Pin the provider the model resolves under, atomically with the model
+      # below. A resolution failure is not fatal to the selection (the turn
+      # will surface it), but it must not fabricate a pin either.
+      try:
+        var pinArgs = %*{"model": entry.modelOverride}
+        let pinned = ct.dispatchToolCall("llm_resolve", pinArgs, 10_000)
+        let resolvedProvider = pinned{"provider"}.getStr("").strip()
+        if resolvedProvider.len > 0:
+          entry.providerOverride = resolvedProvider
+      except CatchableError:
+        discard
+    ct.updateConversationHeader(sessionId, %*{
+      "providerOverride": entry.providerOverride,
+      "modelOverride": entry.modelOverride})
   if args.kind == JObject and args.hasKey("thinking"):
     entry.thinkingEffort = args{"thinking"}.getStr("").strip()
     if entry.thinkingEffort notin ["", "low", "medium", "high", "max"]:

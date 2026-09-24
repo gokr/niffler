@@ -48,6 +48,40 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A background management call could stall a component's whole call
+  stream.** The Go SDK ran every tool on the NATS subscription callback: a
+  serialized `llm_models_source` (called by the models component's periodic
+  refresh) waited on the writer barrier behind a streaming `chat`, and because
+  nats.go invokes one subscription's callbacks serially, that blocked callback
+  also stopped delivery of `llm_resolve` and every new chat for the length of
+  the turn. Observed live: `llm_resolve` unanswered for 25 s while a chat
+  streamed, then 2.7 ms the instant the refresh finished. Dispatch is now a
+  per-component delivery loop: callbacks only enqueue, serialized handlers
+  start only when no concurrent handler is running (the writer lock is
+  acquired, never parked), and a waiting serialized call does not block later
+  concurrent calls. `llm_models_source`, the provider component's read tools
+  (`provider_list`/`provider_status`/`provider_active`/`provider_get`/
+  `provider_models`) and the models component's read tools are registered
+  `ToolConcurrent` so a slow network probe or a streaming chat can never delay
+  a hot read; OAuth token refresh is serialized under its own lock. The SDK
+  regression test pins that a queued serialized call does not stall an
+  unrelated concurrent call.
+- **Provider and model are now pinned together.** A conversation could store
+  a `modelOverride` with no `providerOverride`; the model then resolved against
+  whatever the harness-global active provider happened to be on each chat
+  call, so another UI's provider switch silently sent the model to a provider
+  that might not serve it while the conversation still displayed the old
+  provider. A model-only session call now resolves the provider it belongs to
+  and persists both fields in one header write; a legacy half-pin is healed on
+  the runner's first load by pinning the provider the model currently resolves
+  under; fresh subagents inherit the parent's provider pin alongside the
+  model; the `session` schema documents `provider`; and an explicit provider
+  override that fails is a loud error instead of a silent fall-through to the
+  global default. `WIRE.md` states the invariant.
+- **A failed runtime resolution no longer masquerades as current state in the
+  TUI.** `llm_resolve` timing out kept the last-known-good provider/model in
+  the header with no indication they were stale. The header now marks the
+  selection (`!`) and retries the resolution once; a success clears the mark.
 - **`core.spawn` answered `ok` for a component whose registration the catalog
   refused.** The supervisor started the process and the call returned
   immediately, so a component whose tool name clashed with an existing one (the

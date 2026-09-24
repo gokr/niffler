@@ -1150,8 +1150,11 @@ func main() {
 	// hidden tool via reg.publish and calls it on its refresh cycle. The
 	// patch adds ids each provider actually serves (probed after chats) to
 	// the catalog; models.dev metadata stays authoritative for everything
-	// else.
-	comp.Tool("llm_models_source", map[string]any{
+	// else. Concurrent: it is a background management read (a mutex-guarded
+	// map snapshot), and the models refresh must never wait behind a
+	// streaming chat — that wait used to stall llm_resolve and every new
+	// chat, because a serialized handler blocked the component's call queue.
+	comp.ToolConcurrent("llm_models_source", map[string]any{
 		"type":        "object",
 		"description": "Live model ids observed per provider; x-models-source v1 patch.",
 		"properties": map[string]any{
