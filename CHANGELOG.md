@@ -84,6 +84,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **repomap auto-append is on by default, still behind the admission gates.**
+  `NIF_REPOMAP_AUTOAPPEND` flipped from opt-in to on: a workspace open injects
+  the repo map without an env nudge, while the census floor (50 covered files)
+  and the content gate (800 B / 25 symbols / 5 files) still withhold micro
+  repos and stubs — full30-shaped workspaces pay nothing, as the gate
+  verification predicted (30/30 withheld). `NIF_REPOMAP_AUTOAPPEND=0` opts out
+  and the on-demand `repo_map` tool is unaffected either way. WIRE, MANUAL and
+  the REPOMAP research docs still described the old opt-in default and were
+  reworded (`c2fe1ca`).
 - **The desktop UI moved to its own repository and installs through the plugin
   lifecycle.** The `ui/` sources are gone from this checkout; the UI is now the
   interactive plugin `gokr/niffler-ui`, and `make all` / `make build` build
@@ -158,6 +167,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   TUI.** `llm_resolve` timing out kept the last-known-good provider/model in
   the header with no indication they were stale. The header now marks the
   selection (`!`) and retries the resolution once; a success clears the mark.
+- **A round with an empty repo-map lane no longer discards queued edit
+  diagnostics.** `drainMap` ended with `ct.diagStream.queue.setLen(0)`, so any
+  round whose map lane was empty (gated, late, or default-off) wiped the
+  diagnostics the edit tool had queued asynchronously — the fresh full30 run
+  received zero diagnostic messages across 20 edits while
+  gopls/pyright/nimtortoise/tsserver were all reported warm. Map and
+  diagnostics lanes now drain independently (`drainMapQueue` /
+  `drainDiagnosticsQueue`, each consuming only its own lane), and
+  `t_context_drains` pins the ordering (`21b6c3b`).
+- **The edit tool is never silent about diagnostics for a registry-known
+  language.** The automatic diagnostics push after an edit returned empty in
+  almost every path: the queued acknowledgement from the lsp component was
+  discarded, so an accepted check looked exactly like no check at all, and the
+  one loud path keyed off `E_LSP_SCOPE`, an error lsp stopped raising for
+  sibling checkouts when it began indexing out-of-workspace files under their
+  own root — "checked and clean" and "nothing happened" were
+  indistinguishable. Silence is now reserved for files no `lsp_servers`
+  registry entry claims (a .md file is nobody's language-server business) and
+  for edits with no conversation to report back to; everything else names the
+  `.diag` lane as the component words it, or says the check did not run and
+  why. The verdict itself stays asynchronous on purpose: waiting for it made
+  every edit pay for cold servers (`ea49f1f`).
+- **`plugin_update` repairs stale artifacts on a no-op update.** A
+  branch-pinned package was rebuilt only when `git pull` moved HEAD, so an old
+  install record (no built commit recorded) or a manually deleted `var/bin`
+  artifact stayed broken until a real release landed. The checkout commit is
+  recorded at install, tracked source edits and missing binaries/runtimes
+  count as changes, and the rebuild happens in place — keeping the old
+  components running if the rebuild fails (`cf7ff2f`).
 - **`core.spawn` answered `ok` for a component whose registration the catalog
   refused.** The supervisor started the process and the call returned
   immediately, so a component whose tool name clashed with an existing one (the
@@ -256,6 +294,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **bench: a DeepSeek Harness (dsh) lane**, so Niffler can be paired against
+  DeepSeek's first-party harness on the same tasks and model.
+  `bench/adapters/dsh.mjs` drives DSH's `sdk-minimal` JSON-RPC profile — one
+  process per task workspace, `initialize` selecting `deepseek-official`,
+  model `deepseek-v4-flash` and native effort `low`, the session retained
+  across feedback rounds — with an isolated `DSH_HOME` and first-party
+  `DEEPSEEK_API_KEY` (never LLM Gateway); usage and tool-call counts come from
+  SDK `session.event` notifications and raw JSONL sessions stay under the
+  cell's `dsh-home/sessions` for audit. The lane is opt-in
+  (`--harness niffler,dsh`), not part of `--harness all`, requires a built
+  DeepSeek Harness CLI (`DSH_BIN`/`DEEPSEEK_HARNESS_BIN`), and ships with a
+  mock fixture and adapter tests; an SDK startup/turn error is an error cell,
+  not a zero-token score. The Niffler harness root also excludes
+  `AGENTS.local.md` from the injected context, alongside `AGENTS.md`. A first
+  full30 paired report at low effort is included
+  (`bench/reports/full30-direct-dsh-rc3-low-report.md`) (`11a9257`,
+  `ec94e3f`, `17fac99`).
 - **docs: JEV research note** (`docs/research/JEV.md`) — a map of the Jev
   decision-model control layer (TypeSafe's parallel question primitives
   `noul`/`choice`/`score` and the OpenJEV reimplementation) and how each piece
@@ -823,12 +878,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   full30 gate verification then ran all 30 tasks with append forced on and
   gates live: **30/30 workspaces withheld** ("workspace below census floor"),
   0 published — the ungated-ON lane's +41% prompt tax (34.5k vs 24.1k tokens)
-  is gone by construction. Default stays opt-in. Reports:
+  is gone by construction. The default was opt-in at the time of the report;
+  it has since flipped (see the Changed entry above). Reports:
   `bench/reports/repomap-ab-multi10-low.md`,
   `bench/reports/repomap-gates-full30.md` (`3f9f3e1`, `6bd1247`).
 
-- **repomap append admission gates.** The workspace-open auto-append (still
-  opt-in via `NIF_REPOMAP_AUTOAPPEND=1`) now admits a map only when it is
+- **repomap append admission gates.** The workspace-open auto-append (now on
+  by default; `NIF_REPOMAP_AUTOAPPEND=0` opts out) admits a map only when it is
   worth injecting (docs/research/REPOMAP-GATES.md): a **size floor** —
   workspaces under `NIF_REPOMAP_MIN_CENSUS` (default 50) covered source
   files are never mapped, decided from the census before any tag parsing —
