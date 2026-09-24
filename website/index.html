@@ -119,7 +119,10 @@
     <article class="card">
       <h3 data-i18n-html="why.3h"><span class="num">03</span> self-extension</h3>
       <p data-i18n-html="why.3p">The agent writes source → calls <code>builder.build</code> → calls
-      <code>core.spawn</code> → the tool is live. Adding a capability is a
+      <code>core.spawn</code> → the tool is live — and a spawn the catalog
+      refuses (a clashing tool name; the namespace is flat and globally
+      unique) fails the call with the reason and rolls the attempt back, so
+      the name is free for a corrected retry. Adding a capability is a
       tool call, and the LLM does it to itself mid-conversation. Community
       packages install the same way: <code>plugin_install</code> clones,
       compiles from source and spawns — approval-gated, always built from
@@ -250,7 +253,7 @@
         kind (general / fabric / expert / selfextend), each verified
         green by a reference implementation, with per-turn feedback
         loops, protected-file guards and provider token accounting —
-        niffler / pi / opencode / codewhale / claudecode × several
+        niffler / pi / opencode / codewhale / claudecode / dsh × several
         models, a <code>--thinking low|max</code> matrix, plus a paired
         niffler-expert variant that measures the advisory peer. SWE-bench
         Verified and Datacurve's DeepSWE (113 long-horizon tasks) run as
@@ -264,7 +267,12 @@
         low and high
         (<code>bench/reports/full30-{syn-large,deepseek-v4.1-flash}-*-report.md</code>);
         the first claudecode pairing on full30 ended 30/30 vs 30/30, with
-        niffler leaner per turn (7.3 vs 9.7 avg turns); a niffler-only rerun
+        niffler leaner per turn (7.3 vs 9.7 avg turns); the fresh
+        direct-DeepSeek pairing against DeepSeek Harness itself (no gateway,
+        DSH's sdk-minimal profile) ended 30/30 vs 30/30 at thinking=low, with
+        niffler averaging fewer turns, ~17 s vs ~45 s and 39k vs 51k tokens
+        per cell
+        (<code>bench/reports/full30-direct-dsh-rc3-low-report.md</code>); a niffler-only rerun
         on the optimized stack holds 30/30 at roughly half the prompt volume
         (48 s / 20.5k prompt tokens vs 63 s / 38.9k per cell)
         (<code>bench/reports/full30-synlarge-low-niffler-report.md</code>);
