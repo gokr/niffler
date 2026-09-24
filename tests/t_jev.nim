@@ -6,6 +6,25 @@ import natsnim
 import envelope
 import helpers
 
+proc openSub(nc: NatsConnection, subject: string): ptr natsSubscription =
+  var sub: ptr natsSubscription
+  if not checkStatus(natsConnection_SubscribeSync(addr sub, nc.conn,
+                                                 subject.cstring)):
+    fail("subscribe " & subject)
+  sub
+
+proc pollEnvelope(sub: ptr natsSubscription,
+                  timeoutMs: int64): tuple[found: bool, env: Envelope] =
+  var msg: ptr natsMsg
+  if natsSubscription_NextMsg(addr msg, sub, timeoutMs) != NATS_OK:
+    return (false, Envelope())
+  let data = $natsMsg_GetData(msg)
+  natsMsg_Destroy(msg)
+  try:
+    return (true, decode(data))
+  except CatchableError:
+    return (false, Envelope())
+
 proc serve(portFile: string) =
   let server = newSocket()
   server.bindAddr(Port(0), "127.0.0.1")
@@ -154,20 +173,27 @@ proc main() =
       $shadowDoc)
   turn("done", tid, "")
   stopProcess(http)
+  let logSub = openSub(coreNc, "ev.log.jev")
   let tid2 = "turn-shadow-2"
   turn("start", tid2, "read the Niffler harness guide")
-  var failures = 0
-  for _ in 0 ..< 100:
-    failures = 0
-    for kind in ["skills", "tools"]:
-      let failed = call(coreNc, "store", "get", %*{
-        "kind": "jevshadow", "id": sid & ":" & tid2 & ":" & kind}){"value"}
-      if failed{"status"}.getStr("") == "error" and
-          failed{"result"}{"ok"}.getBool(true) == false:
-        inc failures
-    if failures == 2: break
-    sleep(100)
-  check("shadow outage is recorded for both candidate sets", failures == 2, $failures)
+  var absentWarn = false
+  for _ in 0 ..< 60:
+    let (found, env) = pollEnvelope(logSub, 200)
+    if found and env.kind == ekEvent and
+        env.payload{"level"}.getStr("") == "warn" and
+        env.payload{"msg"}.getStr("").contains("backend absent"):
+      absentWarn = true
+      break
+  check("shadow warns when the backend disappears", absentWarn)
+  sleep(500)  # pending marker deleted, the paired job dropped by the cooldown
+  var leftovers: seq[string]
+  for kind in ["skills", "tools"]:
+    let doc = call(coreNc, "store", "get", %*{
+      "kind": "jevshadow", "id": sid & ":" & tid2 & ":" & kind}){"value"}
+    if doc != nil and doc{"status"} != nil:
+      leftovers.add(kind & ":" & doc{"status"}.getStr(""))
+  check("shadow leaves no records when the backend is absent",
+        leftovers.len == 0, $leftovers)
   turn("done", tid2, "")
   let messages = call(coreNc, "store", "list", %*{
     "kind": "message", "idPrefix": sid & ":"})

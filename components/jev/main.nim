@@ -30,6 +30,7 @@ const
   MaxShadowPending = 32  # 16 turn pairs, each with skills + tools
   MaxShadowTaskBytes = 2000
   ShadowHardTimeoutS = 12.0
+  ShadowAbsentCooldownS = 60.0  # pause shadow launches after an absence
 
 type ShadowJob = object
   sessionId, turnId, task, kind, query: string
@@ -41,6 +42,7 @@ type ShadowJob = object
 var pending: seq[ShadowJob]
 var activeTurns = initTable[string, string]()
 var running: ShadowJob
+var lastBackendAbsentAt = 0.0  # epoch; shadow pauses within the cooldown
 
 proc backend(): string = getEnv("NIF_JEV_BACKEND", "von").strip()
 
@@ -81,7 +83,8 @@ proc askBackend(state, questions: JsonNode): JsonNode =
       return errResult("decision backend returned no answers")
     return data["answers"]
   except CatchableError as e:
-    return errResult("decision backend unavailable: " & e.msg)
+    return %*{"ok": false, "error": "decision backend unavailable: " & e.msg,
+              "backendAbsent": true}
 
 proc validCandidates(candidates: JsonNode): string =
   if candidates == nil or candidates.kind != JArray or
@@ -275,6 +278,21 @@ proc judgeProcess() =
     try: writeFile(paramStr(3), $(errResult("judge failed: " & e.msg)))
     except CatchableError: discard
 
+proc noteBackendAbsent(job: ShadowJob) =
+  ## A missing backend is the stock-install default, not experiment data:
+  ## remove the in-flight pending marker, warn once per absence episode, and
+  ## let the launch cooldown silence further attempts for a while.
+  try:
+    comp.storeDel("jevshadow",
+      job.sessionId & ":" & job.turnId & ":" & job.kind, timeoutMs = 1500)
+  except CatchableError as e:
+    comp.log("warn", "jev shadow pending-marker cleanup failed",
+             %*{"error": e.msg})
+  if lastBackendAbsentAt == 0:
+    comp.log("warn", "jev shadow: decision backend absent — " &
+             "shadow judgments paused until it answers", %*{"url": endpoint()})
+  lastBackendAbsentAt = epochTime()
+
 proc completeShadow() =
   if running.process == nil: return
   if running.process.peekExitCode() == -1:
@@ -300,6 +318,11 @@ proc completeShadow() =
     verdict = errResult("judge output unreadable: " & e.msg)
   if fileExists(job.resultPath): removeFile(job.resultPath)
   if fileExists(job.inputPath): removeFile(job.inputPath)
+  if verdict{"backendAbsent"}.getBool(false):
+    noteBackendAbsent(job)
+    return
+  if lastBackendAbsentAt > 0:
+    lastBackendAbsentAt = 0  # the backend answered again; shadow resumes
   let failed = not verdict{"ok"}.getBool(false)
   persistShadow(job, if failed: "error" else: "done", verdict)
 
@@ -359,6 +382,9 @@ discard comp.onIdle(250) do (c: Component):
   if activeTurns.getOrDefault(job.sessionId) != job.turnId:
     persistShadow(job, "stale")
     return
+  if lastBackendAbsentAt > 0 and
+      epochTime() - lastBackendAbsentAt < ShadowAbsentCooldownS:
+    return  # silent drop; retried after the cooldown expires
   try:
     let query = if job.kind == "tools" and job.query.len == 0:
       taskSearchQuery(job.task)

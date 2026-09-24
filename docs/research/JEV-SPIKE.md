@@ -4,8 +4,9 @@ This optional `jev` component provides advisory decisions over a small list of
 candidates. It does **not** alter `discover`, `skill_list`, `invoke`, the
 conversation prefix, or the approval gate. The only prompt-cache effect is
 append-only tool history when `jev_suggest` or `jev_recommend` is explicitly
-called. An unavailable backend is an error result; continue with ordinary
-discovery.
+called. An unavailable backend is an error result for direct calls; continue
+with ordinary discovery. Shadow judgments behave differently: an absent
+backend leaves no store records (see "Shadow experiment").
 
 ## Local runtime
 
@@ -18,8 +19,9 @@ von serve --model von-1.1 --device cpu --host 127.0.0.1 --port 8000
 ```
 
 `make build` builds only the Niffler adapter, not the Python model/runtime.
-The manifest starts `jev` without loading weights; if Von is absent, only
-Jev calls fail. Configure `NIF_JEV_URL` to another **loopback HTTP** server
+The manifest starts `jev` without loading weights; if Von is absent, direct
+Jev calls fail and the shadow judge stays silent — one warning per absence
+episode, no store records. Configure `NIF_JEV_URL` to another **loopback HTTP** server
 implementing `POST /v1/systemone`; it must not redirect. Set
 `NIF_JEV_BACKEND` to the backend label and `NIF_JEV_MODEL` to its model id.
 Remote endpoints are intentionally excluded from this local-only spike.
@@ -73,7 +75,11 @@ snapshot, raw answers, and inference/queue timings in kind `jevshadow`; join
 by `(sessionId, turnId)` with the transcript and tool-call events. The record
 carries `status` (`done` when the answer parsed, `error` for a failed/timed-out
 judge, `no-candidates`, `pending` while queued/in flight, `stale` when the
-answer arrived after its turn closed) and `turnClosed`. Killing the component
+answer arrived after its turn closed) and `turnClosed`. An **absent backend**
+is different: it writes no record at all — the in-flight `pending` marker is
+deleted, one `ev.log.jev` warning marks the absence, and shadow launches
+pause for a 60 s cooldown before retrying silently, so shadow resumes on its
+own when Von comes up. Killing the component
 mid-flight leaves its in-flight `pending` record behind; the judge process
 carries PDEATHSIG and dies with it. Records contain the task and candidate
 descriptions; treat them as sensitive. Tasks over 2,000 bytes and turns
@@ -94,7 +100,8 @@ validated ranking accuracy**; the no-match question/threshold needs a labeled
 Niffler task set before automation. CPU RSS not yet measured.
 
 `make test-jev` uses a mock backend and a private NATS bus; it proves the
-contract, *not* Von accuracy or CPU latency. Build a held-out list of tasks
+contract, *not* Von accuracy or CPU latency — including the absent-backend
+silence (one warning, no records) and transcript integrity. Build a held-out list of tasks
 with expected tool/skill or no-match labels, compare top-1/top-k and false
 recommendations to plain `discover`/`skill_list`, and measure p50/p95 latency
 and RSS on a typical CPU laptop with real Von. Try both short and confusing
