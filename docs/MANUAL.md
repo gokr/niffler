@@ -441,7 +441,7 @@ component <name> has missing binary` and skips it. Rebuild it with `builder.buil
 |---|---|---|
 | **Environment / `.env`** | all `NIF_*` variables (table below): boot & bus, LLM connection, per-component tuning. `.env` (root, gitignored) holds secrets and local overrides; shell env wins; reference copy with defaults in `.env.example` | process lifetime — components read env once at boot, so a change needs `core.kill` + `core.spawn`. A variable *exported in the shell that started core* is inherited by every child and needs a harness restart instead |
 | **The store** (kind table in [The store](#the-store)) | conversation headers, messages, the `provider` registry (credentials included), frozen per-conversation toolsets, the slash table, plugin/component install records, subagent job/lineage records, fabric programs, MCP server configs | durable — the harness's database |
-| **Conversation header** (`conversation` kind) | per-conversation choice: model, modelOverride, thinking, profile, title, budgets/token meters — set through the `session` call (`/model`, `/effort` in UIs) and echoed in turn results | per conversation |
+| **Conversation header** (`conversation` kind) | per-conversation choice: provider, providerOverride, model, modelOverride, thinking, profile, title, budgets/token meters — set through the `session` call (`/model`, `/effort` in UIs) and echoed in turn results | per conversation |
 | **Home / project files** | skills trees (project `.agents|.claude|.opencode/skills` > bundled `skills/` > home `~/.niffler/skills` + agent-standard dirs > `~/.config/opencode/skills`, then the tree compiled into the binary as the last resort); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
 | **Home files (edit undo store)** | `$XDG_CONFIG_HOME/niffler-edit/undo.json` (else `~/.config/niffler-edit/undo.json`): last pre-edit bytes per file plus per-conversation seen-state digests. One record per edited file, no size cap and no eviction — it grows with the number of distinct files edited, and is safe to delete at any time (deleting it loses only undo history and unchanged-read stubs, never file content) | durable, user-editable |
 | **`var/`** (gitignored) | `bin/` built binaries, `logs/` bus JSONL and per-component JSONL (`.1`…`.N` rotations) plus child logs, `models/` catalog cache, `nats-url`/`nats-pid` bus claiming, `processes/` spools (`pN.out`/`pN.err` per start, wiped at boot; ids continue from the persisted counter instead of restarting at `p1`), `repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached), `fetch/`, `captures/`, `store.db` (the SQLite engine's file) or `barrel-db` (the barrel engine's) — whichever `NIF_STORE_BACKEND` selected — plus its `.lock`, which exactly one `store` process may hold at a time | runtime, regenerable |
@@ -901,9 +901,17 @@ reports:
   `maxTokens` only ever lowers the resolved value (the expert judge's tiny
   verdicts), and the Codex lane ignores it entirely.
 
-- `session {sessionId, content?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
-  conversation-scoped model override. A model-only call persists and resolves
-  the selection without inference; presence with an empty value clears it.
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
+  conversation-scoped provider and model override. `provider` names a stored
+  provider nickname (empty clears it back to the harness-global default); a
+  model-only call resolves and pins the provider it belongs to in the same
+  header write, so provider and model always travel together — a model can
+  never later be sent to a provider that does not serve it because another UI
+  switched the global default. An explicit `provider` that cannot be resolved
+  is an error naming it, never a silent fall-through (see WIRE.md
+  "Provider/model pins are one selection"). A model-only call persists and
+  resolves the selection without inference; presence with an empty value
+  clears it.
   `profile` names a stored tool profile resolved into the direct toolset on
   the conversation's first call only (`NIF_PROFILE` supplies the default);
   an unknown profile fails the call, and resumes ignore the argument.
@@ -1512,12 +1520,11 @@ and the OAuth start/complete/cancel flow) behind the approval prompt.
   with `expectRev` 0 — and a dangling or empty marker is deleted automatically
   on the next read, so `provider_remove`/`provider_use_environment` need no
   manual repair; `store` tools remain there for manual surgery if you want it.
-- A switch changes the backend, not the conversation: a conversation's pinned
-  `modelOverride` still belongs to the provider it was chosen under and may not
-  exist on the new one. Interactive clients therefore clear the pin when a
-  switch actually moves the backend (the web UI and the TUI do); a bare
-  `provider_switch` call leaves it in place, so a stale pin can fail the next
-  turn until the conversation's model is reset (`/model default` in the UI).
+- A switch changes the harness-global default, not a pinned conversation:
+  provider and model are pinned together in the conversation header (see the
+  `session` call above), so a pinned conversation keeps resolving under its
+  own provider and a switch can never send its model to a provider that does
+  not serve it. A conversation without a pin follows the global default.
 
 ## Hooks
 
@@ -2910,9 +2917,12 @@ to the subscription that delivered the message. This avoids the previous
 cross-product where one call could be delivered through the call, event, and tap
 paths multiple times. Nim remains callback-free and thread-free; Go uses its
 existing mutex and TypeScript its promise chain.
-Go waits for drained subscription callbacks (up to its bounded shutdown grace),
-and TypeScript waits for queued handlers without deadlocking a handler that
-explicitly closes its own component.
+On shutdown Go drains the subscriptions (up to its bounded shutdown grace),
+then stops the per-component delivery loop and waits for every running
+handler so replies owed to callers are preserved — calls that were accepted
+but never started are refused instead of dropped silently; TypeScript waits
+for queued handlers without deadlocking a handler that explicitly closes its
+own component.
 
 #### Idle work (`onIdle`)
 
