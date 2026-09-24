@@ -212,7 +212,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 |---|---|---|
 | **Environment / `.env`** | 所有 `NIF_*` 变量（见下表）：启动与总线、LLM 连接、每组件调优。`.env`（根目录，gitignored）保存密钥和本地覆盖；shell 环境优先；带默认值的参考副本在 `.env.example` | 进程生命周期——组件在启动时读取一次环境，因此更改需要 `core.kill` + `core.spawn`。*在启动 core 的 shell 中导出的*变量会被每个子进程继承，需要重启 harness |
 | **The store**（kind 表见 [The store](#the-store)） | 对话头、消息、`provider` 注册表（含凭据）、冻结的每对话工具集、slash 表、插件/组件安装记录、子代理作业/血缘记录、fabric 程序、MCP 服务器配置 | 持久——harness 的数据库 |
-| **Conversation header**（`conversation` kind） | 每对话选择：model、modelOverride、thinking、profile、title、预算/token 计量——通过 `session` 调用设置（UI 中的 `/model`、`/effort`），并在轮次结果中回显 | 每对话 |
+| **Conversation header**（`conversation` kind） | 每对话选择：provider、providerOverride、model、modelOverride、thinking、profile、title、预算/token 计量——通过 `session` 调用设置（UI 中的 `/model`、`/effort`），并在轮次结果中回显 | 每对话 |
 | **Home / project files** | skills 树（项目 `.agents|.claude|.opencode/skills` > 内置 `skills/` > home `~/.niffler/skills` + agent 标准目录 > `~/.config/opencode/skills`，最后是编译进二进制的树作为最后手段）；LSP 注册表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，用户可编辑 |
 | **Home files (edit undo store)** | `$XDG_CONFIG_HOME/niffler-edit/undo.json`（否则 `~/.config/niffler-edit/undo.json`）：每个文件上次编辑前的字节，加上每对话的已见状态摘要。每个被编辑文件一条记录，无大小上限也无淘汰——它随被编辑的不同文件数量增长，随时可安全删除（删除它只会丢失撤销历史和未更改读取的存根，绝不丢失文件内容） | 持久，用户可编辑 |
 | **`var/`**（gitignored） | `bin/` 构建的二进制，`logs/` 总线 JSONL 和每组件 JSONL（`.1`…`.N` 轮转）加上子进程日志，`models/` 目录缓存，`nats-url`/`nats-pid` 总线认领，`processes/` 假脱机（每次启动的 `pN.out`/`pN.err`，启动时清空；id 从持久化计数器继续，而不是从 `p1` 重新开始），`repomap-tags/` 每文件标签缓存（以绝对路径的 sha1 为键的 `{mtime, tags}` JSON；空结果从不缓存），`fetch/`、`captures/`、`store.db`（SQLite 引擎的文件）或 `barrel-db`（barrel 引擎的）——取决于 `NIF_STORE_BACKEND` 选择了哪个——加上其 `.lock`，同一时间只能有一个 `store` 进程持有 | 运行时，可重新生成 |
@@ -615,7 +615,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 
 - **输出**窗口与上下文窗口一起解析，并以 `output`/`outputSource` 返回：目录中的 `model.limit.output`，否则是一个刻意设定的 32768 默认值——如果没有显式上限，提供方会应用其自己的服务端上限，并在流中途截断长回答。每次调用的 `maxTokens` 只会降低已解析的值（专家裁判的微小裁决），而 Codex 通道完全忽略它。
 
-- `session {sessionId, content?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受一个会话作用域的模型覆盖。仅指定模型的调用会持久化并解析该选择而不进行推理；存在但值为空会清除它。`profile` 指定一个已存储的工具配置，仅在对话的第一次调用时解析为直接工具集（`NIF_PROFILE` 提供默认值）；未知配置会使调用失败，而恢复会忽略该参数。`thinking` 是推理强度，取值为 `""`、`low`、`medium`、`high`、`max` 之一；`""` 是提供方默认值（UI 将其显示为 "auto"），并且是唯一能清除先前选择的值。它作为 `reasoning_effort` 转发给提供方——且仅在非空时转发，因此不支持该字段的提供方永远不会看到它；`llm` 适配器将该值映射到每种协议自己的形式（Codex `reasoning {effort, summary}`，Anthropic `thinking` 加上 `output_config.effort`）——并携带在对话头上。
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受会话作用域的 provider 和模型覆盖。`provider` 指定一个已存储的 provider 昵称（为空则清除，回到 harness 全局默认）；仅指定模型的调用会在同一次头写入中解析并固定其所属的 provider，因此 provider 和模型总是一起出现——模型不会在事后因为另一个 UI 切换了全局默认而被发送到不支持它的 provider。无法解析的显式 `provider` 是一个指名它的错误，而不是静默回退（docs/WIRE.md "Provider/model pins are one selection"）。仅指定模型的调用会持久化并解析该选择而不进行推理；存在但值为空会清除它。`profile` 指定一个已存储的工具配置，仅在对话的第一次调用时解析为直接工具集（`NIF_PROFILE` 提供默认值）；未知配置会使调用失败，而恢复会忽略该参数。`thinking` 是推理强度，取值为 `""`、`low`、`medium`、`high`、`max` 之一；`""` 是提供方默认值（UI 将其显示为 "auto"），并且是唯一能清除先前选择的值。它作为 `reasoning_effort` 转发给提供方——且仅在非空时转发，因此不支持该字段的提供方永远不会看到它；`llm` 适配器将该值映射到每种协议自己的形式（Codex `reasoning {effort, summary}`，Anthropic `thinking` 加上 `output_config.effort`）——并携带在对话头上。
   `discovery {…}` 是显式的客户端发现：它运行 `discover`，将模式记录到持久发现摘要中，并将它们作为用户消息追加——没有 LLM 轮次，也不会提升到直接工具集。
   Core 将该选择存储在对话头中，并在一个轮次内的所有工具轮次中固定已解析的模型。
 - 每会话控制项在第一次调用时冻结并持久化在头中：`tools`（子级可以分派的工具允许列表；最多接受 32 个名称，且接受的参数不会在 `session` 工具模式中声明）、`maxRounds`（每轮 LLM 轮次数，1–`NIF_MAX_TURN_ROUNDS`，收窄硬上限）、`maxCalls`（每轮工具分派总数，1-500——每次分派尝试都计数，无论成功还是错误），以及 `maxTokens`（每轮提供方报告的累计 token 数，在每一新轮次之前检查）。预算耗尽会以预算耗尽错误结束该轮次——子代理驱动（`agent_run`/`agent_spawn`）将其作为失败呈现，而绝不是文本回复。
@@ -645,7 +645,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 
 一个稳定下来的 fabric 程序走相同的路线：`fabricprog` 是草稿本，`builder.build` + `core.spawn` 是毕业（参见 [FABRIC_GUIDE.md](FABRIC_GUIDE.md)）。
 
-`replicas` 是可选的（1–16，默认 1）并且会被持久化。仅将其用于无状态或外部协调的组件：所有副本共享同一个 `svc.<name>.call` NATS 队列组，因此并发请求每个进程分发一个。绝不要复制单写入者的 `store`，或像 `edit` 这样其变更/撤销状态是进程本地的组件。默认 Nim SDK 泵保持串行。其初始 NATS 连接在总线绑定时最多重试 60 秒，然后失败进入监督器的正常退避；关闭会中断该等待。当副本不合适时，组件可以显式拥有原生并发：对于长寿命/共享状态的 Nim 工作器，优先使用 `std/threads` + `std/locks`，对于隔离作业使用 `taskpools`，并且绝不使用 `asyncdispatch`。在 Go 中，普通的 `Tool` 处理器保持独占；经过审计的处理器可以使用 `ToolConcurrent`（默认限制为 16 个在途，可通过 `ConcurrentLimit` 配置）。并发处理器必须同步共享状态，并且不得同步调用其自己组件上的串行化工具。这个服务端选择独立于面向运行器的 `x-harness.parallel` 提示：声明 `parallel: true` 的工具可以在同一条 assistant 消息中与其他标记为并行的工具并发分派（`grep` 和 `read` 会；`files` 虽然是只读的，但不会，因此被 `invoke` 的 `files` 会串行化）。
+`replicas` 是可选的（1–16，默认 1）并且会被持久化。仅将其用于无状态或外部协调的组件：所有副本共享同一个 `svc.<name>.call` NATS 队列组，因此并发请求每个进程分发一个。绝不要复制单写入者的 `store`，或像 `edit` 这样其变更/撤销状态是进程本地的组件。默认 Nim SDK 泵保持串行。其初始 NATS 连接在总线绑定时最多重试 60 秒，然后失败进入监督器的正常退避；关闭会中断该等待。当副本不合适时，组件可以显式拥有原生并发：对于长寿命/共享状态的 Nim 工作器，优先使用 `std/threads` + `std/locks`，对于隔离作业使用 `taskpools`，并且绝不使用 `asyncdispatch`。在 Go 中，普通的 `Tool` 处理器保持独占；经过审计的处理器可以使用 `ToolConcurrent`（默认限制为 16 个在途，可通过 `ConcurrentLimit` 配置）。并发处理器必须同步共享状态，并且不得同步调用其自己组件上的串行化工具。分派由每个组件的投递循环调度：NATS 回调只负责入队，因此长处理器（流式 chat）永远不会阻塞无关调用的投递；串行化处理器只在没有并发处理器运行时才开始，而不是驻留一个写锁——否则排在其后的读取者也会被阻塞。这个服务端选择独立于面向运行器的 `x-harness.parallel` 提示：声明 `parallel: true` 的工具可以在同一条 assistant 消息中与其他标记为并行的工具并发分派（`grep` 和 `read` 会；`files` 虽然是只读的，但不会，因此被 `invoke` 的 `files` 会串行化）。
 
 **重启策略**：每个受监督的子级都携带一个——`never` 或 `on-failure`（默认；重启的子级在 1 秒后尝试，每次连续崩溃翻倍，上限为 8 秒）。清单按组件设置它（`manifest.yaml`），`spawn` 始终使用 `on-failure`，而会话运行器始终是 `never`。
 
@@ -774,7 +774,7 @@ API-key provider 只能使用 `openai-chat` 或 `anthropic`：`openai-codex` 需
 - `llm` 在每次聊天调用时从活动存储的 provider 解析其默认后端，因此 `provider_switch` 立即生效。当 `provider` 组件不存在或没有活动项时，`llm` 像以前一样回退到 `NIF_OPENAI_*` 和 `NIF_LLM_PROVIDERS` 表。向 `chat` 或 `llm_resolve` 显式传入 `provider` 参数会先解析存储的昵称，然后解析 `NIF_LLM_PROVIDERS`，因此会话可以在其回合内固定一个非活动的存储 provider，而无需切换全局默认值。
 - 存储的 provider 的显式 `context`（令牌数）优先于模型目录；其 `catalog` id 为上下文查找命名 models.dev provider，而 `plugin` 是信息性元数据，命名拥有此 provider 额外工具的组件 —— `provider` 既不启动也不验证它，因此命名的组件必须单独生成，并且只能对 `ev.provider.switch` 做出反应。每次切换时，组件发布 `ev.provider.switch {nickname, previous, source, at}`，以便此类插件可以启用或隐藏其工具。每次注册表变更还会发布无密钥的 `ev.provider.changed {op, nickname, active, source, at}` —— `op` 是 `add`、`update`、`switch`、`remove`、`import`、`login` 或 `refresh` 之一 —— 供交互式客户端使其 provider/模型视图失效。
 - `active` 标记是一个普通的存储文档（`{nickname, updatedAt}`）—— 以 `expectRev` 0 写入 —— 悬空或空的标记会在下次读取时自动删除，因此 `provider_remove`/`provider_use_environment` 无需手动修复；`store` 工具仍然保留在那里，供你手动操作。
-- 切换改变的是后端，而不是对话：对话固定的 `modelOverride` 仍然属于它被选择时所处的 provider，并且可能在新 provider 上不存在。因此，当切换实际移动后端时，交互式客户端会清除该固定（Web UI 和 TUI 都会这样做）；裸的 `provider_switch` 调用会保留它，因此过期的固定可能会使下一回合失败，直到对话的模型被重置（UI 中的 `/model default`）。
+- 切换改变的是 harness 全局默认，而不是被固定的对话：provider 和模型成对地固定在对话头中（见上文对 `session` 调用的说明），因此被固定的对话仍在其自己的 provider 下解析，切换永远不会把它的模型发送到不支持该模型的 provider。没有固定的对话则跟随全局默认。
 
 ## Hooks
 
@@ -1631,7 +1631,7 @@ comp.publishEnvelope(subject, envelope)
 await comp.requestEnvelope(subject, envelope, timeoutMs?)
 ```
 
-每个 SDK 都让 NATS 执行主题匹配，并且只分派绑定到投递该消息的订阅的处理程序。这避免了以前的叉积问题，即一次调用可能通过 call、event 和 tap 路径多次投递。Nim 保持无回调和无线程；Go 使用其现有的互斥锁，TypeScript 使用其 promise 链。Go 等待已排空的订阅回调（至其有界关闭宽限期），TypeScript 等待排队的处理程序，而不会死锁显式关闭自身组件的处理程序。
+每个 SDK 都让 NATS 执行主题匹配，并且只分派绑定到投递该消息的订阅的处理程序。这避免了以前的叉积问题，即一次调用可能通过 call、event 和 tap 路径多次投递。Nim 保持无回调和无线程；Go 使用其现有的互斥锁，TypeScript 使用其 promise 链。关闭时，Go 先排空订阅（至其有界关闭宽限期），然后停止每个组件的投递循环并等待所有正在运行的处理器完成，以保留欠给调用方的回复——已接受但尚未启动的调用会被拒绝，而不是静默丢弃；TypeScript 等待排队的处理程序，而不会死锁显式关闭自身组件的处理程序。
 
 #### Idle work (`onIdle`)
 

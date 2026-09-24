@@ -218,7 +218,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 |---|---|---|
 | **Environment / `.env`** | 所有 `NIF_*` 變數（下表）：開機與匯流排、LLM 連線、各元件調校。`.env`（root，gitignored）存放機密與本機覆寫；shell 環境優先；含預設值的參考副本在 `.env.example` | 行程生命週期——元件在開機時讀取環境一次，因此變更需要 `core.kill` + `core.spawn`。*在啟動 core 的 shell 中匯出*的變數會被每個子行程繼承，改為需要重啟 harness |
 | **The store**（kind 表見 [The store](#the-store)） | 對話標頭、訊息、`provider` 註冊表（含憑證）、凍結的每對話工具集、slash 表、plugin/component 安裝記錄、subagent 工作/血統記錄、fabric 程式、MCP 伺服器配置 | 持久——harness 的資料庫 |
-| **Conversation header**（`conversation` kind） | 每對話選擇：model、modelOverride、thinking、profile、title、預算/token 計量——透過 `session` 呼叫設定（UI 中的 `/model`、`/effort`），並在回合結果中回顯 | 每對話 |
+| **Conversation header**（`conversation` kind） | 每對話選擇：provider、providerOverride、model、modelOverride、thinking、profile、title、預算/token 計量——透過 `session` 呼叫設定（UI 中的 `/model`、`/effort`），並在回合結果中回顯 | 每對話 |
 | **Home / project files** | skills 樹（專案 `.agents|.claude|.opencode/skills` > 內附 `skills/` > home `~/.niffler/skills` + agent 標準目錄 > `~/.config/opencode/skills`，然後是最後手段、編譯進二進位檔的樹）；LSP 註冊表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，使用者可編輯 |
 | **Home files（edit undo store）** | `$XDG_CONFIG_HOME/niffler-edit/undo.json`（否則 `~/.config/niffler-edit/undo.json`）：每個檔案最後的編輯前位元組，加上每對話的已見狀態摘要。每個被編輯的檔案一筆記錄，無大小上限、無淘汰——它隨被編輯的不同檔案數量成長，且隨時可安全刪除（刪除它只會失去 undo 歷史與未變更讀取 stub，絕不會失去檔案內容） | 持久，使用者可編輯 |
 | **`var/`**（gitignored） | `bin/` 建置的二進位檔、`logs/` 匯流排 JSONL 與各元件 JSONL（`.1`…`.N` 輪替）加上子行程日誌、`models/` 目錄快取、`nats-url`/`nats-pid` 匯流排認領、`processes/` spool（每次啟動的 `pN.out`/`pN.err`，開機時清空；id 從持久化計數器繼續，而非從 `p1` 重新開始）、`repomap-tags/` 每檔案標籤快取（以絕對路徑的 sha1 為鍵的 `{mtime, tags}` JSON；空結果永不快取）、`fetch/`、`captures/`、`store.db`（SQLite 引擎的檔案）或 `barrel-db`（barrel 引擎的）——取決於 `NIF_STORE_BACKEND` 選了哪個——加上其 `.lock`，同一時間只能由一個 `store` 行程持有 | 執行時，可重新產生 |
@@ -583,7 +583,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
 
 - **output** window 會與 context window 一併解析，並以 `output`/`outputSource` 回傳：catalog 的 `model.limit.output`，否則為刻意設定的 32768 預設值——若無明確上限，provider 會套用其自身的伺服器端上限，並在串流中途截斷冗長的回答。每次呼叫的 `maxTokens` 只會調降已解析的值（expert judge 的微小裁決），而 Codex 通道則完全忽略它。
 
-- `session {sessionId, content?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受一個會話範圍的模型覆寫。僅指定 model 的呼叫會在不進行推論的情況下持續保存並解析該選取；帶有空值的存在則會清除它。`profile` 指名一個已儲存的工具 profile，僅在會話的第一次呼叫時解析進直接工具集（`NIF_PROFILE` 提供預設值）；未知的 profile 會使該呼叫失敗，而續接會忽略該引數。`thinking` 是推理強度，為 `""`、`low`、`medium`、`high`、`max` 之一；`""` 是 provider 預設值（UI 顯示為「auto」），且是唯一能清除先前選擇的值。它會以 `reasoning_effort` 轉送給 provider——且僅在非空時，因此不支援該欄位的 provider 永遠不會看到它；`llm` 轉接器會將該值對應到各協定自身的形式（Codex `reasoning {effort, summary}`、Anthropic `thinking` 加上 `output_config.effort`）——並攜帶於會話標頭上。
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受一個會話範圍的 provider 與模型覆寫。`provider` 指名一個已儲存的 provider 暱稱（空值會清除它，回到 harness 全域預設）；僅指定 model 的呼叫會在同一次標頭寫入中解析並釘住其所屬的 provider，因此 provider 與 model 總是一起出現——model 不會在事後因為另一個 UI 切換了全域預設而被送往不支援它的 provider。無法解析的明確 `provider` 是一個指名它的錯誤，而不是靜默回退（見 WIRE.md「Provider/model pins are one selection」）。僅指定 model 的呼叫會在不進行推論的情況下持續保存並解析該選取；帶有空值的存在則會清除它。`profile` 指名一個已儲存的工具 profile，僅在會話的第一次呼叫時解析進直接工具集（`NIF_PROFILE` 提供預設值）；未知的 profile 會使該呼叫失敗，而續接會忽略該引數。`thinking` 是推理強度，為 `""`、`low`、`medium`、`high`、`max` 之一；`""` 是 provider 預設值（UI 顯示為「auto」），且是唯一能清除先前選擇的值。它會以 `reasoning_effort` 轉送給 provider——且僅在非空時，因此不支援該欄位的 provider 永遠不會看到它；`llm` 轉接器會將該值對應到各協定自身的形式（Codex `reasoning {effort, summary}`、Anthropic `thinking` 加上 `output_config.effort`）——並攜帶於會話標頭上。
   `discovery {…}` 是明確的用戶端探索：它執行 `discover`，將 schemas 記錄於持久 discovery summary 中，並將它們附加為一則使用者訊息——不進行 LLM 回合，也不晉升進直接工具集。
   Core 會將該選擇儲存於會話標頭，並在一個回合中的所有工具回合間釘住已解析的模型。
 - 各會話的控制項會在第一次呼叫時凍結並持續保存於標頭中：`tools`（子項可分派的工具允許清單；最多接受 32 個名稱，且可接受的引數不會宣告於 `session` 工具 schema 中）、`maxRounds`
@@ -714,7 +714,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
 一般的 `Tool` 處理程式保持互斥；一個受稽核的處理程式可以使用
 `ToolConcurrent`（預設在途上限為 16，可透過
 `ConcurrentLimit` 設定）。並行處理程式必須同步共享狀態，且
-不得在其自身元件上同步呼叫序列化的工具。這個
+不得在其自身元件上同步呼叫序列化的工具。分派由每個元件的傳遞迴圈調度：NATS 回呼只負責排入佇列，因此長處理程式（串流 chat）永遠不會阻塞無關呼叫的傳遞；序列化處理程式只在沒有並行處理程式執行時才開始，而不是駐留一個寫入鎖——否則排在其後的讀取者也會被阻塞。這個
 伺服器端選擇獨立於面向 runner 的 `x-harness.parallel`
 提示：一個宣告 `parallel: true` 的工具可以與同一則 assistant
 訊息中其他標記為 parallel 的工具並行分派（`grep` 與 `read` 會；
@@ -1004,7 +1004,7 @@ content` 結束回合；`llm-openai` 範例不回報任何一個。
 - `llm` 在每次聊天呼叫時從作用中的已儲存 provider 解析其預設後端，因此 `provider_switch` 會立即生效。當 `provider` 元件不存在或沒有作用中的項目時，`llm` 會如以往退回 `NIF_OPENAI_*` 與 `NIF_LLM_PROVIDERS` 表。對 `chat` 或 `llm_resolve` 明確傳入 `provider` 引數時，會先解析已儲存的暱稱，再解析 `NIF_LLM_PROVIDERS`，因此會話可以在其回合中釘選非作用中的已儲存 provider，而不切換全域預設值。
 - 已儲存 provider 的明確 `context`（權杖數）優先於模型目錄；其 `catalog` id 為 context 查詢命名 models.dev provider，而 `plugin` 是資訊性中介資料，命名擁有此 provider 額外工具的元件 —— `provider` 既不啟動也不驗證它，因此被命名的元件必須另行生成，且只能對 `ev.provider.switch` 做出反應。每次切換時，元件會發佈 `ev.provider.switch {nickname, previous, source, at}`，讓這類外掛可以啟用或隱藏其工具。每次登錄變更也會發佈不含機密的 `ev.provider.changed {op, nickname, active, source, at}` —— `op` 是 `add`、`update`、`switch`、`remove`、`import`、`login` 或 `refresh` 之一 —— 供互動式用戶端使其 provider/模型檢視失效。
 - `active` 標記是一個單純的儲存文件（`{nickname, updatedAt}`）—— 以 `expectRev` 0 寫入 —— 而懸空或空白的標記會在下次讀取時自動刪除，因此 `provider_remove`/`provider_use_environment` 不需要手動修復；`store` 工具仍在那裡供你手動手術，如果你想要的話。
-- 切換改變的是後端，不是對話：對話釘選的 `modelOverride` 仍屬於它被選擇時所屬的 provider，且可能不存在於新的 provider 上。因此互動式用戶端會在切換實際移動後端時清除釘選（web UI 與 TUI 都會這麼做）；單純的 `provider_switch` 呼叫會讓它留在原處，因此過期的釘選可能會讓下一個回合失敗，直到對話的模型被重設（在 UI 中為 `/model default`）。
+- 切換改變的是 harness 全域預設，而不是被釘選的對話：provider 與 model 成對地釘選在對話標頭中（見上文對 `session` 呼叫的說明），因此被釘選的對話仍在其自身的 provider 下解析，切換永遠不會把它的 model 送往不支援該 model 的 provider。沒有釘選的對話則跟隨全域預設。
 
 ## Hooks
 
@@ -1782,7 +1782,7 @@ comp.publishEnvelope(subject, envelope)
 await comp.requestEnvelope(subject, envelope, timeoutMs?)
 ```
 
-每個 SDK 都讓 NATS 執行主體比對，並只分派綁定至傳遞該訊息的訂閱的處理常式。這避免了先前的交叉乘積，即一次呼叫可能透過 call、event 與 tap 路徑多次傳遞。Nim 保持無回呼且無執行緒；Go 使用其現有的互斥鎖，而 TypeScript 使用其 promise 鏈。Go 會等待已排空的訂閱回呼（至其有界的關閉寬限期），而 TypeScript 會等待已排入佇列的處理常式，且不會使明確關閉自身元件的處理常式死鎖。
+每個 SDK 都讓 NATS 執行主體比對，並只分派綁定至傳遞該訊息的訂閱的處理常式。這避免了先前的交叉乘積，即一次呼叫可能透過 call、event 與 tap 路徑多次傳遞。Nim 保持無回呼且無執行緒；Go 使用其現有的互斥鎖，而 TypeScript 使用其 promise 鏈。關機時，Go 會先排空訂閱（至其有界的關閉寬限期），然後停止每個元件的傳遞迴圈並等待每個仍在執行的處理常式完成，以保留欠給呼叫方的回覆——已接受但從未開始的呼叫會被拒絕，而不是被靜默丟棄；而 TypeScript 會等待已排入佇列的處理常式，且不會使明確關閉自身元件的處理常式死鎖。
 
 #### Idle work (`onIdle`)
 
