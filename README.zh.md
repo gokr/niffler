@@ -14,6 +14,7 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
 
 - **模块化到进程边界。** 类似 Pi 和 DeepSeek Harness，但低一个层级：每项能力都是独立的操作系统进程，位于同一套线协议之后（通过 NATS 传输的 JSON 信封），智能体在对话过程中构建、生成和移除组件——无需拆卸代码，不会泄漏子进程。参见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 - **开箱即用。** `fabric`（可编程工具调用）、`agent`/`expert`（子智能体和咨询对等体）、`git`、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank 移植）、`skills`、`plugins`、`processes`、`observe`/`logfile`——其他 harness 留给插件完成的工作。参见[随附组件](docs/MANUAL.md#shipped-components)。
+- **实验性功能保持可选加入。** `jev`（基于本地决策模型的建议式发现）以惰性的按需顾问形式随附在清单中，其运行时是你用 spawn 记录启用的受监督启动器——`make build`/`make setup` 从不被迫承担重量级依赖。参见[建议式发现](docs/MANUAL.md#advisory-discovery-jev-and-the-von-launcher)。
 - **开放模型，支持所有提供商。** 任何 OpenAI 兼容端点——本地、开放权重或托管——通过 `.env` 或存储支持的提供商注册表；ChatGPT/Claude 订阅 OAuth 和 models.dev 支持的目录。参见[提供商](docs/MANUAL.md#provider-registry-provider)和[模型目录](docs/MANUAL.md#model-catalog-models)。
 - **渐进式工具披露。** 一个小的、冻结的直接工具集；其他一切只需一次 `discover`/`invoke`，作为历史追加而非提示膨胀。参见 [MANUAL](docs/MANUAL.md#progressive-tool-discovery)。
 - **人类始终在环。** 审批门控工具，带清单摘要和每会话的 `ask`/`auto` 模式；当无法联系到人类时，调用被拒绝，绝不静默允许。参见[审批](docs/MANUAL.md#approvals)。

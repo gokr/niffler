@@ -30,6 +30,7 @@
 - [Hooks](#hooks)
 - [Fabric and subagents](#fabric-and-subagents)
 - [Expert advisory peer (`expert`)](#expert-advisory-peer-expert)
+- [Advisory discovery (`jev`) and the Von launcher](#advisory-discovery-jev-and-the-von-launcher)
 - [Recovery](#recovery) · [The store](#the-store) · [Testing](#testing)
 - [Starting and stopping](#starting-and-stopping) · [Common tasks](#common-tasks) · [Troubleshooting](#troubleshooting)
 
@@ -75,6 +76,8 @@
 | `git` | Nim | 可选 | 只读仓库检查：在固定 argv 上的 `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame`（免审批；变更留在 bash 中）加上 `review_receipt` —— 在 `var/review-receipts/` 下的本地 diff 指纹写入/检查对，用于推送前审查交接（从不调用模型；当 diff 自收据以来发生变化时检查失败）。按需工具 —— worker 通过 `discover` + `invoke` 到达它们，保持直接工具集小 |
 | `agent` | Nim | 可选 | 子代理会话，九个工具：`agent_run`/`agent_spawn`（全新或继续的子代理、后台作业、持久结算通知）加上 `agent_status`/`agent_wait`/`agent_stop`/`agent_steer`/`agent_ask`/`agent_notices`/`agent_list` —— 见 [Fabric 与子代理](#fabric-and-subagents) |
 | `expert` | Nim | 可选 | 顾问对等体：并发跟随一个或多个会话，LLM 评判，回合绑定转向（见[专家顾问对等体](#expert-advisory-peer-expert)） |
+| `jev` | Nim | 可选 | 基于本地决策模型的建议式发现（docs/research/JEV-SPIKE.md）：`jev_recommend {task, query, kind: "tools"|"skills"}` 通过 `core.discover`/`skill_list` 获取新的候选名单，再问配置的 System One 后端哪一个合适；`jev_suggest` 接受调用方提供的 1–24 项候选列表，`jev_decide` 提问原始的类型化（`noul`/`choice`/`score`）问题。三者都是按需、只读效应且**仅供建议**——不授予任何权限、不加载 schema/技能、不调用任何东西；后端故障是失败开放（fail-open）的结果，概率值是未校准的。仅限本地：`NIF_JEV_URL` 必须是回环 `/v1/systemone` 端点（不允许重定向）。后端（Von）由 `von` 启动器启动，或手动启动——见[建议式发现（`jev`）与 Von 启动器](#advisory-discovery-jev-and-the-von-launcher)。每回合的**影子**观测默认开启（`NIF_JEV_SHADOW=0` 关闭；`NIF_JEV_SHADOW_KIND`/`_SKILL_QUERY`/`_TOOL_QUERY` 可调整）并存入存储 kind `jevshadow`，绝不进入会话；后端缺席时不写任何记录——一条警告，然后静默冷却 |
+| `von` | Nim | **不在清单中** | `jev` 背后 Von 决策运行时的受监督启动器：由 `make build` 构建（`var/bin/von`），通过持久化的 `core.spawn` 记录启用（`make von-up`；`make von-down`/`core.remove` 禁用），从不自动启动。以内核清理的子进程（`setpriv --pdeathsig`）启动 `var/jev-venv/bin/von`，会收养已在端点提供服务的 Von，并通过 `von_status` 报告 `starting`/`serving`/`absent`/`failed`。venv 缺失 = 一条警告加诚实的 `absent` 状态，空闲时隙上重新检查（因此稍后 `make install-jev` 会被发现）——绝不崩溃循环。环境变量：`NIF_VON_BIN`、`NIF_VON_ARGS`、`NIF_VON_MODEL`、`NIF_VON_DEVICE`、`NIF_VON_HOST`、`NIF_VON_PORT`、`NIF_VON_POLL_MS`、`NIF_VON_BACKOFF_MAX_S` |
 | `fabric` | Nim | 可选 | 可编程工具调用：模型编写一个编排工具的 Nim 程序；只有其 `finish()` 值进入会话（见 [Fabric 与子代理](#fabric-and-subagents)） |
 | `grep` | Nim | 可选（4 个副本） | ripgrep 支持的搜索：`grep`（内容，path:line:match，直接，输出上限）和 `files`（排序列表，按需）；感知 .gitignore，无需 shell 引用；无状态队列组副本重叠同组件搜索 —— 参数、上限、退出码和效果分类在 [`grep` 详解](#grep-in-detail) |
 | `systemprompt` | Nim | 可选 | 会话宪法：会话运行器每个会话从 `svc.systemprompt.call` 获取一次系统提示（见[系统提示（`systemprompt`）](#system-prompt-systemprompt)） |
@@ -317,6 +320,14 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | `NIF_REPOMAP_MIN_SYMBOLS` | 追加内容门：渲染的符号行最小值。门是仅追加的——`repo_map` 从不被门控 | `25` |
 | `NIF_REPOMAP_MIN_FILES` | 追加内容门：带符号文件最小值。门是仅追加的——`repo_map` 从不被门控 | `5` |
 | `NIF_RUNNER_IDLE_S` | 会话运行器在此时间内没有会话调用则退役；下一次调用生成一个新的（子代理子进程按需重新确保） | `600` |
+| `NIF_JEV_URL` | `jev` 所询问的、实现 System One 契约的回环 HTTP 端点。必须是 `http`，主机为 `127.0.0.1`/`localhost`/`[::1]`，路径恰为 `/v1/systemone`，无凭据/查询/锚点且不允许重定向——决策输入携带私有仓库上下文，因此远程端点会被拒绝 | `http://127.0.0.1:8000/v1/systemone` |
+| `NIF_JEV_BACKEND` / `NIF_JEV_MODEL` | 结果中回显的后端标签，以及发送给该后端的模型 id | `von` / `von-1.1` |
+| `NIF_JEV_SHADOW` | 每回合影子观测：每次回合开始时 `jev` 排队最多两个独立判断（已安装技能；可通过任务派生的词法查询发现按需工具），并记录到存储 kind `jevshadow`——绝不向模型暴露任何内容。`0`/`false`/`no`/`off` 关闭。后端缺席时不写记录：一条 `ev.log.jev` 警告，然后静默冷却 | `1` |
+| `NIF_JEV_SHADOW_KIND` / `NIF_JEV_SHADOW_SKILL_QUERY` / `NIF_JEV_SHADOW_TOOL_QUERY` | 要观测的影子集合（`tools`、`skills`、`both`），以及覆盖任务派生默认值的显式词法查询 | `both` / — / — |
+| `NIF_VON_BIN` | `von` 启动器要启动的 Von 二进制路径（缺失 = 一条警告 + `absent` 状态，空闲时隙上重新检查） | `<root>/var/jev-venv/bin/von` |
+| `NIF_VON_ARGS` | 子进程的完整 argv，按空白拆分；覆盖内置的 `serve --model … --host … --port …` | `serve --model $NIF_VON_MODEL --host $NIF_VON_HOST --port $NIF_VON_PORT` |
+| `NIF_VON_MODEL` / `NIF_VON_DEVICE` / `NIF_VON_HOST` / `NIF_VON_PORT` | 未设置 `NIF_VON_ARGS` 时启动器构建的 serve 参数 | `von-1.1` / `cpu` / `127.0.0.1` / `8000` |
+| `NIF_VON_POLL_MS` / `NIF_VON_BACKOFF_MAX_S` | 启动器空闲间隔，以及子进程退出后重启退避的上限 | `1000` / `60` |
 | `NIF_WRITE_MAX_BYTES` | `write` 工具整文件负载的上限 | `900000` |
 | `NIF_OAUTH_CALLBACK_HOST` | 本地 OAuth 回调监听器的主机（端口固定为 1455/53692） | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core 在 `var/logs` 中子进程日志保留上限（MB） | `200` |
@@ -1226,7 +1237,8 @@ Provider 提示词缓存包含顶层工具定义。将已发现的具体 schema 
   logfile 的 `logfile_search`/`logfile_paths`。
 - 状态和内省：存储 `get`/`list`、`session_info`，以及
   技能入口点 `skill_list`/`skill_load`（仅当某个工作流指南适合任务时才加载）。
-- 编排：`fabric`、`agent_*` 和 `expert_*` 工具。
+- 编排：`fabric`、`agent_*` 和 `expert_*` 工具，以及实验性的建议对 `jev_*` /
+  `von_status`（仅在词法发现匹配较弱时加载——见[建议式发现](#advisory-discovery-jev-and-the-von-launcher)）。
 - 核心生命周期/状态/目录、builder、插件和 fetch。
 - 模型和 provider 管理。
 - 技能资源、在线搜索、安装和移除。
@@ -1830,6 +1842,74 @@ steer 的唯一存储产物是被跟随会话中的并入消息记录）；失�
 工具。绝不是全局 LLM 工具集——那会夸大
 一个较旧或列入允许清单的会话实际可以调用的内容。
 
+## Advisory discovery (`jev`) and the Von launcher
+
+`jev` 组件是一个可选加入的实验性 spike（设计与诚实的局限：
+[docs/research/JEV-SPIKE.md](research/JEV-SPIKE.md)）：一个小候选列表之上的
+thin、可替换的顾问，由本地决策模型支撑。它是三个按需、只读效应的工具：
+
+- `jev_recommend {task, query, kind: "tools"|"skills"}` —— 可用的一步路径：
+  从 `core.discover`（按需提示）或 `skill_list` 获取新的候选名单，然后询问
+  后端哪一个合适。查询必须狭窄且非空（1–24 个候选；过大的集合拒绝而非
+  截断，空列表或空建议是有效答案）。
+- `jev_suggest {task, candidates}` —— 给自带 1–24 项候选名单的调用方；在
+  一个请求中配对 `noul`（有任何能力有帮助吗？）与 `choice`。
+- `jev_decide {state, questions}` —— 原始的 System One 类型化问题
+  （`noul`/`choice`/`score`），有界 state，无副作用。
+
+它们**仅供建议**。不加载 schema、不加载技能、不调用任何东西、不授予
+任何权限，报告的是未校准的实验性信号——绝不是策略，绝不是审批门。
+分发和审批仍是唯一的执行路径，因此行动前必须用 `discover` + `invoke`（或
+`skill_load`）确认答案。后端故障是失败开放的结果：继续用普通发现。端点
+在构造上仅限本地（`NIF_JEV_URL` 必须是不重定向的回环 `/v1/systemone`
+URL），因为决策输入携带私有仓库上下文——绝不要在 `task` 中传递秘密或
+文件内容。
+
+推荐的集成方式是 **fabric 程序**，而不是直接循环：候选名单和原始答案留在
+guest 中，只有已验证的结果进入会话。`components/fabric/examples/
+advisory-ranking.nim` 是可运行的形态（顾问 → 验证 → 同一程序内的词法回退，
+因此决策模型的缺失绝不决定发现是否发生）；
+`fabric_help {topic: "advisory-ranking"}` 返回其源码。
+
+**影子实验。** 为了在不打扰任何人的情况下收集证据，`jev` 还会在后台
+判断每次回合开始（默认开启；`NIF_JEV_SHADOW=0` 关闭）：一个观测已安装的
+技能列表，一个观测可发现的按需工具，使用该回合的请求（上限 2,000 字节），
+以及——除非设置了 `NIF_JEV_SHADOW_TOOL_QUERY`——由其最长单词派生的词法
+查询。每个候选集上限 24；过大的集合记录为 `no-candidates`，绝不截断。
+不向模型暴露任何内容，不触碰任何转录，会话的冻结前缀不受影响（整个组件
+唯一的提示缓存效应是在显式调用这些工具时追加的 tool history）。结果落在
+存储 kind `jevshadow`（`<sessionId>:<turnId>:<kind>`，可与转录 join），
+携带候选快照、原始答案、`elapsedMs`/`queueMs`、终止 `status`（`done`、
+`error`、`no-candidates`、进行中的 `pending`、回合先关闭时的 `stale`）和
+`turnClosed`；judge 作为独立的 PDEATHSIG 子进程运行（12 秒硬限制，一次
+一个，有界队列），因此 NATS 泵保持响应。**后端缺席是原装安装的默认状态，
+而不是实验数据**：删除进行中的标记，一条 `ev.log.jev` 警告标记中断，
+后续判断暂停 60 秒冷却并静默重试——因此后端一旦应答，影子会自动恢复。
+记录包含任务文本——按敏感数据处理。
+
+**启动后端。** [Von](https://github.com/wfzyx/von) 是独立的 Python 运行时，
+刻意置于 `make build` 之外：
+
+```bash
+make install-jev   # idempotent: uv venv var/jev-venv + von-sdk (~5.4 GB)
+make von-up        # enable the supervised launcher (persisted spawn record)
+make von-down      # disable again (stops it, deletes the record)
+```
+
+`make install-jev` 从不属于 `make setup`（体积和可选性就是原因）。`von`
+**不在清单中**——启用是一条持久化的 `core.spawn` 记录，与插件完全一样，
+因此监督器像管理任何组件一样管理启动器（PDEATHSIG、重启策略、drain），
+原装 harness 从不为该运行时付费。启动器以内核清理的子进程
+（`setpriv --pdeathsig`，监督器自己的包装）启动 venv 二进制，收养已在
+端点应答的 Von 而不是重复启动，并在空闲时隙上重新检查稍后的
+`make install-jev`。用 `von_status` 询问它在做什么：`starting`（Von 正在
+加载权重——首次 serve 会下载模型，CPU 试验中约 115 秒，因此在依赖 `jev`
+前先轮询）、`serving`（端点应答）、`absent`（venv 二进制缺失）或 `failed`
+（子进程退出；有上限的退避）。状态只是启动器自身视角的声明——真正的
+探测是 `jev` 调用。因为启动器是普通的 spawn 记录，LLM 也可以在对话中
+启用它：`discover` + `invoke spawn {name: "von", arguments…}`——与每个
+`spawn` 一样受审批门控。
+
 ## Recovery
 
 仓库是快照；`var/` 是一次性构建输出——用 `make clean` 删除构建
@@ -1889,6 +1969,7 @@ make build
 | `context_projection` | `<convId>` | 每个会话一个文档——已提交的上下文投影（`version`、`generation`、`canonicalHigh`、`renderer`、规范化后的 `checkpoint`、持久的 `covered` 规范范围、`retained` id、`prunes`、`measurements`、`provenance`），运行器在压缩后复用它。基于上一代以 `expectRev` 写入一次；它是重启后重建提供商视图的真相来源，当通知指名 `checkpoint` 引用时，召回解析器会读取其 `checkpoint`/`generation` |
 | `spill` | `<convId>:<n>` | 从上下文窗口中提升出来的超大工具结果，可用 `context_recall {"ref": {"source": "spill", "id": "…"}}` 寻址。提升在追加时尽力而为（失败则保留临时文件指针且不添加引用）；缺失、为空或格式错误的 spill 文档会被大声拒绝，而不是作为空成功来回答，并且修剪门在修剪前会重新校验该文档，因此损坏的 spill 绝不会导致最后一份副本丢失 |
 | `mcp` | 服务器名 | `mcp` 组件的 MCP 服务器配置记录（见 [External MCP servers](#external-mcp-servers-mcp)） |
+| `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建议式发现实验（`jev`）的每回合影子观测：候选快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。绝不向模型暴露，也绝不写入转录；后端缺席时**不**写任何记录（见[建议式发现](#advisory-discovery-jev-and-the-von-launcher)）。记录包含任务文本——按敏感数据处理 |
 | `selftest` | store 自检探针 | 一次性——由 store 自身的自检往返写入并删除 |
 
 后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，设置 `NIF_STORE_BACKEND=barrel` 时是位于 `var/barrel-db` 的 BitBarrel，或 DSN 共享的 TiDB 引擎（`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。
@@ -1958,6 +2039,10 @@ make install-ui     # install the desktop UI plugin (gokr/niffler-ui): an
                     # isolated auto-approved harness boots, the plugin manager
                     # clones + the builder builds it into var/bin/niffler-ui
 make install-lsp    # install the lsp component's default language servers
+make install-jev    # 安装 jev 背后的 Von 运行时（可选，约 5.4 GB；
+                    # 不属于 `make setup`）
+make von-up         # 启用受监督的 Von 启动器（持久化 spawn 记录；
+                    # `make von-down` 再次移除）
 make test           # the full gate: the bus-contract suite (the UI repo's
                     # frontend tests live in gokr/niffler-ui)
 make test-server    # the bus-contract suite alone (each test owns a private bus)

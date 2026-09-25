@@ -14,6 +14,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 
 - **模組化到行程邊界。** 就像 Pi 和 DeepSeek Harness，但再低一層：每個能力都是自己的 OS 行程，位於單一線路協定之後（透過 NATS 傳遞 JSON 封套），而代理會在對話中途建置、生成與移除元件——不需拆除程式碼，也不會有洩漏的子行程。請參閱 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 - **電池內含。** `fabric`（可程式化的工具呼叫）、`agent`/`expert`（子代理與諮詢同儕）、`git`、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank 移植）、`skills`、`plugins`、`processes`、`observe`/`logfile`——這些是其他 harness 留給外掛的工作。請參閱[隨附元件](docs/MANUAL.md#shipped-components)。
+- **實驗性功能維持可選加入。** `jev`（基於本機決策模型的建議式探索）以惰性的隨需顧問形式隨附於 manifest，其執行時是你用 spawn 記錄啟用的受監督啟動器——`make build`/`make setup` 絕不被強加重量級相依。請參閱[建議式探索](docs/MANUAL.md#advisory-discovery-jev-and-the-von-launcher)。
 - **開放模型，所有供應商。** 任何 OpenAI 相容端點——本機、開放權重或代管——透過 `.env` 或由儲存支援的供應商登錄檔；ChatGPT/Claude 訂閱 OAuth 以及由 models.dev 支援的目錄。請參閱[供應商](docs/MANUAL.md#provider-registry-provider)與[模型目錄](docs/MANUAL.md#model-catalog-models)。
 - **漸進式工具揭露。** 一組小型、凍結的直接工具集；其他一切只需一次 `discover`/`invoke`，以歷史形式附加，而非提示詞膨脹。請參閱 [MANUAL](docs/MANUAL.md#progressive-tool-discovery)。
 - **人類保持在迴圈中。** 需核准的工具，附帶 manifest 摘要與每個會話的 `ask`/`auto` 模式；在無法觸及人類時，呼叫會被拒絕，絕不會默默允許。請參閱[核准](docs/MANUAL.md#approvals)。
