@@ -511,6 +511,15 @@ func run() int {
 	}
 	defer unsub()
 	comp.OnDrain(func(*sdk.Component) { b.shutdown() })
+	// Re-announce after a re-attach: the SDK's reconnect watch rebuilds
+	// subscriptions on a fresh connection, and this deferred-announce component
+	// must re-publish its (possibly drifted) contract with it — otherwise the
+	// catalog keeps the pre-outage registration pointing at a dead surface.
+	comp.OnReattached(func(*sdk.Component) {
+		if err := comp.Announce(); err != nil {
+			fmt.Fprintln(os.Stderr, "re-announce after reattach:", err)
+		}
+	})
 	if err := comp.Announce(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

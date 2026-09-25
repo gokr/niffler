@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -599,4 +600,152 @@ func TestSerialToolDoesNotStallConcurrentDelivery(t *testing.T) {
 			t.Fatalf("request failed: %v", err)
 		}
 	}
+}
+
+// TestReattachAfterOutage pins issue #3 for the Go SDK: when the bus is
+// unreachable past the reconnect grace, the component re-dials (following
+// the discovery file to the NEW port), resubscribes every pattern and
+// re-announces, then answers calls again — no process restart.
+func TestReattachAfterOutage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("reconnect timing test skipped in -short mode")
+	}
+	url1, server1 := startTestNATSProc(t)
+	t.Setenv("NIF_NATS_URL", url1)
+	t.Setenv("NIF_RECONNECT_GRACE_S", "2")
+	c := New("reconnect-go", "0.0.1")
+	reannounced := make(chan struct{}, 4)
+	c.OnReattached(func(*Component) { reannounced <- struct{}{} })
+	ping := func(*Component, json.RawMessage) (any, error) {
+		return map[string]bool{"ok": true, "pong": true}, nil
+	}
+	c.Tool("ping", map[string]any{"type": "object"}, ping)
+	c.On("ev.recon.*", func(*Component, string, json.RawMessage) {})
+	if err := c.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	client, err := nats.Connect(url1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// bus #2 on a different port + discovery file pointing at it
+	url2 := startTestNATS(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "var"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "var", "nats-url"), []byte(url2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NIF_ROOT", root)
+	// NIF_NATS_URL still names the DEAD bus: the watcher must move past it
+	// via the discovery file (the restarted-harness scenario).
+
+	// pre-outage sanity: the tool answers on bus #1
+	deadline := time.Now().Add(5 * time.Second)
+	var pong bool
+	for time.Now().Before(deadline) && !pong {
+		var msg *nats.Msg
+		msg, err = client.Request("svc.reconnect-go.call", mustCallEnvelope("ping"), 2*time.Second)
+		if err == nil && msg != nil {
+			pong = containsField(msg.Data, `"ok"`)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !pong {
+		t.Fatal("pre-outage: ping never answered on the first bus")
+	}
+	client.Close()
+
+	// Kill bus #1: the outage. nats.go keeps RECONNECTING to the dead URL
+	// forever; only the grace-bounded re-attach escapes it.
+	_ = server1.Process.Kill()
+	_ = server1.Wait()
+
+	// outlive the grace: the watcher trips, re-dials to url2 via the
+	// discovery file, resubscribes and re-announces.
+	select {
+	case <-reannounced:
+	case <-time.After(30 * time.Second):
+		t.Fatal("no re-announce within 30s of the outage")
+	}
+
+	client2, err := nats.Connect(url2)
+	if err != nil {
+		t.Fatalf("connect bus2: %v", err)
+	}
+	defer client2.Close()
+	pong = false
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !pong {
+		var msg *nats.Msg
+		msg, err = client2.Request("svc.reconnect-go.call", mustCallEnvelope("ping"), 2*time.Second)
+		if err == nil && msg != nil {
+			pong = containsField(msg.Data, `"ok"`)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !pong {
+		t.Fatal("post-outage: ping never answered on the new bus")
+	}
+}
+
+// startTestNATSProc is startTestNATS that also hands back the process, so a
+// test can kill the bus mid-flight (the re-attach test's outage).
+func startTestNATSProc(t *testing.T) (string, *exec.Cmd) {
+	t.Helper()
+	serverBin, err := exec.LookPath("nats-server")
+	if err != nil {
+		t.Skip("nats-server is not installed")
+	}
+	portsDir, err := os.MkdirTemp("", "niffler-sdk-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := exec.Command(serverBin, "-a", "127.0.0.1", "-p", "-1",
+		"--ports_file_dir", portsDir)
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = server.Process.Kill()
+		_ = server.Wait()
+		_ = os.RemoveAll(portsDir)
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, globErr := filepath.Glob(filepath.Join(portsDir, "*.ports"))
+		if globErr == nil {
+			for _, path := range entries {
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					continue
+				}
+				var ports struct {
+					Nats []string `json:"nats"`
+				}
+				if json.Unmarshal(data, &ports) == nil && len(ports.Nats) > 0 {
+					return ports.Nats[0], server
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("nats-server did not publish a client port")
+	return "", server
+}
+
+// mustCallEnvelope builds a minimal call envelope for the ping tool.
+func mustCallEnvelope(tool string) []byte {
+	data, _ := json.Marshal(map[string]any{
+		"v": 1, "id": "test-1", "kind": "call", "tool": tool, "args": map[string]any{},
+	})
+	return data
+}
+
+// containsField probes for a JSON field's presence in a reply.
+func containsField(data []byte, needle string) bool {
+	return strings.Contains(string(data), needle)
 }

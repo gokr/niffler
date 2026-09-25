@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -134,6 +136,10 @@ type Component struct {
 	deferAnnounce    bool
 	contractMu       sync.RWMutex // protects setup while deferred calls/events can arrive
 	ready            bool
+	// Re-attach (issue #3): callbacks for a successful post-outage re-attach;
+	// guarded so a concurrent reconnectWatch tick cannot race registration.
+	reattachedMu       sync.Mutex
+	reattachedHandlers []func(*Component)
 	// Idle work (see OnIdle): registered before Connect, run by its own
 	// ticker goroutine under the serial handler lock.
 	idleEvery   time.Duration
@@ -623,17 +629,11 @@ func (c *Component) Connect() error {
 	// .env from cwd and the harness root (existing env always wins)
 	LoadDotEnv(".env", filepath.Join(os.Getenv("NIF_ROOT"), ".env"))
 
-	url := os.Getenv("NIF_NATS_URL")
-	if url == "" {
-		url = "nats://127.0.0.1:4222"
-	}
-	nc, err := nats.Connect(url,
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(time.Second))
+	url, err := c.dial()
 	if err != nil {
-		return fmt.Errorf("connect %s: %w", url, err)
+		return err
 	}
-	c.nc = nc
+	nc := c.nc
 	if c.shutdown == nil {
 		c.shutdown = make(chan struct{})
 	}
@@ -714,7 +714,212 @@ func (c *Component) Connect() error {
 		slog.Info("connected (announce deferred)", "component", c.Name,
 			"version", c.Version, "url", url)
 	}
+	// Reconnect watch (issue #3): nats.go reconnects forever on the SAME url,
+	// but a server that stays down past its reconnect buffer, or a harness
+	// restarted on a NEW port, leaves the component alive but deaf — no
+	// reg.depart was sent, so the catalog keeps advertising tools nothing can
+	// reach. A ticker goroutine measures the connection: a Reconnect/Disconnect
+	// notice followed by a failed Flush past NIF_RECONNECT_GRACE_S (default
+	// 180s, deliberately above nats.go's own patience) triggers a re-dial to a
+	// re-resolved URL, a resubscribe of every pattern, and a re-announce.
+	go c.reconnectWatch(url)
 	return nil
+}
+
+// dial resolves the bus URL and connects. Resolution order: NIF_NATS_URL
+// (explicit always wins), the harness root's var/nats-url discovery file
+// (a restarted core usually binds a new port), then the well-known port.
+func (c *Component) dial() (string, error) {
+	url := os.Getenv("NIF_NATS_URL")
+	if url == "" {
+		if r := os.Getenv("NIF_ROOT"); r != "" {
+			if data, err := os.ReadFile(filepath.Join(r, "var", "nats-url")); err == nil {
+				if u := strings.TrimSpace(string(data)); u != "" {
+					url = u
+				}
+			}
+		}
+	}
+	if url == "" {
+		url = "nats://127.0.0.1:4222"
+	}
+	nc, err := nats.Connect(url,
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(time.Second))
+	if err != nil {
+		return "", fmt.Errorf("connect %s: %w", url, err)
+	}
+	c.nc = nc
+	return url, nil
+}
+
+// resubscribe installs the call subject, event bindings and taps on the
+// CURRENT connection. Extracted from Connect so a re-attach can rebuild the
+// surface on a fresh connection: subscriptions belong to their connection
+// and do not survive a redial. The drain binding is added by Connect —
+// exactly once per process, never per attach.
+func (c *Component) resubscribe() error {
+	nc := c.nc
+
+	// queue-grouped call subject: N replicas, one gets each call
+	callSubject := "svc." + c.Name + ".call"
+	sub, err := nc.QueueSubscribe(callSubject, c.Name, c.handleCall)
+	if err != nil {
+		return fmt.Errorf("subscribe %s: %w", callSubject, err)
+	}
+	c.subs = append(c.subs, sub)
+
+	for _, e := range c.events {
+		e := e
+		s, err := nc.Subscribe(e.pattern, func(m *nats.Msg) {
+			c.handlerMu.Lock()
+			defer c.handlerMu.Unlock()
+			env := ParseEnvelope(m.Data)
+			e.handler(c.handlerView(), m.Subject, env.Payload)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe %s: %w", e.pattern, err)
+		}
+		c.subs = append(c.subs, s)
+	}
+
+	// raw wire taps (serialized like events)
+	for _, t := range c.taps {
+		t := t
+		s, err := nc.Subscribe(t.pattern, func(m *nats.Msg) {
+			c.handlerMu.Lock()
+			defer c.handlerMu.Unlock()
+			t.handler(c.handlerView(), m.Subject, m.Data)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe %s: %w", t.pattern, err)
+		}
+		c.subs = append(c.subs, s)
+	}
+
+	if err := c.nc.Flush(); err != nil {
+		return fmt.Errorf("flush subscriptions: %w", err)
+	}
+	return nil
+}
+
+// reattachCandidates lists bus URLs to try when re-attaching, most likely
+// first: the env URL (the same bus may simply have returned), the discovery
+// file (a restarted core usually binds a new port), the well-known port.
+func (c *Component) reattachCandidates() []string {
+	var urls []string
+	seen := map[string]bool{}
+	add := func(u string) {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+	add(os.Getenv("NIF_NATS_URL"))
+	if r := os.Getenv("NIF_ROOT"); r != "" {
+		if data, err := os.ReadFile(filepath.Join(r, "var", "nats-url")); err == nil {
+			add(strings.TrimSpace(string(data)))
+		}
+	}
+	add("nats://127.0.0.1:4222")
+	return urls
+}
+
+// reconnectWatch measures the connection every 2s. Disconnect/Reconnecting
+// notices start the unhealthy clock; a Flush success resets it. Unhealthy
+// past reconnectGraceSecs triggers a re-dial, resubscribe and re-announce —
+// issue #3's alive-but-deaf component recovers without a process restart.
+func (c *Component) reconnectWatch(initialURL string) {
+	grace := 180 * time.Second
+	if v := os.Getenv("NIF_RECONNECT_GRACE_S"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			grace = time.Duration(secs) * time.Second
+		}
+	}
+	var unhealthySince time.Time
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-c.shutdown:
+			return
+		case <-tick.C:
+		}
+		nc := c.nc
+		if nc == nil {
+			continue
+		}
+		status := nc.Status()
+		if status == nats.CONNECTED {
+			// Trust a successful round trip over the status flag alone.
+			if err := nc.Flush(); err == nil {
+				unhealthySince = time.Time{}
+				continue
+			}
+		} else if status != nats.DISCONNECTED && status != nats.RECONNECTING &&
+			status != nats.CLOSED {
+			continue
+		}
+		if unhealthySince.IsZero() {
+			unhealthySince = time.Now()
+			continue
+		}
+		if time.Since(unhealthySince) < grace {
+			continue
+		}
+		// Past the grace: re-dial, resubscribe, re-announce.
+		slog.Warn("bus unreachable past the reconnect grace — re-attaching",
+			"component", c.Name, "url", initialURL,
+			"unhealthy_for", time.Since(unhealthySince).Round(time.Second))
+		if err := c.reattachNow(); err != nil {
+			slog.Error("re-attach failed — retrying", "component", c.Name, "err", err)
+			continue // unhealthySince stays set: retry on the next tick
+		}
+		unhealthySince = time.Time{}
+	}
+}
+
+// reconnectNow replaces the connection: close the dead one, dial a
+// freshly-resolved URL, rebuild every subscription, re-announce. The old
+// subscriptions are drained first so no handler fires on a dying connection.
+func (c *Component) reconnectNow() error {
+	c.contractMu.Lock()
+	defer c.contractMu.Unlock()
+	if c.nc != nil {
+		for _, s := range c.subs {
+			_ = s.Drain()
+		}
+		c.subs = nil
+		c.nc.Close()
+		c.nc = nil
+	}
+	var lastErr error
+	for _, url := range c.reattachCandidates() {
+		nc, err := nats.Connect(url,
+			nats.MaxReconnects(-1),
+			nats.ReconnectWait(time.Second))
+		if err != nil {
+			lastErr = fmt.Errorf("connect %s: %w", url, err)
+			continue
+		}
+		c.nc = nc
+		if err := c.resubscribe(); err != nil {
+			lastErr = err
+			nc.Close()
+			c.nc = nil
+			continue
+		}
+		if err := c.announceLocked("reg.publish"); err != nil {
+			lastErr = err
+			nc.Close()
+			c.nc = nil
+			continue
+		}
+		slog.Info("reattached after the outage — resubscribed and re-announced",
+			"component", c.Name, "url", url)
+		return nil
+	}
+	return lastErr
 }
 
 // Connected reports whether the component is connected to the bus.
@@ -763,6 +968,41 @@ func (c *Component) Run() error {
 	c.Wait()
 	c.Close()
 	return nil
+}
+
+// reattachNow replaces the connection (reconnectNow) and then runs every
+// OnReattached handler. Deferred-announce components (mcp-bridge) use the
+// hook to re-publish their contract on the fresh connection.
+func (c *Component) reattachNow() error {
+	if err := c.reconnectNow(); err != nil {
+		return err
+	}
+	c.reattachedMu.Lock()
+	handlers := append([]func(*Component){}, c.reattachedHandlers...)
+	c.reattachedMu.Unlock()
+	for _, h := range handlers {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("reattached handler panic", "component", c.Name, "panic", r)
+				}
+			}()
+			h(c)
+		}()
+	}
+	return nil
+}
+
+// OnReattached registers a callback for a successful re-attach after a bus
+// outage (issue #3): the connection was re-dialed, subscriptions rebuilt and
+// reg.publish re-sent. Deferred-announce components re-announce here (their
+// contract may have drifted while disconnected); ordinary components need
+// no hook — the SDK's re-attach already re-announced the frozen contract.
+func (c *Component) OnReattached(h func(*Component)) *Component {
+	c.reattachedMu.Lock()
+	c.reattachedHandlers = append(c.reattachedHandlers, h)
+	c.reattachedMu.Unlock()
+	return c
 }
 
 // DeferAnnounce: Connect() performs no reg.publish; call Announce() once the

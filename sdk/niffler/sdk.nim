@@ -68,9 +68,16 @@ type
 
   SubscriptionBinding = object
     sub: ptr natsSubscription
+    pattern: string  ## subject this binding serves; a re-attach rebuilds it
     kind: SubscriptionKind
     eventHandler: EventHandler
     tapHandler: TapHandler
+
+  ReattachedHandler* = proc(c: Component)
+    ## Callback for a successful re-attach after a bus outage (issue #3):
+    ## the connection was re-dialed, subscriptions rebuilt and reg.publish
+    ## re-sent. Deferred-announce components re-announce here (their
+    ## contract may have drifted while disconnected).
 
   Component* = ref object
     name*: string
@@ -91,6 +98,7 @@ type
                              ## runs — block-form tools read it to match
                              ## cancel.<component> without raw-args access.
     bindings: seq[SubscriptionBinding]
+    reattachedHandlers: seq[ReattachedHandler]
     shuttingDown*: bool
 
   DrainHandler* = proc(c: Component)
@@ -789,6 +797,103 @@ proc drainHandler(c: Component, subject: string, payload: JsonNode) =
       stderr.writeLine(c.name & ": drain handler failed: " & e.msg)
   gShutdown = true
 
+proc subscribeSurface(c: Component) =
+  ## Subscribe the queue-grouped call subject, the event handlers and the raw
+  ## taps on the CURRENT connection. Extracted from run() so a re-attach can
+  ## rebuild the surface on a fresh connection: natsnim subscriptions belong
+  ## to their connection and do not survive a redial. The drain handler is
+  ## registered in run() — exactly once per process, never per attach.
+  var sub: ptr natsSubscription
+  let callSubject = "svc." & c.name & ".call"
+  let st = natsConnection_QueueSubscribeSync(addr sub, c.nc.conn,
+                                             callSubject.cstring, c.name.cstring)
+  if not checkStatus(st):
+    raise newException(IOError, "subscribe " & callSubject & ": " & getErrorString(st))
+  c.bindings.add(SubscriptionBinding(sub: sub, pattern: callSubject, kind: skCall))
+
+  for e in c.eventHandlers:
+    var s: ptr natsSubscription
+    let es = natsConnection_SubscribeSync(addr s, c.nc.conn, e.pattern.cstring)
+    if not checkStatus(es):
+      raise newException(IOError, "subscribe " & e.pattern & ": " & getErrorString(es))
+    c.bindings.add(SubscriptionBinding(sub: s, pattern: e.pattern, kind: skEvent,
+                                      eventHandler: e.handler))
+
+  for t in c.taps:
+    var s: ptr natsSubscription
+    let ts = natsConnection_SubscribeSync(addr s, c.nc.conn, t.pattern.cstring)
+    if not checkStatus(ts):
+      raise newException(IOError, "subscribe " & t.pattern & ": " & getErrorString(ts))
+    c.bindings.add(SubscriptionBinding(sub: s, pattern: t.pattern, kind: skTap,
+                                      tapHandler: t.handler))
+
+proc onReattached*(c: Component, handler: ReattachedHandler): Component =
+  ## Register a callback for a successful re-attach after a bus outage
+  ## (issue #3). Deferred-announce components re-announce here; ordinary
+  ## components need no hook — the re-attach already re-announced the
+  ## frozen contract.
+  c.reattachedHandlers.add(handler)
+  return c
+
+proc reattachCandidates(c: Component): seq[string] =
+  ## Bus URLs to try when re-attaching, most likely first: the env URL (the
+  ## same bus may simply have returned), then the harness root's discovery
+  ## file (a restarted core usually binds a new port), then the well-known
+  ## port — adopted only when a core serving OUR root answers it, the same
+  ## identity rule ensureHarness applies.
+  let explicit = getEnv("NIF_NATS_URL")
+  if explicit.len > 0: result.add(explicit)
+  let r = harnessRoot()
+  let disc = r / "var" / "nats-url"
+  if fileExists(disc):
+    let u = readFile(disc).strip()
+    if u.len > 0 and u != explicit: result.add(u)
+  let wellKnown = "nats://127.0.0.1:4222"
+  if wellKnown notin result and coreRoot(wellKnown) == r:
+    result.add(wellKnown)
+
+proc reattach(c: Component) =
+  ## The connection is dead beyond the client's own reconnect budget (issue
+  ## #3): the client reconnects transparently for about two minutes, but an
+  ## outage past that leaves the component alive but deaf — subscriptions
+  ## never deliver again, no reg.depart was sent, and the catalog keeps
+  ## advertising a component nothing can reach. Re-resolve the bus (the port
+  ## can change across harness restarts), redial, rebuild every subscription
+  ## and re-announce, all without a process restart. Runs on the main thread
+  ## from the pump loop — the same serialization every handler has.
+  stderr.writeLine(c.name & ": bus connection lost beyond the reconnect " &
+                   "budget — re-attaching")
+  for binding in c.bindings:
+    try: natsSubscription_Destroy(binding.sub)
+    except CatchableError: discard
+  c.bindings.setLen(0)
+  try: c.nc.close()
+  except CatchableError: discard
+  var backoffMs = 500
+  while not gShutdown:
+    for url in reattachCandidates(c):
+      try:
+        c.nc = connect(url)
+        subscribeSurface(c)
+        c.announce("reg.publish")
+        stderr.writeLine(c.name & ": reattached to " & url &
+                         " after the outage — resubscribed and re-announced")
+        for h in c.reattachedHandlers:
+          try: h(c)
+          except CatchableError as e:
+            stderr.writeLine(c.name & ": reattached handler failed: " & e.msg)
+        return
+      except CatchableError as e:
+        try: c.nc.close()
+        except CatchableError: discard
+        if backoffMs == 500:
+          stderr.writeLine(c.name & ": re-attach to " & url & " failed: " &
+                           e.msg & " — retrying with backoff")
+    sleep(backoffMs)
+    backoffMs = min(backoffMs * 2, 10_000)
+  # A drain/teardown arrived during the outage: leave like the normal path.
+  quit(0)
+
 proc run*(c: Component) =
   dieWithParent()
   installSignals()
@@ -820,34 +925,11 @@ proc run*(c: Component) =
   if not connected:
     raise newException(IOError, "connect " & url & ": gave up after 60s")
 
-  # queue-grouped call subject: N replicas, one gets each call
-  var sub: ptr natsSubscription
-  let callSubject = "svc." & c.name & ".call"
-  let st = natsConnection_QueueSubscribeSync(addr sub, c.nc.conn,
-                                             callSubject.cstring, c.name.cstring)
-  if not checkStatus(st):
-    raise newException(IOError, "subscribe " & callSubject & ": " & getErrorString(st))
-  c.bindings.add(SubscriptionBinding(sub: sub, kind: skCall))
-
-  # passive event subscriptions (plus the SDK-managed drain subject)
+  # The drain subject registration happens exactly once per process; the
+  # subscriptions themselves are rebuilt by subscribeSurface on re-attach.
   c.eventHandlers.add((pattern: "ev.sys.drain",
                        handler: EventHandler(drainHandler)))
-  for e in c.eventHandlers:
-    var s: ptr natsSubscription
-    let es = natsConnection_SubscribeSync(addr s, c.nc.conn, e.pattern.cstring)
-    if not checkStatus(es):
-      raise newException(IOError, "subscribe " & e.pattern & ": " & getErrorString(es))
-    c.bindings.add(SubscriptionBinding(sub: s, kind: skEvent,
-                                      eventHandler: e.handler))
-
-  # raw wire taps
-  for t in c.taps:
-    var s: ptr natsSubscription
-    let ts = natsConnection_SubscribeSync(addr s, c.nc.conn, t.pattern.cstring)
-    if not checkStatus(ts):
-      raise newException(IOError, "subscribe " & t.pattern & ": " & getErrorString(ts))
-    c.bindings.add(SubscriptionBinding(sub: s, kind: skTap,
-                                      tapHandler: t.handler))
+  subscribeSurface(c)
 
   c.announce("reg.publish")
   echo c.name & " v" & c.version & " online on " & url &
@@ -859,6 +941,11 @@ proc run*(c: Component) =
   # every message on the bus) backs up for seconds (t_observe). Bounded per
   # pass so a hammered call subject can't starve the rest.
   var idleDueAt = epochTime() + c.idleEveryMs.float / 1000.0
+  let reconnectGraceSecs = block:
+    try: parseFloat(getEnv("NIF_RECONNECT_GRACE_S", "180"))
+    except CatchableError: 180.0
+  var healthDueAt = epochTime() + 2.0
+  var unhealthySince = 0.0
   while not gShutdown:
     var gotOne = false
     for binding in c.bindings:
@@ -877,6 +964,27 @@ proc run*(c: Component) =
     if c.idleHandler != nil and epochTime() >= idleDueAt:
       idleDueAt = epochTime() + c.idleEveryMs.float / 1000.0
       c.idleHandler(c)
+    # Health watch (issue #3): the client below us reconnects transparently
+    # for about two minutes; past that budget the connection is dead for
+    # good and this loop would spin on it forever — subscriptions never
+    # deliver, no reg.depart was sent, and the catalog keeps advertising a
+    # component nothing can reach. A periodic PING/PONG flush measures the
+    # truth: a timeout means the client's own reconnect may still recover
+    # the connection; a failure persisting past NIF_RECONNECT_GRACE_S
+    # (default 180s — deliberately above the client's budget) triggers the
+    # re-attach, which re-resolves the bus, resubscribes and re-announces.
+    if epochTime() >= healthDueAt:
+      healthDueAt = epochTime() + 2.0
+      let hst = natsConnection_FlushTimeout(c.nc.conn, 500)
+      if hst == NATS_OK:
+        unhealthySince = 0.0
+      else:
+        if unhealthySince == 0.0:
+          unhealthySince = epochTime()
+        elif epochTime() - unhealthySince >= reconnectGraceSecs:
+          c.reattach()
+          unhealthySince = 0.0
+          healthDueAt = epochTime() + 2.0
     if not gotOne:
       sleep(5)
 
