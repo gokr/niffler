@@ -241,18 +241,27 @@ proc waitRegistered(nc: NatsConnection, secs = 20): bool =
 proc listAll(nc: NatsConnection, kind, idPrefix: string,
              quiet = false): seq[JsonNode] =
   ## Page a whole kind with the cursor (a single list caps at 1000).
+  ## Attachment payloads need one-item pages to stay under NATS max_payload.
   var after = ""
   var pages = 0
+  # Each attachmentdata document can contain 4 MB of base64 pixels; even
+  # two can exceed the bus's 8 MB payload. Page this kind one document at a
+  # time on both source reads and target verification. Metadata and every
+  # other kind keep the normal 1000-item page.
+  let pageSize = if kind == "attachmentdata": 1 else: 1000
   while true:
-    var args = %*{"kind": kind, "idPrefix": idPrefix, "limit": 1000}
+    var args = %*{"kind": kind, "idPrefix": idPrefix, "limit": pageSize}
     if after.len > 0: args["after"] = %after
     let r = callStore(nc, "list", args)
     let items = r{"items"}
     if items != nil and items.kind == JArray:
       for item in items: result.add(item)
     let nextAfter = r{"nextAfter"}.getStr("")
-    if not r{"hasMore"}.getBool(false) or nextAfter.len == 0 or
-        nextAfter == after:
+    # A malformed cursor cannot silently truncate a migration.
+    if r{"hasMore"}.getBool(false) and
+        (nextAfter.len == 0 or nextAfter == after):
+      die("invalid list cursor on kind " & kind)
+    if not r{"hasMore"}.getBool(false):
       break
     after = nextAfter
     inc pages
