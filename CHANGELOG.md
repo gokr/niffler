@@ -62,6 +62,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A pinned provider/model pair with no catalog match now warns instead of
+  silently accepting the fallback window.** When the pair resolves with
+  `contextSource: "fallback"` (no catalog entry for the model), the status
+  frame carries a `warning` naming the pair and the window it got — the drift
+  that once made a healthy transcript measure 262% of a 128k fallback and trim
+  itself (`t_provider`). The `warn:threshold` context event also carries
+  `trimAt` (the effective rung in tokens), so a client can render core's own
+  "will compact/trim at N%" wording, and the terminal client renders every
+  context reason — including compaction refusals — instead of only trim counts.
+
 - **Dropped images now reach the model (multimodal turns).** A UI can send
   `attachments` on a session call — `{type:"image", name?, mimeType,
   data(base64), width?, height?}` — and core validates every claim (base64,
@@ -132,6 +142,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   line (`2ecec27`).
 
 ### Fixed
+
+- **A conversation that trimmed before it ever compacted could never compact
+  again — silently.** `trimTurns` puts the omission notice at projection index
+  1 and `permittedCuts` offered the preferred cut from there, so the durable
+  `covered.from` was the notice id, the commit guard refused it, and no event
+  was emitted: the ladder trimmed generation after generation while nothing on
+  the wire explained why compaction never committed. The offered cut set is now
+  reconciled with the commit guard — a notice-starting span resolves its
+  `covered.from` to the first canonical entry the checkpoint actually absorbs,
+  a span with no canonical coverage is never offered — and **every** refusal
+  exit of `attemptCompaction` emits an `ev.session.<id>.context` event
+  (`compact:unavailable|failed|declined|invalid|stale` with a human-readable
+  `detail`). `t_compaction` drives trim-first → compaction → restart end to
+  end.
 
 - **A background management call could stall a component's whole call
   stream.** The Go SDK ran every tool on the NATS subscription callback: a

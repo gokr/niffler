@@ -316,6 +316,29 @@ proc main() =
   check("imported provider appears in the list",
         list2{"count"}.getInt(0) == 3, $list2)
 
+  # A pinned provider/model pair the catalog cannot match silently accepted the
+  # conservative fallback window (128k on a real 1M model) — the drift that
+  # measured a healthy transcript at 262% and trimmed it. The status frame now
+  # names the mismatch; a pair that resolves stays warning-free.
+  let mismatch = call(nc, "core", "session", %*{
+    "sessionId": "provider-pin-mismatch", "provider": "deepseek",
+    "model": "no-such-model"
+  }, 30_000)
+  check("a pinned pair with no catalog match warns instead of silently shrinking",
+        mismatch{"ok"}.getBool(false) and
+        mismatch{"contextSource"}.getStr("") == "fallback" and
+        mismatch{"warning"}.getStr("").contains("no catalog match") and
+        mismatch{"warning"}.getStr("").contains("no-such-model") and
+        mismatch{"warning"}.getStr("").contains("check that /model"), $mismatch)
+  let coherentPin = call(nc, "core", "session", %*{
+    "sessionId": "provider-pin-coherent", "provider": "deepseek",
+    "model": "deepseek-chat"
+  }, 30_000)
+  check("a pinned pair that resolves carries no warning",
+        coherentPin{"ok"}.getBool(false) and
+        coherentPin{"contextSource"}.getStr("") == "builtin" and
+        coherentPin{"warning"} == nil, $coherentPin)
+
   # --- environment fallback: clear and restore the stored global default
   let envDefault = call(nc, "provider", "provider_use_environment", newJObject())
   check("provider_use_environment clears the stored active marker",

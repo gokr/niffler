@@ -1056,12 +1056,26 @@ reports:
   emits `reset:prune`; lossy fallback emits `reset:trim`. `reset:tools` remains
   reserved for an actual sticky tool-schema promotion. These are the only
   intentional prompt-prefix rebuilds and make cache misses attributable. The
-  compaction rung also reports non-reset reasons, which never rebuild the prefix:
-  `compact:failed` (dispatch error or timeout), `compact:declined` (with
-  `detail` = the stable decline reason), `compact:invalid` (schema, bounds,
-  claimed-call-budget or strict-reduction failure) and `compact:stale` (the
-  covered span changed under the attempt); the successful `reset:compact` event
-  carries `generation`, `covered`, `beforeTokens` and `afterTokens`.
+  compaction rung reports **every** non-reset exit, never silently:
+  `compact:unavailable` (no compactor configured or registered),
+  `compact:failed` (dispatch error/timeout, missing or stale previous
+  projection, or a lost optimistic commit), `compact:declined` (with `detail`
+  = the stable decline reason, or the runner's `no permitted cut exists yet` /
+  `no committable cut exists yet`), `compact:invalid` (schema, bounds,
+  claimed-call-budget, strict-reduction or boundary-resolution failure) and
+  `compact:stale` (the covered span or the projection changed under the
+  attempt). Every one of them carries a human-readable `detail`; none of them
+  rebuilds the prompt prefix. The successful `reset:compact` event carries
+  `generation`, `covered`, `beforeTokens` and `afterTokens`. The threshold
+  warning (`warn:threshold`) carries `trimAt` — the effective rung in tokens —
+  so a UI can name the same percentage core prints instead of inventing one.
+- A boundary is only offered to the compactor when it resolves to canonical
+  history. A covered span that starts at an omission notice (the projection a
+  lossy trim leaves behind) resolves its `covered.from` to the first canonical
+  entry the checkpoint actually absorbs; a span with no canonical coverage at
+  all is never offered. A conversation that trimmed before it ever compacted
+  can therefore still commit a checkpoint — it previously could not, and the
+  refusal was silent, so the ladder trimmed generation after generation.
 - Canonical `message` documents are immutable and append-only. Prune and
   compaction change only the provider projection; a restarted runner validates
   and reloads the durable checkpoint plus retained canonical tail, while
@@ -1548,7 +1562,11 @@ and the OAuth start/complete/cancel flow) behind the approval prompt.
   provider and model are pinned together in the conversation header (see the
   `session` call above), so a pinned conversation keeps resolving under its
   own provider and a switch can never send its model to a provider that does
-  not serve it. A conversation without a pin follows the global default.
+  not serve it. A conversation without a pin follows the global default. When
+  a pinned pair nevertheless has no catalog match, resolution falls back to
+  the conservative default window and the status frame carries a `warning`
+  naming the pair and the window it got instead — the drift that once let a
+  healthy transcript measure 262% of a 128k fallback and trim itself.
 
 ## Hooks
 

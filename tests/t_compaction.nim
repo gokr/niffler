@@ -730,6 +730,113 @@ proc main() =
         liarTurn{"reply"}.getStr("").len > 0,
         $liarTurn)
 
+  # Regression: a conversation that trimmed BEFORE it ever compacted used to
+  # be unable to compact at all. trimTurns puts the omission notice at
+  # projection index 1 and permittedCuts' preferred cut starts there, so
+  # covered.from was the notice id and the commit guard refused it — silently,
+  # generation after generation, while the ladder trimmed. The offered set is
+  # now reconciled with the guard and the refused exit is always reported.
+  stopHard(fixtureProc)
+  coreProc.stopHard()
+  # Phase 1: compaction disabled, so pressure runs the lossy trim rung and the
+  # projection ends up notice-first with no checkpoint at all.
+  var trimFirstExtra = extra
+  trimFirstExtra.add(("NIF_COMPACTION_TOOL", ""))
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = trimFirstExtra,
+    logFile = root / "var" / "test-logs" / "core-compaction-trimfirst.log")
+  doAssert waitComponent(nc, "store"), "store did not register for trim-first fixture"
+  doAssert waitComponent(nc, "llm"), "llm did not register for trim-first fixture"
+  let trimFirstConv = "conv-compaction-trimfirst-" & $int(epochTime())
+  putDoc(nc, "conversation", trimFirstConv,
+    %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt"})
+  # Seed enough bulk that pressure trims (compaction is disabled), while what
+  # survives the trim is still far larger than a checkpoint — otherwise the
+  # strict-reduction check has nothing to reduce and this would test nothing.
+  discard seedMessages(nc, trimFirstConv, 1, 5, 8000)
+  let trimmedTurn = call(nc, "core", "session",
+    %*{"sessionId": trimFirstConv, "content": "TRIM-FIRST-TURN",
+       "tools": ["bash"]}, 180_000)
+  check("pressure with compaction disabled completes on the trim rung",
+        trimmedTurn{"turnError"}.getStr("").len == 0, $trimmedTurn)
+  let trimFirstHeader = getDoc(nc, "conversation", trimFirstConv)
+  check("the lossy trim recorded its watermark and committed no projection",
+        getDoc(nc, "context_projection", trimFirstConv) == nil and
+        trimFirstHeader != nil and
+        trimFirstHeader{"trimThrough"}.getInt(0) > 0,
+        (if trimFirstHeader == nil: "header missing" else: $trimFirstHeader))
+
+  # Phase 2: compaction available again; the manual rung (no LLM turn) must
+  # resolve the notice-starting cut to canonical coverage and commit.
+  coreProc.stopHard()
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = extra,
+    logFile = root / "var" / "test-logs" / "core-compaction-after-trim.log")
+  doAssert waitComponent(nc, "store"), "store did not re-register"
+  doAssert waitComponent(nc, "llm"), "llm did not re-register"
+  doAssert waitComponent(nc, "compaction"), "compaction did not re-register"
+  let afterTrimContextSub = subscribeEvents(nc,
+    "ev.session." & trimFirstConv & ".context")
+  defer: discard natsSubscription_Unsubscribe(afterTrimContextSub)
+  let afterTrim = call(nc, "core", "session",
+    %*{"sessionId": trimFirstConv, "compact": true}, 180_000)
+  let afterTrimProjection = getDoc(nc, "context_projection", trimFirstConv)
+  check("a trimmed conversation can now commit a checkpoint",
+        afterTrim{"ok"}.getBool(false) and
+        afterTrim{"compacted"}.getBool(false) and
+        afterTrimProjection != nil and
+        afterTrimProjection{"generation"}.getInt(0) == 1,
+        $afterTrim & " / " &
+        (if afterTrimProjection == nil: "projection missing"
+         else: $afterTrimProjection))
+  check("the checkpoint's durable coverage is canonical, not the notice",
+        afterTrimProjection != nil and
+        afterTrimProjection{"covered"}{"from"}.getStr("").startsWith(
+          trimFirstConv & ":") and
+        afterTrimProjection{"covered"}{"to"}.getStr("").startsWith(
+          trimFirstConv & ":") and
+        not afterTrimProjection{"covered"}{"from"}.getStr("").contains("#omit-"),
+        (if afterTrimProjection == nil: "projection missing"
+         else: $afterTrimProjection{"covered"}))
+  var sawTrimFirstReset = false
+  for ev in drainEvents(afterTrimContextSub):
+    if ev{"reason"}.getStr("") == "reset:compact": sawTrimFirstReset = true
+  check("the trim-first compaction emits reset:compact", sawTrimFirstReset)
+  # The committed checkpoint must also survive a restart: reload goes through
+  # covered.to plus the retained canonical tail, never the notice.
+  coreProc.stopHard()
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = extra,
+    logFile = root / "var" / "test-logs" / "core-compaction-trimfirst-reload.log")
+  doAssert waitComponent(nc, "store") and waitComponent(nc, "llm") and
+    waitComponent(nc, "compaction")
+  let trimFirstReload = call(nc, "core", "session",
+    %*{"sessionId": trimFirstConv, "content": "AFTER-TRIM-FIRST-RELOAD"},
+    180_000)
+  check("the trim-first checkpoint reloads after a runner restart",
+        trimFirstReload{"ok"}.getBool(false) and
+        trimFirstReload{"turnError"}.getStr("").len == 0, $trimFirstReload)
+
+  # A refusal is never silent: a conversation with no permitted cut at all
+  # answers the manual rung AND emits the same reason as a context event.
+  let barrenConv = "conv-compaction-barren-" & $int(epochTime())
+  let barrenSub = subscribeEvents(nc, "ev.session." & barrenConv & ".context")
+  defer: discard natsSubscription_Unsubscribe(barrenSub)
+  let barren = call(nc, "core", "session",
+    %*{"sessionId": barrenConv, "compact": true}, 60_000)
+  check("a conversation with no permitted cut declines the manual compact",
+        barren{"ok"}.getBool(false) and
+        not barren{"compacted"}.getBool(true) and
+        barren{"reason"}.getStr("").contains("no permitted cut exists yet"),
+        $barren)
+  var sawDeclineEvent = false
+  for ev in drainEvents(barrenSub):
+    if ev{"reason"}.getStr("") == "compact:declined" and
+        ev{"detail"}.getStr("").contains("no permitted cut"):
+      sawDeclineEvent = true
+  check("the declined manual compact emits the reason as a context event",
+        sawDeclineEvent)
+
   report("COMPACTION TEST")
 
 when isMainModule:

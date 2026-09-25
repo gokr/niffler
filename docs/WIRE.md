@@ -205,9 +205,16 @@ ev.session.<id>.status      # {sessionId, turnId?, provider?, providerSource?, m
                        #   prompt-cache reads (A3; present when the provider
                        #   sends prompt_tokens_details). Also emitted by
                        #   model-only session calls (no inference)
-ev.session.<id>.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
-                       #   warning?|trimmed?}; context-window pressure
-                       #   (75% warn, 90% trim)
+ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens,
+                       #   usedTokens, context, trimAt?, warning?, trimmed?,
+                       #   bytesSaved?, pruned?, generation?, covered?,
+                       #   beforeTokens?, afterTokens?} — one row per admission
+                       #   decision: `warn:threshold` (75% of the effective
+                       #   line; `trimAt` is that line in tokens), `reset:prune`,
+                       #   `reset:trim`, `reset:compact`, and EVERY compaction
+                       #   refusal (`compact:unavailable|failed|declined|invalid|
+                       #   stale`) with a human-readable `detail`. Only the
+                       #   reset:* reasons rebuild the provider prompt prefix
 ev.session.<id>.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
                        #   a transient LLM failure is being retried after delayMs
                        #   (exponential backoff; NIF_LLM_MAX_RETRIES, default 2).

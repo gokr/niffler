@@ -923,9 +923,12 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
     echo "core: WARNING context at " & $pct & "% — will compact/trim at " &
          $(int(trimAt.float * 100.0 / p.ctxSize.float)) & "%"
     if onEvent != nil:
+      # trimAt is the effective rung in tokens; a UI can name the exact
+      # percentage core prints above instead of inventing its own wording.
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "promptTokens": p.promptTokens,
                             "usedTokens": used0, "context": p.ctxSize,
+                            "trimAt": trimAt,
                             "warning": true,
                             "reason": "warn:threshold"})
   var used = measured(toolTokens)
@@ -1034,6 +1037,19 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
     "promptTokens": p.promptTokens,
     "usedTokens": p.contextUsed
   }
+  # A pinned provider/model pair the catalog cannot match silently accepts the
+  # conservative fallback window — as much as 4x smaller than the pin's real
+  # model — and admission then measures a healthy transcript against the wrong
+  # line. Surface the mismatch in the same status frame a UI already renders
+  # as a note (advisory: resolution still owns the choice, and a relay
+  # provider like `synthetic` may legitimately have no catalog entry).
+  if result{"contextSource"}.getStr("") == "fallback" and
+      (providerOverride.len > 0 or modelOverride.len > 0):
+    result["warning"] = %("pinned provider/model (" &
+      (if providerOverride.len > 0: providerOverride
+       else: result{"provider"}.getStr("")) & "/" & selectedModel &
+      ") has no catalog match — using the fallback " & $p.ctxSize &
+      "-token window; check that /model and /provider agree")
 
 proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               onEvent: proc(kind: string, data: JsonNode) {.closure.},
@@ -1539,6 +1555,47 @@ proc sweepCompactionSnapshots(ct: CoreTools, convId: string) =
   except CatchableError:
     discard
 
+proc resolveCoveredEndpoint(nodes: seq[CtxNode], ids: openArray[string],
+                            firstIdx, lastIdx: int, fromSide: bool,
+                            previousProjection: JsonNode):
+    tuple[ok: bool, id: string] =
+  ## Map one endpoint of a covered projection span to the durable canonical id
+  ## the projection record must name (§6.2). A notice node stands for history
+  ## that already left the projection — it contributes no canonical coverage,
+  ## so the walk skips it. A checkpoint node is remapped to the range the
+  ## previous projection already claims, so an absorbed generation keeps
+  ## chaining to canonical history. When nothing canonical remains, the cut
+  ## cannot be committed — the trim-first defect: the omission notice sits at
+  ## projection index 1 and must never become `covered.from`.
+  result.ok = false
+  if firstIdx < 0 or lastIdx < firstIdx or lastIdx >= nodes.len or
+      lastIdx >= ids.len:
+    return
+  var i = if fromSide: firstIdx else: lastIdx
+  while true:
+    case nodes[i].source
+    of nsCanonical:
+      result.ok = true
+      result.id = ids[i]
+      return
+    of nsCheckpoint:
+      if previousProjection != nil:
+        let key = if fromSide: "from" else: "to"
+        let value = previousProjection{"covered"}{key}.getStr("")
+        if value.len > 0:
+          result.ok = true
+          result.id = value
+      return
+    of nsNotice:
+      if fromSide:
+        if i >= lastIdx: return
+        inc i
+      else:
+        if i <= firstIdx: return
+        dec i
+    of nsSystem:
+      return
+
 proc attemptCompaction*(ct: CoreTools, p: var Persister,
                         messages: var seq[JsonNode],
                         frozenTools: JsonNode,
@@ -1555,14 +1612,46 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   ## proceed to lossy trim while manual callers surface the precise reason.
   result = CompactionAttempt(status: casFailed,
     reason: "compaction failed before a candidate could be installed")
+  # Every exit below is visible on the wire (docs/WIRE.md "Context events"):
+  # a refusal that emitted nothing made a whole rung invisible — the ladder
+  # trimmed generation after generation while the log said nothing about why
+  # compaction never committed.
+  template compactionEvent(reason: string, detail: string = "") =
+    if onEvent != nil:
+      var payload = %*{"sessionId": p.convId, "turnId": turnId,
+                       "reason": reason}
+      if detail.len > 0: payload["detail"] = %detail
+      onEvent("context", payload)
   if cfg.tool.len == 0 or ct.cat.toolSchema(cfg.tool) == nil:
     result.status = casUnavailable
     result.reason = "no compaction component available"
+    compactionEvent("compact:unavailable", result.reason)
     return
   if messages.len != p.nodes.len:
     result.reason = "live context/node ledger mismatch"
+    compactionEvent("compact:failed", result.reason)
     return
   sweepCompactionSnapshots(ct, p.convId)
+  # The previous projection is needed before the snapshot is built: the offered
+  # cuts must already resolve to canonical history (below), and an absorbed
+  # checkpoint has to be mergeable. Loading it here also means a missing or
+  # stale projection fails before anything is written to the store.
+  var previousProjection: JsonNode
+  if p.generation > 0:
+    try:
+      let old = ct.storeGetItem("context_projection", p.convId)
+      if old.value == nil or
+          old.value{"generation"}.getInt(-1) != p.generation or
+          old.value{"checkpoint"} == nil:
+        result.reason = "previous checkpoint projection is missing or stale"
+        compactionEvent("compact:stale", result.reason)
+        return
+      previousProjection = old.value
+    except CatchableError as e:
+      result.reason = "previous checkpoint projection is unavailable"
+      result.detail = e.msg
+      compactionEvent("compact:failed", result.reason & ": " & e.msg)
+      return
 
   var ids, sources, roles, callIds, answerIds: seq[string]
   var manifest = newJArray()
@@ -1586,10 +1675,30 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                 "contentHash": contentDigest($snapshotForm(m))}
     if n.source == nsCanonical: mn["canonicalSeq"] = %n.canonicalSeq
     manifest.add(mn)
-  let cuts = permittedCuts(ids, sources, roles, callIds, answerIds)
+  let offered = permittedCuts(ids, sources, roles, callIds, answerIds)
+  # Reconcile the offered boundaries with the commit guard: a cut is only
+  # permitted if it can actually be committed. A notice node covers history
+  # that already left the projection and a checkpoint chains to the range the
+  # previous generation claims; a span with neither has no canonical endpoint
+  # to record. The trim-first defect offered fromIndex 1 while the omission
+  # notice sat there — the compactor's only preferred cut was then refused by
+  # the guard and the ladder trimmed silently, generation after generation.
+  var cuts: seq[CutBoundary]
+  for c in offered:
+    if c.index <= c.fromIndex: continue
+    let fromSide = resolveCoveredEndpoint(p.nodes, ids, c.fromIndex,
+                                          c.index - 1, true, previousProjection)
+    let toSide = resolveCoveredEndpoint(p.nodes, ids, c.fromIndex,
+                                        c.index - 1, false, previousProjection)
+    if fromSide.ok and toSide.ok and
+        fromSide.id.startsWith(p.convId & ":") and
+        toSide.id.startsWith(p.convId & ":"):
+      cuts.add(c)
   if cuts.len == 0:
     result.status = casDeclined
-    result.reason = "no permitted cut exists yet"
+    result.reason = if offered.len == 0: "no permitted cut exists yet"
+                     else: "no committable cut exists yet"
+    compactionEvent("compact:declined", result.reason)
     return
   var lastCovered = 1
   for c in cuts: lastCovered = max(lastCovered, c.index - 1)
@@ -1634,21 +1743,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   # The previously normalized checkpoint is repeated explicitly for
   # replacement components; it is also present in page content as the
   # rendered checkpoint node. This makes merge intent unambiguous.
-  var previousProjection: JsonNode
-  if p.generation > 0:
-    try:
-      let old = ct.storeGetItem("context_projection", p.convId)
-      if old.value == nil or
-          old.value{"generation"}.getInt(-1) != p.generation or
-          old.value{"checkpoint"} == nil:
-        result.reason = "previous checkpoint projection is missing or stale"
-        return
-      previousProjection = old.value
-      meta["previousCheckpoint"] = old.value{"checkpoint"}
-    except CatchableError as e:
-      result.reason = "previous checkpoint projection is unavailable"
-      result.detail = e.msg
-      return
+  if previousProjection != nil:
+    meta["previousCheckpoint"] = previousProjection{"checkpoint"}
   try:
     discard ct.storePutRev("compaction_input", metaId, meta)
     for i, page in pages:
@@ -1694,9 +1790,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     # The component can still be unwinding after our request deadline. Leave
     # its pages for the startup/next-attempt grace-period sweep rather than
     # deleting input under a timed-out reader.
-    if onEvent != nil:
-      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
-                            "reason": "compact:failed", "error": e.msg})
+    compactionEvent("compact:failed", e.msg)
     result.reason = "compactor call failed"
     result.detail = e.msg
     return
@@ -1753,6 +1847,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     return
   if coveredFrom < 1 or cutIdx <= coveredFrom:
     result.reason = "compactor selected an invalid covered range"
+    compactionEvent("compact:invalid", result.reason)
     return
   # Covered nodes must still be byte-identical to the persisted snapshot.
   # A concurrent steer may append outside the cut, but replacement never
@@ -1760,25 +1855,29 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   for i in coveredFrom ..< cutIdx:
     if manifest[i]{"contentHash"}.getStr("") !=
         contentDigest($snapshotForm(messages[i])):
-      if onEvent != nil:
-        onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
-                              "reason": "compact:stale"})
       result.reason = "compaction snapshot became stale"
+      compactionEvent("compact:stale", "covered span changed under the attempt")
       return
 
   # Candidate boundaries name projection nodes; durable coverage must name
-  # canonical messages. In particular, a legal checkpoint-only cut cannot
-  # persist #ckN as covered.to: that checkpoint is superseded by this put.
-  let recordFrom = if p.nodes[coveredFrom].source == nsCheckpoint:
-                     previousProjection{"covered"}{"from"}.getStr("")
-                   else: ids[coveredFrom]
-  let recordTo = if p.nodes[cutIdx - 1].source == nsCheckpoint:
-                   previousProjection{"covered"}{"to"}.getStr("")
-                 else: ids[cutIdx - 1]
-  if not recordFrom.startsWith(p.convId & ":") or
-      not recordTo.startsWith(p.convId & ":"):
+  # canonical messages. A checkpoint-only cut cannot persist #ckN as
+  # covered.to (that checkpoint is superseded by this put) — it chains to the
+  # previous projection's own range instead, and a notice endpoint resolves
+  # inward to the first/last canonical entry the checkpoint actually absorbs.
+  # The offered set was filtered by the same rule, so this can only fire on a
+  # state that changed under the attempt; it is reported, never silent.
+  let fromSide = resolveCoveredEndpoint(p.nodes, ids, coveredFrom, cutIdx - 1,
+                                        true, previousProjection)
+  let toSide = resolveCoveredEndpoint(p.nodes, ids, coveredFrom, cutIdx - 1,
+                                      false, previousProjection)
+  if not (fromSide.ok and toSide.ok and
+          fromSide.id.startsWith(p.convId & ":") and
+          toSide.id.startsWith(p.convId & ":")):
     result.reason = "compactor boundary does not resolve to canonical history"
+    compactionEvent("compact:invalid", result.reason)
     return
+  let recordFrom = fromSide.id
+  let recordTo = toSide.id
   let newGeneration = p.generation + 1
   let rendered = renderCheckpoint(checked.checkpoint, newGeneration,
                                   recordFrom, recordTo)
@@ -1822,9 +1921,11 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     let old = ct.storeGetItem("context_projection", p.convId)
     if old.value != nil and old.value{"generation"}.getInt(-1) != p.generation:
       result.reason = "projection generation changed before commit"
+      compactionEvent("compact:stale", result.reason)
       return
     if old.value == nil and p.generation != 0:
       result.reason = "projection disappeared before commit"
+      compactionEvent("compact:stale", result.reason)
       return
     discard ct.storePutRev("context_projection", p.convId, record,
                            expectRev = old.rev)
@@ -1832,6 +1933,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     echo "core: WARNING compaction projection commit failed: " & e.msg
     result.reason = "compaction projection commit failed"
     result.detail = e.msg
+    compactionEvent("compact:failed", result.reason & ": " & e.msg)
     return
 
   # Commit order matters: only an acknowledged projection put authorizes the

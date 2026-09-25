@@ -626,9 +626,10 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   `context_projection` 文件。Snapshot 分頁為
   512000 位元組，因此一則巨大的訊息無法使匯流排訊息過大；checkpoint 有界（objective 與清單項目 ≤ 4000 字元，每個清單 ≤ 32 個項目，≤ 64 個檔案，編碼後 ≤ 65536 位元組），並由 runner 擁有的 `checkpoint-v1` 範本渲染，因此由一個 compactor 儲存的 checkpoint 在另一個之下會以相同方式重新載入。該元件
   永不寫入會話或 projection 記錄。
-- 一次成功的 projection 會發出 `reason: "reset:compact"`；無模型的剪除會發出 `reset:prune`；有損後備會發出 `reset:trim`。`reset:tools` 仍保留給實際的黏性工具 schema 晉升。這些是唯一刻意的 prompt 前綴重建，並使快取未命中可歸因。compaction 階也會回報非 reset 原因，這些永不重建前綴：
-  `compact:failed`（分派錯誤或逾時）、`compact:declined`（帶有 `detail` = 穩定的拒絕原因）、`compact:invalid`（schema、界限、宣稱呼叫預算或嚴格縮減失敗）與 `compact:stale`（被涵蓋的跨度在嘗試期間改變）；成功的 `reset:compact` 事件
-  攜帶 `generation`、`covered`、`beforeTokens` 與 `afterTokens`。
+- 一次成功的 projection 會發出 `reason: "reset:compact"`；無模型的剪除會發出 `reset:prune`；有損後備會發出 `reset:trim`。`reset:tools` 仍保留給實際的黏性工具 schema 晉升。這些是唯一刻意的 prompt 前綴重建，並使快取未命中可歸因。compaction 階會回報**每一個**非 reset 退出，絕不靜默：
+  `compact:unavailable`（未設定或未註冊 compactor）、`compact:failed`（分派錯誤/逾時、上一個 projection 缺失或過期，或樂觀提交遺失）、`compact:declined`（帶 `detail` = 穩定的拒絕原因，或 runner 的 `no permitted cut exists yet` / `no committable cut exists yet`）、`compact:invalid`（schema、界限、宣稱呼叫預算、嚴格縮減或邊界解析失敗）與 `compact:stale`（被涵蓋的跨度或 projection 在嘗試期間改變）。它們每一個都攜帶人類可讀的 `detail`；它們都不重建 prompt 前綴。成功的 `reset:compact` 事件
+  攜帶 `generation`、`covered`、`beforeTokens` 與 `afterTokens`。閾值警告（`warn:threshold`）攜帶 `trimAt`——以 token 計的有效門檻線——因此 UI 可以顯示與 core 列印的相同百分比，而不是自行編造。
+- 只有當邊界能解析到標準歷史時，它才會被提供給 compactor。起始於省略通知的涵蓋跨度（有損裁剪留下的 projection）會將其 `covered.from` 解析為該 checkpoint 實際吸收的第一個標準項目；完全沒有標準涵蓋的跨度絕不會被提供。因此，在 compaction 之前就裁剪過的對話仍然可以提交 checkpoint——以前不能，而且拒絕是靜默的，所以階梯一代又一代地裁剪。
 - 標準的 `message` 文件不可變且僅可附加。剪除與 compaction 只改變 provider projection；重啟的 runner 會驗證並重新載入持久 checkpoint 加上保留的標準尾端，而
   `context_recall` 會解析 canonical/spill/current-checkpoint refs；一個
   `checkpoint` ref 會回傳該 projection 的結構化 checkpoint 加上其
@@ -1017,7 +1018,7 @@ content` 結束回合；`llm-openai` 範例不回報任何一個。
 - `llm` 在每次聊天呼叫時從作用中的已儲存 provider 解析其預設後端，因此 `provider_switch` 會立即生效。當 `provider` 元件不存在或沒有作用中的項目時，`llm` 會如以往退回 `NIF_OPENAI_*` 與 `NIF_LLM_PROVIDERS` 表。對 `chat` 或 `llm_resolve` 明確傳入 `provider` 引數時，會先解析已儲存的暱稱，再解析 `NIF_LLM_PROVIDERS`，因此會話可以在其回合中釘選非作用中的已儲存 provider，而不切換全域預設值。
 - 已儲存 provider 的明確 `context`（權杖數）優先於模型目錄；其 `catalog` id 為 context 查詢命名 models.dev provider，而 `plugin` 是資訊性中介資料，命名擁有此 provider 額外工具的元件 —— `provider` 既不啟動也不驗證它，因此被命名的元件必須另行生成，且只能對 `ev.provider.switch` 做出反應。每次切換時，元件會發佈 `ev.provider.switch {nickname, previous, source, at}`，讓這類外掛可以啟用或隱藏其工具。每次登錄變更也會發佈不含機密的 `ev.provider.changed {op, nickname, active, source, at}` —— `op` 是 `add`、`update`、`switch`、`remove`、`import`、`login` 或 `refresh` 之一 —— 供互動式用戶端使其 provider/模型檢視失效。
 - `active` 標記是一個單純的儲存文件（`{nickname, updatedAt}`）—— 以 `expectRev` 0 寫入 —— 而懸空或空白的標記會在下次讀取時自動刪除，因此 `provider_remove`/`provider_use_environment` 不需要手動修復；`store` 工具仍在那裡供你手動手術，如果你想要的話。
-- 切換改變的是 harness 全域預設，而不是被釘選的對話：provider 與 model 成對地釘選在對話標頭中（見上文對 `session` 呼叫的說明），因此被釘選的對話仍在其自身的 provider 下解析，切換永遠不會把它的 model 送往不支援該 model 的 provider。沒有釘選的對話則跟隨全域預設。
+- 切換改變的是 harness 全域預設，而不是被釘選的對話：provider 與 model 成對地釘選在對話標頭中（見上文對 `session` 呼叫的說明），因此被釘選的對話仍在其自身的 provider 下解析，切換永遠不會把它的 model 送往不支援該 model 的 provider。沒有釘選的對話則跟隨全域預設。當被釘選的組合仍然沒有目錄匹配時，解析會退回保守的預設視窗，而狀態幀會攜帶一個 `warning`，指名該組合以及實際取得的視窗——正是這種漂移曾讓一份健康的紀錄被測量為 128k 後備視窗的 262% 並裁剪自身。
 
 ## Hooks
 
