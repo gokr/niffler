@@ -10,15 +10,30 @@ backend leaves no store records (see "Shadow experiment").
 
 ## Local runtime
 
-Run [Von](https://github.com/wfzyx/von) separately on loopback:
+Run [Von](https://github.com/wfzyx/von) as a supervised Niffler component:
+`make install-jev` installs the runtime into `var/jev-venv` (idempotent,
+~5.4 GB including CUDA wheels), and `make von-up` enables the `von` launcher
+— a persisted `core.spawn` record (`make von-down` / `core.remove` disables
+it again). The launcher is deliberately NOT in the manifest: enabling is a
+spawn record, not a boot-flag change, and a stock harness never pays for the
+runtime. The launcher starts the venv binary as a kernel-cleaned child
+(`setpriv --pdeathsig`, like the supervisor's own wrapper), adopts a Von that
+is already serving instead of double-starting it, and reports
+`starting | serving | absent | failed` through `von_status` — poll it after
+enabling before relying on jev: the first serve downloads the model weights
+and can take minutes. Missing venv = one warning + honest `absent` status,
+never a crash loop; `make install-jev` later is picked up on the idle seam.
+
+Without the launcher, run Von by hand:
 
 ```sh
-# In a separate Python environment (model weights are downloaded by Von).
-pip install 'von-sdk>=1.1.0'
-von serve --model von-1.1 --device cpu --host 127.0.0.1 --port 8000
+uv venv var/jev-venv --python 3.12
+uv pip install --python var/jev-venv/bin/python 'von-sdk>=1.1.0'
+var/jev-venv/bin/von serve --model von-1.1 --device cpu --host 127.0.0.1 --port 8000
 ```
 
-`make build` builds only the Niffler adapter, not the Python model/runtime.
+`make build` builds the jev adapter and the von launcher, not the Python
+runtime, and `make setup` deliberately does not install Von.
 The manifest starts `jev` without loading weights; if Von is absent, direct
 Jev calls fail and the shadow judge stays silent — one warning per absence
 episode, no store records. Configure `NIF_JEV_URL` to another **loopback HTTP** server
@@ -101,7 +116,11 @@ Niffler task set before automation. CPU RSS not yet measured.
 
 `make test-jev` uses a mock backend and a private NATS bus; it proves the
 contract, *not* Von accuracy or CPU latency — including the absent-backend
-silence (one warning, no records) and transcript integrity. Build a held-out list of tasks
+silence (one warning, no records) and transcript integrity. `make test-von`
+covers the launcher contract with a fake Von binary: honest `absent` status
+and a single warning, spawn-record enablement, adoption of a serving
+endpoint, supervisor restart after a hard SIGKILL, kernel-enforced child
+cleanup (setpriv), and record deletion on remove. Build a held-out list of tasks
 with expected tool/skill or no-match labels, compare top-1/top-k and false
 recommendations to plain `discover`/`skill_list`, and measure p50/p95 latency
 and RSS on a typical CPU laptop with real Von. Try both short and confusing
