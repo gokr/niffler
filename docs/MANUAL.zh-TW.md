@@ -59,7 +59,7 @@
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim/Go | required | 匯流排上的文件儲存（`put/get/list/del`，基於 rev 的並行控制）。全部四個工具都是隨需的，且 `del` 額外被隱藏 — core 刪除記錄，模型不能。引擎以相同名稱註冊相同的四個工具（`put`/`get`/`list`/`del`；barrel 引擎額外註冊一個隱藏的 `selftest` — `/doctor` 展開的那個 — Go 引擎不實作）：`store-sqlite`（Go，SQLite ＋ goose 遷移，`var/store.db`）是**預設**；`barrel`（`var/bin/store`）和 `tidb` 仍可透過 `NIF_STORE_BACKEND` 選擇 — 見[儲存引擎](#store-engines) |
+| `store` | Nim/Go | required | 匯流排上的文件儲存（`put/get/list/search/del`，基於 rev 的並行控制）。全部五個工具都是隨需的，且 `del` 額外被隱藏 — core 刪除記錄，模型不能。引擎以相同名稱註冊相同的五個工具（`put`/`get`/`list`/`search`/`del`），外加一個隱藏的 `selftest` — `/doctor` 展開的那個 — 每個引擎都註冊：`store-sqlite`（Go，SQLite ＋ goose 遷移，`var/store.db`）是**預設**；`barrel`（`var/bin/store`）和 `tidb` 仍可透過 `NIF_STORE_BACKEND` 選擇 — 見[儲存引擎](#store-engines) |
 | `bash` | Nim | required | 經典工具：帶逾時＋輸出上限的 shell 命令。命令作為其自身程序群組的領導者執行，因此逾時或取消的回合會殺死整棵樹（退出碼 124 / 130）— 沒有孤兒子程序。結果攜帶 `text`（一個 `(exit N)` 狀態行 — 非零 = 失敗；124 = 逾時，130 = 已取消，126 = cwd 無法進入（該工具也使用 126 表示找到但不可執行），127 = `bash` 不在 `PATH` 上，128 ＋信號表示命令殺死了自己（139 = SIGSEGV，143 = SIGTERM）— 後接合併的 stdout/stderr；這是 LLM 對話記錄顯示的內容）加上機器欄位 `exit_code`、`cancelled`，以及當過大輸出溢出到 `var/toolout/` 下的檔案時的 `spill {path, bytes, lines}`（絕對路徑在 `spill.path` 中；可用 `read` 分頁，1 小時後清掃）。`run_in_background: true` 將長時間執行的命令（伺服器、監看器）交給 `processes` 元件而非阻塞 — 見[背景程序](#background-processes-processes) |
 | `repomap` | Nim | optional | 排序的工作區地圖（docs/research/REPOMAP.md）：約 1KB 的關鍵檔案及其關鍵定義，由 tree-sitter ＋原生 Nim 標籤圖與個人化 PageRank 建構（aider repomap 移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且為讀取效應。工作區開啟自動附加（在 `ev.workspace.opened` 上的一個僅附加歷史條目）**預設開啟但受閘控**（`docs/research/REPOMAP-GATES.md`）：工作區必須至少有 50 個涵蓋檔案，且其渲染的地圖必須至少有 800 位元組、25 個符號和 5 個帶符號的檔案。小型/殘缺的地圖會被扣留並記錄為 `repo map withheld`；設定 `NIF_REPOMAP_AUTOAPPEND=0` 以停用附加。明確的 `repo_map` 工具無論這些閘門如何都可用。快取：`var/repomap-tags/`（以 mtime 為鍵）。選用元件 — 不存在意味著沒有地圖，其他一切不變。參數、標籤層級和附加負載：[`repomap` 詳解](#repomap-in-detail) |
 | `processes` | Nim | optional | 帶有擁有者的長時間執行命令：`process_start`（分離，自有程序群組，立即返回一個 id）、`process_poll`（排空增量輸出）、`process_kill`（停止群組）、`process_list` — 見[背景程序](#background-processes-processes) |
@@ -177,11 +177,13 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 ### Store engines
 
-儲存的**匯流排契約就是產物本身**：`put/get/list/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。多個引擎實作它，並以元件 `store` 註冊、提供完全相同的工具——消費者永遠不會知道哪個引擎正在運作。選擇是開機時的決定：`NIF_STORE_BACKEND=sqlite|barrel|tidb`（預設 `sqlite`）；core 據此解析 manifest 項目的二進位檔，並在遇到未知值時拒絕開機。未設定 `NIF_STORE_BACKEND` 是預設，不是要求：當 `var/bin/store-sqlite` 從未建置時，core 會警告並改為啟動 manifest 的二進位檔（`var/bin/store`，barrel）。明確的值則是要求——二進位檔缺失只會發出警告，絕不會被悄悄換成另一個引擎的資料庫。
+儲存的**匯流排契約就是產物本身**：`put/get/list/search/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。多個引擎實作它，並以元件 `store` 註冊、提供完全相同的工具——消費者永遠不會知道哪個引擎正在運作。選擇是開機時的決定：`NIF_STORE_BACKEND=sqlite|barrel|tidb`（預設 `sqlite`）；core 據此解析 manifest 項目的二進位檔，並在遇到未知值時拒絕開機。未設定 `NIF_STORE_BACKEND` 是預設，不是要求：當 `var/bin/store-sqlite` 從未建置時，core 會警告並改為啟動 manifest 的二進位檔（`var/bin/store`，barrel）。明確的值則是要求——二進位檔缺失只會發出警告，絕不會被悄悄換成另一個引擎的資料庫。
+
+**`search`** 是伺服端過濾器（`{kind, query, limit?, after?}`——依 id/標題尋找會話，或依內容尋找訊息，無需下載整個 kind；niffler-tui 的 `/sessions` 使用它）。語意在每個引擎中都是契約：各 kind 的索引欄位（conversation = id + 標題，message = id + `content` 文字（上限 16KB），其他 = 僅 id）、每個查詢詞皆以不分大小寫的**前綴**匹配（AND）、所有非英數字元皆不具運算子作用，因此使用者輸入無需轉義，以及 `list` 的排序/游標/上限。引擎只在回答方式上不同：**sqlite** 維護 FTS5 索引（`docs_fts`，與 `docs` 共用 rowid，隨文件在同一交易中維護，啟動時只要兩者不一致就從 `docs` 重建——衍生狀態，可安全丟棄），而 **barrel** 與 **tidb** 沒有索引，依 id 順序以相同匹配器掃描該 kind（結果等價，每次呼叫 O(該 kind 的文件數)）。
 
 - **sqlite**（預設，`var/bin/store-sqlite`，Go）：在 SQLite 上實作同一份文件契約。文件以 JSON TEXT 原樣存放；`put` 是單一原子陳述式（doc 與 rev 一起移動——KV 引擎的雙鍵崩潰窗口不復存在）；schema 透過內嵌的 goose migration 管理；純 Go 驅動程式（`modernc.org/sqlite`，無 cgo）。資料檔 `var/store.db`（WAL），可用任何 SQLite 工具檢視（`sqlite3 var/store.db 'select kind, count(*) from docs group by kind'`），也可從 DuckDB 以唯讀方式掛載以進行離線分析。自 context compaction 落地後即為預設：context projection 需要原子寫入與可範圍讀取的清單（docs/research/COMPACTION.md §2）。SQLite pragma 是程式碼內建、不可配置（`_txlock=immediate`、WAL、`synchronous(NORMAL)`、10 秒 `busy_timeout`、單一連線池），且 goose migration 會在啟動時自動套用。
 - **barrel**（`var/bin/store`）：內嵌的 BitBarrel KV（Bitcask 風格）位於 `var/barrel-db`——設計上無 schema、零依賴、久經考驗。仍完整支援（`NIF_STORE_BACKEND=barrel`）；其 `put` 是雙鍵序列（先 doc，再 rev）：兩者之間發生崩潰可能導致內容更新而修訂未更新，而對於*新*文件，doc 鍵會被寫入但完全沒有 rev 鍵，`get` 與 `list` 會將其讀為不存在（`rev == 0`）——該文件在再次寫入之前無法觸及。
-- **tidb**（`var/bin/store-tidb`，Go）：透過 MySQL 協定（go-sql-driver）實作同一份 schema——一個網路共享的儲存，任何數量的 harness 都能從中提供服務。`NIF_STORE_TIDB_DSN` 指向叢集（`root@tcp(host:4000)/niffler`；單節點 docker：`docker run -p 4000:4000 pingcap/tidb`）。`value` 維持 MEDIUMTEXT，而非原生 JSON 型別——二進位 JSON 會正規化鍵順序與數字精度，破壞原樣文件契約；索引查詢日後會以 TEXT 上的生成欄位形式到來（一個 goose migration）。`kind`/`id` 為 utf8mb4_bin：位元組精確相等、位元組序清單排序，以及大小寫敏感的 LIKE 前綴（與其他引擎的契約對等）。無 flock——叢集依設計即為共享狀態；資料列鎖（`SELECT … FOR UPDATE`、悲觀式交易）仲裁寫入者，而 rev 計數器仍是樂觀並行控制的檢查。也可對純 MySQL 8 運作。DSN 使用者需要 goose 建立其版本表並套用 migration 所需的權限；連線/讀取/寫入逾時為硬編碼（5 秒 / 60 秒 / 30 秒），且引擎持有單一連線池連線（單一會話，因此 `FOR UPDATE` 交易的陳述式會保持在一起）——同一叢集上的 N 個 harness 持有 N 條連線，不共享連線池。
+- **tidb**（`var/bin/store-tidb`，Go）：透過 MySQL 協定（go-sql-driver）實作同一份 schema——一個網路共享的儲存，任何數量的 harness 都能從中提供服務。`NIF_STORE_TIDB_DSN` 指向叢集（`root@tcp(host:4000)/niffler`；單節點 docker：`docker run -p 4000:4000 pingcap/tidb`）。`value` 維持 MEDIUMTEXT，而非原生 JSON 型別——二進位 JSON 會正規化鍵順序與數字精度，破壞原樣文件契約。`search` 以共用匹配器依 id 順序掃描該 kind 作答——沒有索引（見上）。`kind`/`id` 為 utf8mb4_bin：位元組精確相等、位元組序清單排序，以及大小寫敏感的 LIKE 前綴（與其他引擎的契約對等）。無 flock——叢集依設計即為共享狀態；資料列鎖（`SELECT … FOR UPDATE`、悲觀式交易）仲裁寫入者，而 rev 計數器仍是樂觀並行控制的檢查。也可對純 MySQL 8 運作。DSN 使用者需要 goose 建立其版本表並套用 migration 所需的權限；連線/讀取/寫入逾時為硬編碼（5 秒 / 60 秒 / 30 秒），且引擎持有單一連線池連線（單一會話，因此 `FOR UPDATE` 交易的陳述式會保持在一起）——同一叢集上的 N 個 harness 持有 N 條連線，不共享連線池。
 
 除了 root 與引擎選擇之外，引擎不接受任何配置：檔案路徑、鎖路徑、pragma、逾時與連線池大小皆為程式碼內建（`NIF_ROOT` 決定 root，`NIF_STORE_BACKEND` 決定引擎，`NIF_STORE_TIDB_DSN` 決定叢集）。
 
@@ -205,7 +207,7 @@ core:     niffler-store-migrate --scan
 core: or keep using the old engine: NIF_STORE_BACKEND=barrel
 ```
 
-`niffler-store-migrate`（位於 `var/bin`）以**離線**方式執行——它啟動自己私有的 NATS 伺服器與 store 行程，因此無需啟動任何 harness，且它絕不編輯來源資料。儲存契約無法列舉 kind（`list` 需要一個），因此它讀取**它所探查之 kind 的**每一份文件——這份候選清單是對 harness 今日所寫每一種 kind 的經驗證普查（`agentjob`、`agentnotice`、`approval`、`compaction_input`、`component`、`context_projection`、`contextreceipt`、`conversation`、`fabricprog`、`mcp`、`message`、`plugin`、`profile`、`session`、`sessionmeta`、`slash`、`spill`）——而收尾驗證會逐 kind 走過它實際**搬運**的 kind，對照目標進行驗證。日後加入 harness 的 kind 仍會被悄悄略過，直到普查被擴充（匯流排無法看到它），這就是為什麼這份清單維護在 store 的 kind 表旁邊。
+`niffler-store-migrate`（位於 `var/bin`）以**離線**方式執行——它啟動自己私有的 NATS 伺服器與 store 行程，因此無需啟動任何 harness，且它絕不編輯來源資料。儲存契約無法列舉 kind（`list` 需要一個），因此它讀取**它所探查之 kind 的**每一份文件——這份候選清單（`agentjob`、`agentnotice`、`approval`、`compaction_input`、`component`、`context_projection`、`contextreceipt`、`conversation`、`fabricprog`、`mcp`、`message`、`plugin`、`profile`、`session`、`sessionmeta`、`slash`、`spill`）是手動維護的，目前遺漏了 `attachment`/`attachmentdata` 兩個 kind，因此遷移不會搬運拖入的圖片。而收尾驗證會逐 kind 走過它實際**搬運**的 kind，對照目標進行驗證。日後加入 harness 的 kind（無論是新增的，還是清單本身漏掉的）仍會被悄悄略過，直到普查被擴充（匯流排無法看到它），這就是為什麼這份清單維護在 store 的 kind 表旁邊。
 今日接上的方向是 barrel → `sqlite`（預設）或 barrel → `tidb` 搭配 `--to tidb`；純 SQLite 的 root 會被拒絕，並顯示「root already uses sqlite — nothing to migrate」。每份文件都會被重放到全新的目標，然後逐 kind 驗證。旗標（`--root`、`--to <engine>`、`--dry-run`、`--scan [<top>]`、`--all [<top>]`、`--force`）由工具自身的 `--help` 說明；`--force` 會覆蓋既有的目標資料庫（舊的會被移到一旁為 `<name>.<timestamp>.aside`），而每個階段背後的設計見 [research/STORE_V2.md](research/STORE_V2.md) 的「Moving data between engines」。
 
 `--scan` 會尋找頂層目錄、同層複本與 benchmark 樹（`var/bench/**/niffler-root`）。Migration 會拒絕在同時持有 `var/barrel-db` 與 `var/store.db` 的 root 上執行——那是完成遷移後留下的狀態，重跑會失敗並顯示「ambiguous source; move one aside first」（將過時的 `var/store.db` 移到一旁即可重複執行）。回復就只是 `NIF_STORE_BACKEND=barrel`，因為 barrel 檔案未被觸碰；反方向的資料搬移——從 SQLite 或 TiDB 移出——尚未接上。
@@ -2014,12 +2016,11 @@ make build
 ## The store
 
 `store` 就像其他任何元件一樣——一個位於匯流排上的文件儲存，具備
-`put` / `get` / `list` / `del` 以及以 rev 為基礎的樂觀並行控制
-（`put` 接受 `expectRev`，不符時以 `rev-conflict` 失敗）。barrel
-引擎另外註冊了一個隱藏的 `selftest` 工具——一個真正的
-put/get/rev/list/`del` 往返，`/doctor` 可以呼叫；兩個 SQL 引擎
-只註冊那四個工具。
-`put`、`get` 和 `list` 是隨選工具；`del` 是隱藏的——由 core 刪除
+`put` / `get` / `list` / `search` / `del` 以及以 rev 為基礎的樂觀並行控制
+（`put` 接受 `expectRev`，不符時以 `rev-conflict` 失敗）。每個
+引擎都註冊相同的隱藏 `selftest` 工具——一個真正的
+put/get/rev/list/`del` 往返，`/doctor` 可以呼叫。
+`put`、`get`、`list` 和 `search` 是隨選工具；`del` 是隱藏的——由 core 刪除
 記錄，模型無法。`put` 也帶有 `x-harness.sessionId`，這正是讓下方
 寫入圍籬得以成立的原因。**受會話綁定的呼叫者只能寫入精選的種類**
 （目前是 `fabricprog`）：其他每個種類都由 harness 管理，並以
@@ -2047,6 +2048,8 @@ core 及其元件使用中的種類（store 工具自身的 docstring 只列出
 | `compaction_input` | `<convId>:<attemptId>` | 分頁的壓縮前快照，壓縮元件據以驗證、執行器據以提交（分頁為 `<id>:p<idx>`）。短暫性：嘗試一結算即刪除，而因當機或逾時的嘗試而孤兒化的分頁會在 600 秒後清掃——任何東西都不得將其視為持久（只有 `context_projection` 才是） |
 | `context_projection` | `<convId>` | 每個會話一份文件——已提交的上下文投影（`version`、`generation`、`canonicalHigh`、`renderer`、正規化的 `checkpoint`、持久的 `covered` 正規範圍、`retained` id、`prunes`、`measurements`、`provenance`），執行器在壓縮後重用。以前一代的 `expectRev` 寫入一次；它是重新啟動時重建供應商視圖的真相來源，而當通知指名 `checkpoint` 參照時，回想解析器會讀取它的 `checkpoint`/`generation` |
 | `spill` | `<convId>:<n>` | 一個被提升出上下文視窗的過大工具結果，可用 `context_recall {"ref": {"source": "spill", "id": "…"}}` 定址。提升在附加時為盡力而為（失敗會保留暫存檔指標且不加入參照）；缺失、空或格式錯誤的 spill 文件會被大聲拒絕，而非以空成功回應，且修剪閘門在修剪前會重新驗證該文件，因此損壞的 spill 絕不可能賠上最後一份副本 |
+| `attachment` | `<messageId>:a<i>` | 一張拖入圖片的中介資料（訊息 id、MIME、尺寸、原始名稱）——刻意不含像素，因為 `list` 該 kind 正是列舉附件的方式，而攜帶像素的一頁在兩張圖片後就超出匯流排酬載上限。在參照它的訊息之前寫入；由 `conversation_delete` 清掃 |
+| `attachmentdata` | `<messageId>:a<i>` | 與同 id 的 `attachment` 文件對應的 base64 像素。當上下文為供應商要求具體化圖片時讀取（在 `NIF_ATTACH_BUDGET` 內最新的優先）；從不大量列舉 |
 | `mcp` | 伺服器名稱 | `mcp` 元件的 MCP 伺服器設定記錄（見 [External MCP servers](#external-mcp-servers-mcp)） |
 | `selftest` | store 自我測試探針 | 用後即丟——由 store 自身的自我測試往返寫入並刪除 |
 
@@ -2060,7 +2063,10 @@ root 開機的第二個 core 就會這麼做；實驗時請使用暫存的 `NIF_
 
 `list` 是一頁，不是完整視圖（見 [Store engines](#store-engines)）：
 core 中所有必須看見整個種類的東西都走 `storeListAll`——
-單一有上限的 `list` 在續接時曾悄悄截斷長逐字稿。
+單一有上限的 `list` 在續接時曾悄悄截斷長逐字稿。而 `search` 把
+「哪些會話提到了……」變成一次伺服端查詢，而不是先下載再過濾：
+`cli call search '{"kind":"conversation","query":"…"}'`（逐字稿文字用
+`message`）回傳與 `list` 相同的分頁形狀。
 
 ## Testing
 
