@@ -140,12 +140,11 @@ independent of what the model picked.
 
 ## Niffler fit analysis
 
-Both ideas from the ask map 1:1 onto established patterns, and both are
-**plugin seams, not core changes**: a decision layer is a new generic
-component (like `lsp`), built via `builder.build` → `core.spawn`, answering a
-normalized `{state, questions}` contract. Zero core edits; the test that
-language support is data, not code, applies unchanged — these judgments are
-language-agnostic by construction.
+A decision component can implement **some** experiments through existing
+plugin seams. Tool discovery advice is buildable without core edits; first-turn
+model routing, pre-history result filtering, and approval pre-filtering are not.
+The model's judgments remain language-agnostic, but wiring them into those
+runner boundaries requires an explicit seam and a separate safety review.
 
 ### 1. Dynamic model selection (model cascade)
 
@@ -153,11 +152,14 @@ A `decide` component classifies the incoming turn (difficulty, risk, need for
 repo context) and picks from the `models` registry. The constraint is our own
 prompt-cache discipline, and it decides the shape:
 
-- The conversation's request prefix is frozen, and the only legitimate full
-  cache misses are `reset:trim` and `reset:tools`. Switching models
-  mid-conversation nukes the provider-side cache with no documented reason.
-  So: route **once, at conversation start** (first turn, before the prefix
-  freezes), not per turn.
+- The conversation's request prefix is frozen. Intentional rebuilds are
+  `reset:prune`, `reset:compact`, `reset:trim` and `reset:tools`; switching
+  models mid-conversation also misses the provider cache but has no rebuild
+  reason. So: route **once, before the first turn's resolution**, not per
+  turn. There is currently no runner hook at that point: the earliest turn
+  event fires after model resolution. A client can set `session {model}`
+  before turn 1, but a standalone component cannot observe conversation birth
+  and route reliably without a new pre-resolve seam or client cooperation.
 - Subagent continuation freezes model/thinking/tools at the child's first
   turn — routing at `agent_spawn` time is equally clean and free of cache
   damage. Per-subagent routing is the natural place for a cascade: cheap
@@ -176,18 +178,26 @@ if the selected tool changes the state or the available choices, make a second
 call after loading it. Schema mutations ride the documented paths only —
 `discover` schemas append to history, `invoke {sticky: true}` is the sole
 direct-set rewrite — so a Jev picker never touches the frozen prefix.
+Existing delivery seams include turn-bound `svc.session.<id>.advise` (the
+`expert` precedent) and client-driven `session {discovery}`; both append
+context rather than rewriting the frozen request prefix.
 
 ### 3. Other seams, in priority order
 
 - **Tool-result filtering** (jev-harness pattern): score `bash`/`grep` output
   chunks for relevance to the turn's intent before they enter context; keep
-  the raw output retrievable. Tool results are append-only history, so this is
-  prompt-cache-safe — and it is the one pattern with measured
-  better-outcome-and-cheaper evidence, not just latency claims.
+  the raw output retrievable. Doing so **before** the result enters history
+  needs a runner-side filter seam at `commitToolItem`; observe-only `hooks`
+  cannot intercept it. Post-result advice is possible today, but cannot save
+  the tokens already spent on the unfiltered output. This is not a plugin-only
+  experiment.
 - **Approval tiering**: `x-harness.approval` is the enforced boundary (terminal
   y/N, deny when no human is reachable). A Jev layer sits *below* it — decide
   which calls need the prompt at all, with escalation on low confidence as in
-  pi-jev/learnjev. Never let it grant capability.
+  pi-jev/learnjev. Never let it grant capability. Core's current approval
+  chain has no pre-filter hook: publishing an `ev.approval.reply` verdict would
+  instead grant capability and violates this boundary. Approval tiering needs
+  a reviewed pre-filter seam, not a reply-publishing plugin.
 - **Output judging** (pi-jev): secret-leak and failure-classification on
   `bash` output, one line appended to the tool result. Cheap, table-driven.
 - **Loop/stall detection**: judge "same action, fourth attempt" from runner
@@ -238,15 +248,16 @@ direct-set rewrite — so a Jev picker never touches the frozen prefix.
    factors, not prompt prose; when priorities shift, change a threshold, not
    a prompt.
 
-## First spike (proposal, no core edits)
+## First spike (proposal: discovery only without core edits)
 
 Build a hidden `decide` component (normalized `{state, questions}`, hosted
 TypeSafe backend first, OpenJEV behind the same contract second) via
-`builder` + `core.spawn`, then wire **one** experiment: either conversation-
-start model routing from the `models` registry, or a `discover`-advisory
-scorer. A/B it jev-harness style — same tasks, decision layer on/off,
-pass + cost per passing task. The filter experiment is the one with existing
-evidence it can win.
+`builder` + `core.spawn`, then wire a `discover`-advisory scorer through
+`svc.session.<id>.advise`. A/B it jev-harness style — same tasks, decision
+layer on/off, pass + cost per passing task. First-turn model routing needs
+an explicit pre-resolve seam or cooperating client; pre-history filtering
+needs a runner-side filter seam. The filter experiment has evidence it can
+win, not an implementation path through today's plugin API.
 
 ## Sources
 

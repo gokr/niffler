@@ -152,9 +152,11 @@ working in every language.
   append is durable and never removes or rewrites earlier tools.
   Cache hits are surfaced per turn in `ev.session.<id>.context` status events
   (the nested `cache {prompt, read, hitRate}`, plus the header's
-  `cachePrompt`/`cacheRead`/`cacheHitRate`); the only legitimate full misses are a
-  trim (`reason: "reset:trim"`) and a sticky `invoke` promotion
-  (`reason: "reset:tools"`, emitted only when the direct set actually grew).
+  `cachePrompt`/`cacheRead`/`cacheHitRate`); intentional prefix rebuilds are
+  `reset:prune` (dead schema removal), `reset:compact` (checkpoint),
+  `reset:trim` (lossy trim) and `reset:tools` (only when a sticky `invoke`
+  actually grows the direct set). Model switches can also miss the provider
+  cache and must not be presented as one of these rebuild reasons.
 - **Subagent continuation is append-only by construction**
   (docs/WIRE.md "Subagent continuation"): `agent_run`/`agent_spawn
   {session}` send content only — no preamble, no system prompt, no model/

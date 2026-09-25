@@ -414,15 +414,13 @@ core: or keep using the old engine: NIF_STORE_BACKEND=barrel
 private NATS server and store processes, so no harness needs to be booted,
 and it never edits the source data. The store contract cannot enumerate
 kinds (`list` needs one), so it reads every document **of the kinds it
-probes** — a candidate list that is a verified census of every kind the
-harness writes today (`agentjob`, `agentnotice`, `approval`,
-`compaction_input`, `component`, `context_projection`, `contextreceipt`,
-`conversation`, `fabricprog`, `mcp`, `message`, `plugin`, `profile`,
-`session`, `sessionmeta`, `slash`, `spill`) — and the closing verification
-walks the kinds it actually CARRIED, per kind, against the target. A kind
-added to the harness later is still silently skipped until the census is
-extended (the bus gives no way to see it), which is why the list is
-maintained beside the store's kind table.
+probes** — a hand-maintained candidate list (`agentjob`, `agentnotice`,
+`approval`, `attachment`, `attachmentdata`, `compaction_input`, `component`,
+`context_projection`, `contextreceipt`, `conversation`, `fabricprog`, `mcp`,
+`message`, `plugin`, `profile`, `session`, `sessionmeta`, `slash`, `spill`) —
+and the closing verification walks the kinds it actually CARRIED, per kind,
+against the target. A new kind is silently skipped until added to this list
+(the bus cannot enumerate kinds); keep it in sync with the store's kind table.
 The direction wired up today is barrel → `sqlite` (the
 default) or barrel → `tidb` with `--to tidb`; a SQLite-only root is refused
 with "root already uses sqlite — nothing to migrate". Each document is

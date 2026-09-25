@@ -259,12 +259,12 @@ proc listAll(nc: NatsConnection, kind, idPrefix: string,
     if pages > 100_000: die("paging runaway on kind " & kind)
 
 proc kindProbes(): seq[string] =
-  ## Candidate kinds to probe. Census of every kind the harness writes today
-  ## (core, agent, plugins, fabric, mcp) — verified against the tree; a kind
-  ## absent from this list simply is not migrated, so keep it generous and
-  ## alphabetical.
-  @["agentjob", "agentnotice", "approval", "compaction_input", "component",
-    "context_projection", "contextreceipt", "conversation", "fabricprog",
+  ## Candidate kinds to probe. Every kind the harness writes today
+  ## (core, agent, plugins, fabric, mcp), including attachment pixels;
+  ## a kind absent from this list is not migrated, so keep it alphabetical.
+  @["agentjob", "agentnotice", "approval", "attachment", "attachmentdata",
+    "compaction_input", "component", "context_projection", "contextreceipt",
+    "conversation", "fabricprog",
     "mcp", "message", "plugin", "profile", "session", "sessionmeta",
     "slash", "spill"]
 
