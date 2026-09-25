@@ -120,22 +120,24 @@ type Component struct {
 	// streaming turn), so nothing here ever waits on handlerMu inside a
 	// callback. handlerDone reports a finished handler back to deliverLoop;
 	// dispatchStop/dispatchDone bound Close to accepted-but-unfinished work.
-	callQueue        chan *nats.Msg
-	handlerDone      chan bool // true = a serialized handler finished
-	dispatchStop     chan struct{}
-	dispatchDone     chan struct{}
-	dispatchMu       sync.Mutex // guards dispatchStarted (lifecycle, not scheduling)
-	dispatchStarted  bool
-	dispatchStopOnce sync.Once
-	concurrentLimit  int
-	closeMu          sync.Mutex
-	shutdown         chan struct{}
-	shutdownOnce     sync.Once
-	owner            *Component
-	inHandler        bool
-	deferAnnounce    bool
-	contractMu       sync.RWMutex // protects setup while deferred calls/events can arrive
-	ready            bool
+	callQueue         chan *nats.Msg
+	handlerDone       chan bool // true = a serialized handler finished
+	dispatchStop      chan struct{}
+	dispatchDone      chan struct{}
+	dispatchMu        sync.Mutex // guards dispatchStarted (lifecycle, not scheduling)
+	dispatchStarted   bool
+	dispatchStopOnce  sync.Once
+	concurrentLimit   int
+	closeMu           sync.Mutex
+	shutdown          chan struct{}
+	shutdownOnce      sync.Once
+	reconnectStop     chan struct{} // stops the reconnect watch at Close
+	reconnectStopOnce sync.Once
+	owner             *Component
+	inHandler         bool
+	deferAnnounce     bool
+	contractMu        sync.RWMutex // protects setup while deferred calls/events can arrive
+	ready             bool
 	// Re-attach (issue #3): callbacks for a successful post-outage re-attach;
 	// guarded so a concurrent reconnectWatch tick cannot race registration.
 	reattachedMu       sync.Mutex
@@ -161,6 +163,7 @@ func New(name, version string) *Component {
 		Name:            name,
 		Version:         version,
 		shutdown:        make(chan struct{}),
+		reconnectStop:   make(chan struct{}),
 		concurrentLimit: defaultConcurrentLimit,
 		callQueue:       make(chan *nats.Msg, defaultCallQueueLimit),
 		handlerDone:     make(chan bool),
@@ -843,9 +846,15 @@ func (c *Component) reconnectWatch(initialURL string) {
 		select {
 		case <-c.shutdown:
 			return
+		case <-c.reconnectStop:
+			return
 		case <-tick.C:
 		}
+		// Snapshot under contractMu: Close (and a re-attach) write c.nc, and
+		// handlerView reads it the same way — one lock, no torn reads.
+		c.contractMu.RLock()
 		nc := c.nc
+		c.contractMu.RUnlock()
 		if nc == nil {
 			continue
 		}
@@ -938,7 +947,17 @@ func (c *Component) Close() {
 	if c.nc == nil {
 		return
 	}
+	// Stop the reconnect watch before tearing the connection down: its
+	// goroutine must not observe (or act on) a half-closed component.
+	c.reconnectStopOnce.Do(func() { close(c.reconnectStop) })
 	_ = c.announce("reg.depart")
+	// The rest mutates exactly what the reconnect watch reads under
+	// contractMu (c.nc, c.subs): hold the same lock so a re-attach in flight
+	// cannot interleave with teardown. Two SECTIONS, never spanning
+	// stopDispatch: a running handler may still need handlerView's RLock, so
+	// the lock must not be held while waiting on handlers (deadlock). No
+	// inverse nesting exists — nothing takes closeMu under contractMu.
+	c.contractMu.Lock()
 	for _, s := range c.subs {
 		_ = s.Drain()
 	}
@@ -948,14 +967,17 @@ func (c *Component) Close() {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+	c.contractMu.Unlock()
 	// Stop scheduling and wait for every accepted handler to finish before
 	// closing the shared NATS connection, so replies owed to callers are
 	// preserved (a handler may still be streaming its response).
 	c.stopDispatch()
 	c.stopIdle()
+	c.contractMu.Lock()
 	_ = c.nc.FlushTimeout(time.Second)
 	c.nc.Close()
 	c.nc = nil
+	c.contractMu.Unlock()
 }
 
 // Run connects, serves calls until SIGTERM/SIGINT or ev.sys.drain, then
