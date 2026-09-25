@@ -259,6 +259,17 @@ proc main() =
   check("checked-in typed examples execute end to end",
         transcript.contains("grepDone") and transcript.contains("rawBytes") and
         transcript.contains("agentReply"), transcript)
+  check("advisory-ranking example verifies the ranked suggestion",
+        transcript.contains("\"ranked\":true") and
+        transcript.contains("\"suggestion\":\"grep\"") and
+        transcript.contains("\"verified\":true"), transcript)
+  check("advisory-ranking example falls back on no-match",
+        transcript.contains("\"advisor\":\"no-match\"") and
+        transcript.contains("\"ranked\":false") and
+        transcript.contains("\"discovered\":true"), transcript)
+  check("advisory-ranking example survives an unavailable advisor",
+        transcript.contains("\"advisor\":\"unavailable:") and
+        transcript.contains("\"discovered\":true"), transcript)
 
   # hybrid: fabric program -> agent_run -> subagent session -> reply
   check("hybrid fabric->agent_run returned the subagent reply",

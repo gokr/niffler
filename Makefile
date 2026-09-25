@@ -224,7 +224,8 @@ var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/plugins: $(call NIM_SRCS,plugins) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/plugins/main.nim
 
-var/bin/skills: components/skills/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/skills: components/skills/main.nim \
+    $(wildcard skills/*/SKILL.md) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/skills/main.nim
 
 var/bin/systemprompt: components/systemprompt/main.nim \

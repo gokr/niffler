@@ -76,6 +76,16 @@ finish($(%*{"answer": ...}))     # the ONLY thing that reaches the conversation
    maxTokens); exhaustion ends the child as a failure, never a silent reply.
 7. **Big payloads** — pass via the `strings` argument and read with
    `stringArg("key")` instead of pasting megabytes into the source.
+8. **Advisor then verify** — `call("jev_recommend", %*{"task": …, "query": …})`
+   suggests which discoverable tool fits a fuzzy task; the program then
+   confirms the name with `discover` before using it, and falls back to
+   ordinary lexical discovery inside the same program when the advisor is
+   absent, answers no-match, or answers low-confidence. This is where the
+   opt-in jev spike belongs: shortlist and raw answers stay in the guest,
+   only the verified outcome reaches the chat. Never treat a suggestion as
+   permission or as a substitute for discovery. See
+   `examples/advisory-ranking.nim` (`fabric_help {topic: "advisory-ranking"}`)
+   and `docs/research/JEV-SPIKE.md`.
 
 ## Budgets (defaults)
 
@@ -102,3 +112,7 @@ finish($(%*{"answer": ...}))     # the ONLY thing that reaches the conversation
   write programs that try to reach past the bridge.
 - Plain `callTool` is sequential; only `batch(...)` overlaps independent
   calls. fabric is not a parallel-speed mechanism by itself.
+- An advisor (`jev_recommend`) is optional infrastructure: a missing jev
+  component or a missing backend is a normal `{"ok": false}` result, not a
+  program failure — keep the lexical-discovery fallback in the same program
+  and never let its absence decide whether discovery runs at all.

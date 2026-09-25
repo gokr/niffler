@@ -134,6 +134,7 @@ Use the structured fields (`exit_code`, `added_lines`, `ok`).
 | `examples/retry-loop.nim` | mechanical retry until green with a hard cap; `call` returns the node so probe `exit_code` |
 | `examples/hybrid.nim` | mechanical program + `agent_run` subagent for the judgment part |
 | `examples/bench-selfreview.nim` | embedded walker script via bash heredoc; big intermediate data never enters the conversation |
+| `examples/advisory-ranking.nim` | ask `jev_recommend` for a fit, verify the suggestion with live `discover`, fall back inside the same program when the advisor/no-match is out (the spike's opt-in candidate ranking, see `docs/research/JEV-SPIKE.md`) |
 
 Decision rule: if one command does it, use bash directly. If results feed
 each other or the intermediate data is large, write a program. If every step

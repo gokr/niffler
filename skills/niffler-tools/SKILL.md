@@ -86,6 +86,28 @@ before checking the ecosystem is the classic mistake.
 - `skill_list` / `skill_load` — reviewed workflow guides (including this
   one, niffler-fabric and niffler-harness). Skills add strategy, not tools.
 
+## Advisory ranking (on-demand, experimental)
+
+- `jev_recommend {task, query, kind: "tools"|"skills"}` — a local decision
+  model ranks discoverable tools/skills against a fuzzy task. Reach for it
+  when lexical `discover`/`skill_list` is a weak match (you cannot name the
+  capability), not as a first step over a name you already know.
+- `jev_suggest` for a shortlist you assemble yourself; `jev_decide` for a raw
+  typed question. All three are ADVISORY: they grant nothing, load no
+  schemas, and invoke nothing — confirm the answer with `discover` +
+  `invoke` or `skill_load` before acting.
+- Candidates come from live discovery: use a narrow nonempty query; 1–24
+  entries; an empty list or empty suggestion is a valid answer; oversized
+  sets refuse rather than truncate. Never put secrets or file contents in
+  `task`.
+- Best home is a fabric program (advisor → verify → fallback, all inside the
+  guest; see the niffler-fabric skill and `examples/advisory-ranking.nim`).
+- A "backend unavailable" result is advisory, not fatal — fall back to
+  ordinary discovery. The probability is uncalibrated spike data; recheck
+  discovery after catalog changes. Backend: `make install-jev`, then
+  `make von-up`; `von_status` reports starting|serving|absent|failed. Notes:
+  `docs/research/JEV-SPIKE.md`.
+
 ## Context economy
 
 - `agent_run` — exploratory subtask in a FRESH context (own loop, summary
@@ -141,6 +163,10 @@ assume a tool you saw in one context exists in another:
 
 - shell `git status`/`git diff`/`grep -rn` when the dedicated tools are one
   discover away
+- `jev_recommend` over a capability you can already name — that is a
+  `discover` call, not a model request
+- treating a jev suggestion as permission or as verified truth without a
+  `discover`/`skill_load` confirmation
 - building an integration before `plugin_search`
 - `cat`/`sed` file edits; `curl` for web pages
 - bulk exploration in the main transcript instead of agent_run/fabric

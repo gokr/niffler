@@ -678,6 +678,33 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t25", "fabric",
                         %*{"tools": ["bash"], "code": code,
                            "strings": {"run": "fake-run"}})
+      of 25:
+        # example advisory-ranking.nim (ranked path): the stub advisor
+        # suggests grep, the program verifies it with live discovery
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "advisory-ranking.nim")
+        return toolCall("t26", "fabric",
+                        %*{"tools": ["jev_recommend", "discover"], "code": code,
+                           "strings": {"task": "find a way to search file contents",
+                                       "query": "grep"}})
+      of 26:
+        # the same example with the advisor returning NO MATCH: ordinary
+        # discovery must still run (query bash matches lexically)
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "advisory-ranking.nim")
+        return toolCall("t27", "fabric",
+                        %*{"tools": ["jev_recommend", "discover"], "code": code,
+                           "strings": {"task": "advisor-no-match",
+                                       "query": "bash"}})
+      of 27:
+        # ...and with the advisor UNAVAILABLE (tool-level failure, the
+        # stock no-Von state): the fallback must be identical
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "advisory-ranking.nim")
+        return toolCall("t28", "fabric",
+                        %*{"tools": ["jev_recommend", "discover"], "code": code,
+                           "strings": {"task": "advisor-unavailable",
+                                       "query": "bash"}})
       else:
         return %*{"content": "fabric-turn-done"}
     if sessionId == "fab-lib":
@@ -823,6 +850,27 @@ echoOutSchema["x-harness"] = %*{"effect": "read"}
 discard comp.tool("ctx_out", echoOutSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     %toolArgs{"say"}.getStr(""))
+
+# stub advisor for the advisory-ranking example (t_fabric): jev's tool
+# shape, deterministic answers. The task text selects the outcome so the
+# example's ranked / no-match / unavailable branches each run in-suite.
+let jevSchema = toolSchema(%*{
+  "task": {"type": "string"},
+  "query": {"type": "string"},
+  "kind": {"type": "string"}
+}, required = @["task"])
+jevSchema["x-harness"] = %*{"effect": "read"}
+discard comp.tool("jev_recommend", jevSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let task = toolArgs{"task"}.getStr("")
+    if task.contains("advisor-unavailable"):
+      return %*{"ok": false, "error": "decision backend unavailable (stub)"}
+    if task.contains("advisor-no-match"):
+      return %*{"ok": true, "suggestion": "", "needsCapability": 0.1,
+                "candidates": []}
+    %*{"ok": true, "suggestion": "grep", "needsCapability": 0.9,
+       "kind": toolArgs{"kind"}.getStr("tools"),
+       "query": toolArgs{"query"}.getStr(""), "candidates": []})
 
 proc nestedCall(subject, tool: string, args: JsonNode, lease: string,
                 timeoutMs: int, catalog: JsonNode = nil): Envelope =
