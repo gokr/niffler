@@ -21,6 +21,11 @@ home.
   tree-sitter + PageRank port), `skills`, `plugins`, `processes`,
   `observe`/`logfile` — work other harnesses leave to plugins. See the
   [shipped components](docs/MANUAL.md#shipped-components).
+- **Opt-in experiments stay opt-in.** `jev` (advisory discovery over a local
+  decision model) ships in the manifest as an inert on-demand advisor, and its
+  runtime is a supervised launcher you enable with a spawn record — no
+  heavyweight dependency is ever forced on a stock `make build`/`make setup`.
+  See [Advisory discovery](docs/MANUAL.md#advisory-discovery-jev-and-the-von-launcher).
 - **Open models, all providers.** Any OpenAI-compatible endpoint — local,
   open-weight or hosted — via `.env` or a store-backed provider registry;
   ChatGPT/Claude subscription OAuth and a models.dev-backed catalog. See

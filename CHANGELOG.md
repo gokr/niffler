@@ -8,6 +8,33 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Advisory discovery (`jev`) and the supervised Von launcher (`von`) — an
+  opt-in spike (docs/research/JEV-SPIKE.md).** `jev` is a thin, on-demand
+  advisor: `jev_recommend {task, query, kind: "tools"|"skills"}` fetches a
+  fresh shortlist from `core.discover`/`skill_list` and asks a local System
+  One backend which entry fits, ranked by an uncalibrated `noul`+`choice`
+  pair; `jev_suggest` takes a caller-supplied candidate list and `jev_decide`
+  asks raw typed questions. The three tools are read-effect and advisory
+  only — they grant no permission, load no schemas and invoke nothing, and a
+  missing backend is a normal failure result, never fatal. Per-turn shadow
+  observations (no candidates persisted into any conversation; store kind
+  `jevshadow`, status `done`/`error`/`no-candidates`/`pending`/`stale`) are on
+  by default (`NIF_JEV_SHADOW=0` disables) — an absent backend writes **no**
+  record: one `ev.log.jev` warning, then silent 60 s cooldowns until it
+  answers. `von` is a launcher component that is deliberately **not** in the
+  manifest: enabling it is a persisted `core.spawn` record (`make von-up`,
+  `core.remove`/`make von-down` disables), so the supervisor manages it like
+  any component. It starts `var/jev-venv/bin/von` as a kernel-cleaned child
+  (`setpriv --pdeathsig`), adopts a Von already serving at the endpoint,
+  reports `starting`/`serving`/`absent`/`failed` through `von_status`, and
+  re-checks for the venv on the idle seam — no crash loop when Von is not
+  installed. `make install-jev` provisions the venv (idempotent, ~5.4 GB
+  including CUDA wheels; never part of `make setup`). `docs/research/
+  JEV-SPIKE.md` documents the experiment and explicitly does **not** claim
+  validated ranking accuracy. `components/fabric/examples/advisory-ranking.
+  nim` is the recommended integration shape (advisor → verify with
+  `discover` → lexical fallback, all inside one fabric program).
+
 - **The store answers `search`: server-side full-text search over stored
   documents — sessions without the download (issues #77, #51).** `search
   {kind, query, limit?, after?}` returns exactly `list`'s shape and ordering

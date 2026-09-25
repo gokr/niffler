@@ -27,6 +27,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Hooks](#hooks)
 - [Fabric and subagents](#fabric-and-subagents)
 - [Expert advisory peer (`expert`)](#expert-advisory-peer-expert)
+- [Advisory discovery (`jev`) and the Von launcher](#advisory-discovery-jev-and-the-von-launcher)
 - [Recovery](#recovery) · [The store](#the-store) · [Testing](#testing)
 - [Starting and stopping](#starting-and-stopping) · [Common tasks](#common-tasks) · [Troubleshooting](#troubleshooting)
 
@@ -72,6 +73,8 @@ reference chapters for the shipped components. Design rationale lives in
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions, nine tools: `agent_run`/`agent_spawn` (fresh or continued children, background jobs, durable settlement notices) plus `agent_status`/`agent_wait`/`agent_stop`/`agent_steer`/`agent_ask`/`agent_notices`/`agent_list` — see [Fabric and subagents](#fabric-and-subagents) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
+| `jev` | Nim | optional | advisory discovery over a local decision model (docs/research/JEV-SPIKE.md): `jev_recommend {task, query, kind: "tools"|"skills"}` fetches a fresh shortlist via `core.discover`/`skill_list` and asks the configured System One backend which entry fits; `jev_suggest` takes a caller-supplied 1–24 candidate list, `jev_decide` asks raw typed (`noul`/`choice`/`score`) questions. All three are on-demand, read-effect and **advisory only** — they grant no permission, load no schemas/skills and invoke nothing; a backend outage is a fail-open result and the probability is uncalibrated. Local-only: `NIF_JEV_URL` must be a loopback `/v1/systemone` endpoint (no redirects). The backend (Von) is started by the `von` launcher or by hand — see [Advisory discovery (`jev`) and the Von launcher](#advisory-discovery-jev-and-the-von-launcher). Per-turn **shadow** observations are on by default (`NIF_JEV_SHADOW=0` opts out; `NIF_JEV_SHADOW_KIND`/`_SKILL_QUERY`/`_TOOL_QUERY` tune them) and land in store kind `jevshadow`, never in a conversation; an absent backend writes no record — one warning, then silent cooldowns |
+| `von` | Nim | **not in the manifest** | supervised launcher for the Von decision runtime behind `jev`: built by `make build` (`var/bin/von`), enabled by a persisted `core.spawn` record (`make von-up`; `make von-down`/`core.remove` disables), never autostarted. Starts `var/jev-venv/bin/von` as a kernel-cleaned child (`setpriv --pdeathsig`), adopts a Von already serving at the endpoint, and reports `starting`/`serving`/`absent`/`failed` through `von_status`. Missing venv = one warning and an honest `absent` status, re-checked on the idle seam (so `make install-jev` later is picked up) — never a crash loop. Env: `NIF_VON_BIN`, `NIF_VON_ARGS`, `NIF_VON_MODEL`, `NIF_VON_DEVICE`, `NIF_VON_HOST`, `NIF_VON_PORT`, `NIF_VON_POLL_MS`, `NIF_VON_BACKOFF_MAX_S` |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches — parameters, caps, exit codes and the effect classification are in [`grep` in detail](#grep-in-detail) |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
@@ -570,6 +573,14 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_REPOMAP_MIN_SYMBOLS` | append content gate: rendered symbol-row minimum. The gates are append-only — `repo_map` is never gated | `25` |
 | `NIF_REPOMAP_MIN_FILES` | append content gate: symbol-bearing file minimum. The gates are append-only — `repo_map` is never gated | `5` |
 | `NIF_RUNNER_IDLE_S` | a session runner with no session call for this long retires; the next call spawns a fresh one (subagent children re-ensure on demand) | `600` |
+| `NIF_JEV_URL` | loopback HTTP endpoint implementing the System One contract that `jev` asks. Must be `http`, host `127.0.0.1`/`localhost`/`[::1]`, exact path `/v1/systemone`, no credentials/query/anchor and no redirects — decision inputs carry private repo context, so remote endpoints are refused | `http://127.0.0.1:8000/v1/systemone` |
+| `NIF_JEV_BACKEND` / `NIF_JEV_MODEL` | backend label echoed in results, and the model id sent to that backend | `von` / `von-1.1` |
+| `NIF_JEV_SHADOW` | per-turn shadow observations: at every turn start `jev` queues up to two independent judgments (installed skills; discoverable on-demand tools via a lexical query from the task) and records them in store kind `jevshadow` — never surfacing anything to the model. `0`/`false`/`no`/`off` disables. An absent backend writes no record: one `ev.log.jev` warning, then silent cooldowns | `1` |
+| `NIF_JEV_SHADOW_KIND` / `NIF_JEV_SHADOW_SKILL_QUERY` / `NIF_JEV_SHADOW_TOOL_QUERY` | which shadow sets to observe (`tools`, `skills`, `both`) and explicit lexical queries overriding the task-derived default | `both` / — / — |
+| `NIF_VON_BIN` | path of the Von binary the `von` launcher starts (missing binary = one warning + `absent` status, re-checked on the idle seam) | `<root>/var/jev-venv/bin/von` |
+| `NIF_VON_ARGS` | full argv for the child, whitespace-split; overrides the built-in `serve --model … --host … --port …` | `serve --model $NIF_VON_MODEL --host $NIF_VON_HOST --port $NIF_VON_PORT` |
+| `NIF_VON_MODEL` / `NIF_VON_DEVICE` / `NIF_VON_HOST` / `NIF_VON_PORT` | the serve arguments the launcher builds when `NIF_VON_ARGS` is unset | `von-1.1` / `cpu` / `127.0.0.1` / `8000` |
+| `NIF_VON_POLL_MS` / `NIF_VON_BACKOFF_MAX_S` | launcher idle interval, and the cap for its restart backoff after the child exits | `1000` / `60` |
 | `NIF_WRITE_MAX_BYTES` | cap for the `write` tool's whole-file payload | `900000` |
 | `NIF_OAUTH_CALLBACK_HOST` | host for the local OAuth callback listener (ports stay fixed at 1455/53692) | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core's child-log retention cap in `var/logs` (MB) | `200` |
@@ -2405,7 +2416,10 @@ The long tail is on demand:
 - State and introspection: store `get`/`list`, `session_info`, and the
   skill entry points `skill_list`/`skill_load` (a workflow guide is
   loaded only when one fits the task).
-- Orchestration: `fabric`, the `agent_*` and `expert_*` tools.
+- Orchestration: `fabric`, the `agent_*` and `expert_*` tools, and the
+  experimental advisory pair `jev_*` / `von_status` (load them only when
+  lexical discovery is a weak match — see
+  [Advisory discovery](#advisory-discovery-jev-and-the-von-launcher)).
 - Core lifecycle/status/catalog, builder, plugins, and fetch.
 - Models and provider administration.
 - Skill resources, online search, install, and remove.
@@ -3264,6 +3278,89 @@ exposure and tool allowlist (read from `core.prompt_preview`) plus the on-demand
 tools it could `discover`. Never the global LLM toolset — that would overstate
 what an older or allowlisted session can actually call.
 
+## Advisory discovery (`jev`) and the Von launcher
+
+The `jev` component is an opt-in experimental spike (design and honest limits:
+[docs/research/JEV-SPIKE.md](research/JEV-SPIKE.md)): a thin, replaceable
+advisor over a small candidate list, backed by a local decision model. It is
+three on-demand, read-effect tools:
+
+- `jev_recommend {task, query, kind: "tools"|"skills"}` — the usable one-call
+  path: fetch a fresh shortlist from `core.discover` (on-demand hints) or
+  `skill_list`, then ask the backend which entry fits. The query must be
+  narrow and nonempty (1–24 candidates; an oversized set refuses rather than
+  truncating, and an empty list or empty suggestion is a valid answer).
+- `jev_suggest {task, candidates}` — for callers with their own 1–24 item
+  shortlist; pairs a `noul` (does any capability help?) with a `choice` in one
+  request.
+- `jev_decide {state, questions}` — raw typed System One questions
+  (`noul`/`choice`/`score`), bounded state, no side effects.
+
+They are **advisory only**. They load no schemas, load no skills, invoke
+nothing, grant no permission, and report an uncalibrated experimental signal —
+never policy, never an approval gate. Dispatch and approvals remain the only
+execution path, so the answer must be confirmed with `discover` + `invoke` (or
+`skill_load`) before acting. A backend outage is a fail-open result: continue
+with ordinary discovery. The endpoint is local-only by construction
+(`NIF_JEV_URL` must be a loopback `/v1/systemone` URL without redirects),
+because decision inputs carry private repo context — never pass secrets or
+file contents in `task`.
+
+The recommended integration is a **fabric program**, not the direct loop: the
+candidate shortlist and the raw answers stay in the guest and only the
+verified outcome enters the conversation. `components/fabric/examples/
+advisory-ranking.nim` is the runnable shape (advisor → verify → lexical
+fallback in the same program, so a missing decision model never decides
+whether discovery happens at all); `fabric_help {topic: "advisory-ranking"}`
+returns its source.
+
+**Shadow experiment.** To gather evidence without asking anyone, `jev` also
+judges every turn start in the background (on by default; `NIF_JEV_SHADOW=0`
+disables): one observation of the installed skill list and one of the
+discoverable on-demand tools, using the turn's request (capped at 2,000 bytes)
+and — unless `NIF_JEV_SHADOW_TOOL_QUERY` is set — a lexical query derived from
+its longest word. Each candidate set is capped at 24; oversized sets are
+recorded as `no-candidates`, never truncated. Nothing is surfaced to the
+model, no transcript is touched, and the conversation's frozen prefix is
+unaffected (the only prompt-cache effect of the whole component is
+append-only tool history when the tools are explicitly invoked). Results land
+in store kind `jevshadow` (`<sessionId>:<turnId>:<kind>`, joinable with the
+transcript) carrying the candidate snapshot, raw answers, `elapsedMs`/
+`queueMs`, the terminal `status` (`done`, `error`, `no-candidates`, `pending`
+while in flight, `stale` when the turn closed first) and `turnClosed`; the
+judge runs as a separate PDEATHSIG subprocess (12 s hard limit, one at a time,
+bounded queue) so the NATS pump stays responsive. An **absent backend is the
+stock-install default, not experiment data**: the in-flight marker is deleted,
+a single `ev.log.jev` warning marks the outage, and further judgments pause for
+a 60 s cooldown that retries silently — so shadow resumes on its own once a
+backend answers. Records contain the task text — treat them as sensitive.
+
+**Starting the backend.** [Von](https://github.com/wfzyx/von) is a separate
+Python runtime, deliberately outside `make build`:
+
+```bash
+make install-jev   # idempotent: uv venv var/jev-venv + von-sdk (~5.4 GB)
+make von-up        # enable the supervised launcher (persisted spawn record)
+make von-down      # disable again (stops it, deletes the record)
+```
+
+`make install-jev` is never part of `make setup` (the size and optionality are
+why). `von` is **not in the manifest** — enabling is a persisted `core.spawn`
+record, exactly like a plugin, so the supervisor manages the launcher like any
+component (PDEATHSIG, restart policy, drain) and a stock harness never pays for
+the runtime. The launcher starts the venv binary as a kernel-cleaned child
+(`setpriv --pdeathsig`, the supervisor's own wrapper), adopts a Von already
+answering at the endpoint instead of double-starting it, and re-checks for a
+later `make install-jev` on the idle seam. Ask it what is going on with
+`von_status`: `starting` (Von loading weights — the first serve downloads the
+model and took ~115 s in CPU trials, so poll before relying on `jev`),
+`serving` (the endpoint answers), `absent` (venv binary missing) or `failed`
+(child exited; capped backoff). The status is a claim about the launcher's own
+view — the real probe is a `jev` call. Because the launcher is a normal spawn
+record, the LLM can also
+enable it mid-conversation: `discover` + `invoke spawn {name: "von",
+arguments…}` — approval-gated, like every `spawn`.
+
 ## Recovery
 
 The repo is the snapshot; `var/` is disposable build output — delete build
@@ -3338,6 +3435,7 @@ only a subset — this table is the complete list):
 | `attachment` | `<messageId>:a<i>` | one dropped image's METADATA (message id, MIME, dimensions, original name) — deliberately pixel-free, because a `list` page of this kind is how attachments are enumerated and a page carrying pixels exceeds the bus payload limit after two images. Written before the message that refs it; swept by `conversation_delete` |
 | `attachmentdata` | `<messageId>:a<i>` | the base64 pixels for the `attachment` doc with the same id. Read when the context materializes images for the provider request (newest-first within `NIF_ATTACH_BUDGET`); never enumerated in bulk |
 | `mcp` | server name | MCP server config record of the `mcp` component (see [External MCP servers](#external-mcp-servers-mcp)) |
+| `jevshadow` | `<sessionId>:<turnId>:<kind>` (`kind` = `tools`/`skills`) | per-turn shadow observations of the advisory-discovery spike (`jev`): the candidate snapshot, raw answers, `elapsedMs`/`queueMs`, `status`/`turnClosed`. Never surfaced to the model and never written into a transcript; an absent backend writes **no** record (see [Advisory discovery](#advisory-discovery-jev-and-the-von-launcher)). Records contain task text — treat them as sensitive |
 | `selftest` | store self-test probe | throwaway — written and deleted by the store's own self-test roundtrip |
 
 Backend is the selected engine — SQLite at `var/store.db` by default,
@@ -3516,6 +3614,10 @@ make install-ui     # install the desktop UI plugin (gokr/niffler-ui): an
                     # isolated auto-approved harness boots, the plugin manager
                     # clones + the builder builds it into var/bin/niffler-ui
 make install-lsp    # install the lsp component's default language servers
+make install-jev    # install the Von runtime for jev (opt-in, ~5.4 GB;
+                    # never part of `make setup`)
+make von-up         # enable the supervised Von launcher (persisted spawn
+                    # record; `make von-down` removes it again)
 make test           # the full gate: the bus-contract suite (the UI repo's
                     # frontend tests live in gokr/niffler-ui)
 make test-server    # the bus-contract suite alone (each test owns a private bus)

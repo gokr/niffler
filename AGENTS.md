@@ -24,7 +24,8 @@ working in every language.
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
   `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `lsp`, `processes`,
-  `observe`, `logfile`, `models`, `provider`, `llm`, `mcp` are peers. Adding a
+  `observe`, `logfile`, `models`, `provider`, `llm`, `mcp`, `jev` are peers.
+  Adding a
   capability = write source → `builder.build`
   → `core.spawn`; `replicas: N` (1–16) is only for stateless or externally
   coordinated components and uses their existing NATS queue group. Removing
@@ -68,6 +69,16 @@ working in every language.
   goroutine under the serial handler lock. Reach for it instead of a thread
   whenever "every N seconds" is all you need — `components/processes` reaps its
   background children that way.
+- **An external runtime the harness must own gets a launcher component,
+  enabled by a spawn record — never a manifest autostart.** `von` (the Python
+  decision runtime behind `jev`) is the worked example: built by `make build`
+  but absent from `manifest.yaml`, started as a kernel-cleaned child
+  (`setpriv --pdeathsig`, the supervisor's own wrapper), adopting an instance
+  already serving, reporting state through a status tool, and enabling via
+  `core.spawn` (`make von-up`) so the supervisor's PDEATHSIG/restart/drain
+  semantics apply unchanged. A stock harness must never pay for an optional
+  runtime (`make install-jev` stays out of `make setup`). Built-but-unspawned
+  binaries have precedent (`cli`, `console`, `dialog`).
 - NATS is the only bus. Barrel's (embedded BitBarrel KV in `store`) own pubsub is
   deliberately unused.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
@@ -212,6 +223,13 @@ make down-here        # the scoped variant: only this checkout's harness,
                       # stray-everything case)
 make install-lsp      # idempotent installer for the lsp component's default
                       # language servers (failures non-fatal per language)
+make install-jev      # install the Von runtime behind the jev advisor (opt-in,
+                      # ~5.4 GB; deliberately NOT part of `make setup`)
+make von-up           # enable the supervised Von launcher: a persisted
+                      # core.spawn record (`make von-down` removes it again).
+                      # jev's tools are advisory only; a missing backend is a
+                      # normal failure and `von_status` reports readiness
+                      # (docs/research/JEV-SPIKE.md)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
 make doctor           # check prerequisites, report what's missing
 make install-ui       # install the desktop UI plugin (gokr/niffler-ui) through
