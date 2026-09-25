@@ -72,14 +72,14 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 
 .PHONY: help all build components components-inner run down down-here \
         test test-server test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
-        test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli \
+        test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke dev clean gotest \
         install uninstall install-ui install-tui \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps install-native-deps install-nim-deps \
-        install-natscli install-jq install-zenity
+        install-natscli install-jq install-zenity install-lsp install-jev von-up von-down
 
 help:
 	@echo 'make all       build core + components (default)'
@@ -93,7 +93,7 @@ help:
 	@echo 'make run       run the harness in the terminal (admin shell)'
 	@echo 'make ram       RAM of running niffler stacks (harness + components + nats + clients)'
 	@echo 'make down      stop any running harness, components and nats-server'
-	@echo 'make down-here stop only THIS checkout's harness, components and bus'
+	@echo 'make down-here stop only THIS checkout: harness, components and bus'
 	@echo 'make test      full gate: the bus-contract suite (frontend tests are in'
 	@echo '               gokr/niffler-ui: make test / make typecheck there)'
 	@echo 'make test-server  bus-contract suite only (no node/UI toolchain)'
@@ -101,6 +101,10 @@ help:
 	@echo '               niffler-ui checkout: make dev there)'
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'
+	@echo 'make install-lsp  install the lsp component language servers'
+	@echo 'make install-jev  install the Von runtime for the jev component (opt-in, ~5.4 GB)'
+	@echo 'make von-up      enable the supervised Von launcher (persists across boots)'
+	@echo 'make von-down    disable it again (spawn record removed)'
 	@echo 'make clean     remove all build artifacts'
 	@echo 'make recover   stop everything, rebuild shipped binaries, wipe spawned'
 	@echo '               component records, restart interactively (--recover)'
@@ -233,6 +237,12 @@ var/bin/recall: components/recall/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/compaction: components/compaction/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/compaction/main.nim
 
+var/bin/jev: components/jev/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/jev/main.nim
+
+var/bin/von: components/von/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/von/main.nim
+
 var/bin/fetch: components/fetch/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fetch/main.nim
 
@@ -296,7 +306,7 @@ components:
 
 components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sqlite var/bin/store-tidb var/bin/niffler-store-migrate var/bin/bash \
 	var/bin/edit var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
-	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
+	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
@@ -467,6 +477,8 @@ test-builder: build var/bin/test_t_builder ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-console: build var/bin/test_t_console ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_console
 test-plugins: build var/bin/test_t_plugins ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_plugins
 test-skills:  build var/bin/test_t_skills  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_skills
+test-jev: build var/bin/test_t_jev ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_jev
+test-von: build var/bin/test_t_von ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_von
 test-fetch:   build var/bin/test_t_fetch   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fetch
 test-core:    build var/bin/test_t_core    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_core
 test-systemprompt: build var/bin/test_t_systemprompt ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_systemprompt
@@ -627,6 +639,11 @@ doctor:
 	fi)
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
 	@echo "                  npm registry access needed for TS source/package recipes"
+	@if [ -x var/jev-venv/bin/von ]; then \
+		echo "  jev backend (Von): installed — 'make von-up' enables the supervised launcher"; \
+	else \
+		echo "  jev backend (Von): not installed (optional) — 'make install-jev', then 'make von-up'"; \
+	fi
 	@echo "Then: make — and launch niffler-ui or ./var/bin/niffler"
 
 install-go:
@@ -641,6 +658,21 @@ install-lsp:
 	@# bash-language-server, jdtls, csharp-ls). Go/Nim/TS mandatory, rest y/n;
 	@# `make install-lsp ALL=1` installs everything unattended.
 	@bash scripts/install-lsp.sh $(if $(filter 1,$(ALL)),--all,)
+
+install-jev:
+	@# The Von runtime behind the jev component (venv + von-sdk). Opt-in:
+	@# ~5.4 GB including CUDA wheels; model weights download on first serve.
+	@# Never part of `make setup` — the harness runs fine without Von.
+	@bash scripts/install-jev.sh
+
+von-up:
+	@# Enable the supervised Von launcher: a persisted core.spawn record,
+	@# restored on every boot until `make von-down` (needs a live harness).
+	./var/bin/cli call spawn '{"name":"von","binary":"var/bin/von"}'
+
+von-down:
+	@# Disable: stop the launcher and delete the persisted record.
+	./var/bin/cli call remove '{"name":"von"}'
 
 install-native-deps:
 	@if [ -n "$(IS_MAC)" ]; then \

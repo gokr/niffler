@@ -92,6 +92,15 @@ components:
     required: false
     restart: on-failure
 
+  # Optional advisory decision layer. Von is the initial backend; replaceable
+  # via the normalized System One HTTP seam. Never grants tool access.
+  - name: jev
+    build: {lang: nim, src: components/jev/main.nim}
+    binary: var/bin/jev
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: models
     build: {lang: go, src: components/models}
     binary: var/bin/models
