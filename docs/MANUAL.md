@@ -316,7 +316,7 @@ another engine's database.
 
 **`search`** is the server-side filter (`{kind, query, limit?, after?}` —
 find conversations by id/title or messages by content without downloading
-the whole kind; niffler-tui's `/sessions` uses it). Semantics are contract
+the whole kind; niffler-tui's `/session` uses it). Semantics are contract
 in every engine: per-kind indexed fields (conversation = id + title,
 message = id + content text capped at 16KB, others = id only),
 case-insensitive **prefix** matching of every query word (AND), everything

@@ -59,7 +59,7 @@
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim/Go | required | 匯流排上的文件儲存（`put/get/list/del`，基於 rev 的並行控制）。全部四個工具都是隨需的，且 `del` 額外被隱藏 — core 刪除記錄，模型不能。引擎以相同名稱註冊相同的四個工具（`put`/`get`/`list`/`del`；barrel 引擎額外註冊一個隱藏的 `selftest` — `/doctor` 展開的那個 — Go 引擎不實作）：`store-sqlite`（Go，SQLite ＋ goose 遷移，`var/store.db`）是**預設**；`barrel`（`var/bin/store`）和 `tidb` 仍可透過 `NIF_STORE_BACKEND` 選擇 — 見[儲存引擎](#store-engines) |
+| `store` | Nim/Go | required | 匯流排上的文件儲存（`put/get/list/search/del`，基於 rev 的並行控制）。全部五個工具都是隨需的，且 `del` 額外被隱藏 — core 刪除記錄，模型不能。引擎以相同名稱註冊相同的五個工具（`put`/`get`/`list`/`search`/`del`；barrel 引擎額外註冊一個隱藏的 `selftest` — `/doctor` 展開的那個 — Go 引擎不實作）：`store-sqlite`（Go，SQLite ＋ goose 遷移，`var/store.db`）是**預設**；`barrel`（`var/bin/store`）和 `tidb` 仍可透過 `NIF_STORE_BACKEND` 選擇 — 見[儲存引擎](#store-engines) |
 | `bash` | Nim | required | 經典工具：帶逾時＋輸出上限的 shell 命令。命令作為其自身程序群組的領導者執行，因此逾時或取消的回合會殺死整棵樹（退出碼 124 / 130）— 沒有孤兒子程序。結果攜帶 `text`（一個 `(exit N)` 狀態行 — 非零 = 失敗；124 = 逾時，130 = 已取消，126 = cwd 無法進入（該工具也使用 126 表示找到但不可執行），127 = `bash` 不在 `PATH` 上，128 ＋信號表示命令殺死了自己（139 = SIGSEGV，143 = SIGTERM）— 後接合併的 stdout/stderr；這是 LLM 對話記錄顯示的內容）加上機器欄位 `exit_code`、`cancelled`，以及當過大輸出溢出到 `var/toolout/` 下的檔案時的 `spill {path, bytes, lines}`（絕對路徑在 `spill.path` 中；可用 `read` 分頁，1 小時後清掃）。`run_in_background: true` 將長時間執行的命令（伺服器、監看器）交給 `processes` 元件而非阻塞 — 見[背景程序](#background-processes-processes) |
 | `repomap` | Nim | optional | 排序的工作區地圖（docs/research/REPOMAP.md）：約 1KB 的關鍵檔案及其關鍵定義，由 tree-sitter ＋原生 Nim 標籤圖與個人化 PageRank 建構（aider repomap 移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且為讀取效應。工作區開啟自動附加（在 `ev.workspace.opened` 上的一個僅附加歷史條目）**預設開啟但受閘控**（`docs/research/REPOMAP-GATES.md`）：工作區必須至少有 50 個涵蓋檔案，且其渲染的地圖必須至少有 800 位元組、25 個符號和 5 個帶符號的檔案。小型/殘缺的地圖會被扣留並記錄為 `repo map withheld`；設定 `NIF_REPOMAP_AUTOAPPEND=0` 以停用附加。明確的 `repo_map` 工具無論這些閘門如何都可用。快取：`var/repomap-tags/`（以 mtime 為鍵）。選用元件 — 不存在意味著沒有地圖，其他一切不變。參數、標籤層級和附加負載：[`repomap` 詳解](#repomap-in-detail) |
 | `processes` | Nim | optional | 帶有擁有者的長時間執行命令：`process_start`（分離，自有程序群組，立即返回一個 id）、`process_poll`（排空增量輸出）、`process_kill`（停止群組）、`process_list` — 見[背景程序](#background-processes-processes) |
@@ -177,7 +177,9 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 ### Store engines
 
-儲存的**匯流排契約就是產物本身**：`put/get/list/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。多個引擎實作它，並以元件 `store` 註冊、提供完全相同的工具——消費者永遠不會知道哪個引擎正在運作。選擇是開機時的決定：`NIF_STORE_BACKEND=sqlite|barrel|tidb`（預設 `sqlite`）；core 據此解析 manifest 項目的二進位檔，並在遇到未知值時拒絕開機。未設定 `NIF_STORE_BACKEND` 是預設，不是要求：當 `var/bin/store-sqlite` 從未建置時，core 會警告並改為啟動 manifest 的二進位檔（`var/bin/store`，barrel）。明確的值則是要求——二進位檔缺失只會發出警告，絕不會被悄悄換成另一個引擎的資料庫。
+儲存的**匯流排契約就是產物本身**：`put/get/list/search/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。多個引擎實作它，並以元件 `store` 註冊、提供完全相同的工具——消費者永遠不會知道哪個引擎正在運作。選擇是開機時的決定：`NIF_STORE_BACKEND=sqlite|barrel|tidb`（預設 `sqlite`）；core 據此解析 manifest 項目的二進位檔，並在遇到未知值時拒絕開機。未設定 `NIF_STORE_BACKEND` 是預設，不是要求：當 `var/bin/store-sqlite` 從未建置時，core 會警告並改為啟動 manifest 的二進位檔（`var/bin/store`，barrel）。明確的值則是要求——二進位檔缺失只會發出警告，絕不會被悄悄換成另一個引擎的資料庫。
+
+**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個種類，即可依 id/標題尋找對話、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語義在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的不分大小寫**前綴**比對（AND），非字母數字字元一律無作用，因此使用者輸入無需跳脫；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一個交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 派生狀態，可安全丟棄），而 **barrel** 和 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的比對器（結果等價，每次呼叫 O(kind 中的文件數)）。
 
 - **sqlite**（預設，`var/bin/store-sqlite`，Go）：在 SQLite 上實作同一份文件契約。文件以 JSON TEXT 原樣存放；`put` 是單一原子陳述式（doc 與 rev 一起移動——KV 引擎的雙鍵崩潰窗口不復存在）；schema 透過內嵌的 goose migration 管理；純 Go 驅動程式（`modernc.org/sqlite`，無 cgo）。資料檔 `var/store.db`（WAL），可用任何 SQLite 工具檢視（`sqlite3 var/store.db 'select kind, count(*) from docs group by kind'`），也可從 DuckDB 以唯讀方式掛載以進行離線分析。自 context compaction 落地後即為預設：context projection 需要原子寫入與可範圍讀取的清單（docs/research/COMPACTION.md §2）。SQLite pragma 是程式碼內建、不可配置（`_txlock=immediate`、WAL、`synchronous(NORMAL)`、10 秒 `busy_timeout`、單一連線池），且 goose migration 會在啟動時自動套用。
 - **barrel**（`var/bin/store`）：內嵌的 BitBarrel KV（Bitcask 風格）位於 `var/barrel-db`——設計上無 schema、零依賴、久經考驗。仍完整支援（`NIF_STORE_BACKEND=barrel`）；其 `put` 是雙鍵序列（先 doc，再 rev）：兩者之間發生崩潰可能導致內容更新而修訂未更新，而對於*新*文件，doc 鍵會被寫入但完全沒有 rev 鍵，`get` 與 `list` 會將其讀為不存在（`rev == 0`）——該文件在再次寫入之前無法觸及。
@@ -2060,7 +2062,7 @@ root 開機的第二個 core 就會這麼做；實驗時請使用暫存的 `NIF_
 
 `list` 是一頁，不是完整視圖（見 [Store engines](#store-engines)）：
 core 中所有必須看見整個種類的東西都走 `storeListAll`——
-單一有上限的 `list` 在續接時曾悄悄截斷長逐字稿。
+單一有上限的 `list` 在續接時曾悄悄截斷長逐字稿。`search` 則把「哪些對話提到過 …」變成伺服器端查詢，而不是先下載再過濾：`cli call search '{"kind":"conversation","query":"…"}'`（要在逐字稿文字中查找則用 `message`）返回與 `list` 相同的分頁結構。
 
 ## Testing
 
