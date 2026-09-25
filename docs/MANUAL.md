@@ -57,7 +57,7 @@ reference chapters for the shipped components. Design rationale lives in
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim/Go | required | document store over the bus (`put/get/list/search/del`, rev-based concurrency). All five tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with the same five tools (`put`/`get`/`list`/`search`/`del`; the barrel engine additionally registers a hidden `selftest` — the one `/doctor` fans out to — that the Go engines do not implement): `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
+| `store` | Nim/Go | required | document store over the bus (`put/get/list/search/del`, rev-based concurrency). All five tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with the same five tools (`put`/`get`/`list`/`search`/`del`) and a hidden `selftest` in every engine (used by `/doctor`): `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled, 126 = cwd not enterable (the tool also uses 126 for found-but-not-executable), 127 = `bash` not on `PATH`, 128 + signal when the command killed itself (139 = SIGSEGV, 143 = SIGTERM) — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a file under `var/toolout/` (the absolute path is in `spill.path`; pageable with `read`, swept after 1 h). `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes) |
 | `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect. Workspace-open auto-append (one append-only history entry on `ev.workspace.opened`) is **on by default but gated** (`docs/research/REPOMAP-GATES.md`): the workspace must have at least 50 covered files, and its rendered map must have at least 800 bytes, 25 symbols and 5 symbol-bearing files. A small/stub map is withheld and logged as `repo map withheld`; set `NIF_REPOMAP_AUTOAPPEND=0` to disable the append. The explicit `repo_map` tool is available regardless of these gates. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes. Parameters, tag tiers and append payload: [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
@@ -357,8 +357,9 @@ matcher (equivalent results, O(documents of the kind) per call).
   (`root@tcp(host:4000)/niffler`; single-node docker:
   `docker run -p 4000:4000 pingcap/tidb`). `value` stays MEDIUMTEXT, not
   the native JSON type — binary JSON normalizes key order and number
-  precision, breaking the verbatim-document contract; indexed queries
-  arrive later as generated columns over the TEXT (a goose migration).
+  precision, breaking the verbatim-document contract. `search` scans the
+  kind in id order with the shared matcher; TiDB has no usable full-text index
+  for this contract.
   `kind`/`id` are utf8mb4_bin: byte-exact equality, byte-order list
   sorting and case-sensitive LIKE prefixes (contract parity with the
   other engines). No flock — the cluster is shared state by design; row
@@ -3397,12 +3398,11 @@ make build
 ## The store
 
 `store` is a component like any other — a document store over the bus with
-`put` / `get` / `list` / `del` and rev-based optimistic concurrency
-(`put` accepts `expectRev` and fails with `rev-conflict` on mismatch). The
-barrel engine also registers a hidden `selftest` tool — a real
-put/get/rev/list/`del` roundtrip that `/doctor` can call; the two SQL engines
-register the four tools only.
-`put`, `get` and `list` are on-demand tools; `del` is hidden — core deletes
+`put` / `get` / `list` / `search` / `del` and rev-based optimistic concurrency
+(`put` accepts `expectRev` and fails with `rev-conflict` on mismatch). Every
+engine registers a hidden `selftest` tool — a real
+put/get/rev/list/`del` roundtrip that `/doctor` can call.
+`put`, `get`, `list` and `search` are on-demand tools; `del` is hidden — core deletes
 records, the model cannot. `put` also carries `x-harness.sessionId`, which is
 what makes the write fence below possible. A **session-bound caller may only write curated kinds**
 (`fabricprog` today): every other kind is harness-managed and refused with
