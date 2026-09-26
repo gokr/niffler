@@ -138,7 +138,9 @@
       store and restored on boot. The repo holds the reproducible source;
       <code>var/bin/</code> can be rebuilt, while the store engine holds
       persistent state (SQLite at <code>var/store.db</code> by default —
-      barrel or TiDB via <code>NIF_STORE_BACKEND</code>).</p>
+      barrel or TiDB via <code>NIF_STORE_BACKEND</code>). A component that
+      outlives a bus outage re-attaches on its own — it re-resolves the bus,
+      rebuilds its subscriptions and re-announces, with no process kill.</p>
     </article>
   </div>
 </section>
