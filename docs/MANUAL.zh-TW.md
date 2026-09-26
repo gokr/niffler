@@ -210,8 +210,8 @@ core:     niffler-store-migrate --scan
 core: or keep using the old engine: NIF_STORE_BACKEND=barrel
 ```
 
-`niffler-store-migrate`（位於 `var/bin`）以**離線**方式執行——它啟動自己私有的 NATS 伺服器與 store 行程，因此無需啟動任何 harness，且它絕不編輯來源資料。儲存契約無法列舉 kind（`list` 需要一個），因此它讀取**它所探查之 kind 的**每一份文件——這份候選清單是對 harness 今日所寫每一種 kind 的經驗證普查（`agentjob`、`agentnotice`、`approval`、`compaction_input`、`component`、`context_projection`、`contextreceipt`、`conversation`、`fabricprog`、`mcp`、`message`、`plugin`、`profile`、`session`、`sessionmeta`、`slash`、`spill`）——而收尾驗證會逐 kind 走過它實際**搬運**的 kind，對照目標進行驗證。日後加入 harness 的 kind 仍會被悄悄略過，直到普查被擴充（匯流排無法看到它），這就是為什麼這份清單維護在 store 的 kind 表旁邊。
-今日接上的方向是 barrel → `sqlite`（預設）或 barrel → `tidb` 搭配 `--to tidb`；純 SQLite 的 root 會被拒絕，並顯示「root already uses sqlite — nothing to migrate」。每份文件都會被重放到全新的目標，然後逐 kind 驗證。旗標（`--root`、`--to <engine>`、`--dry-run`、`--scan [<top>]`、`--all [<top>]`、`--force`）由工具自身的 `--help` 說明；`--force` 會覆蓋既有的目標資料庫（舊的會被移到一旁為 `<name>.<timestamp>.aside`），而每個階段背後的設計見 [research/STORE_V2.md](research/STORE_V2.md) 的「Moving data between engines」。
+`niffler-store-migrate`（位於 `var/bin`）以**離線**方式執行——它啟動自己私有的 NATS 伺服器與 store 行程，因此無需啟動任何 harness，且它絕不編輯來源資料。儲存契約無法列舉 kind（`list` 需要一個），因此它讀取**它所探查之 kind 的**每一份文件——這份候選清單是對 harness 今日所寫每一種 kind 的經驗證普查（`agentjob`、`agentnotice`、`approval`、`attachment`、`attachmentdata`、`compaction_input`、`component`、`context_projection`、`contextreceipt`、`conversation`、`fabricprog`、`mcp`、`message`、`plugin`、`profile`、`session`、`sessionmeta`、`slash`、`spill`）——而收尾驗證會逐 kind 走過它實際**搬運**的 kind，對照目標進行驗證。日後加入 harness 的 kind 仍會被悄悄略過，直到普查被擴充（匯流排無法看到它），這就是為什麼這份清單維護在 store 的 kind 表旁邊。
+今日接上的方向是 barrel → `sqlite`（預設）或 barrel → `tidb` 搭配 `--to tidb`；純 SQLite 的 root 會被拒絕，並顯示「root already uses sqlite — nothing to migrate」。每份文件都會被重放到全新的目標，然後逐 kind 驗證。`attachmentdata` 一次分頁一份文件（一整頁中的 4 MB base64 負載會超過匯流排的 8 MiB 上限），而格式錯誤的 `list` 游標會中止遷移，而不是靜默截斷它。旗標（`--root`、`--to <engine>`、`--dry-run`、`--scan [<top>]`、`--all [<top>]`、`--force`）由工具自身的 `--help` 說明；`--force` 會覆蓋既有的目標資料庫（舊的會被移到一旁為 `<name>.<timestamp>.aside`），而每個階段背後的設計見 [research/STORE_V2.md](research/STORE_V2.md) 的「Moving data between engines」。
 
 `--scan` 會尋找頂層目錄、同層複本與 benchmark 樹（`var/bench/**/niffler-root`）。Migration 會拒絕在同時持有 `var/barrel-db` 與 `var/store.db` 的 root 上執行——那是完成遷移後留下的狀態，重跑會失敗並顯示「ambiguous source; move one aside first」（將過時的 `var/store.db` 移到一旁即可重複執行）。回復就只是 `NIF_STORE_BACKEND=barrel`，因為 barrel 檔案未被觸碰；反方向的資料搬移——從 SQLite 或 TiDB 移出——尚未接上。
 
@@ -283,6 +283,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外搜尋伺服器二進位檔的額外目錄（以冒號分隔；開頭的 `~` 表示你的 home 目錄） | — |
 | `NIF_TRAFILATURA` | Trafilatura 執行檔路徑/名稱；`off` 停用外部擷取 | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK 結構化日誌發布閾值（`debug`、`info`、`warn`、`error`） | `info` |
+| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 眾所周知的連接埠，因此在新連接埠上重啟的 core 也能被找到）、帶退避地重新撥號、重建每個訂閱並重新發佈 `reg.publish`。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。TypeScript SDK 目前尚不重新接入 | `180` |
 | `NIF_LLM_MAX_RETRIES` | 對暫時性 LLM 失敗（429/5xx/超載/連線中斷）的額外嘗試次數，採指數退避；每次重試會宣告 `ev.session.<id>.retry`。驗證/配額/錯誤請求錯誤一律快速失敗 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 串流回應中途中斷時的額外嘗試次數——與一般情況分開編列預算，因為中斷的串流可能已經計費輸出 | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | 連線/撥號失敗的額外嘗試次數 | `2` |
@@ -1798,6 +1799,20 @@ await comp.requestEnvelope(subject, envelope, timeoutMs?)
 ```
 
 每個 SDK 都讓 NATS 執行主體比對，並只分派綁定至傳遞該訊息的訂閱的處理常式。這避免了先前的交叉乘積，即一次呼叫可能透過 call、event 與 tap 路徑多次傳遞。Nim 保持無回呼且無執行緒；Go 使用其現有的互斥鎖，而 TypeScript 使用其 promise 鏈。關機時，Go 會先排空訂閱（至其有界的關閉寬限期），然後停止每個元件的傳遞迴圈並等待每個仍在執行的處理常式完成，以保留欠給呼叫方的回覆——已接受但從未開始的呼叫會被拒絕，而不是被靜默丟棄；而 TypeScript 會等待已排入佇列的處理常式，且不會使明確關閉自身元件的處理常式死鎖。
+
+#### 匯流排中斷後重新接入
+
+NATS 用戶端會透明地重連至相同 URL，但匯流排在其重連預算之後仍不可達——或 harness 在新連接埠上重啟——過去會讓元件**存活卻失聰**：訂閱不再傳遞，未送出 `reg.depart`，目錄仍公告著無人能觸及的工具，恢復只能靠殺掉行程。Nim 與 Go SDK 現在會監視連線健康（每 2 秒一次 `Flush` 探測），一旦連線不健康持續 `NIF_RECONNECT_GRACE_S`（預設 180 秒，刻意高於用戶端自身的耐心），便**重新接入**：重新解析匯流排 URL、帶退避地重新撥號、重建每個訂閱（call、event 與 tap）並重新發佈 `reg.publish`——無需重啟行程。
+
+延遲公告的元件（Go SDK 的 `DeferAnnounce`，例如 `mcp-bridge`）必須在全新連線上重新發佈自己的契約，因為它可能在不健康期間已經漂移；以 `onReattached`（Go 為 `OnReattached`）註冊它。一般元件無需鉤子——重新接入已重新公告它們凍結的契約。TypeScript SDK 目前尚不重新接入。
+
+```nim
+proc onReattached*(c: Component, handler: ReattachedHandler): Component
+```
+
+```go
+func (c *Component) OnReattached(h func(*Component)) *Component
+```
 
 #### Idle work (`onIdle`)
 

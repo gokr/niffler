@@ -143,34 +143,34 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **A component that outlived a bus outage no longer stays alive but deaf.**
-  Past the NATS client's own reconnect budget (~2 min) the connection is dead
-  for good, but the process lived on: subscriptions never delivered again, no
-  `reg.depart` was sent, and the catalog kept advertising a component nothing
-  could reach — recovery required killing the process (issue #3). Both SDKs
-  now watch connection health with a periodic flush probe; unhealthy past
-  `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the client's own
-  patience) the component re-resolves the bus URL (`NIF_NATS_URL` →
-  `var/nats-url` → 4222, so a core restarted on a new port is found), redials
-  with backoff, rebuilds every call/event/tap subscription and re-publishes
-  `reg.publish` — no process restart. Deferred-announce components
-  (`mcp-bridge`) re-publish their possibly-drifted contract through the new
-  `onReattached`/`OnReattached` hook; ordinary components need none.
-  `tests/t_reconnect.nim` and the Go `TestReattachAfterOutage` kill the bus
-  under a live component, restart it on a different port and assert a second
-  `reg.publish` plus a working call. A follow-up race fix stops the watch at
-  `Close` and snapshots the connection under `contractMu`, so a re-attach in
-  flight can never interleave with teardown (`607f4b0`, `1b66d3d`).
+- **A component that outlived its bus's reconnect budget stayed alive but
+  deaf (issue #3).** After an outage longer than the NATS client's own
+  reconnect window (~2 min), the Nim and Go SDK components kept running but
+  never received another message: subscriptions never delivered again, no
+  `reg.depart` was sent, and the catalog kept advertising tools nothing could
+  reach — recovery meant killing the process. Both SDKs now probe connection
+  health (a `Flush` every 2 s) and, once the connection has been unhealthy for
+  `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the client's
+  patience), **re-attach**: re-resolve the bus URL (`NIF_NATS_URL` →
+  `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new
+  port is found), redial with backoff, rebuild every subscription
+  (call/event/tap) and re-publish `reg.publish` — no process restart. A
+  deferred-announce component (`mcp-bridge`) registers `onReattached` /
+  `OnReattached` to re-publish its possibly-drifted contract; ordinary
+  components need no hook. `t_reconnect` and `TestReattachAfterOutage` kill the
+  bus under a live component, restart it on a different port and assert a
+  second `reg.publish` plus working calls. The TypeScript SDK does not
+  re-attach yet.
 
-- **`store_migrate` carries attachment pixels and keeps its pages under the
-  bus payload ceiling.** The kind census omitted `attachment` and
-  `attachmentdata`, so migrating a store silently left image messages behind;
-  and `listAll` read a full 1000-document page, while two `attachmentdata`
-  documents (4 MB of base64 pixels each) already exceed the 8 MB bus payload.
-  Attachment pixels are now paged one document at a time on both source reads
-  and target verification, the census includes both kinds, and an impossible
-  list cursor is a fatal error instead of a silent truncation (`d880cdc`,
-  `9c2b28d`).
+- **`niffler-store-migrate` could exceed the bus payload ceiling on
+  attachment pixels, and an invalid cursor could truncate a migration
+  silently.** Every kind was paged at the full 1000-item `list` cap, but an
+  `attachmentdata` document can hold 4 MB of base64 pixels — a page of them
+  blows past the bus's 8 MiB `max_payload`, so that kind now pages one
+  document at a time (source reads and target verification alike) while every
+  other kind keeps the 1000-item page. A reply that claims `hasMore` with a
+  missing or repeating `nextAfter` now aborts with `invalid list cursor on
+  kind <kind>` instead of treating the page as the end of the kind.
 
 - **A conversation that trimmed before it ever compacted could never compact
   again — silently.** `trimTurns` puts the omission notice at projection index

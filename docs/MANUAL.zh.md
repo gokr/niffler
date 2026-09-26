@@ -204,8 +204,8 @@ core:     niffler-store-migrate --scan
 core: or keep using the old engine: NIF_STORE_BACKEND=barrel
 ```
 
-`niffler-store-migrate`（位于 `var/bin`）**离线**运行——它启动自己私有的 NATS 服务器和存储进程，因此无需启动任何 harness，并且它从不编辑源数据。存储契约无法枚举 kind（`list` 需要一个 kind），因此它读取**它所探测的 kind** 的每个文档——该候选列表是对 harness 当前写入的每个 kind 的经过验证的普查（`agentjob`、`agentnotice`、`approval`、`compaction_input`、`component`、`context_projection`、`contextreceipt`、`conversation`、`fabricprog`、`mcp`、`message`、`plugin`、`profile`、`session`、`sessionmeta`、`slash`、`spill`）——收尾验证则按 kind 遍历它实际**搬运**的 kind，逐一对照目标。之后添加到 harness 的 kind 仍会被静默跳过，直到普查被扩展（总线无法看到它），这就是为什么该列表维护在存储的 kind 表旁边。
-当前接线的方向是 barrel → `sqlite`（默认）或 barrel → `tidb`（带 `--to tidb`）；仅含 SQLite 的根会被拒绝，提示 "root already uses sqlite — nothing to migrate"。每个文档被重放到全新的目标中，然后按 kind 验证。各标志（`--root`、`--to <engine>`、`--dry-run`、`--scan [<top>]`、`--all [<top>]`、`--force`）由工具自身的 `--help` 描述；`--force` 覆盖已存在的目标数据库（旧数据库被移到一旁，命名为 `<name>.<timestamp>.aside`），每个阶段背后的设计见 [research/STORE_V2.md](research/STORE_V2.md) 的 "Moving data between engines"。
+`niffler-store-migrate`（位于 `var/bin`）**离线**运行——它启动自己私有的 NATS 服务器和存储进程，因此无需启动任何 harness，并且它从不编辑源数据。存储契约无法枚举 kind（`list` 需要一个 kind），因此它读取**它所探测的 kind** 的每个文档——该候选列表是对 harness 当前写入的每个 kind 的经过验证的普查（`agentjob`、`agentnotice`、`approval`、`attachment`、`attachmentdata`、`compaction_input`、`component`、`context_projection`、`contextreceipt`、`conversation`、`fabricprog`、`mcp`、`message`、`plugin`、`profile`、`session`、`sessionmeta`、`slash`、`spill`）——收尾验证则按 kind 遍历它实际**搬运**的 kind，逐一对照目标。之后添加到 harness 的 kind 仍会被静默跳过，直到普查被扩展（总线无法看到它），这就是为什么该列表维护在存储的 kind 表旁边。
+当前接线的方向是 barrel → `sqlite`（默认）或 barrel → `tidb`（带 `--to tidb`）；仅含 SQLite 的根会被拒绝，提示 "root already uses sqlite — nothing to migrate"。每个文档被重放到全新的目标中，然后按 kind 验证。`attachmentdata` 一次分页一个文档（一整页中的 4 MB base64 负载会超过总线的 8 MiB 上限），而格式错误的 `list` 游标会中止迁移，而不是静默截断它。各标志（`--root`、`--to <engine>`、`--dry-run`、`--scan [<top>]`、`--all [<top>]`、`--force`）由工具自身的 `--help` 描述；`--force` 覆盖已存在的目标数据库（旧数据库被移到一旁，命名为 `<name>.<timestamp>.aside`），每个阶段背后的设计见 [research/STORE_V2.md](research/STORE_V2.md) 的 "Moving data between engines"。
 
 `--scan` 查找顶层目录、同级克隆和基准测试树（`var/bench/**/niffler-root`）。迁移拒绝在同时持有 `var/barrel-db` 和 `var/store.db` 的根上运行——这是迁移完成后留下的状态，此时重新运行会失败并提示 "ambiguous source; move one aside first"（将过时的 `var/store.db` 移到一旁即可重复）。回滚只需 `NIF_STORE_BACKEND=barrel`，因为 barrel 文件未被改动；反方向移动数据——从 SQLite 或 TiDB 迁出——尚未接线。
 
@@ -277,6 +277,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外搜索服务器二进制的额外目录（冒号分隔；前导 `~` 表示你的 home 目录） | — |
 | `NIF_TRAFILATURA` | Trafilatura 可执行文件路径/名称；`off` 禁用外部提取 | 在 `PATH` 上自动检测 `trafilatura` |
 | `NIF_LOG_LEVEL` | SDK 结构化日志发布阈值（`debug`、`info`、`warn`、`error`） | `info` |
+| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 组件在总线不可达时容忍的秒数，超过后**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 众所周知的端口，因此在新端口上重启的 core 也能被找到）、带退避地重拨、重建每个订阅并重新发布 `reg.publish`。刻意高于 NATS 客户端自身的重连预算（约 2 分钟），因此更短的中断绝不触发它；不是正数的值会保留默认值。TypeScript SDK 目前尚不重新接入 | `180` |
 | `NIF_LLM_MAX_RETRIES` | 对瞬时 LLM 失败（429/5xx/过载/连接断开）的额外尝试次数，带指数退避；每次重试宣告 `ev.session.<id>.retry`。认证/配额/错误请求错误始终快速失败 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 流式响应中途断开时的额外尝试次数——与一般情况分开预算，因为断开的流可能已经计费了输出 | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | 连接/拨号失败的额外尝试次数 | `2` |
@@ -1647,6 +1648,20 @@ await comp.requestEnvelope(subject, envelope, timeoutMs?)
 ```
 
 每个 SDK 都让 NATS 执行主题匹配，并且只分派绑定到投递该消息的订阅的处理程序。这避免了以前的叉积问题，即一次调用可能通过 call、event 和 tap 路径多次投递。Nim 保持无回调和无线程；Go 使用其现有的互斥锁，TypeScript 使用其 promise 链。关闭时，Go 先排空订阅（至其有界关闭宽限期），然后停止每个组件的投递循环并等待所有正在运行的处理器完成，以保留欠给调用方的回复——已接受但尚未启动的调用会被拒绝，而不是静默丢弃；TypeScript 等待排队的处理程序，而不会死锁显式关闭自身组件的处理程序。
+
+#### 总线中断后重新接入
+
+NATS 客户端会透明地重连到同一 URL，但总线在超出其重连预算后仍不可达——或 harness 在新端口上重启——过去会让组件**存活却失聪**：订阅不再投递，没有发出 `reg.depart`，目录仍宣告着无人能到达的工具，恢复只能靠杀死进程。Nim 和 Go SDK 现在监视连接健康（每 2 秒一次 `Flush` 探测），一旦连接不健康持续 `NIF_RECONNECT_GRACE_S`（默认 180 秒，刻意高于客户端自身的耐心），就**重新接入**：重新解析总线 URL、带退避地重拨、重建每个订阅（call、event 与 tap）并重新发布 `reg.publish`——无需重启进程。
+
+延迟宣告的组件（Go SDK 的 `DeferAnnounce`，例如 `mcp-bridge`）必须在全新连接上重新发布自己的契约，因为它可能在不健康期间已经漂移；用 `onReattached`（Go 为 `OnReattached`）注册它。普通组件无需钩子——重新接入已经重新宣告了它们冻结的契约。TypeScript SDK 目前尚不重新接入。
+
+```nim
+proc onReattached*(c: Component, handler: ReattachedHandler): Component
+```
+
+```go
+func (c *Component) OnReattached(h func(*Component)) *Component
+```
 
 #### Idle work (`onIdle`)
 
