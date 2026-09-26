@@ -837,6 +837,101 @@ proc main() =
   check("the declined manual compact emits the reason as a context event",
         sawDeclineEvent)
 
+  # Regression: a durable trim that happens AFTER a checkpoint exists must
+  # survive a restart. The projection reload path read `retained` verbatim and
+  # never consulted the header's trimThrough watermark (only the ordinary
+  # resume path did), so every retained message a later trim dropped came back
+  # into the provider request — re-inflating exactly what the trim made fit,
+  # while the meter reported post-trim usage for the bigger request.
+  coreProc.stopHard()
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = extra,
+    logFile = root / "var" / "test-logs" / "core-compaction-trimreload.log")
+  doAssert waitComponent(nc, "store"), "store did not register for the trim-reload fixture"
+  doAssert waitComponent(nc, "llm"), "llm did not register for the trim-reload fixture"
+  doAssert waitComponent(nc, "compaction"), "compaction did not register for the trim-reload fixture"
+  let trimReloadId = "conv-compaction-trimreload-" & $int(epochTime())
+  putDoc(nc, "conversation", trimReloadId,
+    %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt"})
+  discard seedMessages(nc, trimReloadId, 1, 8, 2200)
+  let compactFirst = call(nc, "core", "session",
+    %*{"sessionId": trimReloadId, "content": "COMPACT-THEN-TRIM",
+       "tools": ["bash"]}, 180_000)
+  let trimReloadProjection = getDoc(nc, "context_projection", trimReloadId)
+  check("a checkpoint commits before the later trim",
+        compactFirst{"turnError"}.getStr("").len == 0 and
+        trimReloadProjection != nil and
+        trimReloadProjection{"generation"}.getInt(0) == 1,
+        $compactFirst & " / " &
+        (if trimReloadProjection == nil: "projection missing"
+         else: $trimReloadProjection))
+
+  # Phase 2: the compactor is unavailable, so pressure falls through to the
+  # lossy trim rung — with the checkpoint already installed. New bulk is
+  # seeded while no runner is live, so the trim has to drop retained messages.
+  coreProc.stopHard()
+  var trimReloadExtra = extra
+  trimReloadExtra.add(("NIF_COMPACTION_TOOL", ""))
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = trimReloadExtra,
+    logFile = root / "var" / "test-logs" / "core-compaction-trimreload-trim.log")
+  doAssert waitComponent(nc, "store") and waitComponent(nc, "llm")
+  var trimReloadNextSeq = 1
+  for item in listDocs(nc, "message", trimReloadId & ":"):
+    trimReloadNextSeq = max(trimReloadNextSeq, seqOf(item{"id"}.getStr("")) + 1)
+  discard seedMessages(nc, trimReloadId, trimReloadNextSeq, 6, 4000)
+  let trimmedAfterCompact = call(nc, "core", "session",
+    %*{"sessionId": trimReloadId, "content": "TRIM-AFTER-CHECKPOINT"}, 180_000)
+  let trimReloadHeader = getDoc(nc, "conversation", trimReloadId)
+  let trimThrough = if trimReloadHeader == nil: 0
+                    else: trimReloadHeader{"trimThrough"}.getInt(0)
+  check("the trim after a checkpoint recorded its watermark",
+        trimmedAfterCompact{"turnError"}.getStr("").len == 0 and
+        trimThrough > 0,
+        $trimmedAfterCompact & " / trimThrough=" & $trimThrough)
+  var droppedRetained: seq[string]
+  if trimReloadProjection != nil:
+    for idNode in trimReloadProjection{"retained"}:
+      let id = idNode.getStr("")
+      if id.len > 0 and seqOf(id) <= trimThrough:
+        droppedRetained.add(id)
+  check("the trim dropped messages the projection still lists as retained",
+        droppedRetained.len > 0,
+        "trimThrough=" & $trimThrough & " retained=" &
+        (if trimReloadProjection == nil: "projection missing"
+         else: $trimReloadProjection{"retained"}))
+
+  # Phase 3: restart. The reloaded provider request must not carry them, and
+  # something must still tell the model that history was dropped.
+  coreProc.stopHard()
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = extra,
+    logFile = root / "var" / "test-logs" / "core-compaction-trimreload-reload.log")
+  doAssert waitComponent(nc, "store") and waitComponent(nc, "llm") and
+    waitComponent(nc, "compaction")
+  let trimReloadExport = call(nc, "core", "session",
+    %*{"sessionId": trimReloadId, "export": true}, 60_000)
+  let trimReloadRequest = $(trimReloadExport{"request"})
+  check("the reloaded request still carries the durable checkpoint",
+        trimReloadExport{"ok"}.getBool(false) and
+        trimReloadRequest.contains("<context_checkpoint"),
+        $trimReloadExport)
+  var resurrected: seq[string]
+  for id in droppedRetained:
+    let stored = getDoc(nc, "message", id)
+    if stored == nil: continue
+    let body = stored{"content"}.getStr("")
+    let probe = if body.len > 60: body[0 ..< 60] else: body
+    if probe.len > 0 and trimReloadRequest.contains(probe):
+      resurrected.add(id)
+  check("a restart does not resurrect what a later trim dropped",
+        resurrected.len == 0,
+        "resurrected=" & $resurrected & " (trimThrough=" & $trimThrough & ")")
+  check("the reload keeps a visible pointer to the trimmed span",
+        trimReloadRequest.contains("history omitted"),
+        "no omission notice in: " &
+        trimReloadRequest[0 .. min(400, trimReloadRequest.len - 1)])
+
   report("COMPACTION TEST")
 
 when isMainModule:

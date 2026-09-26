@@ -1121,17 +1121,22 @@ reports:
   stable `context-overflow` prefix; the runner's classifier carries the
   raw phrasings as a fallback.
 - A lossy trim is **durable**: it records the canonical seqNo it cut
-  through in the conversation header (`trimThrough`) and the ordinary
-  resume honors it, so a restart rebuilds the trimmed projection instead
-  of re-inflating the full pre-trim context while the meter restores
-  post-trim usage. Dropped turns remain in canonical history for
-  `context_recall`, and the omission notice is DURABLE: a resumed runner
-  rebuilds the trimmed projection from `trimThrough` and re-inserts the
-  notice (range-honest — it names the canonical span below the first kept
-  seq, not the live run's exact `coveredFrom`/`coveredTo` pair), so a
-  restart keeps a visible pointer to what the projection dropped. `mode:
-  search` is the way back into trimmed history — the notice carries no
-  recall ref, because a whole-turn drop covers many messages.
+  through in the conversation header (`trimThrough`) and **every** resume
+  path honors it — the plain one and the projection one — so a restart
+  rebuilds the trimmed projection instead of re-inflating the full
+  pre-trim context while the meter restores post-trim usage. That covers a
+  trim that lands *after* a checkpoint was committed: a projection's
+  `retained` list is only the commit-time tail, so the resume drops every
+  retained ref at or below the watermark (canonical history keeps them for
+  `context_recall`) and re-inserts the omission notice in its place.
+  Dropped turns remain in canonical history for `context_recall`, and the
+  omission notice is DURABLE: a resumed runner rebuilds the trimmed
+  projection and re-inserts the notice (range-honest — it names the
+  canonical span below the first kept seq, not the live run's exact
+  `coveredFrom`/`coveredTo` pair), so a restart keeps a visible pointer to
+  what the projection dropped. `mode: search` is the way back into trimmed
+  history — the notice carries no recall ref, because a whole-turn drop
+  covers many messages.
 
 - The prune step is byte-exact and model-free: a tool result over 8192 bytes is
   rewritten as its first 4096 bytes, an `[tool result middle pruned: N bytes

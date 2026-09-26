@@ -172,6 +172,22 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   missing or repeating `nextAfter` now aborts with `invalid list cursor on
   kind <kind>` instead of treating the page as the end of the kind.
 
+- **A restart resurrected history a later trim had dropped.** The durable trim
+  watermark (`conversation.trimThrough`) was honored only by the plain resume
+  path: a conversation that committed a checkpoint and *then* trimmed kept
+  `context_projection.retained` — the commit-time tail — and the projection
+  resume read it verbatim, so every retained message the trim had dropped came
+  back into the provider request while the meter restored post-trim usage.
+  The exact failure the watermark exists to prevent, one restart away (and the
+  common shape: compact, keep working, trim, restart). The projection resume
+  now drops every retained ref at or below `trimThrough` (canonical history
+  keeps them for `context_recall`) and re-inserts the same omission node the
+  live trim wrote, so a restart is indistinguishable from a trim in flight —
+  including the case where the trim reached past every retained ref.
+  `t_compaction` grew the compact → trim → restart fixture that fails without
+  the fix (asserting via `/export` that the dropped ids are absent from the
+  assembled request and the pointer is present).
+
 - **A conversation that trimmed before it ever compacted could never compact
   again — silently.** `trimTurns` puts the omission notice at projection index
   1 and `permittedCuts` offered the preferred cut from there, so the durable

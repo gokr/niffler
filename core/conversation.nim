@@ -3014,11 +3014,27 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       if retainedNode == nil or retainedNode.kind != JArray or retainedNode.len == 0:
         return %*{"error": "context-recovery-required: context projection has no retained canonical tail"}
       var previousSeq = 0
+      var firstKeptSeq = 0
+      var trimmedRetained = 0
+      # §6.3 durable trim meets a live projection: a lossy trim can land AFTER
+      # this projection was committed (header trimThrough). `retained` is only
+      # the commit-time tail, so the watermark has to be honored here exactly
+      # as the ordinary resume path honors it — otherwise every retained
+      # message a later trim dropped returns on restart, re-inflating the
+      # request that trim had just made fit while the meter restores
+      # post-trim usage (the failure the ordinary path was fixed for).
+      let trimThrough = header{"trimThrough"}.getInt(0)
       for idNode in retainedNode:
         let id = idNode.getStr("")
         let seqNo = canonicalSeqOf(id)
         if id.len == 0 or seqNo <= previousSeq or seqNo > projectedHigh:
           return %*{"error": "context-recovery-required: context projection has an invalid or unordered retained ref"}
+        previousSeq = seqNo
+        if trimThrough > 0 and seqNo <= trimThrough:
+          inc trimmedRetained
+          continue
+        if firstKeptSeq == 0:
+          firstKeptSeq = seqNo
         let v = ct.storeGetItem("message", id).value
         if v == nil or v{"role"}.getStr("") == "error":
           return %*{"error": "context-recovery-required: retained projection ref does not resolve to a provider message: " & id}
@@ -3026,7 +3042,6 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
           canonicalSeq: seqNo, projectionIndex: stored.len))
         stored.add(providerMessage(v))
         recoverUsage(v, pt, used, cs)
-        previousSeq = seqNo
       # A legal cut keeps a non-empty tail, so the final retained canonical
       # id is the commit's high-water mark. This proves canonicalHigh does
       # not point beyond stored history without replaying covered documents.
@@ -3037,6 +3052,24 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       let highKey = sessionId & ":" & align($projectedHigh, 6, '0')
       let appended = loadStoredMessagesEx(ct, sessionId, pt, used, cs,
                                            after = highKey)
+      # The dropped span is contiguous canonical history at the FRONT of the
+      # projection, so the notice stands where it was dropped: after the
+      # checkpoint and before the surviving tail — the same node the live trim
+      # wrote, so a restart is indistinguishable from a trim in flight. A trim
+      # that reached past every retained ref falls back to the first canonical
+      # append for the range it names.
+      if trimmedRetained > 0:
+        var noticeSeq = firstKeptSeq
+        if noticeSeq == 0 and appended.nodes.len > 0:
+          noticeSeq = appended.nodes[0].canonicalSeq
+        if noticeSeq > 0:
+          stored.insert(%*{"role": "system", "content":
+            "[history omitted without summary: earlier messages (canonical " &
+            "seq < " & $noticeSeq & ") were dropped to fit the model " &
+            "window — the originals remain in canonical history]"}, 0)
+          storedNodes.insert(CtxNode(source: nsNotice,
+                                     id: sessionId & "#omit-reload",
+                                     projectionIndex: 0), 0)
       let base = stored.len
       for m in appended.messages: stored.add(m)
       for i, node0 in appended.nodes:

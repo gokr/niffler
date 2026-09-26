@@ -656,11 +656,14 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   不可縮減的候選會終止，而非重送被拒絕的內容。轉接器會將 provider 溢出的措辭（包括某些主機回傳的裸 `"Context limit exceeded"` 主體）正規化為
   穩定的 `context-overflow` 前綴；runner 的分類器會將
   原始措辭作為後備。
-- 有損修剪是**持久的**：它會在會話標頭中記錄它所切穿的標準 seqNo（`trimThrough`），而一般的
-  續接會遵循它，因此重啟會重建修剪後的 projection，而非重新膨脹完整的修剪前 context，同時計量器會還原
-  修剪後的使用量。被丟棄的回合仍留在標準歷史中供
+- 有損修剪是**持久的**：它會在會話標頭中記錄它所切穿的標準 seqNo（`trimThrough`），而**每一條**續接路徑都會遵循它（一般路徑與
+  projection 路徑皆然），因此重啟會重建修剪後的 projection，而非重新膨脹完整的修剪前 context，同時計量器會還原
+  修剪後的使用量。這也涵蓋在 checkpoint 提交**之後**才發生的修剪：projection 的
+  `retained` 清單只是提交當時的尾端，因此續接會丟棄水位線及以下的每個 retained ref（標準歷史仍為
+  `context_recall` 保留它們），並在原處重新插入該省略通知。
+  被丟棄的回合仍留在標準歷史中供
   `context_recall` 使用，且省略通知是持久的：續接的 runner
-  會從 `trimThrough` 重建修剪後的 projection 並重新插入該
+  會重建修剪後的 projection 並重新插入該
   通知（範圍誠實——它指名第一個保留 seq 以下的標準跨度，而非執行中確切的 `coveredFrom`/`coveredTo` 對），因此
   重啟會保留一個可見的指標指向該 projection 所丟棄的內容。`mode:
   search` 是回到修剪歷史的方式——該通知不攜帶
