@@ -143,6 +143,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A component that outlived a bus outage no longer stays alive but deaf.**
+  Past the NATS client's own reconnect budget (~2 min) the connection is dead
+  for good, but the process lived on: subscriptions never delivered again, no
+  `reg.depart` was sent, and the catalog kept advertising a component nothing
+  could reach — recovery required killing the process (issue #3). Both SDKs
+  now watch connection health with a periodic flush probe; unhealthy past
+  `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the client's own
+  patience) the component re-resolves the bus URL (`NIF_NATS_URL` →
+  `var/nats-url` → 4222, so a core restarted on a new port is found), redials
+  with backoff, rebuilds every call/event/tap subscription and re-publishes
+  `reg.publish` — no process restart. Deferred-announce components
+  (`mcp-bridge`) re-publish their possibly-drifted contract through the new
+  `onReattached`/`OnReattached` hook; ordinary components need none.
+  `tests/t_reconnect.nim` and the Go `TestReattachAfterOutage` kill the bus
+  under a live component, restart it on a different port and assert a second
+  `reg.publish` plus a working call. A follow-up race fix stops the watch at
+  `Close` and snapshots the connection under `contractMu`, so a re-attach in
+  flight can never interleave with teardown (`607f4b0`, `1b66d3d`).
+
+- **`store_migrate` carries attachment pixels and keeps its pages under the
+  bus payload ceiling.** The kind census omitted `attachment` and
+  `attachmentdata`, so migrating a store silently left image messages behind;
+  and `listAll` read a full 1000-document page, while two `attachmentdata`
+  documents (4 MB of base64 pixels each) already exceed the 8 MB bus payload.
+  Attachment pixels are now paged one document at a time on both source reads
+  and target verification, the census includes both kinds, and an impossible
+  list cursor is a fatal error instead of a silent truncation (`d880cdc`,
+  `9c2b28d`).
+
 - **A conversation that trimmed before it ever compacted could never compact
   again — silently.** `trimTurns` puts the omission notice at projection index
   1 and `permittedCuts` offered the preferred cut from there, so the durable
