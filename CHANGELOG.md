@@ -143,6 +143,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A component that outlived its bus's reconnect budget stayed alive but
+  deaf (issue #3).** After an outage longer than the NATS client's own
+  reconnect window (~2 min), the Nim and Go SDK components kept running but
+  never received another message: subscriptions never delivered again, no
+  `reg.depart` was sent, and the catalog kept advertising tools nothing could
+  reach — recovery meant killing the process. Both SDKs now probe connection
+  health (a `Flush` every 2 s) and, once the connection has been unhealthy for
+  `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the client's
+  patience), **re-attach**: re-resolve the bus URL (`NIF_NATS_URL` →
+  `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new
+  port is found), redial with backoff, rebuild every subscription
+  (call/event/tap) and re-publish `reg.publish` — no process restart. A
+  deferred-announce component (`mcp-bridge`) registers `onReattached` /
+  `OnReattached` to re-publish its possibly-drifted contract; ordinary
+  components need no hook. `t_reconnect` and `TestReattachAfterOutage` kill the
+  bus under a live component, restart it on a different port and assert a
+  second `reg.publish` plus working calls. The TypeScript SDK does not
+  re-attach yet.
+
+- **`niffler-store-migrate` could exceed the bus payload ceiling on
+  attachment pixels, and an invalid cursor could truncate a migration
+  silently.** Every kind was paged at the full 1000-item `list` cap, but an
+  `attachmentdata` document can hold 4 MB of base64 pixels — a page of them
+  blows past the bus's 8 MiB `max_payload`, so that kind now pages one
+  document at a time (source reads and target verification alike) while every
+  other kind keeps the 1000-item page. A reply that claims `hasMore` with a
+  missing or repeating `nextAfter` now aborts with `invalid list cursor on
+  kind <kind>` instead of treating the page as the end of the kind.
+
 - **A conversation that trimmed before it ever compacted could never compact
   again — silently.** `trimTurns` puts the omission notice at projection index
   1 and `permittedCuts` offered the preferred cut from there, so the durable

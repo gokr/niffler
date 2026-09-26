@@ -314,7 +314,11 @@ conversations' turns overlap while a mid-turn conversation refuses further
 turns with `busy` — turns never nest.
 
 - Presence = connection; component death detected by core via NATS disconnect
-  plus `reg.depart` (graceful) vs silence (crash).
+  plus `reg.depart` (graceful) vs silence (crash). A Nim or Go SDK component
+  whose connection stays unhealthy past `NIF_RECONNECT_GRACE_S` re-attaches —
+  it re-resolves the bus, rebuilds its subscriptions and re-publishes
+  `reg.publish` on the fresh connection — rather than requiring a process
+  restart (docs/MANUAL.md "Re-attaching after a bus outage").
 - Tool names are unique across the whole catalog — enforced by core at
   registration; conflicting registrations are refused in full. The LLM only
   sees tool names; core maps tool → component at dispatch. The namespace is deliberately

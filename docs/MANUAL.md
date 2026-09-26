@@ -425,7 +425,10 @@ against the target. A new kind is silently skipped until added to this list
 The direction wired up today is barrel → `sqlite` (the
 default) or barrel → `tidb` with `--to tidb`; a SQLite-only root is refused
 with "root already uses sqlite — nothing to migrate". Each document is
-replayed into the fresh target, then verified per kind. The flags
+replayed into the fresh target, then verified per kind. `attachmentdata` is
+paged one document at a time (a 4 MB base64 payload in a full page would
+exceed the bus's 8 MiB ceiling), and a malformed `list` cursor aborts the
+migration instead of silently truncating it. The flags
 (`--root`, `--to <engine>`, `--dry-run`, `--scan [<top>]`, `--all [<top>]`,
 `--force`) are described by the tool's own `--help`; `--force` overlays an
 existing target database (the old one is moved aside as
@@ -529,6 +532,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (colon-separated; a leading `~` means your home directory) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
+| `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial with backoff, rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.<id>.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | additional attempts when a streamed response drops mid-flight — budgeted separately from the general case because a dropped stream may already have billed output | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | additional attempts for connect/dial failures | `2` |
@@ -2968,6 +2972,34 @@ handler so replies owed to callers are preserved — calls that were accepted
 but never started are refused instead of dropped silently; TypeScript waits
 for queued handlers without deadlocking a handler that explicitly closes its
 own component.
+
+#### Re-attaching after a bus outage
+
+The NATS client reconnects transparently to the same URL, but a bus that stays
+down past its reconnect budget — or a harness restarted on a new port — used to
+leave a component **alive but deaf**: its subscriptions never delivered again,
+no `reg.depart` was sent, and the catalog kept advertising tools nothing could
+reach, so recovery meant killing the process. The Nim and Go SDKs now watch
+connection health (a `Flush` probe every 2 s) and, once the connection has been
+unhealthy for `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the
+client's own patience), **re-attach**: re-resolve the bus URL, redial with
+backoff, rebuild every subscription (call, event and tap) and re-publish
+`reg.publish` — no process restart.
+
+A component that deferred its announce (the Go SDK's `DeferAnnounce`, e.g.
+`mcp-bridge`) must re-publish its own contract on the fresh connection, since
+it may have drifted while disconnected; register it with `onReattached`
+(`OnReattached` in Go). Ordinary components need no hook — the re-attach
+already re-announced their frozen contract. The TypeScript SDK does not
+re-attach yet.
+
+```nim
+proc onReattached*(c: Component, handler: ReattachedHandler): Component
+```
+
+```go
+func (c *Component) OnReattached(h func(*Component)) *Component
+```
 
 #### Idle work (`onIdle`)
 

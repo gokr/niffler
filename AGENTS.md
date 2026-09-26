@@ -69,6 +69,14 @@ working in every language.
   goroutine under the serial handler lock. Reach for it instead of a thread
   whenever "every N seconds" is all you need — `components/processes` reaps its
   background children that way.
+  The Nim and Go SDKs also watch connection health: a bus unhealthy past
+  `NIF_RECONNECT_GRACE_S` (default 180 s) triggers a **re-attach** (re-resolve
+  the URL, redial, rebuild every subscription, re-publish `reg.publish`) instead
+  of leaving the component alive but deaf. A component that defers its announce
+  (the Go SDK's `DeferAnnounce`, e.g. `mcp-bridge`) must register
+  `onReattached` / `OnReattached` to re-publish its own contract on the fresh
+  connection; the
+  TypeScript SDK does not re-attach yet.
 - **An external runtime the harness must own gets a launcher component,
   enabled by a spawn record — never a manifest autostart.** `von` (the Python
   decision runtime behind `jev`) is the worked example: built by `make build`
