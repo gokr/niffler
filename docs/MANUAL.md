@@ -532,7 +532,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (colon-separated; a leading `~` means your home directory) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
-| `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial with backoff, rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
+| `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.<id>.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | additional attempts when a streamed response drops mid-flight — budgeted separately from the general case because a dropped stream may already have billed output | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | additional attempts for connect/dial failures | `2` |
@@ -1062,13 +1062,15 @@ reports:
   intentional prompt-prefix rebuilds and make cache misses attributable. The
   compaction rung reports **every** non-reset exit, never silently:
   `compact:unavailable` (no compactor configured or registered),
-  `compact:failed` (dispatch error/timeout, missing or stale previous
-  projection, or a lost optimistic commit), `compact:declined` (with `detail`
+  `compact:failed` (dispatch error/timeout, an unreadable previous projection,
+  a live context/node ledger mismatch, or a failed projection commit),
+  `compact:declined` (with `detail`
   = the stable decline reason, or the runner's `no permitted cut exists yet` /
   `no committable cut exists yet`), `compact:invalid` (schema, bounds,
   claimed-call-budget, strict-reduction or boundary-resolution failure) and
-  `compact:stale` (the covered span or the projection changed under the
-  attempt). Every one of them carries a human-readable `detail`; none of them
+  `compact:stale` (the previous projection was missing or stale, the covered
+  span changed under the attempt, or the projection generation moved before
+  commit). Every one of them carries a human-readable `detail`; none of them
   rebuilds the prompt prefix. The successful `reset:compact` event carries
   `generation`, `covered`, `beforeTokens` and `afterTokens`. The threshold
   warning (`warn:threshold`) carries `trimAt` — the effective rung in tokens —
@@ -2982,9 +2984,10 @@ no `reg.depart` was sent, and the catalog kept advertising tools nothing could
 reach, so recovery meant killing the process. The Nim and Go SDKs now watch
 connection health (a `Flush` probe every 2 s) and, once the connection has been
 unhealthy for `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the
-client's own patience), **re-attach**: re-resolve the bus URL, redial with
-backoff, rebuild every subscription (call, event and tap) and re-publish
-`reg.publish` — no process restart.
+client's own patience), **re-attach**: re-resolve the bus URL, redial (with
+exponential backoff in Nim; Go retries on its health tick), rebuild every
+subscription (call, event and tap) and re-publish `reg.publish` — no process
+restart.
 
 A component that deferred its announce (the Go SDK's `DeferAnnounce`, e.g.
 `mcp-bridge`) must re-publish its own contract on the fresh connection, since

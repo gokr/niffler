@@ -283,7 +283,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外搜尋伺服器二進位檔的額外目錄（以冒號分隔；開頭的 `~` 表示你的 home 目錄） | — |
 | `NIF_TRAFILATURA` | Trafilatura 執行檔路徑/名稱；`off` 停用外部擷取 | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK 結構化日誌發布閾值（`debug`、`info`、`warn`、`error`） | `info` |
-| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 眾所周知的連接埠，因此在新連接埠上重啟的 core 也能被找到）、帶退避地重新撥號、重建每個訂閱並重新發佈 `reg.publish`。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。TypeScript SDK 目前尚不重新接入 | `180` |
+| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 眾所周知的連接埠，因此在新連接埠上重啟的 core 也能被找到）、重新撥號（Nim 採指數退避）、重建每個訂閱並重新發佈 `reg.publish`。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。TypeScript SDK 目前尚不重新接入 | `180` |
 | `NIF_LLM_MAX_RETRIES` | 對暫時性 LLM 失敗（429/5xx/超載/連線中斷）的額外嘗試次數，採指數退避；每次重試會宣告 `ev.session.<id>.retry`。驗證/配額/錯誤請求錯誤一律快速失敗 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 串流回應中途中斷時的額外嘗試次數——與一般情況分開編列預算，因為中斷的串流可能已經計費輸出 | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | 連線/撥號失敗的額外嘗試次數 | `2` |
@@ -628,7 +628,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   512000 位元組，因此一則巨大的訊息無法使匯流排訊息過大；checkpoint 有界（objective 與清單項目 ≤ 4000 字元，每個清單 ≤ 32 個項目，≤ 64 個檔案，編碼後 ≤ 65536 位元組），並由 runner 擁有的 `checkpoint-v1` 範本渲染，因此由一個 compactor 儲存的 checkpoint 在另一個之下會以相同方式重新載入。該元件
   永不寫入會話或 projection 記錄。
 - 一次成功的 projection 會發出 `reason: "reset:compact"`；無模型的剪除會發出 `reset:prune`；有損後備會發出 `reset:trim`。`reset:tools` 仍保留給實際的黏性工具 schema 晉升。這些是唯一刻意的 prompt 前綴重建，並使快取未命中可歸因。compaction 階會回報**每一個**非 reset 退出，絕不靜默：
-  `compact:unavailable`（未設定或未註冊 compactor）、`compact:failed`（分派錯誤/逾時、上一個 projection 缺失或過期，或樂觀提交遺失）、`compact:declined`（帶 `detail` = 穩定的拒絕原因，或 runner 的 `no permitted cut exists yet` / `no committable cut exists yet`）、`compact:invalid`（schema、界限、宣稱呼叫預算、嚴格縮減或邊界解析失敗）與 `compact:stale`（被涵蓋的跨度或 projection 在嘗試期間改變）。它們每一個都攜帶人類可讀的 `detail`；它們都不重建 prompt 前綴。成功的 `reset:compact` 事件
+  `compact:unavailable`（未設定或未註冊 compactor）、`compact:failed`（分派錯誤/逾時、上一個 projection 無法讀取、live context/node 帳本不一致，或 projection 提交失敗）、`compact:declined`（帶 `detail` = 穩定的拒絕原因，或 runner 的 `no permitted cut exists yet` / `no committable cut exists yet`）、`compact:invalid`（schema、界限、宣稱呼叫預算、嚴格縮減或邊界解析失敗）與 `compact:stale`（上一個 projection 缺失或過期、被涵蓋的跨度在嘗試期間改變，或 projection 世代在提交前變動）。它們每一個都攜帶人類可讀的 `detail`；它們都不重建 prompt 前綴。成功的 `reset:compact` 事件
   攜帶 `generation`、`covered`、`beforeTokens` 與 `afterTokens`。閾值警告（`warn:threshold`）攜帶 `trimAt`——以 token 計的有效門檻線——因此 UI 可以顯示與 core 列印的相同百分比，而不是自行編造。
 - 只有當邊界能解析到標準歷史時，它才會被提供給 compactor。起始於省略通知的涵蓋跨度（有損裁剪留下的 projection）會將其 `covered.from` 解析為該 checkpoint 實際吸收的第一個標準項目；完全沒有標準涵蓋的跨度絕不會被提供。因此，在 compaction 之前就裁剪過的對話仍然可以提交 checkpoint——以前不能，而且拒絕是靜默的，所以階梯一代又一代地裁剪。
 - 標準的 `message` 文件不可變且僅可附加。剪除與 compaction 只改變 provider projection；重啟的 runner 會驗證並重新載入持久 checkpoint 加上保留的標準尾端，而
@@ -1802,7 +1802,7 @@ await comp.requestEnvelope(subject, envelope, timeoutMs?)
 
 #### 匯流排中斷後重新接入
 
-NATS 用戶端會透明地重連至相同 URL，但匯流排在其重連預算之後仍不可達——或 harness 在新連接埠上重啟——過去會讓元件**存活卻失聰**：訂閱不再傳遞，未送出 `reg.depart`，目錄仍公告著無人能觸及的工具，恢復只能靠殺掉行程。Nim 與 Go SDK 現在會監視連線健康（每 2 秒一次 `Flush` 探測），一旦連線不健康持續 `NIF_RECONNECT_GRACE_S`（預設 180 秒，刻意高於用戶端自身的耐心），便**重新接入**：重新解析匯流排 URL、帶退避地重新撥號、重建每個訂閱（call、event 與 tap）並重新發佈 `reg.publish`——無需重啟行程。
+NATS 用戶端會透明地重連至相同 URL，但匯流排在其重連預算之後仍不可達——或 harness 在新連接埠上重啟——過去會讓元件**存活卻失聰**：訂閱不再傳遞，未送出 `reg.depart`，目錄仍公告著無人能觸及的工具，恢復只能靠殺掉行程。Nim 與 Go SDK 現在會監視連線健康（每 2 秒一次 `Flush` 探測），一旦連線不健康持續 `NIF_RECONNECT_GRACE_S`（預設 180 秒，刻意高於用戶端自身的耐心），便**重新接入**：重新解析匯流排 URL、重新撥號（Nim 採指數退避；Go 在其健康 tick 上重試）、重建每個訂閱（call、event 與 tap）並重新發佈 `reg.publish`——無需重啟行程。
 
 延遲公告的元件（Go SDK 的 `DeferAnnounce`，例如 `mcp-bridge`）必須在全新連線上重新發佈自己的契約，因為它可能在不健康期間已經漂移；以 `onReattached`（Go 為 `OnReattached`）註冊它。一般元件無需鉤子——重新接入已重新公告它們凍結的契約。TypeScript SDK 目前尚不重新接入。
 

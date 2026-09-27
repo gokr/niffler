@@ -199,12 +199,14 @@ ev.session.<id>.assistant   # {sessionId, turnId?, content, provider?, model?,
                        #   complete model text + actual backend metadata per LLM round
 ev.session.<id>.status      # {sessionId, turnId?, provider?, providerSource?, model?,
                        #   catalog?, context?, contextSource?, promptTokens?,
-                       #   usedTokens?, cache?: {prompt, read, hitRate}}
+                       #   usedTokens?, cache?: {prompt, read, hitRate}, warning?}
                        #   resolved turn config and live context occupancy.
                        #   cache reports cumulative provider-reported
                        #   prompt-cache reads (A3; present when the provider
-                       #   sends prompt_tokens_details). Also emitted by
-                       #   model-only session calls (no inference)
+                       #   sends prompt_tokens_details). warning is present
+                       #   when a pinned provider/model pair has no catalog
+                       #   match and resolved to the fallback window. Also
+                       #   emitted by model-only session calls (no inference)
 ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens,
                        #   usedTokens, context, trimAt?, warning?, trimmed?,
                        #   bytesSaved?, pruned?, generation?, covered?,
