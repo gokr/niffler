@@ -21,7 +21,7 @@ working in every language.
 - Core speaks exactly one protocol: JSON envelopes over NATS. Core never imports
   component code; components never import core. The envelope codec
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
-  stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
+  stay portable (~77 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
   `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `lsp`, `processes`,
   `observe`, `logfile`, `models`, `provider`, `llm`, `mcp`, `jev` are peers.
@@ -208,17 +208,14 @@ niffler-ui            # the desktop app: autostarts core; the last UI stops it
                       # plugin; `make install` links it when present)
 make test             # the full gate: the bus-contract suite (the UI repo's
                       # frontend tests + typecheck live in gokr/niffler-ui)
-make test-server      # the whole bus-contract suite: smoke + t_bash, t_store,
-                      # t_builder, t_console, t_plugins, t_skills, t_fetch,
-                      # t_models, t_provider, t_observe, t_logfile, t_core,
-                      # t_cli, t_grep, t_git, t_edit, t_autostart,
-                      # t_systemprompt, t_agent, t_agentnotice, t_agentcont,
-                      # t_fabric, t_nested, t_mcp —
-                      # each owns a private NATS server + temporary NIF_ROOT,
-                      # so component targets can overlap a live harness
+make test-server      # the whole bus-contract suite: smoke + every
+                      # `tests/t_*.nim` — each owns a private NATS server +
+                      # temporary NIF_ROOT, so component targets can overlap a
+                      # live harness — plus the Go unit tests
 make gotest           # Go unit tests + vet (+ `-race` for sdk/go, mcp,
-                      # mcp-bridge): sdk/go, components/models, provider,
-                      # llm, llm-openai, mcp, mcp-bridge (also part of make test)
+                      # mcp-bridge): sdk/go, components/{models,provider,llm,
+                      # llm-openai,store-sqlite,store-tidb,nats,mcp,mcp-bridge}
+                      # (also part of make test)
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make down             # stop stray harnesses/components + nats-server (e.g. a
@@ -287,7 +284,8 @@ The SPA is a NATS client, not a Wails client: it only talks to its
 ## Environment and gotchas
 
 - **Nim packages come from nimble.** `niffler.nimble` requires `yaml`,
-  `gokr/natsnim` and `gokr/bitbarrel` (GitHub URLs). Run `make setup`
+  `htmlparser` and `checksums` from nimble, plus `gokr/natsnim` and
+  `gokr/bitbarrel` (GitHub URLs). Run `make setup`
   to install native prerequisites and Nim packages before building;
   `make build` does not install them. `config.nims` scans `~/.nimble/pkgs2` so plain
   `nim c` invocations (builder, smoke test) resolve them without nimble.paths.
@@ -462,5 +460,5 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   the suite breaks, re-run the *narrowest* target that reproduces it
   (`make test-core`, `make test-bash`, …) with output captured, and fix
   before re-running broadly.
-- Milestone status and open quests live in `README.md` — update it when you
-  complete one.
+- Milestone status and open quests live in `docs/research/PLAN.md` — update it
+  when you complete one.

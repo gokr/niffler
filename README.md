@@ -140,8 +140,9 @@ Community components are installed through the `plugins` component; see the
   pi, opencode, CodeWhale and Claude Code on the same tasks and models,
   comparing time-to-green, token cost and patch quality across the full30,
   SWE-bench Verified and DeepSWE suites. Features land on that evidence — and
-  sometimes stay off it, like the repo map's auto-append, which ships disabled
-  because the A/Bs disagreed — with reports committed under `bench/reports/`.
+  sometimes only behind a gate, like the repo map's auto-append, which ships on
+  by default but withholds small or stub maps because the A/Bs disagreed — with
+  reports committed under `bench/reports/`.
 - **Chinese is a first-class language here.** The READMEs are English,
   Simplified and Traditional Chinese, and the web UI is fully localized
   (`en`/`zh`/`zh-TW`) with typed catalogs — a missing translation fails
