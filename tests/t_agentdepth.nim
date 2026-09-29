@@ -39,17 +39,8 @@ proc bootSandbox(tag, maxDepth: string) =
   echo "sandbox root: ", root, " (NIF_AGENT_MAX_DEPTH=", maxDepth, ")"
   copyFileWithPermissions(repoRoot / "var" / "bin" / "agent",
                           sandbox.sandboxBin("agent"))
-  let ctxBin = sandbox.sandboxBin("ctxtest")
-  let compProc = startProcess("nim", args = [
-    "c", "--hints:off", "--warnings:off",
-    "--path:" & repoRoot / "sdk",
-    "-o:" & ctxBin,
-    repoRoot / "components" / "ctxtest" / "main.nim"],
-    options = {poUsePath, poStdErrToStdOut})
-  defer: compProc.close()
-  if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
-    fail("ctxtest component failed to compile")
-    quit(1)
+  let ctxBin = fixtureBin(sandbox, "ctxtest",
+                          repoRoot / "components" / "ctxtest" / "main.nim")
 
   let (server, url, monUrl) = startNatsMonitoring()
   defer: stopServer(server)

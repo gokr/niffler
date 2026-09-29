@@ -325,6 +325,44 @@ proc resolveStoreBin*(root: string): string =
 proc sandboxBin*(sandbox: TestSandbox, name: string): string =
   sandbox.root / "var" / "bin" / name
 
+proc fixtureBin*(sandbox: TestSandbox, name: string, source: string,
+                 prebuiltName = ""): string =
+  ## Path of a test-only fixture binary inside the sandbox, compiled by
+  ## `make test-server` once into `var/bin/<prebuiltName>` (defaults to
+  ## `name`) and copied per sandbox.
+  ##
+  ## Compiling per sandbox made every pooled run start a dozen concurrent
+  ## `nim c` processes, each with a cold cache; under load those died without
+  ## emitting any compiler output, so the failure read as "component failed to
+  ## compile" and cost a full gate run (issue #108 — deterministic in CI, at
+  ## jobs=4). Pass `prebuiltName` when the sandbox name differs from the
+  ## shipped name: t_compaction replaces the sandbox's `llm` with the mock,
+  ## and `var/bin/llm` is the real component.
+  ##
+  ## The compile stays as a fallback for a hand-invoked single test, and now
+  ## captures the compiler's output and reports its exit status, so a genuine
+  ## compile error is diagnosable instead of being guessed at.
+  let prebuilt = sandbox.repoRoot / "var" / "bin" /
+                 (if prebuiltName.len > 0: prebuiltName else: name)
+  result = sandbox.sandboxBin(name)
+  createDir(sandbox.root / "var" / "bin")
+  if fileExists(prebuilt):
+    copyFileWithPermissions(prebuilt, result)
+    return
+  let log = sandbox.root / "var" / "test-logs" / (name & ".compile.log")
+  createDir(log.parentDir())
+  let cmd = "nim c --hints:off --warnings:off --path:" &
+            quoteShell(sandbox.repoRoot / "sdk") & " -o:" & quoteShell(result) &
+            " " & quoteShell(source) & " > " & quoteShell(log) & " 2>&1"
+  let p = startProcess("/bin/sh", args = ["-c", cmd], options = {poUsePath})
+  defer: p.close()
+  let code = p.waitForExit(fixtureCompileTimeoutMs)
+  if code != 0:
+    let output = if fileExists(log): readFile(log) else: "(no compiler output)"
+    fail("fixture " & name & " failed to compile (exit " & $code &
+         "); compiler output in " & log & ":\n" & output)
+    return sandbox.sandboxBin(name)
+
 proc sandboxStoreBin*(sandbox: TestSandbox): string =
   ## The store binary the sandbox core will actually boot, mirroring core's
   ## NIF_STORE_BACKEND resolution (default sqlite, with the same
