@@ -16,6 +16,7 @@
 <header class="nav">
   <a class="nav-brand" href="#top"><span class="caret">$</span> niffler</a>
   <nav class="nav-links">
+    <a href="#whatsnew" data-i18n="nav.whatsnew">what's new</a>
     <a href="#why" data-i18n="nav.why">why</a>
     <a href="#architecture" data-i18n="nav.architecture">architecture</a>
     <a href="#quickstart" data-i18n="nav.quickstart">quickstart</a>
@@ -98,6 +99,74 @@
       <p class="dim small" data-i18n="term.note">that terminal is the admin shell (no chat) — conversations live in niffler-ui and niffler-tui</p>
     </div>
   </div>
+</section>
+
+<!-- ============ WHAT'S NEW ============ -->
+<section class="section" id="whatsnew">
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="whatsnew.title">what's new in 0.3.0</span></h2>
+  <div class="cards">
+    <article class="card">
+      <h3 data-i18n-html="whatsnew.1h"><span class="num">01</span> the desktop UI is a plugin</h3>
+      <p data-i18n-html="whatsnew.1p">The app moved to its own repository and installs through the
+      plugin lifecycle: <code>make install-ui</code> boots an isolated
+      harness and builds <code>gokr/niffler-ui</code> into
+      <code>var/bin</code>. Interactive packages are a first-class kind now —
+      a manifest recipe builds a real language project through
+      <code>builder.build_package</code> — and the app's sources no longer
+      live in this clone.</p>
+    </article>
+    <article class="card">
+      <h3 data-i18n-html="whatsnew.2h"><span class="num">02</span> a context ladder you can watch</h3>
+      <p data-i18n-html="whatsnew.2p">Pressure walks a visible ladder — prune tool results, compact
+      with a checkpoint, then a lossy trim — and every step reaches the wire:
+      each compaction refusal arrives as a <code>context</code> event with its
+      reason, both clients render them, and a trim is durable, so a restart
+      rebuilds the trimmed projection instead of resurrecting what was
+      dropped. A pinned provider/model pair that has to fall back to a
+      smaller window now says so instead of quietly shrinking.</p>
+    </article>
+    <article class="card">
+      <h3 data-i18n-html="whatsnew.3h"><span class="num">03</span> images reach the model</h3>
+      <p data-i18n-html="whatsnew.3p">A client can attach images: turns are multimodal end to end —
+      attachments are stored like any other document, budgeted against the
+      context window, and rebuilt into the provider projection on resume.</p>
+    </article>
+    <article class="card">
+      <h3 data-i18n-html="whatsnew.4h"><span class="num">04</span> the store answers questions</h3>
+      <p data-i18n-html="whatsnew.4p">A new <code>search</code> op does server-side full-text over
+      stored documents, so a session finds things without downloading a whole
+      transcript. SQLite is the default engine (barrel and TiDB selectable),
+      and <code>niffler-store-migrate</code> pages large documents under the
+      bus payload ceiling instead of blowing it.</p>
+    </article>
+    <article class="card">
+      <h3 data-i18n-html="whatsnew.5h"><span class="num">05</span> fabric, plus an opt-in advisor</h3>
+      <p data-i18n-html="whatsnew.5p"><code>fabric</code> runs LLM-authored Nim guest programs inside a
+      turn, so a control flow over many tool calls becomes one component call.
+      This release also lands an experimental advisor lane (<code>jev</code>,
+      plus the supervised <code>von</code> launcher) — explicitly opt-in and
+      unproven: it advises, it never grants anything.</p>
+    </article>
+    <article class="card">
+      <h3 data-i18n-html="whatsnew.6h"><span class="num">06</span> hardening you notice only when it is missing</h3>
+      <p data-i18n-html="whatsnew.6p">A component that outlives a bus outage re-attaches itself instead
+      of going deaf; a session runner keeps answering while it waits for a
+      human approval; cancelling a turn aborts a concurrent tool-call wave;
+      stale clients are swept from the catalog; and repo-map auto-append is on
+      by default, still behind the admission gates.</p>
+    </article>
+    <article class="card">
+      <h3 data-i18n-html="whatsnew.7h"><span class="num">07</span> a gate that finishes</h3>
+      <p data-i18n-html="whatsnew.7p">The bus-contract suite — one binary per component, each with its
+      own NATS server and temporary root — runs in a bounded pool: ~15
+      minutes sequential, about 2 minutes pooled. CI runs that gate,
+      components grew selftests, and the test sandboxes are hermetic.</p>
+    </article>
+  </div>
+  <p class="screens-note" data-i18n-html="whatsnew.more">…and a long tail of smaller fixes and additions. The full list is in the
+  <a href="https://github.com/gokr/niffler/blob/main/CHANGELOG.md" target="_blank" rel="noopener">changelog</a>,
+  every release is on the <a href="https://github.com/gokr/niffler/releases" target="_blank" rel="noopener">releases page</a>,
+  and the previous one was <a href="https://github.com/gokr/niffler/releases/tag/v0.2.0" target="_blank" rel="noopener">v0.2.0</a>.</p>
 </section>
 
 <!-- ============ WHY ============ -->
