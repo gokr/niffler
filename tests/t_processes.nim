@@ -83,6 +83,51 @@ proc main() =
   proc emitter(args: string): JsonNode =
     pcall("process_start", %*{"command": "python3 -u " & quoteShell(fixture) & " " & args})
 
+  # Waiting that does not race the child: `tail` is a raw re-read that leaves
+  # the drain cursor alone (asserted below), so a probe can watch for a line —
+  # or for the child to exit — without stealing it from the assertion that
+  # follows, and each round trip refreshes the status. Fixed sleeps made these
+  # checks depend on how fast python starts under a loaded pool (TEST_JOBS=14):
+  # the "first" poll could see nothing at all, and the lines it missed then
+  # showed up inside the next poll's window, which asserts only NEWER lines.
+  proc waitForLine(id, needle: string, tries = 150): bool =
+    for _ in 1 .. tries:
+      let t = pcall("process_poll", %*{"id": id, "tail": "1"})
+      if t{"text"}.getStr("").contains(needle): return true
+      sleep(100)
+    false
+
+  proc waitForExit(id: string, tries = 150): bool =
+    for _ in 1 .. tries:
+      let t = pcall("process_poll", %*{"id": id, "tail": "1"})
+      if t{"status"}.getStr("") != "running": return true
+      sleep(100)
+    false
+
+  proc waitUntilDead(pid: int, tries = 100): bool =
+    for _ in 1 .. tries:
+      if not pidAlive(pid): return true
+      sleep(100)
+    false
+
+  proc lineNumbers(text, prefix: string): seq[int] =
+    ## The numbers of every "<prefix>N" line in a poll's text, in order — so a
+    ## drain assertion can name the lines it saw instead of guessing at the
+    ## component's own line accounting.
+    var i = 0
+    while true:
+      let at = text.find(prefix, i)
+      if at < 0: break
+      var j = at + prefix.len
+      var n = 0
+      var digits = 0
+      while j < text.len and text[j] in {'0'..'9'}:
+        n = n * 10 + (ord(text[j]) - ord('0'))
+        inc digits
+        inc j
+      if digits > 0: result.add(n)
+      i = j
+
   # --- start + drain: incremental, no duplicates --------------------------
   let s1 = emitter("6 120 tick")
   check("start returns an id and ok", s1{"ok"}.getBool(false) and
@@ -91,20 +136,30 @@ proc main() =
         s1{"label"}.getStr("").len > 0, $s1)
   let id1 = s1{"id"}.getStr("")
 
-  sleep(400)                          # ~3 lines have been emitted
+  check("first lines are emitted before the drain starts",
+        waitForLine(id1, "tick line 0"), "no early output within the deadline")
   let d1 = pcall("process_poll", %*{"id": id1})
   check("first poll sees early lines", d1{"ok"}.getBool(false) and
         d1{"text"}.getStr("").contains("tick line 0"), $d1)
   let early = d1{"lines"}.getInt(-1)
   check("first poll counted lines", early > 0, $d1)
 
-  sleep(700)                          # remaining lines emitted
+  check("the fixture ran to completion",
+        waitForExit(id1), "still running within the deadline")
   let d2 = pcall("process_poll", %*{"id": id1})
+  let seen1 = lineNumbers(d1{"text"}.getStr(""), "tick line ")
+  let seen2 = lineNumbers(d2{"text"}.getStr(""), "tick line ")
   check("second poll returns only newer lines (drain semantics)",
-        d2{"text"}.getStr("").contains("tick line 5") and
-        not d2{"text"}.getStr("").contains("tick line 0"), $d2)
-  check("drain is incremental: lines counted only once",
-        d2{"lines"}.getInt(-1) < 6, $d2)
+        seen2.len > 0 and 5 in seen2 and 0 notin seen2, $d2)
+  # The invariant behind "counted only once": every line the fixture printed
+  # comes back exactly once across the two polls. Where the drain splits them
+  # depends on how fast the child started, which is not this test's business
+  # (and the component's `lines` counts differently from its own text).
+  var allTicks: seq[int]
+  for n in seen1: allTicks.add(n)
+  for n in seen2: allTicks.add(n)
+  check("drain is incremental: every line was returned exactly once",
+        allTicks == @[0, 1, 2, 3, 4, 5], $allTicks)
   let d3 = pcall("process_poll", %*{"id": id1, "waitMs": 2000})
   check("exhausted poll has no new output",
         d3{"text"}.getStr("").contains("(no new output)"), $d3)
@@ -114,7 +169,8 @@ proc main() =
   # --- filter: projection; cursor advances past everything ---------------
   let s2 = emitter("8 100 w")
   let id2 = s2{"id"}.getStr("")
-  sleep(500)
+  check("the filtered fixture produced its matching line",
+        waitForLine(id2, "w line 3"), "no matching line within the deadline")
   let f1 = pcall("process_poll", %*{"id": id2, "filter": "line [2-4]"})
   check("filter keeps only matching lines",
         f1{"text"}.getStr("").contains("w line 3") and
@@ -211,8 +267,10 @@ proc main() =
   check("bash flag teaches the follow-up verbs",
         b1{"text"}.getStr("").contains("process_poll") and
         b1{"text"}.getStr("").contains("process_kill"), $b1)
-  sleep(500)
-  let b2 = pcall("process_poll", %*{"id": b1{"id"}.getStr("")})
+  let idB = b1{"id"}.getStr("")
+  check("the forwarded process emitted before the poll",
+        waitForLine(idB, "via-bash line"), "no output within the deadline")
+  let b2 = pcall("process_poll", %*{"id": idB})
   check("forwarded process is pollable through processes",
         b2{"text"}.getStr("").contains("via-bash line"), $b2)
   # cwd forwarding: bash passes its resolved cwd as workdir
@@ -295,7 +353,8 @@ proc main() =
     procProc2.close()
   check("processes registers again", waitRegistered(nc, "processes"), "reg.publish 2")
   sleep(500)                          # sweep ran at boot
-  check("boot sweep killed the orphan", not pidAlive(orphanPid))
+  check("boot sweep killed the orphan", waitUntilDead(orphanPid),
+        "pid " & $orphanPid & " survived the boot sweep")
   check("sweep file was reset",
         parseJson(readFile(regFile)){"entries"}.len == 0)
   # unknown ids from the previous life are a clean 404
