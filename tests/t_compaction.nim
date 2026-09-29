@@ -107,24 +107,12 @@ proc main() =
   defer: removeDir(root)
   var fixtureProc: Process
   defer: stopHard(fixtureProc)
-  # Replace llm in the immutable binary snapshot with the deterministic mock.
-  let compiler = startProcess("nim", args = [
-    "c", "--hints:off", "--warnings:off", "--path:" & repoRoot / "sdk",
-    "-o:" & sandbox.sandboxBin("llm"), repoRoot / "tests" / "mock_llm.nim"],
-    options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(compiler, fixtureCompileTimeoutMs) != 0:
-    fail("mock llm failed to compile")
-    quit(1)
-  compiler.close()
-  let fixtureCompiler = startProcess("nim", args = [
-    "c", "--hints:off", "--warnings:off", "--path:" & repoRoot / "sdk",
-    "-o:" & sandbox.sandboxBin("fixture-compaction"),
-    repoRoot / "tests" / "compaction_contract" / "fixture.nim"],
-    options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(fixtureCompiler, fixtureCompileTimeoutMs) != 0:
-    fail("contract fixture compactor failed to compile")
-    quit(1)
-  fixtureCompiler.close()
+  # Replace llm in the immutable binary snapshot with the deterministic mock
+  # (prebuilt by `make test-server`; the sandbox name is `llm`).
+  discard fixtureBin(sandbox, "llm", repoRoot / "tests" / "mock_llm.nim",
+                     prebuiltName = "fixture-mock-llm")
+  discard fixtureBin(sandbox, "fixture-compaction",
+                     repoRoot / "tests" / "compaction_contract" / "fixture.nim")
 
   let logPath = root / "mock-requests.log"
   let (server, url) = startNats()

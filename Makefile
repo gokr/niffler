@@ -422,6 +422,25 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 
+# Test-only fixture components, built ONCE for the whole suite. Each session
+# test copies one into its sandbox (tests/helpers.nim:fixtureBin); compiling
+# them per sandbox started a dozen concurrent `nim c` runs per pooled gate and
+# those died under load without any compiler output (issue #108, deterministic
+# in CI). Not part of `build` — they are fixtures, not shipped components.
+FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction
+
+var/bin/ctxtest: components/ctxtest/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/main.nim
+
+var/bin/ctxsink: components/ctxtest/sink.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/sink.nim
+
+var/bin/fixture-mock-llm: tests/mock_llm.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/mock_llm.nim
+
+var/bin/fixture-compaction: tests/compaction_contract/fixture.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/compaction_contract/fixture.nim
+
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/$*.nim
 
@@ -456,7 +475,7 @@ var/bin/test_t_context_drains: core/conversation.nim
 test: test-server
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
-test-server: build $(TEST_BINS) gotest
+test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
 

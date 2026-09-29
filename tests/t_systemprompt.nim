@@ -74,17 +74,8 @@ proc main() =
   writeFile(root / "CLAUDE.md", "stale claude rules that must NOT load\n")
 
   # compile the test-only stub component into the sandbox
-  let ctxBin = sandbox.sandboxBin("ctxtest")
-  let compProc = startProcess("nim", args = [
-    "c", "--hints:off", "--warnings:off",
-    "--path:" & repoRoot / "sdk",
-    "-o:" & ctxBin,
-    repoRoot / "components" / "ctxtest" / "main.nim"],
-    options = {poUsePath, poStdErrToStdOut})
-  defer: compProc.close()
-  if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
-    fail("ctxtest component failed to compile")
-    quit(1)
+  let ctxBin = fixtureBin(sandbox, "ctxtest",
+                          repoRoot / "components" / "ctxtest" / "main.nim")
 
   let (server, url) = startNats()
   defer: stopServer(server)

@@ -359,17 +359,8 @@ proc main() =
   # current-session injection: the stub LLM (ctxtest) calls session_info with
   # no sessionId; the runner must inject its own id before the call reaches
   # the system. The tool result lands in the persisted transcript.
-  let ctxBin = sandbox.sandboxBin("ctxtest")
-  let ctxtestProc = startProcess("nim", args = [
-    "c", "--hints:off", "--warnings:off",
-    "--path:" & repoRoot / "sdk",
-    "-o:" & ctxBin,
-    repoRoot / "components" / "ctxtest" / "main.nim"],
-    options = {poUsePath, poStdErrToStdOut})
-  defer: ctxtestProc.close()
-  if waitForExit(ctxtestProc, fixtureCompileTimeoutMs) != 0:
-    fail("ctxtest component failed to compile")
-    quit(1)
+  let ctxBin = fixtureBin(sandbox, "ctxtest",
+                          repoRoot / "components" / "ctxtest" / "main.nim")
   let ctxProc = startComponent(ctxBin, url, root = root)
   defer:
     if ctxProc.running():
