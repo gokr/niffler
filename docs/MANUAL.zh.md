@@ -215,7 +215,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | **Conversation header**（`conversation` kind） | 每对话选择：provider、providerOverride、model、modelOverride、thinking、profile、title、预算/token 计量——通过 `session` 调用设置（UI 中的 `/model`、`/effort`），并在轮次结果中回显 | 每对话 |
 | **Home / project files** | skills 树（项目 `.agents|.claude|.opencode/skills` > 内置 `skills/` > home `~/.niffler/skills` + agent 标准目录 > `~/.config/opencode/skills`，最后是编译进二进制的树作为最后手段）；LSP 注册表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，用户可编辑 |
 | **Home files (edit undo store)** | `$XDG_CONFIG_HOME/niffler-edit/undo.json`（否则 `~/.config/niffler-edit/undo.json`）：每个文件上次编辑前的字节，加上每对话的已见状态摘要。每个被编辑文件一条记录，无大小上限也无淘汰——它随被编辑的不同文件数量增长，随时可安全删除（删除它只会丢失撤销历史和未更改读取的存根，绝不丢失文件内容） | 持久，用户可编辑 |
-| **`var/`**（gitignored） | `bin/` 构建的二进制，`logs/` 总线 JSONL 和每组件 JSONL（`.1`…`.N` 轮转）加上子进程日志，`models/` 目录缓存，`nats-url`/`nats-pid` 总线认领，`processes/` 假脱机（每次启动的 `pN.out`/`pN.err`，启动时清空；id 从持久化计数器继续，而不是从 `p1` 重新开始），`repomap-tags/` 每文件标签缓存（以绝对路径的 sha1 为键的 `{mtime, tags}` JSON；空结果从不缓存），`fetch/`、`captures/`、`store.db`（SQLite 引擎的文件）或 `barrel-db`（barrel 引擎的）——取决于 `NIF_STORE_BACKEND` 选择了哪个——加上其 `.lock`，同一时间只能有一个 `store` 进程持有 | 运行时，可重新生成 |
+| **`var/`**（gitignored） | `bin/` 构建的二进制，`logs/` 总线 JSONL 和每组件 JSONL（`.1`…`.N` 轮转）加上子进程日志，`models/` 目录缓存，`nats-url`/`nats-pid` 总线认领，`processes/` 假脱机（每次启动的 `pN.out`/`pN.err`，启动时清空；id 从持久化计数器继续，而不是从 `p1` 重新开始），`repomap-tags/` 每文件标签缓存（以绝对路径的 sha1 为键的 `{mtime, tags}` JSON；空结果从不缓存），`fetch/`、`captures/`、`store.db`（SQLite 引擎的文件，也是唯一基于文件的引擎）加上其 `.lock`，同一时间只能有一个 `store` 进程持有 | 运行时，可重新生成 |
 | **Browser localStorage** | 仅显示：推理/工具卡详情级别、locale（`niffler-think`、`niffler-tools`） | 每浏览器 |
 | **Repo files** | `manifest.yaml`（随附的组件注册表）、`skills/`（内置 skills）、构建文件（`config.nims`、`*.nimble`、`Makefile`） | 版本化 |
 
@@ -1956,8 +1956,7 @@ make build
 
 ## The store
 
-`store` 和其他组件一样，是总线上的文档存储，提供 `put` / `get` / `list` / `del`，并基于 rev 实现乐观并发（`put` 接受 `expectRev`，不匹配时以 `rev-conflict` 失败）。barrel 引擎还注册了一个隐藏的 `selftest` 工具——一次真正的 put/get/rev/list/`del` 往返，`/doctor` 可以调用它；两个 SQL 引擎只注册那四个工具。
-`put`、`get` 和 `list` 是按需工具；`del` 是隐藏的——由核心删除记录，模型不能。`put` 还携带 `x-harness.sessionId`，这正是下面写入围栏得以实现的原因。**绑定会话的调用方只能写入受管理的 kind**（目前是 `fabricprog`）：其他所有 kind 都由 harness 管理，会被以 `forbidden-kind` 拒绝，因此任何活动会话都无法破坏转录或组件记录。直接的总线调用方（cli、测试、核心）保留完整访问权限。
+`store` 和其他组件一样，是总线上的文档存储，提供 `put` / `get` / `list` / `del`，并基于 rev 实现乐观并发（`put` 接受 `expectRev`，不匹配时以 `rev-conflict` 失败）。每个引擎还注册了一个隐藏的 `selftest` 工具——一次真正的 put/get/rev/list/`del` 往返，`/doctor` 可以调用它。`put` 还携带 `x-harness.sessionId`，这正是下面写入围栏得以实现的原因。**绑定会话的调用方只能写入受管理的 kind**（目前是 `fabricprog`）：其他所有 kind 都由 harness 管理，会被以 `forbidden-kind` 拒绝，因此任何活动会话都无法破坏转录或组件记录。直接的总线调用方（cli、测试、核心）保留完整访问权限。
 核心及其组件正在使用的 kind（store 工具自身的 docstring 只列出了其中一部分——此表才是完整列表）：
 
 | Kind | Id | Value |
@@ -1966,7 +1965,7 @@ make build
 | `message` | `<convId>:<seq>`（序列号补零到六位——id 顺序即消息顺序） | `{conversationId, role, content, ...}` |
 | `component` | `<name>` | `{name, binary, policy, addedAt}` — 启动时恢复的持久化形态 |
 | `plugin` | `<pkg name>` | `{name, repo, ref, dir, version, components, addedAt}` — `plugins` 组件的安装记录 |
-| `provider` | 昵称（外加 `active` 标记文档） | `provider` 组件的 LLM 提供商注册表。凭据以**明文**存储——store 文件本身就是秘密——脱敏只发生在工具响应中（`provider_list`；`mcp_servers` 同样会脱敏 `mcp` 记录的 `env`/`headers`）。这覆盖了两类 kind 的秘密，因此任何 `var/store.db` 或 `var/barrel-db` 的副本都是它们的副本 |
+| `provider` | 昵称（外加 `active` 标记文档） | `provider` 组件的 LLM 提供商注册表。凭据以**明文**存储——store 文件本身就是秘密——脱敏只发生在工具响应中（`provider_list`；`mcp_servers` 同样会脱敏 `mcp` 记录的 `env`/`headers`）。这覆盖了两类 kind 的秘密，因此任何 `var/store.db` 的副本都是它们的副本 |
 | `session` | `<sessionId>:tools` | 会话冻结的直接工具集快照（见 [Progressive tool discovery](#progressive-tool-discovery)） |
 | `slash` | `slash` | UI 渲染的合并斜杠命令表（见 [WIRE.md](WIRE.md)） |
 | `agentjob` | `<jobId>` | 持久化的后台 `agent_spawn` 作业记录（延续会打上 `continued`、`activation` 和队列 `close` 标记） |
@@ -1983,7 +1982,7 @@ make build
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建议式发现实验（`jev`）的每回合影子观测：候选快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。绝不向模型暴露，也绝不写入转录；后端缺席时**不**写任何记录（见[建议式发现](#advisory-discovery-jev-and-the-von-launcher)）。记录包含任务文本——按敏感数据处理 |
 | `selftest` | store 自检探针 | 一次性——由 store 自身的自检往返写入并删除 |
 
-后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，设置 `NIF_STORE_BACKEND=barrel` 时是位于 `var/barrel-db` 的 BitBarrel，或 DSN 共享的 TiDB 引擎（`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。
+后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，或 DSN 共享的 TiDB 引擎（`NIF_STORE_BACKEND=tidb`，`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。
 
 `list` 是一页，而不是完整视图（见 [Store engines](#store-engines)）：核心中所有必须看到整个 kind 的地方都走 `storeListAll`——单次有上限的 `list` 在恢复时会静默截断长转录。`search` 则把“哪些会话提到过 …”变成服务端查询，而不是先下载再过滤：`cli call search '{"kind":"conversation","query":"…"}'`（要在转录文本中查找则用 `message`）返回与 `list` 相同的分页结构。
 

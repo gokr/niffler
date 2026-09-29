@@ -221,7 +221,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | **Conversation header**（`conversation` kind） | 每對話選擇：provider、providerOverride、model、modelOverride、thinking、profile、title、預算/token 計量——透過 `session` 呼叫設定（UI 中的 `/model`、`/effort`），並在回合結果中回顯 | 每對話 |
 | **Home / project files** | skills 樹（專案 `.agents|.claude|.opencode/skills` > 內附 `skills/` > home `~/.niffler/skills` + agent 標準目錄 > `~/.config/opencode/skills`，然後是最後手段、編譯進二進位檔的樹）；LSP 註冊表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，使用者可編輯 |
 | **Home files（edit undo store）** | `$XDG_CONFIG_HOME/niffler-edit/undo.json`（否則 `~/.config/niffler-edit/undo.json`）：每個檔案最後的編輯前位元組，加上每對話的已見狀態摘要。每個被編輯的檔案一筆記錄，無大小上限、無淘汰——它隨被編輯的不同檔案數量成長，且隨時可安全刪除（刪除它只會失去 undo 歷史與未變更讀取 stub，絕不會失去檔案內容） | 持久，使用者可編輯 |
-| **`var/`**（gitignored） | `bin/` 建置的二進位檔、`logs/` 匯流排 JSONL 與各元件 JSONL（`.1`…`.N` 輪替）加上子行程日誌、`models/` 目錄快取、`nats-url`/`nats-pid` 匯流排認領、`processes/` spool（每次啟動的 `pN.out`/`pN.err`，開機時清空；id 從持久化計數器繼續，而非從 `p1` 重新開始）、`repomap-tags/` 每檔案標籤快取（以絕對路徑的 sha1 為鍵的 `{mtime, tags}` JSON；空結果永不快取）、`fetch/`、`captures/`、`store.db`（SQLite 引擎的檔案）或 `barrel-db`（barrel 引擎的）——取決於 `NIF_STORE_BACKEND` 選了哪個——加上其 `.lock`，同一時間只能由一個 `store` 行程持有 | 執行時，可重新產生 |
+| **`var/`**（gitignored） | `bin/` 建置的二進位檔、`logs/` 匯流排 JSONL 與各元件 JSONL（`.1`…`.N` 輪替）加上子行程日誌、`models/` 目錄快取、`nats-url`/`nats-pid` 匯流排認領、`processes/` spool（每次啟動的 `pN.out`/`pN.err`，開機時清空；id 從持久化計數器繼續，而非從 `p1` 重新開始）、`repomap-tags/` 每檔案標籤快取（以絕對路徑的 sha1 為鍵的 `{mtime, tags}` JSON；空結果永不快取）、`fetch/`、`captures/`、`store.db`（SQLite 引擎的檔案）加上其 `.lock`，同一時間只能由一個 `store` 行程持有 | 執行時，可重新產生 |
 | **Browser localStorage** | 僅顯示：reasoning/工具卡詳細程度、locale（`niffler-think`、`niffler-tools`） | 每瀏覽器 |
 | **Repo files** | `manifest.yaml`（隨附的元件註冊表）、`skills/`（內附 skills）、建置檔（`config.nims`、`*.nimble`、`Makefile`） | 版本化 |
 
@@ -2111,10 +2111,7 @@ make build
 
 `store` 就像其他任何元件一樣——一個位於匯流排上的文件儲存，具備
 `put` / `get` / `list` / `del` 以及以 rev 為基礎的樂觀並行控制
-（`put` 接受 `expectRev`，不符時以 `rev-conflict` 失敗）。barrel
-引擎另外註冊了一個隱藏的 `selftest` 工具——一個真正的
-put/get/rev/list/`del` 往返，`/doctor` 可以呼叫；兩個 SQL 引擎
-只註冊那四個工具。
+（`put` 接受 `expectRev`，不符時以 `rev-conflict` 失敗）。每個引擎還註冊了一個隱藏的 `selftest` 工具——一次真正的 put/get/rev/list/`del` 往返，`/doctor` 可以呼叫它。
 `put`、`get` 和 `list` 是隨選工具；`del` 是隱藏的——由 core 刪除
 記錄，模型無法。`put` 也帶有 `x-harness.sessionId`，這正是讓下方
 寫入圍籬得以成立的原因。**受會話綁定的呼叫者只能寫入精選的種類**
@@ -2130,7 +2127,7 @@ core 及其元件使用中的種類（store 工具自身的 docstring 只列出
 | `message` | `<convId>:<seq>`（序號補零至六位數——id 順序即訊息順序） | `{conversationId, role, content, ...}` |
 | `component` | `<name>` | `{name, binary, policy, addedAt}`——開機時還原的持久化形狀 |
 | `plugin` | `<pkg name>` | `{name, repo, ref, dir, version, components, addedAt}`——`plugins` 元件的安裝記錄 |
-| `provider` | 暱稱（加上 `active` 標記文件） | `provider` 元件的 LLM 供應商登錄。憑證以**明文**儲存——儲存檔案本身就是機密——而遮蔽只發生在工具回應中（`provider_list`；`mcp_servers` 同樣會遮蔽 `mcp` 記錄的 `env`/`headers`）。這涵蓋了兩種種類的機密，因此任何 `var/store.db` 或 `var/barrel-db` 的副本都是它們的副本 |
+| `provider` | 暱稱（加上 `active` 標記文件） | `provider` 元件的 LLM 供應商登錄。憑證以**明文**儲存——儲存檔案本身就是機密——而遮蔽只發生在工具回應中（`provider_list`；`mcp_servers` 同樣會遮蔽 `mcp` 記錄的 `env`/`headers`）。這涵蓋了兩種種類的機密，因此任何 `var/store.db` 的副本都是它們的副本 |
 | `session` | `<sessionId>:tools` | 該會話凍結的直接工具集快照（見 [Progressive tool discovery](#progressive-tool-discovery)） |
 | `slash` | `slash` | UI 所渲染的合併斜線指令表（見 [WIRE.md](WIRE.md)） |
 | `agentjob` | `<jobId>` | 持久的背景 `agent_spawn` 工作記錄（續延會蓋上 `continued`、`activation`，以及佇列 `close`） |
@@ -2147,8 +2144,7 @@ core 及其元件使用中的種類（store 工具自身的 docstring 只列出
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建議式探索實驗（`jev`）的每回合影子觀測：候選快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。絕不向模型暴露，也絕不寫入轉錄；後端缺席時**不**寫任何記錄（見[建議式探索](#advisory-discovery-jev-and-the-von-launcher)）。記錄包含任務文字 — 按敏感資料處理 |
 | `selftest` | store 自我測試探針 | 用後即丟——由 store 自身的自我測試往返寫入並刪除 |
 
-後端是所選的引擎——預設為位於 `var/store.db` 的 SQLite，
-`NIF_STORE_BACKEND=barrel` 時為位於 `var/barrel-db` 的 BitBarrel，或
+後端是所選的引擎——預設為位於 `var/store.db` 的 SQLite，或
 DSN 共享的 TiDB 引擎（`NIF_STORE_TIDB_DSN`，無 flock——由資料列鎖與
 rev 計數器在 harness 之間仲裁）。**恰好只有一個行程擁有該檔案**——
 絕不要對同一個資料庫執行兩個以檔案為後端的 `store` 行程（對同一個
