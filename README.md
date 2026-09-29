@@ -40,7 +40,7 @@ home.
 - **Polyglot.** Mostly Nim and Go, but no component is bound to a language:
   SDKs for Nim, Go and TypeScript, and a shipped bash demo with no SDK at
   all. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- **The bus is the API.** `niffler-tui`, the desktop UI, `cli` and `console`
+- **The bus is the API.** `niffler-tui`, `cli` and `console`
   are equal bus clients; several can attach at once and each builds and
   installs independently (the TUI is its own plugin). See
   [starting and stopping](docs/MANUAL.md#starting-and-stopping).
@@ -59,10 +59,9 @@ See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 
 Requirements: Nim 2.2.12+ and Go. `make setup` installs those and the other
 platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies. Node.js 20+
-and npm are only needed for TypeScript components and the web UI; the optional
-desktop UI additionally needs Wails and WebKitGTK 4.1 on Linux. Niffler uses the
-pure-Nim [natsnim](https://github.com/gokr/natsnim) client; no `libnats` or
-`cnats` installation is needed.
+and npm are needed only for TypeScript components. Niffler uses the pure-Nim
+[natsnim](https://github.com/gokr/natsnim) client; no `libnats` or `cnats`
+installation is needed.
 
 ```bash
 git clone https://github.com/gokr/niffler.git
@@ -84,18 +83,14 @@ asks about the plugin on a terminal instead.
 the terminal admin shell — status, catalog, sessions, not a chat UI — and
 `niffler --minimal` boots only the minimal store/bash/LLM profile.
 
-The desktop UI is optional:
+A Wails-based desktop UI does exist, but it is an **experimental side project**
+in its own repository — [gokr/niffler-ui](https://github.com/gokr/niffler-ui).
+It is unmaintained right now and behind `niffler-tui`, so this harness neither
+builds, installs nor tests it (`make install-ui` is gone; `cli install
+gokr/niffler-ui` can still fetch it as a package if you want to poke at it).
 
-```bash
-make install-ui         # install the desktop UI plugin (gokr/niffler-ui): the
-                        # plugin manager clones it, the builder builds it against
-                        # this harness, and the binary lands in var/bin
-```
-
-`make install` then links `niffler-ui` onto PATH when it is present. The UI's
-own dev server, unit tests and typecheck live in the
-[niffler-ui](https://github.com/gokr/niffler-ui) repository. `make doctor`
-inspects prerequisites; `make down-here` stops only this clone's processes.
+`make doctor` inspects prerequisites; `make down-here` stops only this clone's
+processes.
 
 Testing: `make test` runs the bus-contract suite (one private bus per test);
 `make gotest` runs the Go tests, vet and race checks.

@@ -43,15 +43,9 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 `niffler-tui` 是對話用戶端；`niffler`（或 `./var/bin/niffler`）是終端機管理殼層——狀態、目錄、會話，不是聊天 UI——而 `niffler --minimal` 只啟動最小化的 store/bash/LLM 設定檔。
 
-桌面 UI 是選用的：
+存在一個以 Wails 為基礎的桌面 UI，但它是位於獨立儲存庫中的**實驗性副專案**——[gokr/niffler-ui](https://github.com/gokr/niffler-ui)。它目前無人維護，也落後於 `niffler-tui`，因此本 harness 既不建置、也不安裝、也不測試它（`make install-ui` 已移除；若想把玩，仍可用 `cli install gokr/niffler-ui` 以套件方式取得）。
 
-```bash
-make install-ui         # install the desktop UI plugin (gokr/niffler-ui): the
-                        # plugin manager clones it, the builder builds it against
-                        # this harness, and the binary lands in var/bin
-```
-
-當 `niffler-ui` 存在時，`make install` 會將其連結到 PATH。UI 自己的開發伺服器、單元測試與型別檢查位於 [niffler-ui](https://github.com/gokr/niffler-ui) 儲存庫。`make doctor` 會檢查先決條件；`make down-here` 只會停止此複本的行程。
+`make doctor` 會檢查先決條件；`make down-here` 只會停止此複本的行程。
 
 測試：`make test` 執行匯流排合約測試套件（每個測試一個私有匯流排）；`make gotest` 執行 Go 測試、vet 與競態檢查。
 

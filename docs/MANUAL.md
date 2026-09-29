@@ -241,9 +241,9 @@ NIF_OPENAI_CONTEXT=1000000 \
 ./var/bin/niffler --minimal
 ```
 
-The desktop UI's automatic launch uses the normal profile. To use the UI with
-the minimal profile, start the command above first and then launch
-`niffler-ui`; it attaches to the existing core. `--minimal --recover` is also
+An autostarted harness uses the normal profile. To run a client against the
+minimal profile, start the command above first and then launch `niffler-tui`;
+it attaches to the existing core. `--minimal --recover` is also
 valid: recovery rebuilds and wipes spawned-component records first, then boots
 the three-component profile. This is a runtime choice only; `make build` still
 builds the full shipped set.
@@ -620,8 +620,8 @@ NIF_OPENAI_MODEL=deepseek-chat
 Loading rules (same in the Nim, Go and TypeScript SDKs): existing shell
 environment **always wins** over `.env`; the SDKs load the current
 directory's `.env` first and the harness root's second, first definition of
-a key wins. The desktop UI bridge loads them in the opposite order (harness
-root, then cwd — the plugin's `bridge.go`), so there the root file wins. So
+a key wins. A Wails-hosted client loads them in the opposite order (harness
+root, then cwd), so there the root file wins. So
 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
 `unset NIF_OPENAI_API_KEY` before starting if you want the file value.
 `.env` must be a plain regular file: a symlinked or hardlinked copy is
@@ -2181,9 +2181,9 @@ then `core.remove`).
   whose named parameters mirror the prompt's arguments (≤32 prompts per
   server, ≤16 arguments each); a second hidden generic tool
   `mcp_<server>_prompt` renders any prompt by name for clients. Rendering a prompt is an ordinary bus call; the
-  result carries the rendered text as `userMessage`, and the UI appends it
-  to the conversation as a **user** message (slash result convention,
-  `niffler-ui`'s `frontend/src/lib/slashResult.ts`) — prompt output is never injected
+  result carries the rendered text as `userMessage`, and a client appends it
+  to the conversation as a **user** message (the slash-result convention) — prompt
+  output is never injected
   into the transcript as system/assistant content. The bridge re-registers
   them on drift like tools (server-pushed `notifications/prompt_list_changed`
   included).
@@ -3512,8 +3512,7 @@ download-then-filter: `cli call search '{"kind":"conversation","query":"…"}'`
 ## Testing
 
 ```bash
-make test           # the full gate: the bus-contract suite (the desktop UI's
-                    # frontend tests + typecheck live in gokr/niffler-ui)
+make test           # the full gate: the bus-contract suite
 make test-server    # ... server side only: one test-owned NATS per test, no node
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
@@ -3532,10 +3531,10 @@ is the old sequential run, and the logs remain per-test either way.
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
 the envelope is the artifact, so one harness tests every SDK) and drives
 them over a private nats-server each test starts for itself (`NIF_NATS_SPAWN`-style isolation).
-The desktop UI's frontend tests are not part of this suite: the UI is the
-[gokr/niffler-ui](https://github.com/gokr/niffler-ui) plugin now, and its lib
-unit tests and typecheck run in that repository (`make test` /
-`make typecheck` there), so this gate stays self-contained.
+The gate is self-contained: no browser, no Wails, no frontend toolchain. (The
+experimental desktop UI lives in
+[gokr/niffler-ui](https://github.com/gokr/niffler-ui) and runs its own checks
+there.)
 Core-based tests snapshot their required binaries into a unique temporary
 `NIF_ROOT`; Barrel, plugin clones, generated components, logs, and caches are
 therefore isolated. Individual `make test-*` targets may run concurrently
@@ -3590,14 +3589,12 @@ share provider rate limits even though their local state is isolated.
 
 There is no launcher script — the binaries own the lifecycle:
 
-- **Desktop icon / `niffler-ui`** — the common case. The bridge's first act
-  is the SDK's `ensureHarness`: probe `NIF_NATS_URL` → `var/nats-url` →
+- **Launchers that use `ensureHarness`** — the `niffler-tui` wrapper is the
+  shipping example (a desktop launcher would be another). Its first act is the
+  SDK's `ensureHarness`: probe `NIF_NATS_URL` → `var/nats-url` →
   127.0.0.1:4222 for a core serving **this root** (the catalog carries the
   owning harness's root; a foreign clone's core is never adopted); if none
-  answers, spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`. The
-  binary itself is installed by `make install-ui` — the desktop UI is the
-  [gokr/niffler-ui](https://github.com/gokr/niffler-ui) plugin, built by the
-  builder into `var/bin/niffler-ui` and linked onto PATH by `make install`.
+  answers, spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`.
   The probes are patient: attaching retries for ~10 s at 200 ms, and a spawned
   core must answer within 20 s or `ensureHarness` fails with `spawned core did
   not answer within 20s — check <root>` (the Nim SDK first reaps a core it
@@ -3608,11 +3605,11 @@ There is no launcher script — the binaries own the lifecycle:
   127.0.0.1:4222), connect and register `client: true` (so an autostarted
   core stays up while they run). Unlike `ensureHarness` they do **not** check
   which root the answering core serves, so a TUI can join a foreign harness's
-  bus that the desktop UI would refuse. The chain is per client: the Nim clients (`cli`, `console`) probe
+  bus that a root-checking launcher would refuse. The chain is per client: the Nim clients (`cli`, `console`) probe
   `NIF_NATS_URL` → `<NIF_ROOT or their own clone>/var/nats-url` →
   127.0.0.1:4222 and never the cwd, while the bash `dialog` uses
-  `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222. Start the harness first — desktop UI
-  or `./var/bin/niffler`.
+  `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222. Start the harness first —
+  `niffler-tui` or `./var/bin/niffler`.
 - **Terminal admin shell** — `./var/bin/niffler` directly, or
   `./var/bin/niffler --minimal` for the three-component boot profile. A
   manually started core never self-terminates; stop it with Ctrl-C / SIGTERM.
@@ -3656,26 +3653,21 @@ happens (see Troubleshooting).
 ```bash
 ./var/bin/niffler             # full harness in a terminal (admin shell)
 ./var/bin/niffler --minimal   # store + bash + llm only at boot
-niffler-ui                    # desktop UI; autostarts the full profile
+niffler-tui                   # the client; autostarts the full profile
 make build          # rebuild what changed
-make install        # PATH entries (niffler, niffler-cli, niffler-console,
-                    # + niffler-ui when its plugin binary exists and the
-                    # niffler-tui wrapper on request — never component
+make install        # PATH entries (niffler, niffler-cli, niffler-console
+                    # and the niffler-tui wrapper on request — never component
                     # binaries such as the `grep` tool (`var/bin/grep`, which
                     # shells out to `rg`), so PATH cannot shadow grep/git/...)
 make install-tui    # same, installing the niffler-tui terminal client quietly
                     # (= make install WITH_TUI=1)
 make uninstall      # remove those PATH entries again
-make install-ui     # install the desktop UI plugin (gokr/niffler-ui): an
-                    # isolated auto-approved harness boots, the plugin manager
-                    # clones + the builder builds it into var/bin/niffler-ui
 make install-lsp    # install the lsp component's default language servers
 make install-jev    # install the Von runtime for jev (opt-in, ~5.4 GB;
                     # never part of `make setup`)
 make von-up         # enable the supervised Von launcher (persisted spawn
                     # record; `make von-down` removes it again)
-make test           # the full gate: the bus-contract suite (the UI repo's
-                    # frontend tests live in gokr/niffler-ui)
+make test           # the full gate: the bus-contract suite
 make test-server    # the bus-contract suite alone (each test owns a private bus)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
@@ -3697,15 +3689,16 @@ make clean          # remove all build artifacts (var/, nimcache/)
   deliberately, set `NIF_NATS_URL`.
 - **Probe the bus** without the LLM: one-shot `nim c -r` scripts in
   `tests/` (see AGENTS.md "Debugging the bus").
-- **Wails**: the desktop UI (and any Wails client package) builds through
-  its package recipe, which must run `wails build -tags webkit2_41`
-  (Linux) — a plain `go build` produces a stub. The UI's SPA dev server
-  lives in the gokr/niffler-ui checkout (`make dev` there).
+- **Wails packages build with `wails build`, never `go build`**: a plain
+  `go build` overwrites the binary with a stub. A Wails client's package recipe
+  must run `wails build -tags webkit2_41` on Linux. (The experimental desktop
+  UI, gokr/niffler-ui, is the one Wails package this project knows of; it is not
+  part of the release.)
 - **Monitor RAM** of a running system with `make ram` (or
   `watch -n5 scripts/niffler-ram.sh`): totals per stack — your clone,
   `nifflerprod`, and each bench private harness separately — over harness +
   NATS + all spawned components + session runners + clients. Membership is
-  by executable path (`*/var/bin/*`, `niffler-ui`), not the process tree:
+  by executable path (`*/var/bin/*`), not the process tree:
   the tui is the *parent* of an autostarted harness, and a bench run's
   private bus belongs to the bench driver, so a PPID walk would miss both.
   Read PSS, not RSS: stacks sharing one `var/bin` build double-count
@@ -3716,7 +3709,7 @@ make clean          # remove all build artifacts (var/, nimcache/)
 
 | Symptom | Cause / fix |
 |---|---|
-| UI shows "Running in a browser" inside the desktop app | `nats.ts` binding mismatch — `window.go.main.Bridge` must match the Go struct name (the niffler-ui README) |
+| UI shows "Running in a browser" inside the desktop app | `nats.ts` binding mismatch — `window.go.main.Bridge` must match the Go struct name (see the UI's own README; the Wails client is the experimental gokr/niffler-ui) |
 | UI banner: bus unreachable | core autostart still in progress or failed — start `./var/bin/niffler` in a terminal to see boot errors |
 | `core: WARNING missing binary for <name>` on boot | run `make build` |
 | llm error HTTP 401/403 | check the active provider's key or token first (`provider_status` for a redacted view of what is in effect, `provider_list` for `expiresAt`); only with no stored provider active does `NIF_OPENAI_API_KEY` in `.env` or the shell environment decide |

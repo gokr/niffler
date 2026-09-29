@@ -86,8 +86,9 @@ if [ "$MODE" = "--uninstall" ]; then
     rm -f "$BIN_DIR/$n"
     log "removed $BIN_DIR/$n"
   done
-  # niffler-ui only when it is a symlink made here; the copied binary from
-  # `make ui-install` (plus launcher/icon) belongs to `make ui-uninstall`.
+  # niffler-ui only when it is a symlink made HERE: an older version of this
+  # script linked the (now experimental, external) desktop UI. A real binary or
+  # a launcher someone else installed is left alone.
   if [ -L "$BIN_DIR/niffler-ui" ]; then
     rm -f "$BIN_DIR/niffler-ui"
     log "removed $BIN_DIR/niffler-ui"
@@ -109,11 +110,9 @@ link() {
 link niffler niffler
 link niffler-cli cli
 link niffler-console console
-if [ -x "$ROOT/var/bin/niffler-ui" ]; then
-  link niffler-ui niffler-ui
-else
-  log "desktop UI not built — run 'make install-ui' to install the web UI plugin"
-fi
+# No niffler-ui here: the Wails desktop UI is an experimental, unmaintained side
+# project in its own repository (gokr/niffler-ui) and this harness neither builds
+# nor installs it. niffler-tui is the client that ships.
 
 # ---------------------------------------------------------------------------
 # niffler-tui plugin (separate repo, gokr/niffler-tui — an example of how

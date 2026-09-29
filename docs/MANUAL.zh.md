@@ -158,7 +158,7 @@ NIF_OPENAI_CONTEXT=1000000 \
 ./var/bin/niffler --minimal
 ```
 
-桌面 UI 的自动启动使用正常配置文件。要将 UI 与最小配置文件一起使用，先启动上面的命令，然后启动 `niffler-ui`；它附加到现有的 core。`--minimal --recover` 也有效：恢复先重建并清除生成的组件记录，然后引导三组件配置文件。这只是运行时选择；`make build` 仍构建完整的随附集。
+自动启动的 harness 使用正常配置文件。要让客户端使用最小配置文件，先启动上面的命令，然后启动 `niffler-tui`；它会附加到现有的 core。`--minimal --recover` 也有效：恢复先重建并清除生成的组件记录，然后引导三组件配置文件。这只是运行时选择；`make build` 仍构建完整的随附集。
 
 ### Session runners
 
@@ -349,7 +349,7 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`；SDK 先加载当前目录的 `.env`，再加载 harness 根目录的，键的首次定义优先。桌面 UI 桥以相反顺序加载它们（harness 根目录，然后 cwd——`niffler-ui` 的 `bridge.go`），因此那里根文件优先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
+加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`；SDK 先加载当前目录的 `.env`，再加载 harness 根目录的，键的首次定义优先。基于 Wails 的客户端以相反顺序加载它们（harness 根目录，然后 cwd），因此那里根文件优先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
 
 仓库根目录中的 `.env.example` 是参考副本——每个变量都被注释掉，其默认值作为注释值——但它在两个方向上都不详尽（上表中的少数条目在其中缺失，且它携带 harness 在正常操作中不读取的测试/工具变量）；该表是权威。
 
@@ -1035,8 +1035,7 @@ bridge announces mcp_<server>_<tool> schemas  ──►  catalog ──► disco
   隐藏的目录工具 `mcp_<server>_prompt_<promptname>`（对 LLM 不可见，`x-harness.hidden`），外加一个斜杠命令 `mcp-<server>-<promptname>`，
   其命名参数镜像该提示的参数（每台服务器 ≤32 个提示，每个 ≤16 个参数）；第二个隐藏的通用工具
   `mcp_<server>_prompt` 为客户端按名称渲染任意提示。渲染提示是一次普通的
-  总线调用；结果将渲染后的文本作为 `userMessage` 携带，UI 将其作为**用户**消息追加到会话中（斜杠结果约定，
-  `niffler-ui` 的 `frontend/src/lib/slashResult.ts`）——提示输出永远不会作为 system/assistant 内容注入
+  总线调用；结果将渲染后的文本作为 `userMessage` 携带，UI 将其作为**用户**消息追加到会话中（斜杠结果约定）——提示输出永远不会作为 system/assistant 内容注入
   到记录中。桥接在漂移时像工具一样重新注册它们（包括服务器推送的 `notifications/prompt_list_changed`）。
 - **资源**表现为一个并发工具 `mcp_<server>_resources`
   （`x-harness.effect: "read"`）：`{op: "list"}`、`{op: "templates"}`（URI
@@ -1995,8 +1994,7 @@ make build
 ## Testing
 
 ```bash
-make test           # the full gate: the bus-contract suite (the desktop UI's
-                    # frontend tests + typecheck live in gokr/niffler-ui)
+make test           # the full gate: the bus-contract suite
 make test-server    # ... server side only: one test-owned NATS per test, no node
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
@@ -2006,7 +2004,7 @@ make test-bash      # ... or just one — `make help` lists every target
 `make test-server` 通过 `scripts/run-tests.sh` 在有界池中运行约 60 个测试二进制（默认每个核心一个测试）：测试拥有私有的 NATS 服务器和临时 root，因此可以安全地重叠运行。每个测试的输出被捕获到 `var/test-logs/<name>.log`，完成时打印其墙钟时间，摘要会列出最慢的——可用 `TEST_JOBS=N`（或直接对脚本用 `NIF_TEST_JOBS=N`）覆盖；`TEST_JOBS=1` 是旧的顺序运行，无论哪种方式日志都按测试分开。`NIF_TEST_VERBOSE=1` 会在每个测试的行之后交错输出其捕获的输出。
 
 每个测试都会启动真实的组件二进制（Nim、Go *和* TypeScript——信封就是产物，因此一个 harness 测试所有 SDK），并在每个测试自己启动的私有 nats-server 上驱动它们（`NIF_NATS_SPAWN` 式隔离）。
-桌面 UI 的前端测试不属于此套件：UI 现在是 [gokr/niffler-ui](https://github.com/gokr/niffler-ui) 插件，其 lib 单元测试和类型检查在该仓库中运行（那里的 `make test` / `make typecheck`），因此此门保持自包含。
+此门是自包含的：不需要浏览器、Wails 或前端工具链。（实验性的桌面 UI 位于 [gokr/niffler-ui](https://github.com/gokr/niffler-ui)，在那里运行它自己的检查。）
 基于核心的测试会将其所需二进制快照到唯一的临时 `NIF_ROOT`；Barrel、插件克隆、生成的组件、日志和缓存因此都被隔离。各个 `make test-*` 目标可以彼此并发运行，也可以与活动的开发 harness 并发运行——`scripts/run-tests.sh` 正是依赖这一点来池化套件。仓库构建写入（`make build`、`make clean`）由 `scripts/with-build-lock.sh` 串行化；运行时的 `builder.build` 不获取该锁，因此在第二个终端中执行 `make clean` 会在正在运行的构建之下删除 `var/bin` 和 `var/build`。
 代理构建的测试组件使用沙箱本地的 Nim 缓存。
 
@@ -2026,8 +2024,8 @@ make test-bash      # ... or just one — `make help` lists every target
 
 没有启动器脚本——二进制自己拥有生命周期：
 
-- **桌面图标 / `niffler-ui`** —— 最常见的情况。桥接的第一个动作是 SDK 的 `ensureHarness`：探测 `NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222，寻找服务**此 root** 的核心（目录携带拥有它的 harness 的 root；外来克隆的核心绝不会被采用）；如果没有应答，则以 `NIF_AUTOSTART=1` 分离启动 `var/bin/niffler`。该二进制本身由 `make install-ui` 安装——桌面 UI 是 [gokr/niffler-ui](https://github.com/gokr/niffler-ui) 插件，由构建器构建到 `var/bin/niffler-ui`，并由 `make install` 链接到 PATH。探测是有耐心的：附加以 200 毫秒重试约 10 秒，启动的核心必须在 20 秒内应答，否则 `ensureHarness` 会以 `spawned core did not answer within 20s — check <root>` 失败（Nim SDK 会先回收它在同一会话中早先启动的核心，如果它已退出）。
-- **交互式插件**（例如 `niffler-tui`）——它们**不**调用 `ensureHarness`，也绝不启动 harness：它们探测活动总线（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` → 127.0.0.1:4222），连接并注册 `client: true`（这样自动启动的核心在它们运行期间保持存活）。与 `ensureHarness` 不同，它们**不**检查应答的核心服务哪个 root，因此 TUI 可以加入桌面 UI 会拒绝的外来 harness 的总线。这条链是按客户端而定的：Nim 客户端（`cli`、`console`）探测 `NIF_NATS_URL` → `<NIF_ROOT 或它们自己的克隆>/var/nats-url` → 127.0.0.1:4222，绝不探测 cwd，而 bash `dialog` 使用 `NIF_NATS_URL` → `./var/nats-url`（仅 cwd）→ 127.0.0.1:4222。先启动 harness——桌面 UI 或 `./var/bin/niffler`。
+- **使用 `ensureHarness` 的启动器**——`niffler-tui` 包装器就是随附的例子（桌面启动器会是另一个）。它的第一个动作是 SDK 的 `ensureHarness`：探测 `NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222，寻找服务**此 root** 的核心（目录携带拥有它的 harness 的 root；外来克隆的核心绝不会被采用）；如果没有应答，则以 `NIF_AUTOSTART=1` 分离启动 `var/bin/niffler`。这些探测很有耐心：附加会以 200 毫秒重试约 10 秒，而启动的核心必须在 20 秒内应答，否则 `ensureHarness` 会以 `spawned core did not answer within 20s — check <root>` 失败（如果 Nim SDK 先前在同一次会话中启动的核心已退出，它会先回收它）。
+- **交互式插件**（例如 `niffler-tui`）——它们**不**调用 `ensureHarness`，也绝不启动 harness：它们探测活动总线（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` → 127.0.0.1:4222），连接并注册 `client: true`（这样自动启动的核心在它们运行期间保持存活）。与 `ensureHarness` 不同，它们**不**检查应答的核心服务哪个 root，因此 TUI 可以加入基于 root 检查的启动器会拒绝的外来 harness 的总线。这条链是按客户端而定的：Nim 客户端（`cli`、`console`）探测 `NIF_NATS_URL` → `<NIF_ROOT 或它们自己的克隆>/var/nats-url` → 127.0.0.1:4222，绝不探测 cwd，而 bash `dialog` 使用 `NIF_NATS_URL` → `./var/nats-url`（仅 cwd）→ 127.0.0.1:4222。先启动 harness——桌面 UI 或 `./var/bin/niffler`。
 - **终端管理 shell** —— 直接运行 `./var/bin/niffler`，或用 `./var/bin/niffler --minimal` 启动三组件引导配置。手动启动的核心绝不自行终止；用 Ctrl-C / SIGTERM 停止它。环境中的 `NIF_AUTOSTART=1` 会覆盖 shell——该核心即使在 tty 上也处于服务模式——并且当它停在提示符处时仍继续服务 `svc.core.call`，因此 UI 可以附加到 tty 启动的核心。
 
 交互式前端注册 `"client": true`（SDK 的 `interactive()` / `Component.Client` 标记）。按此定义，`console` 和 `dialog` 不是交互式前端：两者都不注册 `client: true`，因此自动启动的核心可能在它们之下退出（当新 harness 出现时 `console` 会自行重连）。该标记是注册，不是租约：一个未调用 `reg.depart` 就被杀死的客户端会让自动启动的核心保持存活——并让核心相信有人类可联系以进行审批——直到目录将其移除（`ui` 注册表的 20 秒租约是另一个时钟，见 [Clients and the UI registry](#clients-and-the-ui-registry)）。**自动启动的**核心会统计它们：当最后一个离开时，它会在 `NIF_AUTOSTART_IDLE_S`（默认 10 秒——重启的 UI 会在该窗口内重新注册）后关闭，带走其组件和启动的总线；如果从未有客户端到来，它会在 `NIF_AUTOSTART_BOOT_S`（默认 60 秒）后放弃。关闭附加到*手动*启动核心的 UI 不会改变任何东西——核心保持存活。
@@ -2041,26 +2039,21 @@ make test-bash      # ... or just one — `make help` lists every target
 ```bash
 ./var/bin/niffler             # full harness in a terminal (admin shell)
 ./var/bin/niffler --minimal   # store + bash + llm only at boot
-niffler-ui                    # desktop UI; autostarts the full profile
+niffler-tui                   # the client; autostarts the full profile
 make build          # rebuild what changed
 make install        # PATH entries (niffler, niffler-cli, niffler-console,
-                    # + niffler-ui when its plugin binary exists and the
                     # niffler-tui wrapper on request — never component
                     # binaries such as the `grep` tool (`var/bin/grep`, which
                     # shells out to `rg`), so PATH cannot shadow grep/git/...)
 make install-tui    # same, installing the niffler-tui terminal client quietly
                     # (= make install WITH_TUI=1)
 make uninstall      # remove those PATH entries again
-make install-ui     # install the desktop UI plugin (gokr/niffler-ui): an
-                    # isolated auto-approved harness boots, the plugin manager
-                    # clones + the builder builds it into var/bin/niffler-ui
 make install-lsp    # install the lsp component's default language servers
 make install-jev    # 安装 jev 背后的 Von 运行时（可选，约 5.4 GB；
                     # 不属于 `make setup`）
 make von-up         # 启用受监督的 Von 启动器（持久化 spawn 记录；
                     # `make von-down` 再次移除）
-make test           # the full gate: the bus-contract suite (the UI repo's
-                    # frontend tests live in gokr/niffler-ui)
+make test           # the full gate: the bus-contract suite
 make test-server    # the bus-contract suite alone (each test owns a private bus)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
@@ -2074,14 +2067,14 @@ make clean          # remove all build artifacts (var/, nimcache/)
   服务 `svc.core.call`；除非有 UI 附加或设置 `NIF_AUTO_APPROVE=1`，否则需要审批的工具会被拒绝。
 - **附加到任意总线**：`NIF_NATS_URL=nats://host:4222`（甚至远程），或在核心之前自己在默认端口启动 nats-server——只有当应答的核心服务**此 root** 时，核心才会复用 `127.0.0.1:4222` 上的总线；外来 harness，或没有核心在其上的裸 nats-server，会使核心发出警告并改为启动隔离总线（命名为此 root 自己总线之一的遗留 `var/nats-pid` 会先被回收）。要刻意强制使用某条总线，请设置 `NIF_NATS_URL`。
 - **不使用 LLM 探测总线**：`tests/` 中的一次性 `nim c -r` 脚本（见 AGENTS.md 的 "Debugging the bus"）。
-- **Wails**：桌面 UI（以及任何 Wails 客户端包）通过其包配方构建，该配方必须运行 `wails build -tags webkit2_41`（Linux）——普通的 `go build` 会产生一个桩。UI 的 SPA 开发服务器位于 gokr/niffler-ui 检出中（那里的 `make dev`）。
+- **Wails 包用 `wails build` 构建，绝不要用 `go build`**：普通的 `go build` 会写出一份桩二进制。Wails 客户端的包配方必须在 Linux 上运行 `wails build -tags webkit2_41`。（本项目唯一已知的 Wails 包是实验性的桌面 UI——gokr/niffler-ui，它不属于发布内容。）
 - **监控运行系统的 RAM**，用 `make ram`（或 `watch -n5 scripts/niffler-ram.sh`）：按栈统计总量——你的克隆、`nifflerprod` 以及每个 bench 私有 harness 分别统计——涵盖 harness + NATS + 所有启动的组件 + 会话运行器 + 客户端。成员资格按可执行文件路径（`*/var/bin/*`、`niffler-ui`）判定，而非进程树：tui 是自动启动 harness 的*父进程*，而 bench 运行的私有总线属于 bench 驱动程序，因此 PPID 遍历会漏掉两者。读 PSS，而非 RSS：共享同一 `var/bin` 构建的栈会在 RSS 中重复计算文件支持的页。`bash` 工具的工作负载子进程（编译器、测试二进制）按设计被排除。
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| UI 在桌面应用内显示 "Running in a browser" | `nats.ts` 绑定不匹配——`window.go.main.Bridge` 必须与 Go 结构体名匹配（niffler-ui README） |
+| UI 在桌面应用内显示 "Running in a browser" | `nats.ts` 绑定不匹配——`window.go.main.Bridge` 必须与 Go 结构体名匹配（见该 UI 自己的 README；Wails 客户端是实验性的 gokr/niffler-ui） |
 | UI 横幅：总线不可达 | 核心自动启动仍在进行或已失败——在终端中启动 `./var/bin/niffler` 以查看引导错误 |
 | 引导时 `core: WARNING missing binary for <name>` | 运行 `make build` |
 | llm 错误 HTTP 401/403 | 先检查活动提供商的密钥或令牌（`provider_status` 查看生效内容的脱敏视图，`provider_list` 查看 `expiresAt`）；只有在没有存储的提供商处于活动状态时，`.env` 或 shell 环境中的 `NIF_OPENAI_API_KEY` 才起作用 |

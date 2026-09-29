@@ -113,6 +113,22 @@ UI left this repository for its own plugin (`gokr/niffler-ui`), and
 
 ### Changed
 
+- **The Wails desktop UI is no longer an official part of the harness.** Its
+  code has been behind `niffler-tui` for a while and nobody is maintaining it, so
+  it is now presented for what it is: an experimental side project in its own
+  repository ([gokr/niffler-ui](https://github.com/gokr/niffler-ui)), neither
+  built, installed nor tested from this repo. `make install-ui` (and the Wails /
+  WebKitGTK prerequisites it dragged into `make setup` and `make doctor`) are
+  gone, `make install` no longer links a `niffler-ui` binary, `make dev` — the
+  stub that pointed at its SPA dev server — is gone, `scripts/install-ui.sh` is
+  deleted, and the website no longer shows the app (screenshot, component-table
+  row, quickstart step, `svelte` badge, "what's new" card) with the client
+  surface instead named after `niffler-tui`. The plugin lifecycle that installs
+  a client as a package stays — `niffler-tui` uses it, and `cli install
+  gokr/niffler-ui` can still fetch the experimental UI if you want to poke at
+  it. Docs (READMEs, MANUAL in all three languages, WIRE's client-identity note)
+  now say this once, where it is useful, instead of advertising it.
+
 - **repomap auto-append is on by default, still behind the admission gates.**
   `NIF_REPOMAP_AUTOAPPEND` flipped from opt-in to on: a workspace open injects
   the repo map without an env nudge, while the census floor (50 covered files)

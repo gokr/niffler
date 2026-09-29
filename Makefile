@@ -4,8 +4,9 @@
 #   make setup  install all prerequisites for this platform (Ubuntu/macOS)
 #   make doctor check prerequisites and report what is missing
 #
-# Starting/stopping is not make's job: launch niffler-ui (any UI autostarts
-# core, the last UI stops it) or ./var/bin/niffler in a terminal (admin shell).
+# Starting/stopping is not make's job: launch niffler-tui (it boots core on
+# demand, and the last interactive client stops it) or ./var/bin/niffler in a
+# terminal (the admin shell).
 #
 # Every binary target tracks its sources, so `make all` is a no-op
 # when nothing changed. Nim keeps its own incremental cache (nimcache/) on top.
@@ -16,7 +17,6 @@ SHELL   := /bin/bash
 ROOT    := $(abspath .)
 # choosenim and Nimble-installed helpers.
 export PATH := $(HOME)/.nimble/bin:$(PATH)
-WAILS   ?= $(shell command -v wails 2>/dev/null || echo "$(HOME)/go/bin/wails")
 
 # platform detection for the setup/doctor targets
 UNAME_S := $(shell uname -s)
@@ -57,10 +57,10 @@ GO_SRCS  = $(filter-out %_test.go,$(wildcard components/$(1)/*.go)) components/$
 NIMFLAGS ?=
 MODE := var/bin/.mode
 
-# The desktop UI is a separate interactive plugin (gokr/niffler-ui), built
-# with `make install-ui`; it is intentionally not part of `make all`/`make build`.
-# The harness keeps only the installed client artifact in var/bin.
-UI_BIN := var/bin/niffler-ui
+# A Wails-based desktop UI lives outside this repository (gokr/niffler-ui) as
+# an experimental side project: unmaintained right now, not built, installed or
+# tested from here, and never consulted by `make all`/`make build`/`make test`.
+# niffler-tui is the client that ships.
 BUILD_LOCK := bash scripts/with-build-lock.sh
 TEST_LOCK  := bash scripts/with-build-lock.sh -s
 # Per-file recipes lock themselves unless a held lock is already active
@@ -75,17 +75,15 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
-        test-autostart test-smoke smoke dev clean gotest \
-        install uninstall install-ui install-tui \
+        test-autostart test-smoke smoke clean gotest \
+        install uninstall install-tui \
         setup doctor recover install-go install-nim install-nats \
-        install-node install-wails install-ui-deps install-native-deps install-nim-deps \
+        install-node install-native-deps install-nim-deps \
         install-natscli install-jq install-zenity install-lsp install-jev von-up von-down
 
 help:
 	@echo 'make all       build core + components (default)'
-	@echo 'make build     same, explicit target (no UI — the UI lives in gokr/niffler-ui)'
-	@echo 'make install-ui   build + install the desktop UI (gokr/niffler-ui) and the'
-	@echo '                  launcher that boots this harness on demand'
+	@echo 'make build     same, explicit target'
 	@echo 'make install    put niffler/niffler-cli (+ niffler-tui on request) on PATH'
 	@echo 'make install-tui  same, installing the niffler-tui client without asking'
 	@echo 'make uninstall  remove those PATH entries again (WITH_TUI=1 to preinstall)'
@@ -94,11 +92,8 @@ help:
 	@echo 'make ram       RAM of running niffler stacks (harness + components + nats + clients)'
 	@echo 'make down      stop any running harness, components and nats-server'
 	@echo 'make down-here stop only THIS checkout: harness, components and bus'
-	@echo 'make test      full gate: the bus-contract suite (frontend tests are in'
-	@echo '               gokr/niffler-ui: make test / make typecheck there)'
-	@echo 'make test-server  bus-contract suite only (no node/UI toolchain)'
-	@echo 'make dev       Svelte dev server in a browser (bridge stubbed; needs the'
-	@echo '               niffler-ui checkout: make dev there)'
+	@echo 'make test      full gate: core, components and the bus-contract suite'
+	@echo 'make test-server  bus-contract suite only (no TypeScript toolchain)'
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'
 	@echo 'make install-lsp  install the lsp component language servers'
@@ -328,16 +323,6 @@ release:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory NIMFLAGS=-d:release components-inner
 	@echo "release binaries in var/bin (-d:release) — 'make build' swaps debug back"
 
-# ---------------------------------------------------------------------------
-# desktop UI (separate repository: gokr/niffler-ui)
-#
-# This clone keeps no UI source. install-ui clones that repo at its latest
-# release tag, builds it against THIS harness (writing an untracked go.work so
-# the SDK comes from here), drops the binary in var/bin and writes the
-# launcher — the same shape as install-tui for the terminal client.
-install-ui:
-	bash ./scripts/install-ui.sh
-
 # CLI/terminal integration: niffler-prefixed symlinks + the on-demand
 # niffler-tui wrapper in a user bin dir (see scripts/install.sh — never
 # component binaries, so PATH cannot be shadowed by grep/git/edit/...).
@@ -347,9 +332,8 @@ install: build
 uninstall:
 	./scripts/install.sh --uninstall
 
-# The README names these aliases so the desktop and terminal entry points
-# read in the same direction: install-ui builds the UI repo against this
-# harness (above), install-tui = install WITH_TUI=1.
+# install-tui = install WITH_TUI=1: the terminal client installs through the
+# plugin lifecycle like any other package (see scripts/install.sh).
 install-tui:
 	$(MAKE) --no-print-directory install WITH_TUI=1
 
@@ -468,10 +452,8 @@ var/bin/test_t_attachments: core/conversation.nim core/attachments.nim \
 
 var/bin/test_t_context_drains: core/conversation.nim
 
-# The full gate. The frontend half (lib unit tests + typecheck) lives in the
-# UI's own repository now (gokr/niffler-ui: make test / make typecheck) — its
-# toolchain, generated Wails bindings and node_modules are that repo's
-# business, which is what let this suite go back to being self-contained.
+# The full gate, self-contained: core + components + the bus-contract suite
+# (each test owns a private NATS server and a temporary root).
 test: test-server
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
@@ -570,11 +552,6 @@ recover: build
 	 pkill -f "$(ROOT)/var/bin/niffler$$" 2>/dev/null; sleep 1; true
 	./var/bin/niffler --recover
 
-dev:
-	@echo "the SPA dev server lives with the UI now:"
-	@echo "  git clone https://github.com/gokr/niffler-ui && cd niffler-ui && make dev"
-	@exit 1
-
 clean:
 	$(BUILD_LOCK) rm -rf var nimcache
 
@@ -585,7 +562,7 @@ clean:
 # and Clang must exist before Nimble builds Futhark and BitBarrel.
 setup:
 	@set -e; for target in install-native-deps install-nim install-nim-deps \
-		install-go install-node install-wails install-ui-deps \
+		install-go install-node \
 		install-natscli install-jq install-zenity; do \
 		$(MAKE) --no-print-directory $$target; \
 	done
@@ -647,16 +624,6 @@ doctor:
 	else \
 		echo "  dialog display: MISSING — run 'make install-zenity'"; \
 	fi
-	@if command -v wails >/dev/null 2>&1 || [ -x "$(WAILS)" ]; then \
-		echo "  wails: OK"; \
-	else \
-		echo "  wails: MISSING — run 'make install-wails'"; \
-	fi
-	$(if $(IS_LNX),@if pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
-		echo "  webkit2gtk-4.1: OK"; \
-	else \
-		echo "  webkit2gtk-4.1: MISSING — run 'make install-ui-deps'"; \
-	fi)
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
 	@echo "                  npm registry access needed for TS source/package recipes"
 	@if [ -x var/jev-venv/bin/von ]; then \
@@ -664,7 +631,7 @@ doctor:
 	else \
 		echo "  jev backend (Von): not installed (optional) — 'make install-jev', then 'make von-up'"; \
 	fi
-	@echo "Then: make — and launch niffler-ui or ./var/bin/niffler"
+	@echo "Then: make — then launch niffler-tui (the client) or ./var/bin/niffler (admin shell)"
 
 install-go:
 	@if command -v go >/dev/null 2>&1; then echo "go: already installed"; \
@@ -768,17 +735,4 @@ install-node:
 	fi
 	@node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error("Node.js 20+ required by the frontend dependencies; upgrade Node and check PATH."); process.exit(1); }'
 
-install-wails:
-	@if command -v wails >/dev/null 2>&1 || [ -x "$(WAILS)" ]; then \
-		echo "wails: already installed ($(WAILS))"; \
-	else echo "Installing wails CLI ..."; \
-		go install github.com/wailsapp/wails/v2/cmd/wails@latest; fi
-
-install-ui-deps:
-	@if [ -n "$(IS_MAC)" ]; then echo "UI deps: not needed on macOS"; \
-	elif pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
-		echo "webkit2gtk-4.1: already installed"; \
-	else echo "Installing webkit2gtk 4.1 + GTK3 dev packages ..."; \
-		$(SUDO) apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev; fi
-
-# Ubuntu 24.04 apt ships Node 18; use a supported Node release for the UI.
+# Ubuntu 24.04 apt ships Node 18; the TypeScript SDK and ts components want 20+.

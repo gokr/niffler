@@ -164,7 +164,7 @@ NIF_OPENAI_CONTEXT=1000000 \
 ./var/bin/niffler --minimal
 ```
 
-桌面 UI 的自動啟動使用正常設定檔。要將 UI 與最小設定檔一起使用，先啟動上述命令然後啟動 `niffler-ui`；它連接到現有的 core。`--minimal --recover` 也有效：復原先重建並清除生成的元件記錄，然後啟動三元件設定檔。這只是執行時選擇；`make build` 仍建置完整的隨附集。
+自動啟動的 harness 使用正常設定檔。要讓用戶端使用最小設定檔，先啟動上述命令然後啟動 `niffler-tui`；它會連接到現有的 core。`--minimal --recover` 也有效：復原先重建並清除生成的元件記錄，然後啟動三元件設定檔。這只是執行時選擇；`make build` 仍建置完整的隨附集。
 
 ### Session runners
 
@@ -355,7 +355,7 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。桌面 UI bridge 以相反順序載入它們（harness root，然後 cwd——`niffler-ui` 的 `bridge.go`），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
+載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。以 Wails 為基礎的用戶端以相反順序載入它們（harness root，然後 cwd），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
 
 repo root 的 `.env.example` 是參考副本——每個變數都被註解掉，其預設值作為註解值——但它在兩個方向上都不完整（上表有少數項目不在其中，而它帶有 harness 在正常運作中不會讀取的測試/工具變數）；表格才是權威。
 
@@ -1274,8 +1274,7 @@ manager 擁有除了快取以外的每一個欄位：當伺服器漂移時，bri
   隱藏目錄工具 `mcp_<server>_prompt_<promptname>`（對 LLM 不可見，`x-harness.hidden`），外加一個斜線命令 `mcp-<server>-<promptname>`，
   其具名參數會對應 prompt 的引數（每個伺服器 ≤32 個 prompt，每個 ≤16 個引數）；第二個隱藏泛用工具
   `mcp_<server>_prompt` 則為客戶端依名稱渲染任何 prompt。渲染 prompt 是一般的匯流排呼叫；
-  結果會以 `userMessage` 攜帶渲染後文字，而 UI 會將它作為一則 **user** 訊息附加到會話（斜線結果慣例，
-  `niffler-ui` 的 `frontend/src/lib/slashResult.ts`）——prompt 輸出永遠不會以 system/assistant 內容注入逐字稿。bridge 會在漂移時像工具一樣重新註冊它們（包含伺服器推送的 `notifications/prompt_list_changed`）。
+  結果會以 `userMessage` 攜帶渲染後文字，而 UI 會將它作為一則 **user** 訊息附加到會話（斜線結果慣例）——prompt 輸出永遠不會以 system/assistant 內容注入逐字稿。bridge 會在漂移時像工具一樣重新註冊它們（包含伺服器推送的 `notifications/prompt_list_changed`）。
 - **資源**會以一個並行工具 `mcp_<server>_resources`
   浮現（`x-harness.effect: "read"`）：`{op: "list"}`、`{op: "templates"}`（URI
   範本）或 `{op: "read", uri: ...}`。
@@ -2167,8 +2166,7 @@ core 中所有必須看見整個種類的東西都走 `storeListAll`——
 ## Testing
 
 ```bash
-make test           # the full gate: the bus-contract suite (the desktop UI's
-                    # frontend tests + typecheck live in gokr/niffler-ui)
+make test           # the full gate: the bus-contract suite
 make test-server    # ... server side only: one test-owned NATS per test, no node
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
@@ -2186,10 +2184,8 @@ make test-bash      # ... or just one — `make help` lists every target
 每個測試都會啟動真正的元件二進位檔（Nim、Go *以及* TypeScript——
 信封就是產物，因此一個 harness 測試每個 SDK），並透過每個測試為
 自己啟動的私有 nats-server 驅動它們（`NIF_NATS_SPAWN` 式的隔離）。
-桌面 UI 的前端測試不屬於這套件：UI 現在是
-[gokr/niffler-ui](https://github.com/gokr/niffler-ui) 外掛，其 lib
-單元測試與型別檢查在該儲存庫中執行（在該處 `make test` /
-`make typecheck`），因此這個閘門保持自足。
+這個閘門是自足的：不需要瀏覽器、Wails 或前端工具鏈。（實驗性的桌面 UI 位於
+[gokr/niffler-ui](https://github.com/gokr/niffler-ui)，在該處執行它自己的檢查。）
 以 core 為基礎的測試會將其所需的二進位檔快照到唯一的暫存
 `NIF_ROOT`；Barrel、外掛複製、生成的元件、日誌與快取因此都被隔離。
 個別的 `make test-*` 目標可以彼此並行執行，也可以與執行中的開發
@@ -2240,24 +2236,13 @@ TypeScript builder 建置（npm registry）。安裝管線本身由 `t_plugins`
 
 沒有啟動器腳本——二進位檔自己擁有生命週期：
 
-- **桌面圖示 / `niffler-ui`**——最常見的情況。橋接器的第一個動作
-  是 SDK 的 `ensureHarness`：探測 `NIF_NATS_URL` → `var/nats-url` →
-  127.0.0.1:4222，尋找服務**此 root** 的 core（目錄帶有擁有該
-  harness 的 root；外來複製的 core 絕不會被採用）；若無人回應，則以
-  `NIF_AUTOSTART=1` 分離啟動 `var/bin/niffler`。該二進位檔本身由
-  `make install-ui` 安裝——桌面 UI 是
-  [gokr/niffler-ui](https://github.com/gokr/niffler-ui) 外掛，由
-  builder 建置到 `var/bin/niffler-ui`，並由 `make install` 連結到
-  PATH。探測很有耐心：附加會以 200 毫秒重試約 10 秒，而啟動的 core
-  必須在 20 秒內回應，否則 `ensureHarness` 會以 `spawned core did
-  not answer within 20s — check <root>` 失敗（Nim SDK 會先回收它在
-  同一會話中較早啟動的 core，若它已結束）。
+- **使用 `ensureHarness` 的啟動器**——`niffler-tui` 包裝器就是隨附的例子（桌面啟動器會是另一個）。它的第一個動作是 SDK 的 `ensureHarness`：探測 `NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222，尋找服務**此 root** 的 core（目錄帶有擁有該 harness 的 root；外來複製的 core 絕不會被採用）；若無人回應，則以 `NIF_AUTOSTART=1` 分離啟動 `var/bin/niffler`。這些探測很有耐心：附加會以 200 毫秒重試約 10 秒，而啟動的 core 必須在 20 秒內回應，否則 `ensureHarness` 會以 `spawned core did not answer within 20s — check <root>` 失敗（若 Nim SDK 先前在同一次會話中啟動的 core 已退出，它會先回收它）。
 - **互動式外掛**（例如 `niffler-tui`）——它們**不會**呼叫
   `ensureHarness`，也絕不啟動 harness：它們探測執行中的匯流排
   （`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` →
   127.0.0.1:4222），連線並註冊 `client: true`（因此自動啟動的 core
   在她們執行期間保持運作）。與 `ensureHarness` 不同，它們**不會**
-  檢查回應的 core 服務哪個 root，因此 TUI 可以加入桌面 UI 會拒絕的
+  檢查回應的 core 服務哪個 root，因此 TUI 可以加入會做 root 檢查的啟動器會拒絕的
   外來 harness 匯流排。這條鏈是逐用戶端的：Nim 用戶端（`cli`、
   `console`）探測 `NIF_NATS_URL` → `<NIF_ROOT 或其自身複製>/var/nats-url`
   → 127.0.0.1:4222，絕不探測 cwd，而 bash `dialog` 使用
@@ -2304,26 +2289,21 @@ util-linux 的 `setpriv` 位於 `PATH` 時會被包在
 ```bash
 ./var/bin/niffler             # full harness in a terminal (admin shell)
 ./var/bin/niffler --minimal   # store + bash + llm only at boot
-niffler-ui                    # desktop UI; autostarts the full profile
+niffler-tui                   # the client; autostarts the full profile
 make build          # rebuild what changed
 make install        # PATH entries (niffler, niffler-cli, niffler-console,
-                    # + niffler-ui when its plugin binary exists and the
                     # niffler-tui wrapper on request — never component
                     # binaries such as the `grep` tool (`var/bin/grep`, which
                     # shells out to `rg`), so PATH cannot shadow grep/git/...)
 make install-tui    # same, installing the niffler-tui terminal client quietly
                     # (= make install WITH_TUI=1)
 make uninstall      # remove those PATH entries again
-make install-ui     # install the desktop UI plugin (gokr/niffler-ui): an
-                    # isolated auto-approved harness boots, the plugin manager
-                    # clones + the builder builds it into var/bin/niffler-ui
 make install-lsp    # install the lsp component's default language servers
 make install-jev    # 安裝 jev 背後的 Von 執行時（選用，約 5.4 GB；
                     # 不屬於 `make setup`）
 make von-up         # 啟用受監督的 Von 啟動器（持久化 spawn 記錄；
                     # `make von-down` 再次移除）
-make test           # the full gate: the bus-contract suite (the UI repo's
-                    # frontend tests live in gokr/niffler-ui)
+make test           # the full gate: the bus-contract suite
 make test-server    # the bus-contract suite alone (each test owns a private bus)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
@@ -2345,10 +2325,10 @@ make clean          # remove all build artifacts (var/, nimcache/)
   `NIF_NATS_URL`。
 - **在沒有 LLM 的情況下探測匯流排**：`tests/` 中的一次性
   `nim c -r` 腳本（見 AGENTS.md 的「Debugging the bus」）。
-- **Wails**：桌面 UI（以及任何 Wails 用戶端套件）透過其套件配方
-  建置，該配方必須執行 `wails build -tags webkit2_41`（Linux）——
-  單純的 `go build` 會產生一個 stub。UI 的 SPA 開發伺服器位於
-  gokr/niffler-ui 檢出中（在該處 `make dev`）。
+- **Wails 套件用 `wails build` 建置，絕不要用 `go build`**：單純的
+  `go build` 會寫出一份 stub 二進位檔。Wails 用戶端的套件配方必須在 Linux 上執行
+  `wails build -tags webkit2_41`。（本專案唯一已知的 Wails 套件是實驗性的
+  桌面 UI——gokr/niffler-ui，它不屬於發佈內容。）
 - **監控**執行中系統的 RAM，使用 `make ram`（或
   `watch -n5 scripts/niffler-ram.sh`）：每個堆疊的總計——你的複製、
   `nifflerprod`，以及每個 bench 私有 harness 分別計算——涵蓋 harness
@@ -2363,7 +2343,7 @@ make clean          # remove all build artifacts (var/, nimcache/)
 
 | Symptom | Cause / fix |
 |---|---|
-| UI 在桌面應用程式內顯示「Running in a browser」 | `nats.ts` 綁定不符——`window.go.main.Bridge` 必須符合 Go 結構名稱（niffler-ui README） |
+| UI 在桌面應用程式內顯示「Running in a browser」 | `nats.ts` 綁定不符——`window.go.main.Bridge` 必須符合 Go 結構名稱（見該 UI 自己的 README；Wails 用戶端是實驗性的 gokr/niffler-ui） |
 | UI 橫幅：匯流排無法觸達 | core 自動啟動仍在進行或已失敗——在終端機中啟動 `./var/bin/niffler` 以查看開機錯誤 |
 | 開機時出現 `core: WARNING missing binary for <name>` | 執行 `make build` |
 | llm 錯誤 HTTP 401/403 | 先檢查作用中供應商的 key 或 token（`provider_status` 可看生效內容的遮蔽視圖，`provider_list` 可看 `expiresAt`）；只有在沒有已儲存的供應商作用中時，`.env` 或殼層環境中的 `NIF_OPENAI_API_KEY` 才會決定 |

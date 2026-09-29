@@ -285,9 +285,9 @@ monotonic display numbers ("Niffler 1", …) and brokers conversation
 ownership between cooperating UIs; an ~20s lease is the liveness signal. A
 caller name is self-declared, so this is coordination, not authentication.
 The TUIs register unique `tui-<hex>` component names (their approval caller);
-the web UI mints one identity per browser tab (`ui-<hex>`) and stamps it as
-the `caller` of that tab's session turns, so directed approvals stay per tab
-(the niffler-ui README).
+a browser-hosted SPA client mints one identity per browser tab (`ui-<hex>`) and
+stamps it as the `caller` of that tab's session turns, so directed approvals
+stay per tab.
 
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
@@ -927,7 +927,7 @@ write then targeted an existing id.
 `search` takes `{kind, query, limit?, after?}` and returns exactly `list`'s
 shape — `{ok, items: [{id, rev, value}], hasMore, nextAfter?}` — for the
 documents of `kind` whose indexed text matches `query`. It is the
-server-side filter for session browsers (niffler-tui, niffler-ui): find
+server-side filter for session browsers (niffler-tui and any other client): find
 conversations by title/id, or messages by content, without downloading the
 whole kind and filtering locally.
 

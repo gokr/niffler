@@ -59,7 +59,7 @@
   </div>
   <p class="release-line"><a href="https://github.com/gokr/niffler/releases/tag/v0.3.0" target="_blank" rel="noopener">v0.3.0</a><span data-i18n-html="hero.release"> — images in a turn on every provider protocol, server-side <code>search</code> over the store, and SDK components that re-attach after a bus outage</span></p>
   <div class="badges">
-    <span class="badge badge-hl" data-i18n="hero.badgeAny">any language</span><span class="badge">nim</span><span class="badge">go</span><span class="badge">typescript</span><span class="badge">nats</span><span class="badge">svelte 5</span>
+    <span class="badge badge-hl" data-i18n="hero.badgeAny">any language</span><span class="badge">nim</span><span class="badge">go</span><span class="badge">typescript</span><span class="badge">nats</span>
   </div>
 </section>
 
@@ -67,19 +67,13 @@
 <section class="section screens-top" id="screens">
   <div class="screens screens-show">
     <figure class="shot">
-      <a class="shot-frame" href="img/niffler-ui.png" target="_blank" rel="noopener" data-lightbox="niffler-ui — the desktop chat interface">
-        <img src="img/niffler-ui.png" alt="niffler-ui — the desktop chat interface" width="1200" height="934">
-      </a>
-      <figcaption><span class="shot-name" data-i18n="screens.ui.name">niffler-ui</span> — <span data-i18n="screens.ui.desc">the desktop chat UI: sessions, streaming tokens, tool runs, approvals, model controls (a plugin — make install-ui installs gokr/niffler-ui)</span></figcaption>
-    </figure>
-    <figure class="shot">
       <a class="shot-frame" href="img/niffler-tui.png" target="_blank" rel="noopener" data-lightbox="niffler-tui — the terminal chat client">
         <img src="img/niffler-tui.png" alt="niffler-tui — the terminal chat client" loading="lazy" width="1200" height="686">
       </a>
       <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — the installed niffler-tui wrapper boots the harness on demand and re-runs the client after /restart)</span></figcaption>
     </figure>
   </div>
-  <p class="screens-note" data-i18n-html="screens.note"><code>./var/bin/niffler</code> in a terminal is the admin shell — help/status/catalog/tools/sessions, no chat. Conversations live in <code>niffler-ui</code> and <code>niffler-tui</code>; scripting goes through <code>./var/bin/cli</code>.</p>
+  <p class="screens-note" data-i18n-html="screens.note"><code>./var/bin/niffler</code> in a terminal is the admin shell — help/status/catalog/tools/sessions, no chat. Conversations live in <code>niffler-tui</code>; scripting goes through <code>./var/bin/cli</code>.</p>
 </section>
 
 <!-- ============ TERMINAL ============ -->
@@ -96,7 +90,7 @@
       <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
       <p class="dim">→ catalog: store, bash, builder, plugins, skills, systemprompt, recall, compaction, fetch, models, provider, llm, grep, mcp, edit, lsp, repomap, processes, git, observe, logfile, agent, expert, fabric</p>
       <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
-      <p class="dim small" data-i18n="term.note">that terminal is the admin shell (no chat) — conversations live in niffler-ui and niffler-tui</p>
+      <p class="dim small" data-i18n="term.note">that terminal is the admin shell (no chat) — conversations live in niffler-tui</p>
     </div>
   </div>
 </section>
@@ -106,14 +100,13 @@
   <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="whatsnew.title">what's new in 0.3.0</span></h2>
   <div class="cards">
     <article class="card">
-      <h3 data-i18n-html="whatsnew.1h"><span class="num">01</span> the desktop UI is a plugin</h3>
-      <p data-i18n-html="whatsnew.1p">The app moved to its own repository and installs through the
-      plugin lifecycle: <code>make install-ui</code> boots an isolated
-      harness and builds <code>gokr/niffler-ui</code> into
-      <code>var/bin</code>. Interactive packages are a first-class kind now —
-      a manifest recipe builds a real language project through
-      <code>builder.build_package</code> — and the app's sources no longer
-      live in this clone.</p>
+      <h3 data-i18n-html="whatsnew.1h"><span class="num">01</span> a client is a package</h3>
+      <p data-i18n-html="whatsnew.1p">A package can declare a manifest-v2 recipe that builds a real language
+      project through <code>builder.build_package</code> — its own dependency
+      manifests and lockfiles, bounded argv steps, a validated artifact —
+      instead of a single source file. <code>niffler-tui</code>, the client this
+      release ships, installs that way through the plugin lifecycle into
+      <code>var/bin</code>.</p>
     </article>
     <article class="card">
       <h3 data-i18n-html="whatsnew.2h"><span class="num">02</span> a context ladder you can watch</h3>
@@ -368,10 +361,9 @@
         <p><span class="p">$</span> make setup        <span class="dim" data-i18n="qs.setup"># prerequisites (Ubuntu / macOS)</span></p>
         <p><span class="p">$</span> cp .env.example .env <span class="dim" data-i18n="qs.env"># add an LLM API key; edit other settings as needed</span></p>
         <p><span class="p">$</span> make build        <span class="dim" data-i18n="qs.make"># core + components (no UI toolchain), once</span></p>
-        <p><span class="p">$</span> make install      <span class="dim" data-i18n="qs.install"># niffler / niffler-cli / niffler-console on PATH (+ niffler-ui once its plugin is installed; niffler-tui on request)</span></p>
+        <p><span class="p">$</span> make install      <span class="dim" data-i18n="qs.install"># niffler / niffler-cli / niffler-console on PATH (niffler-tui on request)</span></p>
         <p><span class="p">$</span> make install-tui  <span class="dim" data-i18n="qs.installtui"># same, installing the niffler-tui terminal client quietly</span></p>
         <p><span class="p">$</span> niffler-tui        <span class="dim" data-i18n="qs.tui"># terminal chat — boots the harness on demand if none runs</span></p>
-        <p><span class="p">$</span> make install-ui   <span class="dim" data-i18n="qs.installdesktop"># the desktop UI — installs the gokr/niffler-ui plugin and builds var/bin/niffler-ui</span></p>
         <p><span class="p">$</span> make install-lsp  <span class="dim" data-i18n="qs.installlsp"># idempotent installer for the lsp component's default language servers</span></p>
         <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># the bus-contract suite — the full gate, isolated per-test NATS + temp root</span></p>
         <p class="dim">│</p>
@@ -385,7 +377,6 @@
         <li><span class="check">✓</span> <span data-i18n="qs.req.go">go</span></li>
         <li><span class="check">✓</span> <span data-i18n="qs.req.nats">nats-server (built from source)</span></li>
         <li><span class="check">✓</span> <span data-i18n="qs.req.node">node / npm</span></li>
-        <li><span class="check">✓</span> <span data-i18n-html="qs.req.wails">wails cli <span class="dim">(only to build the niffler-ui plugin)</span></span></li>
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
       </ul>
       <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, checksums, natsnim, bitbarrel — installed automatically on first build.</p>

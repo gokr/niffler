@@ -72,10 +72,9 @@ jobs:
       # The server gate (`make test-server`): core + components + the whole
       # bus-contract suite, each test owning a private NATS server.
       #
-      # `make test` is the same gate in this repository (`test: test-server`).
-      # The desktop UI is the gokr/niffler-ui plugin: its typecheck needs Wails
-      # bindings a fresh clone does not have, and its dependency-free unit tests
-      # run there (`make typecheck` / `make test` in that repo), so both are
-      # outside this workflow.
+      # `make test` is the same gate in this repository (`test: test-server`),
+      # and the suite is self-contained: no browser, no Wails, no frontend
+      # toolchain. (The experimental desktop UI in gokr/niffler-ui runs its own
+      # checks in its own repository; nothing here depends on it.)
       - name: make test-server
         run: make -j4 test-server

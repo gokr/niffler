@@ -192,22 +192,18 @@ working in every language.
 The Makefile is the front door:
 
 ```bash
-make all              # build core + all components (the desktop UI is a plugin,
-                      # gokr/niffler-ui — `make install-ui` installs it)
+make all              # build core + all components
 make build            # core + components into var/bin
 make install          # PATH entries: niffler, niffler-cli, niffler-console
-                      # + niffler-ui (when installed) and the niffler-tui
-                      # wrapper (asks; WITH_TUI=1 to force,
+                      # + the niffler-tui wrapper (asks; WITH_TUI=1 to force,
                       # NIF_BIN_DIR=~/bin to override the bin dir)
 make uninstall        # remove those PATH entries again
 make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler     # the harness itself (admin shell) — UIs autostart it too
 ./var/bin/niffler --minimal  # boot only store + bash + llm; skip persisted extras
-niffler-ui            # the desktop app: autostarts core; the last UI stops it
-                      # (installed by `make install-ui` as the gokr/niffler-ui
-                      # plugin; `make install` links it when present)
-make test             # the full gate: the bus-contract suite (the UI repo's
-                      # frontend tests + typecheck live in gokr/niffler-ui)
+niffler-tui           # the client: autostarts core on demand; the last
+                      # interactive client stops it
+make test             # the full gate: the bus-contract suite
 make test-server      # the whole bus-contract suite: smoke + every
                       # `tests/t_*.nim` — each owns a private NATS server +
                       # temporary NIF_ROOT, so component targets can overlap a
@@ -239,12 +235,6 @@ make von-up           # enable the supervised Von launcher: a persisted
                       # (docs/research/JEV-SPIKE.md)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
 make doctor           # check prerequisites, report what's missing
-make install-ui       # install the desktop UI plugin (gokr/niffler-ui) through
-                      # the plugin lifecycle: boots an isolated, auto-approved
-                      # harness, `cli install gokr/niffler-ui` builds it via
-                      # the builder into var/bin/niffler-ui
-make dev              # retired: the SPA dev server lives in gokr/niffler-ui
-                      # (make dev there); the target only prints that and fails
 ```
 
 The nimble tasks are a subset, not a second front door — the Makefile builds
@@ -273,17 +263,15 @@ nimble smoke          # legacy: the original end-to-end script (bash + store).
   Manually started cores never self-terminate. To debug a failed autostart,
   run `./var/bin/niffler` by hand and watch boot.
 
-### Desktop UI (gokr/niffler-ui, a plugin)
+### Experimental side project: the desktop UI
 
-The desktop UI is no longer built by this Makefile: it is an **interactive
-plugin** installed with `make install-ui` (an isolated auto-approved harness
-boots, `cli install gokr/niffler-ui` runs, the builder compiles the package
-into `var/bin/niffler-ui`, and `make install` links it onto PATH when
-present). Its source, SPA dev server, unit tests and typecheck live in that
-repository — `make dev`, `make test` and `make typecheck` there.
-
-The SPA is a NATS client, not a Wails client: it only talks to its
-`nats.ts`; Wails is hosting, not architecture.
+`gokr/niffler-ui` is a Wails-hosted SPA client that lives in its own repository
+and is **not part of this harness**: nothing here builds, installs or tests it,
+`make install-ui` no longer exists, and its code is behind `niffler-tui` — treat
+it as an experimental, currently unmaintained spin-off rather than an official
+client. It still speaks the wire contract (a NATS client; Wails is hosting, not
+architecture), so the plugin lifecycle can install it as a package like any
+other: `cli install gokr/niffler-ui`.
 
 ## Releasing
 
@@ -321,8 +309,8 @@ is the precedent for steps 2–6.
    latest GitHub *release*, so a merged fix reaches users only once its repo is
    released — `gokr/niffler-tui` moves with the harness (bump its
    `niffler.json` `version`, cut its own `CHANGELOG.md`, tag, create the
-   release), and `gokr/niffler-ui` follows its own cadence unless this release
-   changed something its users need.
+   release). The experimental desktop UI (`gokr/niffler-ui`) is not released
+   with the harness.
 
 ## Environment and gotchas
 
@@ -403,11 +391,13 @@ is the precedent for steps 2–6.
   with "session runner binary missing — run `make build`". Runners resume
   conversations from the store, so they are disposable; a runner whose
   conversation id came from a killed runner is recreated automatically.
-- **Wails plugins build with `wails build`, never `go build`.** The desktop
-  UI (and any Wails client package) is built through its package recipe; a
-  plain `go build` overwrites the binary with a stub that prints "Wails
-  applications will not build without the correct build tags." `go vet` is
-  fine; only `wails build -tags webkit2_41` (Linux) produces the real app.
+- **Wails packages build with `wails build`, never `go build`.** A Wails
+  client package is built through its package recipe; a plain `go build`
+  overwrites the binary with a stub that prints "Wails applications will not
+  build without the correct build tags." `go vet` is fine; only `wails build
+  -tags webkit2_41` (Linux) produces the real app. (The experimental desktop
+  UI, `gokr/niffler-ui`, is the one Wails package this project knows of; it is
+  not part of the release.)
 - **Go SDK is `package sdk`.** `import sdk "niffler.dev/sdk"` → identifier
   `sdk` (`sdk.New`, `sdk.Component`). That's the alias the builder/LLM
   naturally writes; don't write `niffler.New` — Go will say
@@ -461,10 +451,9 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 - Never wrap a single HttpClient across multiple GitHub (or any) API calls:
   a stale pooled connection (server closed it, e.g. after a 404) hangs the
   next read forever — fresh client per call (see plugins' resolveTag).
-- The desktop UI (the `gokr/niffler-ui` plugin, installed with `make
-  install-ui`) also registers on the bus (0 tools) — grep core's stdout for
-  `catalog: ui v` to prove its bridge connected. Its sources live in that
-  plugin repository, not here.
+- An interactive client registers on the bus with 0 tools — grep core's stdout
+  for `catalog: tui-` to prove `niffler-tui`'s bridge connected (the
+  experimental desktop UI would show up as `catalog: ui v`).
 - Killing all component processes leaves the NATS server orphaned; either
   use the harness's own spawn (`./var/bin/niffler` spawns nats if `NIF_NATS_URL`
   unset) or `pkill -f nats-server; pkill -f niffler/var/bin` before a cold start.
