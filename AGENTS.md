@@ -189,7 +189,7 @@ working in every language.
 
 ## Commands
 
-The Makefile is the front door (it wraps the nimble tasks below):
+The Makefile is the front door:
 
 ```bash
 make all              # build core + all components (the desktop UI is a plugin,
@@ -250,10 +250,14 @@ make dev              # retired: the SPA dev server lives in gokr/niffler-ui
                       # (make dev there); the target only prints that and fails
 ```
 
-Underlying nimble tasks (same thing, one level down):
+The nimble tasks are a subset, not a second front door — the Makefile builds
+directly and compiles more than `nimble all` does:
 
 ```bash
-nimble all            # build core + all components into var/bin (Nim + Go)
+nimble all            # build core plus most shipped components into var/bin,
+                      # but NOT store-sqlite, store-tidb, niffler-store-migrate,
+                      # lsp, repomap, processes, jev or von — use `make build`
+                      # (or `make all`) for the complete set
 nimble smoke          # legacy: the original end-to-end script (bash + store).
                       # Prefer `make test` — the full bus-contract suite.
 ```

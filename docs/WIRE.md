@@ -222,10 +222,10 @@ ev.session.<id>.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, 
 ev.session.<id>.token       # {sessionId, turnId?, content, reasoning} live token deltas
                        #   (streamed while the model generates)
 ev.session.<id>.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
-                       #   tool, args, result? | error?, errorCode?}
+                       #   tool, args, at?, result? | error?, durationMs?}
                        #   start fires before dispatch, done after the result
-                       #   (error keeps its legacy string shape; errorCode is
-                       #   the stable machine code when known)
+                       #   (error keeps its legacy string shape; durationMs is
+                       #   on done only)
 ev.session.<id>.steer       # {sessionId, turnId?, content} a steer message was folded in
 ev.session.<id>.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
