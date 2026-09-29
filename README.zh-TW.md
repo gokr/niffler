@@ -23,7 +23,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 - **為長時間執行而打造。** 凍結的提示詞/工具前綴讓提示詞快取保持溫熱；耐久的壓縮與有界的溢位復原讓會話保持存活；軟性 `/limit` 預算與硬性失控防護並存。請參閱[上下文視窗](docs/MANUAL.md#context-window)。
 - **本機優先，複製即實例。** 對話與元件狀態位於 `var/`（預設為 SQLite），且 harness 執行自己的 NATS 匯流排，沒有中央服務。請參閱[佈局](docs/MANUAL.md#layout-of-a-running-system)。
 
-目前版本是 [v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0)。請參閱 [CHANGELOG.md](CHANGELOG.md) 了解該版本以來的變更。
+目前版本是 [v0.3.0](https://github.com/gokr/niffler/releases/tag/v0.3.0)。請參閱 [CHANGELOG.md](CHANGELOG.md) 了解該版本以來的變更。
 
 ## Quick start
 

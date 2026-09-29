@@ -6,6 +6,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-29
+
+Images in a turn, server-side search over the store, and components that
+survive a bus outage. A dropped screenshot now reaches the model on every
+provider protocol, with the pixels stored apart from the message so a
+`list` page can never outgrow the bus. The store answers `search`, so a
+session browser filters conversations where they live instead of
+downloading the whole kind. Both SDKs re-attach after an outage longer than
+the NATS client's own reconnect budget — re-resolving the bus, rebuilding
+every subscription and re-announcing, instead of staying alive but deaf.
+
+Underneath: compaction became honest (every refusal reaches the wire, and a
+conversation that had trimmed can compact again), provider and model are
+pinned together, the Go SDK's dispatch no longer lets a background call
+stall hot reads, and the bus-contract suite runs in a bounded pool (~15 min
+sequential → ~2 min) with CI actually running the server gate. The desktop
+UI left this repository for its own plugin (`gokr/niffler-ui`), and
+`niffler-tui` ships alongside these SDK changes.
+
 ### Added
 
 - **Advisory discovery (`jev`) and the supervised Von launcher (`von`) — an
