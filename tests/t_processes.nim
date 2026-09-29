@@ -20,6 +20,12 @@ import helpers
 proc pidAlive(pid: int): bool =
   dirExists("/proc/" & $pid)
 
+proc spoolPath(root, id, stream: string): string =
+  ## Path of a background child's spool file (stdout or stderr) inside the
+  ## sandbox root. Used where a check must observe the file itself rather than
+  ## a poll: the truncation regression needs the size before the first drain.
+  root / "var" / "processes" / (id & "." & stream)
+
 # --- the notice lane, from the test's side ----------------------------------
 # The processes component publishes exit notices on the same subject the agent
 # uses for settlement notices, so the test subscribes to it directly (shim
