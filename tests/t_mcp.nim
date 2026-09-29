@@ -88,7 +88,7 @@ proc startMockRegistry(repoRoot, root: string): (Process, int) =
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  for binary in ["niffler", "session", "store", "mcp", "mcp-bridge", "cli"]:
+  for binary in ["niffler", "session", "store-sqlite", "mcp", "mcp-bridge", "cli"]:
     if not fileExists(repoRoot / "var" / "bin" / binary):
       fail("missing " & binary & " binary — run `make build` first")
   if failures > 0:

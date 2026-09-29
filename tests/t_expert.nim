@@ -61,7 +61,7 @@ proc stopHard(p: var Process) =
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  for bin in ["niffler", "session", "store", "bash", "git", "expert",
+  for bin in ["niffler", "session", "store-sqlite", "bash", "git", "expert",
               "skills"]:
     if not fileExists(repoRoot / "var" / "bin" / bin):
       fail("missing binary " & bin & " — run `make build` first")
