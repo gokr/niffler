@@ -285,6 +285,45 @@ repository — `make dev`, `make test` and `make typecheck` there.
 The SPA is a NATS client, not a Wails client: it only talks to its
 `nats.ts`; Wails is hosting, not architecture.
 
+## Releasing
+
+Cut a release from a green `main` — no open PR that should ship, and the gate
+run on the exact commit being tagged. The order below is the ritual; the
+v0.2.0 cut (`docs: changelog 0.2.0 …, website + README point at the release`)
+is the precedent for steps 2–6.
+
+1. **Freeze and verify.** `make build && make test` (plus `make doctor` for the
+   prerequisite report) on the commit to tag; for SDK, bus or
+   conversation-loop changes also run a live harness by hand. Merge or hold the
+   nightly docs/website PRs — the bots keep filing them, and a release must not
+   be cut from a half-merged window.
+2. **Bump the package version.** `niffler.nimble`'s `version =` is the only
+   version field the release moves; component and bus registrations carry
+   independent `0.x` versions and stay put.
+3. **Cut the changelog.** Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`
+   and put a short headline summary of the release above the accumulated detail
+   (the v0.2.0/v0.3.0 cuts open with a paragraph or two the announcement can
+   quote), then re-add an empty `## [Unreleased]` on top. Nothing in the
+   section may describe unshipped behavior.
+4. **Move the release pointers.** `README.md` ("The current release is …"),
+   `README.zh.md`, `README.zh-TW.md` and the website's release line
+   (`website/index.html` plus the `hero.release` entry in every
+   `website/i18n.js` locale) all still name the previous release.
+5. **Refresh the translations last.** English first, then the localized
+   READMEs/manuals and the website locales — they are AI autotranslations of
+   the English source, so cutting them ahead of it just bakes in staleness.
+   Section headings stay in English so anchors keep working in every language.
+6. **Tag and publish.** An annotated tag whose message is the release summary
+   (the v0.2.0 tag body is the model), then a GitHub release from that tag.
+   The tag *is* the release; `make release` only picks release *build flags*
+   for local benchmarking and is not part of this step.
+7. **Release the plugins that ship fixed code.** Plugins install at a repo's
+   latest GitHub *release*, so a merged fix reaches users only once its repo is
+   released — `gokr/niffler-tui` moves with the harness (bump its
+   `niffler.json` `version`, cut its own `CHANGELOG.md`, tag, create the
+   release), and `gokr/niffler-ui` follows its own cadence unless this release
+   changed something its users need.
+
 ## Environment and gotchas
 
 - **Nim packages come from nimble.** `niffler.nimble` requires `yaml`,
