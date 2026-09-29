@@ -37,7 +37,7 @@ proc compileMock(llmBin, repoRoot, scenario: string) =
     repoRoot / "tests" / "mock_parallel_llm.nim"],
     options = {poUsePath, poStdErrToStdOut})
   defer: compProc.close()
-  if waitForExit(compProc, 120_000) != 0:
+  if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
     fail("mock parallel llm failed to compile")
     quit(1)
 
@@ -50,7 +50,7 @@ proc compileSlow(bin, src: string) =
     "-o:" & bin, src],
     options = {poUsePath, poStdErrToStdOut})
   defer: compProc.close()
-  if waitForExit(compProc, 120_000) != 0:
+  if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
     fail("slow component failed to compile: " & src)
     quit(1)
 

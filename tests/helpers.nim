@@ -12,6 +12,15 @@ type TestFailure* = object of CatchableError
 
 var failures* = 0
 
+const fixtureCompileTimeoutMs* = 600_000
+  ## Tests compile their fixture components with `nim c` themselves. Under the
+  ## pool (TEST_JOBS defaults to one job per core and every test also spawns
+  ## core/store/llm children) a cold compile can take minutes of wall clock,
+  ## so a 120 s budget read as "component failed to compile" on a loaded box —
+  ## four tests failed a full-gate run that way while passing standalone. A
+  ## genuine compile error still returns non-zero at once; only the
+  ## slow-but-healthy case waits here.
+
 proc fail*(msg: string) =
   echo "FAIL: ", msg
   inc failures

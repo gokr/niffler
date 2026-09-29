@@ -43,7 +43,7 @@ proc buildMockLlm(sandbox: TestSandbox) =
     "-o:" & sandbox.sandboxBin("llm"),
     sandbox.repoRoot / "tests" / "mock_llm.nim"],
     options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(compiler, 180_000) != 0:
+  if waitForExit(compiler, fixtureCompileTimeoutMs) != 0:
     fail("mock llm failed to compile")
     quit(1)
   compiler.close()

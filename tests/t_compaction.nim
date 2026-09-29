@@ -112,7 +112,7 @@ proc main() =
     "c", "--hints:off", "--warnings:off", "--path:" & repoRoot / "sdk",
     "-o:" & sandbox.sandboxBin("llm"), repoRoot / "tests" / "mock_llm.nim"],
     options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(compiler, 120_000) != 0:
+  if waitForExit(compiler, fixtureCompileTimeoutMs) != 0:
     fail("mock llm failed to compile")
     quit(1)
   compiler.close()
@@ -121,7 +121,7 @@ proc main() =
     "-o:" & sandbox.sandboxBin("fixture-compaction"),
     repoRoot / "tests" / "compaction_contract" / "fixture.nim"],
     options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(fixtureCompiler, 120_000) != 0:
+  if waitForExit(fixtureCompiler, fixtureCompileTimeoutMs) != 0:
     fail("contract fixture compactor failed to compile")
     quit(1)
   fixtureCompiler.close()

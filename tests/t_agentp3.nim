@@ -54,7 +54,7 @@ proc main() =
     repoRoot / "components" / "ctxtest" / "main.nim"],
     options = {poUsePath, poStdErrToStdOut})
   defer: compProc.close()
-  if waitForExit(compProc, 120_000) != 0:
+  if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
     fail("ctxtest component failed to compile")
     quit(1)
 

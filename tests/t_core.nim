@@ -367,7 +367,7 @@ proc main() =
     repoRoot / "components" / "ctxtest" / "main.nim"],
     options = {poUsePath, poStdErrToStdOut})
   defer: ctxtestProc.close()
-  if waitForExit(ctxtestProc, 120_000) != 0:
+  if waitForExit(ctxtestProc, fixtureCompileTimeoutMs) != 0:
     fail("ctxtest component failed to compile")
     quit(1)
   let ctxProc = startComponent(ctxBin, url, root = root)

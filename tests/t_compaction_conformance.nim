@@ -125,7 +125,7 @@ proc main() =
     "c", "--hints:off", "--warnings:off", "--path:" & repoRoot / "sdk",
     "-o:" & sandbox.sandboxBin("llm"), repoRoot / "tests" / "mock_llm.nim"],
     options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(compiler, 120_000) != 0:
+  if waitForExit(compiler, fixtureCompileTimeoutMs) != 0:
     fail("mock llm failed to compile")
     quit(1)
   compiler.close()

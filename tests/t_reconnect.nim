@@ -34,7 +34,7 @@ proc buildProbe(sandbox: TestSandbox) =
     "-o:" & sandbox.sandboxBin("reconnect-probe"),
     sandbox.repoRoot / "tests" / "fixtures" / "reconnect_probe.nim"],
     options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(compiler, 180_000) != 0:
+  if waitForExit(compiler, fixtureCompileTimeoutMs) != 0:
     fail("reconnect probe failed to compile")
     quit(1)
   compiler.close()

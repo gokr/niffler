@@ -80,7 +80,7 @@ proc main() =
     repoRoot / "tests" / "mock_llm.nim"],
     options = {poUsePath, poStdErrToStdOut})
   defer: compProc.close()
-  if waitForExit(compProc, 120_000) != 0:
+  if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
     fail("mock llm failed to compile")
     quit(1)
   # NOTE: sandbox intentionally kept on failure for post-mortem (cleaned by OS)

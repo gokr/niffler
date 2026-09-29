@@ -71,7 +71,7 @@ proc runSandboxFixture(tag: string, window: int, rounds: int,
     "-o:" & sandbox.sandboxBin("llm"),
     repoRoot / "tests" / "mock_llm.nim"],
     options = {poUsePath, poStdErrToStdOut})
-  if waitForExit(compProc, 120_000) != 0:
+  if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
     fail("mock llm failed to compile for " & tag)
     quit(1)
   compProc.close()
@@ -453,7 +453,7 @@ proc main() =
         "-o:" & sandbox.sandboxBin("llm"),
         repoRoot / "tests" / "mock_llm.nim"],
         options = {poUsePath, poStdErrToStdOut})
-      if waitForExit(compProc, 120_000) != 0:
+      if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
         fail("mock llm failed to compile for " & tag)
         quit(1)
       compProc.close()
@@ -558,7 +558,7 @@ proc main() =
       "-o:" & sandbox.sandboxBin("llm"),
       repoRoot / "tests" / "mock_llm.nim"],
       options = {poUsePath, poStdErrToStdOut})
-    if waitForExit(compProc, 120_000) != 0:
+    if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
       fail("mock llm failed to compile for trimdur")
       quit(1)
     compProc.close()
