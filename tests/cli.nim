@@ -9,7 +9,7 @@
 ## flow a plugin repo's CI uses to prove its package works.
 ##
 ## Requires a prior `nimble all` (core + all components + cli in var/bin)
-## and no other harness running against this repo's var/barrel-db.
+## and no other harness running against this repo's var/store.db.
 
 import std/[json, net, os, osproc, strtabs, strutils, times]
 import natsnim

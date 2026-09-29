@@ -8,14 +8,13 @@ bin           = @[]
 
 # Dependencies — deliberately tiny: the envelope is std/json runtime data,
 # yaml for the bootstrap manifest, natsnim (pure Nim, no libnats) for the
-# bus, bitbarrel for the store component's embedded KV.
+# bus.
 
 requires "nim >= 2.2.12"
 requires "yaml"
 requires "htmlparser"
 requires "checksums"
 requires "https://github.com/gokr/natsnim"
-requires "https://github.com/gokr/bitbarrel"
 
 # Tasks
 

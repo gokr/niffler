@@ -111,6 +111,23 @@ UI left this repository for its own plugin (`gokr/niffler-ui`), and
   rule is a pure function of the refs so a restart rebuilds the same request.
   `conversation_delete` sweeps the pixels with the conversation.
 
+### Removed
+
+- **The Nim/bitbarrel store engine and the migration tool are gone.** `store`
+  has been serving from Go + SQLite for a while (source-independent default,
+  atomic doc+rev writes, FTS5-backed `search`), so the last Nim component of the
+  store retired with its dependency: `components/store/main.nim` and
+  `gokr/bitbarrel` left `niffler.nimble`, and `tools/store_migrate.nim`
+  (`niffler-store-migrate`, plus `tools/bench_stores.nim`, whose only job was
+  comparing the two engines) is deleted. `NIF_STORE_BACKEND` now takes `sqlite`
+  (default) or `tidb`, and anything else still refuses to boot. A harness whose
+  history is in `var/barrel-db` is refused at boot with a plain error instead of
+  the migrate instructions — nothing is touched, and a 0.3.x checkout still
+  moves the data (`niffler-store-migrate --root <root>`). The store contract
+  tests are unchanged: `make test-store` runs them against the default engine,
+  `make test-store-tidb` against TiDB (`make test-store-sqlite` is gone — it had
+  become an alias for the default).
+
 ### Changed
 
 - **The Wails desktop UI is no longer an official part of the harness.** Its

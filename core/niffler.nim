@@ -441,12 +441,11 @@ proc main() =
   let manifest = loadManifest(root)
   var required: seq[string] = @[]
 
-  # Un-migrated barrel guard (docs/research/COMPACTION.md §2, STORE_V2 migration):
-  # the default engine changed from barrel to sqlite, and switching does NOT
-  # migrate data. Booting sqlite over an existing barrel would open an empty
-  # database and look exactly like every conversation vanished, while the real
-  # history sat untouched in var/barrel-db. Refuse loudly with the command to
-  # run instead — a deliberate, recoverable stop, not silent data loss.
+  # Barrel storage was removed in 0.4.0 (docs/research/STORE_V2.md): the store
+  # engines are SQLite (default) and TiDB now, and neither reads var/barrel-db.
+  # Booting SQLite over an existing barrel would open an empty database and look
+  # exactly like every conversation vanished, so refuse loudly instead — the old
+  # history is untouched and an older Niffler can still move it.
   block storeGuard:
     let requested = getEnv("NIF_STORE_BACKEND", "")
     if requested in ["", "sqlite"]:
@@ -458,49 +457,33 @@ proc main() =
       # target database does not exist yet but old history does.
       if fileExists(sqlitePath) and not fileExists(sqliteDb) and
           fileExists(barrelDb):
-        let cmd = "niffler-store-migrate"
         quit("core: this harness has conversation history in var/barrel-db, " &
-             "but the default store engine is now SQLite and no var/store.db " &
-             "exists yet.\n" &
-             "core: migrate first (nothing is moved automatically):\n" &
-             "core:     " & cmd & " --root " & root & "\n" &
-             "core: scan for other un-migrated roots (benchmarks, clones):\n" &
-             "core:     " & cmd & " --scan\n" &
-             "core: or keep using the old engine: NIF_STORE_BACKEND=barrel", 1)
+             "but barrel storage was removed in 0.4.0 — the engines are " &
+             "SQLite (default) and TiDB now.\n" &
+             "core: nothing was modified; var/barrel-db is untouched.\n" &
+             "core: move that history with an older Niffler (0.3.x shipped " &
+             "niffler-store-migrate), or start this checkout on a fresh " &
+             "SQLite store.", 1)
 
   for c in manifest{"components"}:
     let name = c{"name"}.getStr("")
     if minimalMode and name notin minimalComponents:
       continue
-    # Store engine selection (docs/research/STORE_V2.md): all engines
-    # register as component "store" with identical tools — the manifest
-    # keeps its single entry and core resolves the binary at boot.
-    # sqlite (default) | barrel | tidb; anything else refuses to boot.
-    # SQLite is the default because compaction's context projection needs an
-    # atomic doc+rev write (barrel's put is a two-key sequence) and a
-    # range-readable list (docs/research/COMPACTION.md §2).
+    # Store engine selection (docs/research/STORE_V2.md): both engines
+    # register as component "store" with identical tools — the manifest keeps
+    # one entry and core resolves the binary at boot. sqlite (default) | tidb;
+    # anything else refuses to boot. SQLite is the default because compaction's
+    # context projection needs an atomic doc+rev write and a range-readable
+    # list (docs/research/COMPACTION.md §2).
     var binary = c{"binary"}.getStr("")
-    let manifestBinary = binary
     if name == "store":
       let requested = getEnv("NIF_STORE_BACKEND", "")
       case requested
       of "", "sqlite": binary = "var/bin/store-sqlite"
-      of "barrel": discard  # the manifest's own entry (var/bin/store)
       of "tidb": binary = "var/bin/store-tidb"
       else:
         quit("core: unknown NIF_STORE_BACKEND '" & requested &
-          "' (sqlite|barrel|tidb) — refusing to boot", 1)
-      # An unset NIF_STORE_BACKEND is a default, not a demand: a checkout
-      # that built only the Nim components has no store-sqlite, and booting
-      # without a store is worse than using the previously shipped engine.
-      # An explicit request is a demand — it must never silently write to a
-      # different database, so a missing binary falls through to the
-      # missing-binary warning below.
-      if requested.len == 0 and not fileExists(root / binary) and
-          binary != manifestBinary and fileExists(root / manifestBinary):
-        echo "core: WARNING " & binary & " missing — using " &
-             manifestBinary & " (run `make build` for the sqlite engine)"
-        binary = manifestBinary
+          "' (sqlite|tidb) — refusing to boot", 1)
     let binaryPath = root / binary
     if not fileExists(binaryPath):
       echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binaryPath & ")"

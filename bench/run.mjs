@@ -834,7 +834,7 @@ async function ensureCombo(combo) {
           // reset the in-flight marker so the next cell retries (a transient
           // conflict — a stale store from a killed run, a busy port — may
           // have cleared), and tear down the half-booted harness so its
-          // store does not hold the barrel-db against that retry.
+          // store does not hold its database lock against that retry.
           st.booting = null;
           try { await shared.niffler.stop(); } catch {}
         }

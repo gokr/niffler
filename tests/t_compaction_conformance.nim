@@ -107,7 +107,7 @@ proc main() =
   if not fileExists(binDir):
     fail("component binary not found: " & binDir)
     quit(1)
-  for name in ["niffler", "session", "store", "bash", "cli"]:
+  for name in ["niffler", "session", "store-sqlite", "bash", "cli"]:
     if not fileExists(repoRoot / "var" / "bin" / name):
       fail("missing " & name & " binary in " & repoRoot &
            " — run `make build` first")

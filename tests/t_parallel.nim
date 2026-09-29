@@ -152,7 +152,7 @@ proc boot(nc: NatsConnection, coreProc: var Process,
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  for bin in ["niffler", "session", "store", "edit", "grep", "bash"]:
+  for bin in ["niffler", "session", "store-sqlite", "edit", "grep", "bash"]:
     if not fileExists(repoRoot / "var" / "bin" / bin):
       fail("missing binary " & bin & " — run `make build` first")
       quit(1)

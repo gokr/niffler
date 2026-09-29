@@ -90,8 +90,8 @@ proc main() =
   bashProc = nil
   echo if stillRunning: "WARN: bash ignored drain (killed)" else: "OK: bash drained and exited"
 
-  # --- store round trip (barrel-backed document store) -----------------
-  let storeBin = root / "var" / "bin" / "store"
+  # --- store round trip (document store) ------------------------------
+  let storeBin = root / "var" / "bin" / "store-sqlite"
   if not fileExists(storeBin):
     echo "FAIL: " & storeBin & " missing — run `nimble all` first"
     raise newException(AssertionDefect, "smoke test failed")

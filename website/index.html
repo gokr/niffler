@@ -128,9 +128,9 @@
       <h3 data-i18n-html="whatsnew.4h"><span class="num">04</span> the store answers questions</h3>
       <p data-i18n-html="whatsnew.4p">A new <code>search</code> op does server-side full-text over
       stored documents, so a session finds things without downloading a whole
-      transcript. SQLite is the default engine (barrel and TiDB selectable),
-      and <code>niffler-store-migrate</code> pages large documents under the
-      bus payload ceiling instead of blowing it.</p>
+      transcript. SQLite is the default engine (TiDB stays selectable for a
+      shared cluster), with an FTS5 index maintained in the same transaction as
+      the documents it answers from.</p>
     </article>
     <article class="card">
       <h3 data-i18n-html="whatsnew.5h"><span class="num">05</span> fabric, plus an opt-in advisor</h3>
@@ -200,7 +200,7 @@
       store and restored on boot. The repo holds the reproducible source;
       <code>var/bin/</code> can be rebuilt, while the store engine holds
       persistent state (SQLite at <code>var/store.db</code> by default —
-      barrel or TiDB via <code>NIF_STORE_BACKEND</code>). A component that
+      or TiDB via <code>NIF_STORE_BACKEND</code>). A component that
       outlives a bus outage re-attaches on its own — it re-resolves the bus,
       rebuilds its subscriptions and re-announces, with no process kill.</p>
     </article>
@@ -379,7 +379,7 @@
         <li><span class="check">✓</span> <span data-i18n="qs.req.node">node / npm</span></li>
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
       </ul>
-      <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, checksums, natsnim, bitbarrel — installed automatically on first build.</p>
+      <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, checksums, natsnim — installed automatically on first build.</p>
       <h3 data-i18n="qs.clonehome.h">one clone = one instance</h3>
       <p class="dim small" data-i18n-html="qs.clonehome.p">a harness claims its home bus (<code>.env</code>'s <code>NIF_NATS_URL</code>, default <code>nats://127.0.0.1:4222</code>) only when the answering core serves this root — every catalog response carries <code>root</code> + <code>gitHash</code> — and yields loudly to a foreign one. Dev clones set <code>NIF_NATS_SPAWN=1</code> for an isolated random-port bus, and no child (component, nats-server) outlives its harness.</p>
     </div>

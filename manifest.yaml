@@ -5,16 +5,16 @@
 # shipped components. Agent-written components go through builder + spawn.
 
 components:
-  # Store engines: store-sqlite (default), barrel, store-tidb all register
-  # as component "store" with identical tools. NIF_STORE_BACKEND picks the
-  # engine at boot (core resolves this entry's binary): unset/sqlite →
-  # var/bin/store-sqlite, barrel → var/bin/store, tidb → var/bin/store-tidb
-  # (docs/research/STORE_V2.md, docs/research/COMPACTION.md §2). An
-  # un-migrated var/barrel-db makes core refuse to boot — run
-  # `niffler-store-migrate --root <path>` or set NIF_STORE_BACKEND=barrel.
+  # Store engines: store-sqlite (default) and store-tidb both register as
+  # component "store" with identical tools. NIF_STORE_BACKEND picks the engine
+  # at boot (core resolves this entry's binary): unset/sqlite →
+  # var/bin/store-sqlite, tidb → var/bin/store-tidb (docs/research/STORE_V2.md,
+  # docs/research/COMPACTION.md §2). The Nim/bitbarrel engine was removed in
+  # 0.4.0; a harness with history in var/barrel-db refuses to boot rather than
+  # open an empty database over it.
   - name: store
-    build: {lang: nim, src: components/store/main.nim}
-    binary: var/bin/store
+    build: {lang: go, src: components/store-sqlite}
+    binary: var/bin/store-sqlite
     autostart: true
     required: true
     restart: on-failure

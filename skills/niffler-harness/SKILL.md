@@ -42,7 +42,7 @@ advising on or changing Niffler itself:
   wipe spawned-component records, restart.
 - `make down` — stop stray harnesses/components and nats-server. Run it when
   a fresh store refuses to start (a detached core holds
-  `var/barrel-db.lock`) or before a cold start.
+  `var/store.db.lock`) or before a cold start.
 - Autostart: a UI's first act is the SDK's `ensureHarness` — probe env →
   `var/nats-url` → `127.0.0.1:4222`, else spawn core with `NIF_AUTOSTART=1`.
   An autostarted core exits when the last interactive client departs
@@ -58,7 +58,7 @@ advising on or changing Niffler itself:
 
 Document store over the bus: `put/get/list/del` with rev-based optimistic
 concurrency. Engines register as the same component `store` with identical
-tools (boot-time `NIF_STORE_BACKEND=barrel|sqlite|tidb`); consumers never
+tools (boot-time `NIF_STORE_BACKEND=sqlite|tidb`); consumers never
 learn which is live. File engines are single-writer — never run two stores
 against one file. Kinds include `conversation`, `message`, plugin install
 records, the provider registry — and your own durable state.
@@ -73,7 +73,7 @@ Reading a conversation while a harness is on the bus:
 
 Mind which store answers — the bus may host another harness's store
 (`readlink /proc/$(pgrep -f bin/store | head -1)/cwd` shows which db it
-owns). Offline, values are plain JSON inside `var/barrel-db`.
+owns). Offline, values are plain JSON inside `var/store.db` (SQLite).
 
 ## Self-extension end-to-end
 
@@ -151,7 +151,7 @@ variable carries the `NIF_` prefix (`NIF_OPENAI_*`, `NIF_NATS_URL`,
 
 | Symptom | Action |
 |---|---|
-| Boot fails, store refuses to start | `make down` (stale core holds the barrel-db flock), check `var/logs`, restart |
+| Boot fails, store refuses to start | `make down` (stale core holds the store.db flock), check `var/logs`, restart |
 | Child component keeps dying | read the supervisor's `var/logs/<name>.log` tail; `make build` if the binary is stale |
 | Spawned components misbehave | `core.kill <name>` (temporary) or `core.remove` + respawn |
 | Broken build state | `make recover` (rebuild + wipe spawn records) |

@@ -949,8 +949,8 @@ whole kind and filtering locally.
 - **Engines**: the sqlite engine (default) answers from an FTS5 index
   (`docs_fts`) whose rowids are `docs`' rowids — put/del maintain it in
   the same transaction, and startup rebuilds it from `docs` whenever the
-  two disagree (derived state: dropping it loses nothing). The barrel and
-  tidb engines have no index and apply the same matcher by scanning the
+  two disagree (derived state: dropping it loses nothing). The tidb engine
+  has no index and applies the same matcher by scanning the
   kind in id order: equivalent behavior, O(documents of the kind) per
   call — engine-private detail, consumers see the same contract.
 

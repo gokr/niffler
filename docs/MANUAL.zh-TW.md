@@ -45,7 +45,7 @@
 | `manifest.yaml` | 啟動 manifest：core 生成哪些元件、重啟原則，以及選用的無狀態 `replicas` 數量；`--minimal` 將其篩選為 `store`、`bash` 和 `llm` |
 | `var/` | **執行時狀態，gitignored，可丟棄** — 儲存庫是快照 |
 | `var/bin/` | 建置的二進位檔（系統 core ＋會話執行器＋元件），加上 `builder.build` 編譯的一切 — 代理建置的元件也落在此處，與系統元件並列。由 `make build` 重建 |
-| `var/store.db` | SQLite 儲存的資料檔（預設引擎）— **單一寫入者**：恰好一個 `store` 程序可以開啟它。較舊、未遷移的載具仍使用 `var/barrel-db`；已遷移的根目錄會讓該檔案原封不動地留在 `var/store.db` 旁。每個引擎鎖定自己的檔案 — `var/store.db.lock`、`var/barrel-db.lock` |
+| `var/store.db` | 儲存的資料檔（SQLite 是唯一檔案型引擎）— **單一寫入者**：恰好一個 `store` 行程可以開啟它，並鎖定 `var/store.db.lock`（flock，行程崩潰時由核心釋放）。0.4.0 之前的 `var/barrel-db` 會在啟動時被拒絕，絕不會被覆寫 |
 | `var/nats-url` | 最後生成的匯流排的匯流排位址；UI 橋接讀取它以找到 core |
 | `var/nats-monitor-url` | 當 core 生成匯流排時的 HTTP 監控端點；對於重用/遠端匯流排則不存在 |
 | `var/logs/`、`var/captures/` | 輪替的結構化日誌和明確的 observe 探針匯出（見[觀察與日誌](#observation-and-logs)） |
@@ -60,7 +60,7 @@
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim/Go | required | 匯流排上的文件儲存（`put/get/list/search/del`，基於 rev 的並行控制）。全部五個工具都是隨需的，且 `del` 額外被隱藏 — core 刪除記錄，模型不能。引擎以相同名稱註冊相同的五個工具（`put`/`get`/`list`/`search`/`del`；barrel 引擎額外註冊一個隱藏的 `selftest` — `/doctor` 展開的那個 — Go 引擎不實作）：`store-sqlite`（Go，SQLite ＋ goose 遷移，`var/store.db`）是**預設**；`barrel`（`var/bin/store`）和 `tidb` 仍可透過 `NIF_STORE_BACKEND` 選擇 — 見[儲存引擎](#store-engines) |
+| `store` | Go | required | 匯流排上的文件儲存（`put/get/list/search/del`，基於 rev 的並行控制）。五個工具都是 on-demand，`del` 還額外隱藏——core 刪除記錄，模型不能。引擎以同名註冊、工具集完全相同（`put`/`get`/`list`/`search`/`del`），每個引擎還有一個隱藏的 `selftest`（供 `/doctor` 使用）：`store-sqlite`（Go，SQLite + goose 遷移，`var/store.db`）是**預設**；`store-tidb` 仍可用 `NIF_STORE_BACKEND=tidb` 選擇——Nim/bitbarrel 引擎已在 0.4.0 移除，見[儲存引擎](#store-engines) |
 | `bash` | Nim | required | 經典工具：帶逾時＋輸出上限的 shell 命令。命令作為其自身程序群組的領導者執行，因此逾時或取消的回合會殺死整棵樹（退出碼 124 / 130）— 沒有孤兒子程序。結果攜帶 `text`（一個 `(exit N)` 狀態行 — 非零 = 失敗；124 = 逾時，130 = 已取消，126 = cwd 無法進入（該工具也使用 126 表示找到但不可執行），127 = `bash` 不在 `PATH` 上，128 ＋信號表示命令殺死了自己（139 = SIGSEGV，143 = SIGTERM）— 後接合併的 stdout/stderr；這是 LLM 對話記錄顯示的內容）加上機器欄位 `exit_code`、`cancelled`，以及當過大輸出溢出到 `var/toolout/` 下的檔案時的 `spill {path, bytes, lines}`（絕對路徑在 `spill.path` 中；可用 `read` 分頁，1 小時後清掃）。`run_in_background: true` 將長時間執行的命令（伺服器、監看器）交給 `processes` 元件而非阻塞 — 見[背景程序](#background-processes-processes) |
 | `repomap` | Nim | optional | 排序的工作區地圖（docs/research/REPOMAP.md）：約 1KB 的關鍵檔案及其關鍵定義，由 tree-sitter ＋原生 Nim 標籤圖與個人化 PageRank 建構（aider repomap 移植）。`repo_map {workspace?, focus?, mentionedIdents?, budget?}` 是 onDemand 且為讀取效應。工作區開啟自動附加（在 `ev.workspace.opened` 上的一個僅附加歷史條目）**預設開啟但受閘控**（`docs/research/REPOMAP-GATES.md`）：工作區必須至少有 50 個涵蓋檔案，且其渲染的地圖必須至少有 800 位元組、25 個符號和 5 個帶符號的檔案。小型/殘缺的地圖會被扣留並記錄為 `repo map withheld`；設定 `NIF_REPOMAP_AUTOAPPEND=0` 以停用附加。明確的 `repo_map` 工具無論這些閘門如何都可用。快取：`var/repomap-tags/`（以 mtime 為鍵）。選用元件 — 不存在意味著沒有地圖，其他一切不變。參數、標籤層級和附加負載：[`repomap` 詳解](#repomap-in-detail) |
 | `processes` | Nim | optional | 帶有擁有者的長時間執行命令：`process_start`（分離，自有程序群組，立即返回一個 id）、`process_poll`（排空增量輸出）、`process_kill`（停止群組）、`process_list` — 見[背景程序](#background-processes-processes) |
@@ -180,40 +180,35 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 ### Store engines
 
-儲存的**匯流排契約就是產物本身**：`put/get/list/search/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。多個引擎實作它，並以元件 `store` 註冊、提供完全相同的工具——消費者永遠不會知道哪個引擎正在運作。選擇是開機時的決定：`NIF_STORE_BACKEND=sqlite|barrel|tidb`（預設 `sqlite`）；core 據此解析 manifest 項目的二進位檔，並在遇到未知值時拒絕開機。未設定 `NIF_STORE_BACKEND` 是預設，不是要求：當 `var/bin/store-sqlite` 從未建置時，core 會警告並改為啟動 manifest 的二進位檔（`var/bin/store`，barrel）。明確的值則是要求——二進位檔缺失只會發出警告，絕不會被悄悄換成另一個引擎的資料庫。
+儲存的**匯流排契約就是產物本身**：`put/get/list/search/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。兩個引擎實作該契約，並以元件 `store` 註冊，提供完全相同的工具——消費者永遠不會知道目前執行的是哪個引擎。選擇是啟動時的一次決定：`NIF_STORE_BACKEND=sqlite|tidb`（預設 `sqlite`）；core 據此解析清單條目中的二進位，遇到未知值則拒絕啟動。從未建置的二進位只會發出警告（store 是 `required`，core 就此停下），絕不會被靜默替換為另一個引擎的資料庫。
 
-**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個種類，即可依 id/標題尋找對話、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語義在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的不分大小寫**前綴**比對（AND），非字母數字字元一律無作用，因此使用者輸入無需跳脫；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一個交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 派生狀態，可安全丟棄），而 **barrel** 和 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的比對器（結果等價，每次呼叫 O(kind 中的文件數)）。
+**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個 kind，即可依 id/標題尋找工作階段、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語意在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的大小寫不敏感**前綴**匹配（AND），非字母數字字元一律無作用，因此使用者輸入無需轉義；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 衍生狀態，可安全丟棄），而 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的匹配器（結果等價，每次呼叫 O(kind 中的文件數)）。
 
 - **sqlite**（預設，`var/bin/store-sqlite`，Go）：在 SQLite 上實作同一份文件契約。文件以 JSON TEXT 原樣存放；`put` 是單一原子陳述式（doc 與 rev 一起移動——KV 引擎的雙鍵崩潰窗口不復存在）；schema 透過內嵌的 goose migration 管理；純 Go 驅動程式（`modernc.org/sqlite`，無 cgo）。資料檔 `var/store.db`（WAL），可用任何 SQLite 工具檢視（`sqlite3 var/store.db 'select kind, count(*) from docs group by kind'`），也可從 DuckDB 以唯讀方式掛載以進行離線分析。自 context compaction 落地後即為預設：context projection 需要原子寫入與可範圍讀取的清單（docs/research/COMPACTION.md §2）。SQLite pragma 是程式碼內建、不可配置（`_txlock=immediate`、WAL、`synchronous(NORMAL)`、10 秒 `busy_timeout`、單一連線池），且 goose migration 會在啟動時自動套用。
-- **barrel**（`var/bin/store`）：內嵌的 BitBarrel KV（Bitcask 風格）位於 `var/barrel-db`——設計上無 schema、零依賴、久經考驗。仍完整支援（`NIF_STORE_BACKEND=barrel`）；其 `put` 是雙鍵序列（先 doc，再 rev）：兩者之間發生崩潰可能導致內容更新而修訂未更新，而對於*新*文件，doc 鍵會被寫入但完全沒有 rev 鍵，`get` 與 `list` 會將其讀為不存在（`rev == 0`）——該文件在再次寫入之前無法觸及。
 - **tidb**（`var/bin/store-tidb`，Go）：透過 MySQL 協定（go-sql-driver）實作同一份 schema——一個網路共享的儲存，任何數量的 harness 都能從中提供服務。`NIF_STORE_TIDB_DSN` 指向叢集（`root@tcp(host:4000)/niffler`；單節點 docker：`docker run -p 4000:4000 pingcap/tidb`）。`value` 維持 MEDIUMTEXT，而非原生 JSON 型別——二進位 JSON 會正規化鍵順序與數字精度，破壞原樣文件契約；索引查詢日後會以 TEXT 上的生成欄位形式到來（一個 goose migration）。`kind`/`id` 為 utf8mb4_bin：位元組精確相等、位元組序清單排序，以及大小寫敏感的 LIKE 前綴（與其他引擎的契約對等）。無 flock——叢集依設計即為共享狀態；資料列鎖（`SELECT … FOR UPDATE`、悲觀式交易）仲裁寫入者，而 rev 計數器仍是樂觀並行控制的檢查。也可對純 MySQL 8 運作。DSN 使用者需要 goose 建立其版本表並套用 migration 所需的權限；連線/讀取/寫入逾時為硬編碼（5 秒 / 60 秒 / 30 秒），且引擎持有單一連線池連線（單一會話，因此 `FOR UPDATE` 交易的陳述式會保持在一起）——同一叢集上的 N 個 harness 持有 N 條連線，不共享連線池。
 
 除了 root 與引擎選擇之外，引擎不接受任何配置：檔案路徑、鎖路徑、pragma、逾時與連線池大小皆為程式碼內建（`NIF_ROOT` 決定 root，`NIF_STORE_BACKEND` 決定引擎，`NIF_STORE_TIDB_DSN` 決定叢集）。
 
-檔案型引擎（`sqlite`、`barrel`）以相同方式強制單一寫入者：一個行程擁有該檔案（flock；崩潰時由核心釋放），其他所有人以 envelope 溝通。`tidb` 沒有檔案可鎖——叢集依設計即為共享狀態，並由資料列鎖加上 rev 計數器在 harness 之間仲裁。
+檔案型引擎（`sqlite`）以相同方式強制單一寫入者：一個行程擁有該檔案（flock；行程崩潰時由核心釋放），其他所有行程只講 envelope。`tidb` 沒有可鎖的檔案——叢集按設計就是共享狀態，列鎖加上 rev 計數器在多個 harness 之間仲裁。
 
 `list` 是**一頁**，不是完整檢視：`limit` 預設為 100，並被限制在 1000 以內，回覆帶有 `hasMore` 以及 `nextAfter` id 游標。將 `nextAfter` 作為 `after` 傳回以走完其餘部分——`after` 為排他性，而當 `hasMore` 為 false 時 `nextAfter` 不存在。儲存保留完整歷史，因此一段長對話無法容納於單次呼叫；core 自身的全 kind 讀取（resume、`session_info`、`conversation_delete`）會自動分頁。
 
-儲存契約是對每個引擎執行同一套測試：`make test-store`（選定/預設引擎）、`make test-store-sqlite`、`make test-store-tidb`（需要 `NIF_STORE_TIDB_DSN`，否則印出 SKIP）；`t_store_paging` 釘住 resume 與 migration 所依賴的 `after`/`hasMore`/`nextAfter` 游標語意。
+儲存契約是對每個引擎執行同一套測試：`make test-store`（預設引擎）、`make test-store-tidb`（需要 `NIF_STORE_TIDB_DSN`，否則印出 SKIP）；`t_store_paging` 釘住 resume 與 migration 所依賴的 `after`/`hasMore`/`nextAfter` 游標語意。
 
-### Migrating between engines
+### Barrel storage was removed (0.4.0)
 
-**切換引擎不會搬移資料。** 升級後，歷史位於 `var/barrel-db` 的 harness 會拒絕開機，而不是開啟一個空的 `var/store.db` 並看起來像失去了每一段對話：
+**barrel 儲存已在 0.4.0 移除。** Nim/BitBarrel 引擎（`var/bin/store`、`var/barrel-db`）與 `niffler-store-migrate` 工具都已刪除。儲存引擎現在只有 **SQLite**（預設，`var/store.db`）與 **TiDB**；切換引擎依然不會搬移資料，因此歷史位於 `var/barrel-db` 的 harness 會拒絕啟動，而不是開啟一個空的 `var/store.db` 並看起來像遺失了所有對話：
 
 ```
-core: this harness has conversation history in var/barrel-db, but the
-      default store engine is now SQLite and no var/store.db exists yet.
-core: migrate first (nothing is moved automatically):
-core:     niffler-store-migrate --root /path/to/harness
-core: scan for other un-migrated roots (benchmarks, clones):
-core:     niffler-store-migrate --scan
-core: or keep using the old engine: NIF_STORE_BACKEND=barrel
+core: this harness has conversation history in var/barrel-db, but barrel
+      storage was removed in 0.4.0 — the engines are SQLite (default) and
+      TiDB now.
+core: nothing was modified; var/barrel-db is untouched.
+core: move that history with an older Niffler (0.3.x shipped
+      niffler-store-migrate), or start this checkout on a fresh SQLite store.
 ```
 
-`niffler-store-migrate`（位於 `var/bin`）以**離線**方式執行——它啟動自己私有的 NATS 伺服器與 store 行程，因此無需啟動任何 harness，且它絕不編輯來源資料。儲存契約無法列舉 kind（`list` 需要一個），因此它讀取**它所探查之 kind 的**每一份文件——這份候選清單是對 harness 今日所寫每一種 kind 的經驗證普查（`agentjob`、`agentnotice`、`approval`、`attachment`、`attachmentdata`、`compaction_input`、`component`、`context_projection`、`contextreceipt`、`conversation`、`fabricprog`、`mcp`、`message`、`plugin`、`profile`、`session`、`sessionmeta`、`slash`、`spill`）——而收尾驗證會逐 kind 走過它實際**搬運**的 kind，對照目標進行驗證。日後加入 harness 的 kind 仍會被悄悄略過，直到普查被擴充（匯流排無法看到它），這就是為什麼這份清單維護在 store 的 kind 表旁邊。
-今日接上的方向是 barrel → `sqlite`（預設）或 barrel → `tidb` 搭配 `--to tidb`；純 SQLite 的 root 會被拒絕，並顯示「root already uses sqlite — nothing to migrate」。每份文件都會被重放到全新的目標，然後逐 kind 驗證。`attachmentdata` 一次分頁一份文件（一整頁中的 4 MB base64 負載會超過匯流排的 8 MiB 上限），而格式錯誤的 `list` 游標會中止遷移，而不是靜默截斷它。旗標（`--root`、`--to <engine>`、`--dry-run`、`--scan [<top>]`、`--all [<top>]`、`--force`）由工具自身的 `--help` 說明；`--force` 會覆蓋既有的目標資料庫（舊的會被移到一旁為 `<name>.<timestamp>.aside`），而每個階段背後的設計見 [research/STORE_V2.md](research/STORE_V2.md) 的「Moving data between engines」。
-
-`--scan` 會尋找頂層目錄、同層複本與 benchmark 樹（`var/bench/**/niffler-root`）。Migration 會拒絕在同時持有 `var/barrel-db` 與 `var/store.db` 的 root 上執行——那是完成遷移後留下的狀態，重跑會失敗並顯示「ambiguous source; move one aside first」（將過時的 `var/store.db` 移到一旁即可重複執行）。回復就只是 `NIF_STORE_BACKEND=barrel`，因為 barrel 檔案未被觸碰；反方向的資料搬移——從 SQLite 或 TiDB 移出——尚未接上。
+要搬移這些資料，請使用 **0.3.x 檢出**：`niffler-store-migrate --root <root>` 離線執行（自帶私有 NATS 伺服器與 store 行程，絕不改動來源資料），把探測到的每一類文件重放進全新目標並逐類驗證。遷移完成的根目錄會在 `var/store.db` 旁邊原樣保留 `var/barrel-db`；確認結果無誤後，你可以自行刪除舊檔。
 
 ## State and configuration
 
@@ -247,7 +242,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | `NIF_AUTOSTART_IDLE_S` | 最後一個互動式客戶端離開後，自動啟動的 core 結束前的秒數 | `10` |
 | `NIF_AUTOSTART_BOOT_S` | 自動啟動的 core 在放棄前等待其第一個互動式客戶端的秒數 | `60` |
 | `NIF_ENSURE_ATTACH` | `0` 讓 `ensureHarness` 略過附加並總是啟動一個 core（測試） | `1` |
-| `NIF_STORE_BACKEND` | 開機時選定的儲存引擎：`sqlite`（預設 → `var/bin/store-sqlite`）、`barrel`（→ `var/bin/store`）、`tidb`（→ `var/bin/store-tidb`）；其他任何值都拒絕開機。所有引擎都以元件 `store` 註冊、提供完全相同的工具——見 [Store engines](#store-engines)。未遷移的 barrel（歷史在 `var/barrel-db`，尚無 `var/store.db`）會讓 core 拒絕開機並附上 `niffler-store-migrate` 指示；此處的 `barrel` 是逃生口。**未設定**值而其引擎二進位檔缺失（`var/bin/store-sqlite` 不存在）時會警告並退回 `var/bin/store`——明確的要求絕不退回 | `sqlite` |
+| `NIF_STORE_BACKEND` | 啟動時選擇的儲存引擎：`sqlite`（預設 → `var/bin/store-sqlite`，`var/store.db`）或 `tidb`（→ `var/bin/store-tidb`，需要 `NIF_STORE_TIDB_DSN`）。Nim/bitbarrel 引擎已在 0.4.0 移除；未知值會讓 core 拒絕啟動，遺留的 `var/barrel-db` 同理 |
 | `NIF_STORE_TIDB_DSN` | `tidb` 儲存引擎的 TiDB/MySQL DSN，例如 `root@tcp(127.0.0.1:4000)/niffler`（docker 單節點：`docker run -p 4000:4000 pingcap/tidb`）。該引擎必需——無本機預設；元件在沒有它時拒絕開機。除非 DSN 設定 `time_zone`，否則會話被強制為 UTC。帳號需要 goose 的 DDL migration 權限，於每次開機套用（全新資料庫，然後是每個新出貨的 migration）；連線/讀取/寫入逾時（5 秒/60 秒/30 秒）與單一連線池連線為程式碼內建，不可透過環境調校 | unset |
 | `NIF_GIT_MIRROR` | 當 `plugins` 元件複製套件時取代 `https://github.com` 的主機前綴（例如 `https://cnb.cool` 或 Gitee 鏡像）——API/搜尋端點仍留在 GitHub | unset |
 | `NIF_NPM_REGISTRY` | `builder` ts-component 安裝所用的 npm registry（例如 `https://registry.npmmirror.com`） | npm default |
@@ -2083,7 +2078,7 @@ make von-down      # disable again (stops it, deletes the record)
 
 儲存庫是快照；`var/` 是可丟棄的建置輸出——以 `make clean` 刪除建置
 輸出，絕不要用裸的 `rm -rf var`；而一個拒絕啟動的 `store` 意味著另一個行程仍持有鎖
-（`var/store.db.lock` / `var/barrel-db.lock`），而非一個過期檔案：`make down`
+（`var/store.db.lock`），而非一個過期檔案：`make down`
 或殺掉過期的 store，核心便會釋放它。如果 agent
 （或某個 bug）弄壞了隨附元件——覆寫了 `var/bin` 中的二進位檔、
 損毀了某個生成元件的記錄，或某個自行新增的元件在開機時崩潰——請以復原模式啟動 Niffler：
@@ -2188,7 +2183,7 @@ make test-bash      # ... or just one — `make help` lists every target
 這個閘門是自足的：不需要瀏覽器、Wails 或前端工具鏈。（實驗性的桌面 UI 位於
 [gokr/niffler-ui](https://github.com/gokr/niffler-ui)，在該處執行它自己的檢查。）
 以 core 為基礎的測試會將其所需的二進位檔快照到唯一的暫存
-`NIF_ROOT`；Barrel、外掛複製、生成的元件、日誌與快取因此都被隔離。
+`NIF_ROOT`；外掛複製、生成的元件、日誌與快取因此都被隔離。
 個別的 `make test-*` 目標可以彼此並行執行，也可以與執行中的開發
 harness 並行——`scripts/run-tests.sh` 正是靠這點來池化整套件。儲存庫
 建置寫入（`make build`、`make clean`）由 `scripts/with-build-lock.sh`
@@ -2349,8 +2344,8 @@ make clean          # remove all build artifacts (var/, nimcache/)
 | 開機時出現 `core: WARNING missing binary for <name>` | 執行 `make build` |
 | llm 錯誤 HTTP 401/403 | 先檢查作用中供應商的 key 或 token（`provider_status` 可看生效內容的遮蔽視圖，`provider_list` 可看 `expiresAt`）；只有在沒有已儲存的供應商作用中時，`.env` 或殼層環境中的 `NIF_OPENAI_API_KEY` 才會決定 |
 | 無頭模式中出現「approval denied」 | 預期行為：沒有可達的人類。附加 UI、使用 `make run`，或在知情的情況下設定 `NIF_AUTO_APPROVE=1` |
-| 兩個 store 爭奪同一個資料檔（`var/store.db` 或 `var/barrel-db`） | 單一寫入者規則——每個 root 只有一個 core；在暫存的 `NIF_ROOT` 副本中實驗 |
-| 開機拒絕：「this harness has conversation history in var/barrel-db」 | 預設引擎已改為 SQLite，而你的歷史仍在 barrel 中——執行 `niffler-store-migrate --root <path>`（錯誤訊息會印出它），或設定 `NIF_STORE_BACKEND=barrel` 以保留舊引擎 |
+| 兩個 store 爭奪同一個資料檔（`var/store.db`） | 單一寫入者規則——每個 root 只有一個 core；在暫存的 `NIF_ROOT` 副本中實驗 |
+| 開機拒絕：「this harness has conversation history in var/barrel-db」 | barrel 儲存已在 0.4.0 移除：引擎只有 SQLite（預設）與 TiDB。用 0.3.x 檢出搬移舊資料（`niffler-store-migrate`），或從空庫開始——`var/barrel-db` 不會被改動 |
 | 孤兒化的 `nats-server` | 手動啟動的 `nats-server`、非 Linux 主機（沒有 PDEATHSIG 可回收它），或 SIGKILL 留下的殘留 `var/nats-pid`——檢查 pid 檔（core 會驗證 pid + comm，因此殘留檔案會被忽略），然後 `pkill -f nats-server` |
 | 元件在開機時當機，在退避迴圈中重新啟動 | 透過 UI／終端機 `core.remove` 它，或 `make recover` |
 | 代理修改過的原始碼 | `git restore components/ core/ sdk/ manifest.yaml Makefile` 然後 `make build`（見 Recovery） |

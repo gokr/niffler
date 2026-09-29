@@ -42,7 +42,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, and `llm` |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
 | `var/bin/` | built binaries (system core + session runner + components), plus everything `builder.build` compiles — agent-built components land here too, beside the system ones. Rebuilt by `make build` |
-| `var/store.db` | the SQLite store's data file (default engine) — **single-writer**: exactly one `store` process may open it. Older, un-migrated harnesses still use `var/barrel-db`; a migrated root keeps that file untouched beside `var/store.db`. Each engine locks its own file — `var/store.db.lock`, `var/barrel-db.lock` |
+| `var/store.db` | the store's data file (SQLite is the only file-backed engine) — **single-writer**: exactly one `store` process may open it, and it locks `var/store.db.lock` (flock, kernel-released on crash). A pre-0.4.0 `var/barrel-db` is refused at boot, never overwritten |
 | `var/nats-url` | bus address of the last spawned bus; the UI bridge reads it to find core |
 | `var/nats-monitor-url` | HTTP monitoring endpoint when core spawned the bus; absent for reused/remote buses |
 | `var/logs/`, `var/captures/` | rotating structured logs and explicit observe probe exports (see [Observation and logs](#observation-and-logs)) |
@@ -57,7 +57,7 @@ reference chapters for the shipped components. Design rationale lives in
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim/Go | required | document store over the bus (`put/get/list/search/del`, rev-based concurrency). All five tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with the same five tools (`put`/`get`/`list`/`search`/`del`) and a hidden `selftest` in every engine (used by `/doctor`): `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
+| `store` | Go | required | document store over the bus (`put/get/list/search/del`, rev-based concurrency). All five tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with the same five tools (`put`/`get`/`list`/`search`/`del`) and a hidden `selftest` in every engine (used by `/doctor`): `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `store-tidb` remains selectable with `NIF_STORE_BACKEND=tidb` — the Nim/bitbarrel engine was removed in 0.4.0, see [Store engines](#store-engines) |
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled, 126 = cwd not enterable (the tool also uses 126 for found-but-not-executable), 127 = `bash` not on `PATH`, 128 + signal when the command killed itself (139 = SIGSEGV, 143 = SIGTERM) — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a file under `var/toolout/` (the absolute path is in `spill.path`; pageable with `read`, swept after 1 h). `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes) |
 | `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect. Workspace-open auto-append (one append-only history entry on `ev.workspace.opened`) is **on by default but gated** (`docs/research/REPOMAP-GATES.md`): the workspace must have at least 50 covered files, and its rendered map must have at least 800 bytes, 25 symbols and 5 symbol-bearing files. A small/stub map is withheld and logged as `repo map withheld`; set `NIF_REPOMAP_AUTOAPPEND=0` to disable the append. The explicit `repo_map` tool is available regardless of these gates. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes. Parameters, tag tiers and append payload: [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
@@ -307,15 +307,13 @@ workspace), so the conversation and its "Niffler N" label survive.
 
 The store's **bus contract is the artifact**: `put/get/list/search/del`,
 `expectRev` optimistic concurrency, id-ordered lists (docs/WIRE.md).
-Multiple engines implement it and register as component `store` with
-identical tools — consumers never learn which engine is live. Selection is
-a boot-time choice: `NIF_STORE_BACKEND=sqlite|barrel|tidb` (default
-`sqlite`); core resolves the manifest entry's binary accordingly and
-refuses to boot on an unknown value. An unset `NIF_STORE_BACKEND` is a default,
-not a demand: when `var/bin/store-sqlite` was never built, core warns and boots
-the manifest binary (`var/bin/store`, barrel) instead. An explicit value is a
-demand — a missing binary is only warned about, never silently swapped for
-another engine's database.
+Two engines implement it and register as component `store` with identical
+tools — consumers never learn which engine is live. Selection is a boot-time
+choice: `NIF_STORE_BACKEND=sqlite|tidb` (default `sqlite`); core resolves the
+manifest entry's binary accordingly and refuses to boot on an unknown value. A
+binary that was never built is only warned about (the store is `required`, so
+core stops there) and is never silently swapped for another engine's
+database.
 
 **`search`** is the server-side filter (`{kind, query, limit?, after?}` —
 find conversations by id/title or messages by content without downloading
@@ -327,8 +325,8 @@ non-alphanumeric inert so user input needs no escaping, and `list`'s
 ordering/cursor/cap. Engines differ only in how they answer: **sqlite**
 keeps an FTS5 index (`docs_fts`, rowids shared with `docs`, maintained in
 the same transaction as the document and rebuilt from `docs` at startup
-whenever the two disagree — derived state, safe to drop), while **barrel**
-and **tidb** have no index and scan the kind in id order with the same
+whenever the two disagree — derived state, safe to drop), while **tidb**
+has no index and scans the kind in id order with the same
 matcher (equivalent results, O(documents of the kind) per call).
 
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
@@ -344,13 +342,7 @@ matcher (equivalent results, O(documents of the kind) per call).
   configurable (`_txlock=immediate`, WAL, `synchronous(NORMAL)`, a 10 s
   `busy_timeout`, one pooled connection), and the goose migration is applied
   automatically at startup.
-- **barrel** (`var/bin/store`): embedded BitBarrel KV (Bitcask-style) in
-  `var/barrel-db` — schema-free by design, zero deps, proven. Still fully
-  supported (`NIF_STORE_BACKEND=barrel`); its `put` is a two-key sequence
-  (doc, then rev): a crash between them can update content without its
-  revision, and for a *new* document the doc key is written with no rev key at
-  all, which `get` and `list` read as absent (`rev == 0`) — the document is
-  unreachable until it is written again.
+
 - **tidb** (`var/bin/store-tidb`, Go): the same schema over the MySQL
   protocol (go-sql-driver) — a network-shared store any number of
   harnesses can serve from. `NIF_STORE_TIDB_DSN` points at the cluster
@@ -377,9 +369,9 @@ paths, lock paths, pragmas, timeouts and pool sizes are code-resident
 (`NIF_ROOT` decides the root, `NIF_STORE_BACKEND` the engine,
 `NIF_STORE_TIDB_DSN` the cluster).
 
-The file-backed engines (`sqlite`, `barrel`) enforce single-writer the same
-way: one process owns the file (flock; kernel-released on crash), everyone else
-speaks envelopes. `tidb` has no file to lock — the cluster is shared state by
+The file-backed engine (`sqlite`) enforces single-writer the same way: one
+process owns the file (flock; kernel-released on crash), everyone else speaks
+envelopes. `tidb` has no file to lock — the cluster is shared state by
 design, and row locks plus the rev counter arbitrate between harnesses.
 
 `list` is a **page**, not a complete view: `limit` defaults to 100 and is
@@ -390,58 +382,35 @@ so a long conversation does not fit in one call; core's own full-kind reads
 (resume, `session_info`, `conversation_delete`) page automatically.
 
 The store contract is one test run against every engine: `make test-store`
-(the selected/default engine), `make test-store-sqlite`, `make test-store-tidb`
+(the default engine), `make test-store-tidb`
 (needs `NIF_STORE_TIDB_DSN`, otherwise it prints SKIP); `t_store_paging` pins
 the `after`/`hasMore`/`nextAfter` cursor semantics that resume and migration
 depend on.
 
-### Migrating between engines
+### Barrel storage was removed (0.4.0)
 
-**Switching engines does not move data.** After upgrade, a harness whose
-history is in `var/barrel-db` refuses to boot rather than opening an empty
-`var/store.db` and looking like it lost every conversation:
+The Nim/BitBarrel engine (`var/bin/store`, `var/barrel-db`) and the
+`niffler-store-migrate` tool are gone. The store engines are **SQLite**
+(default, `var/store.db`) and **TiDB**; switching engines still never moves
+data, so a harness whose history is in `var/barrel-db` refuses to boot rather
+than opening an empty `var/store.db` and looking like it lost every
+conversation:
 
 ```
-core: this harness has conversation history in var/barrel-db, but the
-      default store engine is now SQLite and no var/store.db exists yet.
-core: migrate first (nothing is moved automatically):
-core:     niffler-store-migrate --root /path/to/harness
-core: scan for other un-migrated roots (benchmarks, clones):
-core:     niffler-store-migrate --scan
-core: or keep using the old engine: NIF_STORE_BACKEND=barrel
+core: this harness has conversation history in var/barrel-db, but barrel
+      storage was removed in 0.4.0 — the engines are SQLite (default) and
+      TiDB now.
+core: nothing was modified; var/barrel-db is untouched.
+core: move that history with an older Niffler (0.3.x shipped
+      niffler-store-migrate), or start this checkout on a fresh SQLite store.
 ```
 
-`niffler-store-migrate` (in `var/bin`) runs **offline** — it starts its own
-private NATS server and store processes, so no harness needs to be booted,
-and it never edits the source data. The store contract cannot enumerate
-kinds (`list` needs one), so it reads every document **of the kinds it
-probes** — a hand-maintained candidate list (`agentjob`, `agentnotice`,
-`approval`, `attachment`, `attachmentdata`, `compaction_input`, `component`,
-`context_projection`, `contextreceipt`, `conversation`, `fabricprog`, `mcp`,
-`message`, `plugin`, `profile`, `session`, `sessionmeta`, `slash`, `spill`) —
-and the closing verification walks the kinds it actually CARRIED, per kind,
-against the target. A new kind is silently skipped until added to this list
-(the bus cannot enumerate kinds); keep it in sync with the store's kind table.
-The direction wired up today is barrel → `sqlite` (the
-default) or barrel → `tidb` with `--to tidb`; a SQLite-only root is refused
-with "root already uses sqlite — nothing to migrate". Each document is
-replayed into the fresh target, then verified per kind. `attachmentdata` is
-paged one document at a time (a 4 MB base64 payload in a full page would
-exceed the bus's 8 MiB ceiling), and a malformed `list` cursor aborts the
-migration instead of silently truncating it. The flags
-(`--root`, `--to <engine>`, `--dry-run`, `--scan [<top>]`, `--all [<top>]`,
-`--force`) are described by the tool's own `--help`; `--force` overlays an
-existing target database (the old one is moved aside as
-`<name>.<timestamp>.aside`) and the design behind each stage is
-[research/STORE_V2.md](research/STORE_V2.md) "Moving data between engines".
-
-`--scan` finds the top directory, sibling clones, and benchmark trees
-(`var/bench/**/niffler-root`). Migration refuses to run on a root that holds both
-`var/barrel-db` and `var/store.db` — the state a finished migration leaves,
-where a re-run fails with "ambiguous source; move one aside first" (move the
-stale `var/store.db` aside to repeat it). Rollback is simply
-`NIF_STORE_BACKEND=barrel`, since the barrel file is untouched; moving data in
-the other direction — out of SQLite or TiDB — is not wired up.
+To move the data, use a **0.3.x checkout**: `niffler-store-migrate --root
+<root>` runs offline (its own private NATS server and store processes, source
+data never edited), replays every document of the kinds it probes into a fresh
+target and verifies per kind. A migrated root keeps `var/barrel-db` untouched
+beside `var/store.db`; once you are satisfied with the result you can delete the
+old file yourself.
 
 ## State and configuration
 
@@ -496,7 +465,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |
 | `NIF_AUTOSTART_BOOT_S` | seconds an autostarted core waits for its first interactive client before giving up | `60` |
 | `NIF_ENSURE_ATTACH` | `0` makes `ensureHarness` skip attaching and always spawn a core (tests) | `1` |
-| `NIF_STORE_BACKEND` | store engine selected at boot: `sqlite` (default → `var/bin/store-sqlite`), `barrel` (→ `var/bin/store`), `tidb` (→ `var/bin/store-tidb`); anything else refuses to boot. All engines register as component `store` with identical tools — see [Store engines](#store-engines). An un-migrated barrel (history in `var/barrel-db`, no `var/store.db` yet) makes core refuse to boot with the `niffler-store-migrate` instructions; `barrel` here is the escape hatch. An **unset** value whose engine binary is missing (`var/bin/store-sqlite` absent) warns and falls back to `var/bin/store` — an explicit request never falls back | `sqlite` |
+| `NIF_STORE_BACKEND` | store engine selected at boot: `sqlite` (default → `var/bin/store-sqlite`, `barrel` (→ `var/bin/store`), `tidb` (→ `var/bin/store-tidb`); anything else refuses to boot. All engines register as component `store` with identical tools — see [Store engines](#store-engines). An un-migrated barrel (history in `var/barrel-db`, no `var/store.db` yet) makes core refuse to boot with the `niffler-store-migrate` instructions; `barrel` here is the escape hatch. An **unset** value whose engine binary is missing (`var/bin/store-sqlite` absent) warns and falls back to `var/bin/store` — an explicit request never falls back | `sqlite` |
 | `NIF_STORE_TIDB_DSN` | TiDB/MySQL DSN for the `tidb` store engine, e.g. `root@tcp(127.0.0.1:4000)/niffler` (docker single-node: `docker run -p 4000:4000 pingcap/tidb`). Required for that engine — no local default; the component refuses to boot without it. Sessions are forced to UTC unless the DSN sets `time_zone`. The account needs rights for goose's DDL migrations, applied at every boot (a fresh database, then each new migration as it ships); the connect/read/write timeouts (5 s/60 s/30 s) and the single pooled connection are code-resident, not env-tunable | unset |
 | `NIF_GIT_MIRROR` | host prefix replacing `https://github.com` when the `plugins` component clones packages (e.g. `https://cnb.cool` or a Gitee mirror) — API/search endpoints stay on GitHub | unset |
 | `NIF_NPM_REGISTRY` | npm registry for `builder` ts-component installs (e.g. `https://registry.npmmirror.com`) | npm default |
@@ -3433,7 +3402,7 @@ arguments…}` — approval-gated, like every `spawn`.
 The repo is the snapshot; `var/` is disposable build output — delete build
 output with `make clean`, never a bare `rm -rf var`; and a `store` that
 refuses to start means another process still holds the lock
-(`var/store.db.lock` / `var/barrel-db.lock`), not a stale file: `make down`
+(`var/store.db.lock`), not a stale file: `make down`
 or kill the stale store and the kernel releases it. If the agent
 (or a bug) breaks a shipped component — overwrote a binary in `var/bin`,
 corrupted a spawned component's record, or a self-added component crashes
@@ -3546,7 +3515,7 @@ experimental desktop UI lives in
 [gokr/niffler-ui](https://github.com/gokr/niffler-ui) and runs its own checks
 there.)
 Core-based tests snapshot their required binaries into a unique temporary
-`NIF_ROOT`; Barrel, plugin clones, generated components, logs, and caches are
+`NIF_ROOT`; plugin clones, generated components, logs, and caches are
 therefore isolated. Individual `make test-*` targets may run concurrently
 with each other and a live development harness — `scripts/run-tests.sh`
 relies on exactly that to pool the suite. Repository build writes
@@ -3724,8 +3693,8 @@ make clean          # remove all build artifacts (var/, nimcache/)
 | `core: WARNING missing binary for <name>` on boot | run `make build` |
 | llm error HTTP 401/403 | check the active provider's key or token first (`provider_status` for a redacted view of what is in effect, `provider_list` for `expiresAt`); only with no stored provider active does `NIF_OPENAI_API_KEY` in `.env` or the shell environment decide |
 | "approval denied" in headless mode | expected: no human reachable. Attach the UI, use `make run`, or set `NIF_AUTO_APPROVE=1` knowingly |
-| two stores fight over the same data file (`var/store.db` or `var/barrel-db`) | single-writer rule — only one core per root; experiment in a temp `NIF_ROOT` copy |
-| boot refuses: "this harness has conversation history in var/barrel-db" | the default engine changed to SQLite and your history is still in barrel — run `niffler-store-migrate --root <path>` (the error prints it), or set `NIF_STORE_BACKEND=barrel` to keep the old engine |
+| two stores fight over the same data file (`var/store.db`) | single-writer rule — only one core per root; experiment in a temp `NIF_ROOT` copy |
+| boot refuses: "this harness has conversation history in var/barrel-db" | barrel storage was removed in 0.4.0: the engines are SQLite (default) and TiDB. Move the old data with a 0.3.x checkout (`niffler-store-migrate`), or start fresh — `var/barrel-db` is never touched |
 | orphaned `nats-server` | a manually started `nats-server`, a non-Linux host (no PDEATHSIG to reap it), or a stale `var/nats-pid` left by SIGKILL — check the pid file (core verifies pid + comm, so a stale file is ignored), then `pkill -f nats-server` |
 | component crashes on boot, restarts in a backoff loop | `core.remove` it via the UI/terminal, or `make recover` |
 | agent-modified sources | `git restore components/ core/ sdk/ manifest.yaml Makefile` then `make build` (see Recovery) |

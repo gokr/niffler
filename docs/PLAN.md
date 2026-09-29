@@ -279,7 +279,7 @@ These were previously tracked here as plans and are now part of `main`:
   [research/SUBAGENTS-PLAN.md](research/SUBAGENTS-PLAN.md).
 - Compiled-Nim Fabric guests, structured APIs, caching, cancellation and
   bounded execution; see [FABRIC_GUIDE.md](FABRIC_GUIDE.md).
-- SQLite (default), Barrel and TiDB store engines behind one contract; see
+- SQLite (default) and TiDB store engines behind one contract (the barrel engine was removed in 0.4.0); see
   [MANUAL.md](MANUAL.md#store-engines) and
   [research/STORE_V2.md](research/STORE_V2.md).
 - Pure-Nim NATS client, the configurable LSP registry and semantic operations,

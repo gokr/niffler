@@ -14,7 +14,7 @@ if dirExists(pkgsDir):
   for kind, path in walkDir(pkgsDir):
     let base = path.extractFilename()
     for prefix in ["lz4wrapper-", "crunchy-", "supersnappy-", "sunny-", "yaml-",
-                   "natsnim-", "bitbarrel-", "htmlparser-",
+                   "natsnim-", "htmlparser-",
                    "checksums-"]:
       if base.startsWith(prefix):
         switch("path", path)

@@ -106,7 +106,7 @@ proc buildFixture(nc: NatsConnection): string =
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  for binary in ["niffler", "session", "store", "builder"]:
+  for binary in ["niffler", "session", "store-sqlite", "builder"]:
     if not fileExists(repoRoot / "var" / "bin" / binary):
       fail("missing " & binary & " binary — run `make build` first")
   if failures > 0:

@@ -87,8 +87,8 @@ working in every language.
   semantics apply unchanged. A stock harness must never pay for an optional
   runtime (`make install-jev` stays out of `make setup`). Built-but-unspawned
   binaries have precedent (`cli`, `console`, `dialog`).
-- NATS is the only bus. Barrel's (embedded BitBarrel KV in `store`) own pubsub is
-  deliberately unused.
+- NATS is the only bus. The removed barrel store's embedded-KV pubsub was
+  deliberately unused; nothing else carries messages either.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
   underscores. Tool names are globally unique — core rejects duplicates at
   registration. Prose here writes `component.tool` for readability
@@ -217,7 +217,7 @@ make recover          # stop everything, rebuild shipped binaries, wipe
 make down             # stop stray harnesses/components + nats-server (e.g. a
                       # detached core holding the store's flock so a fresh
                       # store refuses to start — var/store.db.lock for sqlite
-                      # (default) or var/barrel-db.lock for barrel; also check
+                      # (var/store.db.lock); also check
                       # var/logs/<name>.log — the supervisor writes child
                       # output there and shows its tail when a child dies)
 make down-here        # the scoped variant: only this checkout's harness,
@@ -242,7 +242,7 @@ directly and compiles more than `nimble all` does:
 
 ```bash
 nimble all            # build core plus most shipped components into var/bin,
-                      # but NOT store-sqlite, store-tidb, niffler-store-migrate,
+                      # but NOT store-sqlite and store-tidb —
                       # lsp, repomap, processes, jev or von — use `make build`
                       # (or `make all`) for the complete set
 nimble smoke          # legacy: the original end-to-end script (bash + store).
@@ -253,7 +253,7 @@ nimble smoke          # legacy: the original end-to-end script (bash + store).
   one `t_*.nim` per component) that exit non-zero on failure. Run
   `make test` after bus/SDK changes.
 - Binaries land in `var/bin/`; `var/` is gitignored runtime state (build cache,
-  the store data file — `var/store.db` by default, `var/barrel-db` for barrel
+  the store data file — `var/store.db` (barrel roots are refused at boot; use a
   roots — and `nats-url` of the last spawned bus).
 - Lifecycle has no launcher script: any UI's first act is the SDK's
   `ensureHarness` — probe (env → `var/nats-url` → 127.0.0.1:4222) for a live
@@ -316,7 +316,7 @@ is the precedent for steps 2–6.
 
 - **Nim packages come from nimble.** `niffler.nimble` requires `yaml`,
   `htmlparser` and `checksums` from nimble, plus `gokr/natsnim` and
-  `gokr/bitbarrel` (GitHub URLs). Run `make setup`
+  `gokr/natsnim` (GitHub URL). Run `make setup`
   to install native prerequisites and Nim packages before building;
   `make build` does not install them. `config.nims` scans `~/.nimble/pkgs2` so plain
   `nim c` invocations (builder, smoke test) resolve them without nimble.paths.
@@ -339,14 +339,14 @@ is the precedent for steps 2–6.
   Core writes `var/nats-url`; standalone clients (`cli`, `console`)
   resolve it against their binary's clone, never the cwd.
 - The `store` component is single-writer: exactly one process owns its
-  database (sqlite engine, **default**: `var/store.db` + flock; barrel
-  engine: `var/barrel-db` + flock; tidb engine: `NIF_STORE_TIDB_DSN`
-  cluster — no flock, the DSN is shared network state and row locks
-  arbitrate; selected with `NIF_STORE_BACKEND` — see
-  docs/research/STORE_V2.md and docs/research/COMPACTION.md §2).
-  Never run two file-backed stores against the same file. Switching the
-  default does NOT migrate data: core refuses to boot over an un-migrated
-  `var/barrel-db` and prints `niffler-store-migrate` instructions.
+  database (sqlite, **default**: `var/store.db` + flock; tidb:
+  `NIF_STORE_TIDB_DSN` cluster — no flock, the DSN is shared network state and
+  row locks arbitrate; selected with `NIF_STORE_BACKEND=sqlite|tidb` — see
+  docs/research/STORE_V2.md and docs/research/COMPACTION.md §2). Never run two
+  file-backed stores against the same file. The Nim/bitbarrel engine and
+  `niffler-store-migrate` were removed in 0.4.0: a harness with history in
+  `var/barrel-db` refuses to boot rather than open an empty SQLite database over
+  it (move it with a 0.3.x checkout).
 - `list` is a page, not a complete view: capped at 1000 items, with
   `hasMore` + an `nextAfter` cursor (`after` to continue). Core's full-kind
   reads use `storeListAll` (core/dispatch.nim) / `storeListAll`
@@ -366,7 +366,7 @@ is the precedent for steps 2–6.
   shows which root the serving store owns. Offline (no harness), values are
   plain JSON inside `var/store.db` (sqlite is just SQLite — `sqlite3
   var/store.db 'select kind, count(*) from docs group by kind'`) or inside
-  `var/barrel-db` for barrel roots, so carving works in a pinch; the cli
+  `var/store.db` is just SQLite, so carving works in a pinch; the cli
   path is the supported way.
 - `llm` is Go (`sdk/go`); the builder gives agent-written Go components a
   `go.mod` with a `replace niffler.dev/sdk => <root>/sdk/go` automatically.

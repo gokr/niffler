@@ -315,12 +315,9 @@ proc resolveStoreBin*(root: string): string =
     return (if override.isAbsolute(): override else: root / override)
   let requested = getEnv("NIF_STORE_BACKEND", "")
   let name = case requested
-    of "barrel": "store"
     of "tidb": "store-tidb"
     else: "store-sqlite"  # "", "sqlite", or anything else that boots
   result = root / "var" / "bin" / name
-  if not fileExists(result) and requested.len == 0:
-    result = root / "var" / "bin" / "store"
 
 proc sandboxBin*(sandbox: TestSandbox, name: string): string =
   sandbox.root / "var" / "bin" / name
@@ -365,19 +362,15 @@ proc fixtureBin*(sandbox: TestSandbox, name: string, source: string,
 
 proc sandboxStoreBin*(sandbox: TestSandbox): string =
   ## The store binary the sandbox core will actually boot, mirroring core's
-  ## NIF_STORE_BACKEND resolution (default sqlite, with the same
-  ## missing-binary fallback). A test that starts the store directly to
-  ## seed or inspect records MUST use this: starting the hardcoded barrel
-  ## binary writes to a different database than the harness reads, which
-  ## looks exactly like a lost record.
+  ## NIF_STORE_BACKEND resolution (sqlite by default, tidb on request — the
+  ## Nim/bitbarrel engine was removed in 0.4.0). A test that starts the store
+  ## directly to seed or inspect records MUST use this: starting some other
+  ## engine's binary writes to a different database than the harness reads,
+  ## which looks exactly like a lost record.
   let requested = getEnv("NIF_STORE_BACKEND", "")
   let wanted = case requested
-    of "", "sqlite": "store-sqlite"
-    of "barrel": "store"
     of "tidb": "store-tidb"
     else: "store-sqlite"
-  if requested.len == 0 and not fileExists(sandbox.sandboxBin(wanted)):
-    return sandbox.sandboxBin("store")
   return sandbox.sandboxBin(wanted)
 
 proc newCoreSandbox*(tag: string,
@@ -399,24 +392,24 @@ proc newCoreSandbox*(tag: string,
 
   var manifest = "components:\n"
   for name in components:
+    # The store registers as component "store" whichever engine backs it: the
+    # manifest names the default engine's binary and core resolves it through
+    # NIF_STORE_BACKEND (sqlite default | tidb). There is no Nim/bitbarrel
+    # engine to fall back to any more (removed in 0.4.0).
+    let binaryName = if name == "store": "store-sqlite" else: name
     manifest.add("  - name: " & name & "\n")
-    manifest.add("    binary: var/bin/" & name & "\n")
+    manifest.add("    binary: var/bin/" & binaryName & "\n")
     manifest.add("    autostart: true\n")
     manifest.add("    required: true\n")
     manifest.add("    restart: on-failure\n\n")
-    copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
-                            result.sandboxBin(name))
-    # Store engines: core resolves the `store` manifest entry through
-    # NIF_STORE_BACKEND (default sqlite). Copy every engine the repo built
-    # so the sandbox tests the DEFAULT engine rather than silently falling
-    # back to barrel — the fallback warns loudly, but a suite that only
-    # ever exercises the old engine cannot catch a default-engine bug.
-    # NIF_STORE_BACKEND in the test's environment still selects explicitly.
+    copyFileWithPermissions(result.repoRoot / "var" / "bin" / binaryName,
+                            result.sandboxBin(binaryName))
+    # Copy every store engine the repo built, so a sandbox can exercise
+    # whichever one NIF_STORE_BACKEND selects in the test's environment.
     if name == "store":
-      for engine in ["store-sqlite", "store-tidb"]:
-        let src = result.repoRoot / "var" / "bin" / engine
-        if fileExists(src):
-          copyFileWithPermissions(src, result.sandboxBin(engine))
+      let tidb = result.repoRoot / "var" / "bin" / "store-tidb"
+      if fileExists(tidb):
+        copyFileWithPermissions(tidb, result.sandboxBin("store-tidb"))
   writeFile(result.root / "manifest.yaml", manifest)
   for name in ["niffler", "session", "cli", "nats-server"]:
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,

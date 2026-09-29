@@ -1,6 +1,6 @@
 ## store component tests — bus contract: document store semantics.
 ##
-## Uses a temp NIF_ROOT so the real var/barrel-db is never touched.
+## Uses a temp NIF_ROOT so the real var/store.db is never touched.
 ## Covers put/get/list/del, rev-based optimistic concurrency, prefix
 ## listing, tombstones, and persistence across a store restart.
 
@@ -12,11 +12,10 @@ import helpers
 proc main() =
 
   let root = getEnv("NIF_ROOT", getAppDir().parentDir())
-  # Engine under test: NIF_STORE_BIN overrides the default barrel binary
-  # (make test-store-sqlite runs this exact contract against the SQLite
-  # engine; docs/research/STORE_V2.md). Relative paths resolve against root.
-  # NIF_STORE_BIN (explicit binary) → NIF_STORE_BACKEND → the shipped
-  # default engine (sqlite). See helpers.resolveStoreBin.
+  # Engine under test: NIF_STORE_BIN (an explicit binary) → NIF_STORE_BACKEND
+  # → the shipped default engine, SQLite. `make test-store` and
+  # `make test-store-tidb` run this exact contract against those two
+  # (docs/research/STORE_V2.md); relative paths resolve against root.
   let bin = resolveStoreBin(root)
   if not fileExists(bin):
     fail(bin & " missing — run `make build` first")
