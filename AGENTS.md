@@ -21,7 +21,7 @@ working in every language.
 - Core speaks exactly one protocol: JSON envelopes over NATS. Core never imports
   component code; components never import core. The envelope codec
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
-  stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
+  stay portable (~77 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
   `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `lsp`, `processes`,
   `observe`, `logfile`, `models`, `provider`, `llm`, `mcp`, `jev` are peers.
@@ -189,7 +189,7 @@ working in every language.
 
 ## Commands
 
-The Makefile is the front door (it wraps the nimble tasks below):
+The Makefile is the front door:
 
 ```bash
 make all              # build core + all components (the desktop UI is a plugin,
@@ -208,17 +208,14 @@ niffler-ui            # the desktop app: autostarts core; the last UI stops it
                       # plugin; `make install` links it when present)
 make test             # the full gate: the bus-contract suite (the UI repo's
                       # frontend tests + typecheck live in gokr/niffler-ui)
-make test-server      # the whole bus-contract suite: smoke + t_bash, t_store,
-                      # t_builder, t_console, t_plugins, t_skills, t_fetch,
-                      # t_models, t_provider, t_observe, t_logfile, t_core,
-                      # t_cli, t_grep, t_git, t_edit, t_autostart,
-                      # t_systemprompt, t_agent, t_agentnotice, t_agentcont,
-                      # t_fabric, t_nested, t_mcp —
-                      # each owns a private NATS server + temporary NIF_ROOT,
-                      # so component targets can overlap a live harness
+make test-server      # the whole bus-contract suite: smoke + every
+                      # `tests/t_*.nim` — each owns a private NATS server +
+                      # temporary NIF_ROOT, so component targets can overlap a
+                      # live harness — plus the Go unit tests
 make gotest           # Go unit tests + vet (+ `-race` for sdk/go, mcp,
-                      # mcp-bridge): sdk/go, components/models, provider,
-                      # llm, llm-openai, mcp, mcp-bridge (also part of make test)
+                      # mcp-bridge): sdk/go, components/{models,provider,llm,
+                      # llm-openai,store-sqlite,store-tidb,nats,mcp,mcp-bridge}
+                      # (also part of make test)
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make down             # stop stray harnesses/components + nats-server (e.g. a
@@ -250,10 +247,14 @@ make dev              # retired: the SPA dev server lives in gokr/niffler-ui
                       # (make dev there); the target only prints that and fails
 ```
 
-Underlying nimble tasks (same thing, one level down):
+The nimble tasks are a subset, not a second front door — the Makefile builds
+directly and compiles more than `nimble all` does:
 
 ```bash
-nimble all            # build core + all components into var/bin (Nim + Go)
+nimble all            # build core plus most shipped components into var/bin,
+                      # but NOT store-sqlite, store-tidb, niffler-store-migrate,
+                      # lsp, repomap, processes, jev or von — use `make build`
+                      # (or `make all`) for the complete set
 nimble smoke          # legacy: the original end-to-end script (bash + store).
                       # Prefer `make test` — the full bus-contract suite.
 ```
@@ -284,10 +285,50 @@ repository — `make dev`, `make test` and `make typecheck` there.
 The SPA is a NATS client, not a Wails client: it only talks to its
 `nats.ts`; Wails is hosting, not architecture.
 
+## Releasing
+
+Cut a release from a green `main` — no open PR that should ship, and the gate
+run on the exact commit being tagged. The order below is the ritual; the
+v0.2.0 cut (`docs: changelog 0.2.0 …, website + README point at the release`)
+is the precedent for steps 2–6.
+
+1. **Freeze and verify.** `make build && make test` (plus `make doctor` for the
+   prerequisite report) on the commit to tag; for SDK, bus or
+   conversation-loop changes also run a live harness by hand. Merge or hold the
+   nightly docs/website PRs — the bots keep filing them, and a release must not
+   be cut from a half-merged window.
+2. **Bump the package version.** `niffler.nimble`'s `version =` is the only
+   version field the release moves; component and bus registrations carry
+   independent `0.x` versions and stay put.
+3. **Cut the changelog.** Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`
+   and put a short headline summary of the release above the accumulated detail
+   (the v0.2.0/v0.3.0 cuts open with a paragraph or two the announcement can
+   quote), then re-add an empty `## [Unreleased]` on top. Nothing in the
+   section may describe unshipped behavior.
+4. **Move the release pointers.** `README.md` ("The current release is …"),
+   `README.zh.md`, `README.zh-TW.md` and the website's release line
+   (`website/index.html` plus the `hero.release` entry in every
+   `website/i18n.js` locale) all still name the previous release.
+5. **Refresh the translations last.** English first, then the localized
+   READMEs/manuals and the website locales — they are AI autotranslations of
+   the English source, so cutting them ahead of it just bakes in staleness.
+   Section headings stay in English so anchors keep working in every language.
+6. **Tag and publish.** An annotated tag whose message is the release summary
+   (the v0.2.0 tag body is the model), then a GitHub release from that tag.
+   The tag *is* the release; `make release` only picks release *build flags*
+   for local benchmarking and is not part of this step.
+7. **Release the plugins that ship fixed code.** Plugins install at a repo's
+   latest GitHub *release*, so a merged fix reaches users only once its repo is
+   released — `gokr/niffler-tui` moves with the harness (bump its
+   `niffler.json` `version`, cut its own `CHANGELOG.md`, tag, create the
+   release), and `gokr/niffler-ui` follows its own cadence unless this release
+   changed something its users need.
+
 ## Environment and gotchas
 
 - **Nim packages come from nimble.** `niffler.nimble` requires `yaml`,
-  `gokr/natsnim` and `gokr/bitbarrel` (GitHub URLs). Run `make setup`
+  `htmlparser` and `checksums` from nimble, plus `gokr/natsnim` and
+  `gokr/bitbarrel` (GitHub URLs). Run `make setup`
   to install native prerequisites and Nim packages before building;
   `make build` does not install them. `config.nims` scans `~/.nimble/pkgs2` so plain
   `nim c` invocations (builder, smoke test) resolve them without nimble.paths.

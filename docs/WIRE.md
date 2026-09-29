@@ -199,12 +199,14 @@ ev.session.<id>.assistant   # {sessionId, turnId?, content, provider?, model?,
                        #   complete model text + actual backend metadata per LLM round
 ev.session.<id>.status      # {sessionId, turnId?, provider?, providerSource?, model?,
                        #   catalog?, context?, contextSource?, promptTokens?,
-                       #   usedTokens?, cache?: {prompt, read, hitRate}}
+                       #   usedTokens?, cache?: {prompt, read, hitRate}, warning?}
                        #   resolved turn config and live context occupancy.
                        #   cache reports cumulative provider-reported
                        #   prompt-cache reads (A3; present when the provider
-                       #   sends prompt_tokens_details). Also emitted by
-                       #   model-only session calls (no inference)
+                       #   sends prompt_tokens_details). warning is present
+                       #   when a pinned provider/model pair has no catalog
+                       #   match and resolved to the fallback window. Also
+                       #   emitted by model-only session calls (no inference)
 ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens,
                        #   usedTokens, context, trimAt?, warning?, trimmed?,
                        #   bytesSaved?, pruned?, generation?, covered?,
@@ -222,10 +224,10 @@ ev.session.<id>.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, 
 ev.session.<id>.token       # {sessionId, turnId?, content, reasoning} live token deltas
                        #   (streamed while the model generates)
 ev.session.<id>.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
-                       #   tool, args, result? | error?, errorCode?}
+                       #   tool, args, at?, result? | error?, durationMs?}
                        #   start fires before dispatch, done after the result
-                       #   (error keeps its legacy string shape; errorCode is
-                       #   the stable machine code when known)
+                       #   (error keeps its legacy string shape; durationMs is
+                       #   on done only)
 ev.session.<id>.steer       # {sessionId, turnId?, content} a steer message was folded in
 ev.session.<id>.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
