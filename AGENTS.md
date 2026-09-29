@@ -420,8 +420,10 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 - Never wrap a single HttpClient across multiple GitHub (or any) API calls:
   a stale pooled connection (server closed it, e.g. after a 404) hangs the
   next read forever — fresh client per call (see plugins' resolveTag).
-- The `ui` component also registers on the bus (0 tools) — grep core's stdout
-  for `catalog: ui v` to prove the bridge connected.
+- The desktop UI (the `gokr/niffler-ui` plugin, installed with `make
+  install-ui`) also registers on the bus (0 tools) — grep core's stdout for
+  `catalog: ui v` to prove its bridge connected. Its sources live in that
+  plugin repository, not here.
 - Killing all component processes leaves the NATS server orphaned; either
   use the harness's own spawn (`./var/bin/niffler` spawns nats if `NIF_NATS_URL`
   unset) or `pkill -f nats-server; pkill -f niffler/var/bin` before a cold start.

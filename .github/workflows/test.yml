@@ -72,11 +72,10 @@ jobs:
       # The server gate (`make test-server`): core + components + the whole
       # bus-contract suite, each test owning a private NATS server.
       #
-      # NOT `make test`: that also runs test-ui, whose typecheck needs
-      # ui/frontend/wailsjs/** — Wails-generated bindings (.gitignore:29,
-      # produced by `wails build` from the bound Go struct) that a fresh clone
-      # does not have. Until CI generates them, the UI half is a local/`make
-      # ui` check, not a CI one; the frontend's dependency-free unit tests
-      # (`npm test`, 38 cases) are likewise outside this workflow.
+      # `make test` is the same gate in this repository (`test: test-server`).
+      # The desktop UI is the gokr/niffler-ui plugin: its typecheck needs Wails
+      # bindings a fresh clone does not have, and its dependency-free unit tests
+      # run there (`make typecheck` / `make test` in that repo), so both are
+      # outside this workflow.
       - name: make test-server
         run: make -j4 test-server

@@ -285,7 +285,7 @@ caller name is self-declared, so this is coordination, not authentication.
 The TUIs register unique `tui-<hex>` component names (their approval caller);
 the web UI mints one identity per browser tab (`ui-<hex>`) and stamps it as
 the `caller` of that tab's session turns, so directed approvals stay per tab
-(ui/README.md).
+(the niffler-ui README).
 
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,

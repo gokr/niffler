@@ -621,7 +621,7 @@ Loading rules (same in the Nim, Go and TypeScript SDKs): existing shell
 environment **always wins** over `.env`; the SDKs load the current
 directory's `.env` first and the harness root's second, first definition of
 a key wins. The desktop UI bridge loads them in the opposite order (harness
-root, then cwd — `ui/bridge.go`), so there the root file wins. So
+root, then cwd — the plugin's `bridge.go`), so there the root file wins. So
 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
 `unset NIF_OPENAI_API_KEY` before starting if you want the file value.
 `.env` must be a plain regular file: a symlinked or hardlinked copy is
@@ -2181,7 +2181,7 @@ then `core.remove`).
   `mcp_<server>_prompt` renders any prompt by name for clients. Rendering a prompt is an ordinary bus call; the
   result carries the rendered text as `userMessage`, and the UI appends it
   to the conversation as a **user** message (slash result convention,
-  `ui/frontend/src/lib/slashResult.ts`) — prompt output is never injected
+  `niffler-ui`'s `frontend/src/lib/slashResult.ts`) — prompt output is never injected
   into the transcript as system/assistant content. The bridge re-registers
   them on drift like tools (server-pushed `notifications/prompt_list_changed`
   included).
@@ -3713,7 +3713,7 @@ make clean          # remove all build artifacts (var/, nimcache/)
 
 | Symptom | Cause / fix |
 |---|---|
-| UI shows "Running in a browser" inside the desktop app | `nats.ts` binding mismatch — `window.go.main.Bridge` must match the Go struct name (ui/README.md) |
+| UI shows "Running in a browser" inside the desktop app | `nats.ts` binding mismatch — `window.go.main.Bridge` must match the Go struct name (the niffler-ui README) |
 | UI banner: bus unreachable | core autostart still in progress or failed — start `./var/bin/niffler` in a terminal to see boot errors |
 | `core: WARNING missing binary for <name>` on boot | run `make build` |
 | llm error HTTP 401/403 | check the active provider's key or token first (`provider_status` for a redacted view of what is in effect, `provider_list` for `expiresAt`); only with no stored provider active does `NIF_OPENAI_API_KEY` in `.env` or the shell environment decide |

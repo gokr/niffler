@@ -6,9 +6,6 @@
 #   nimcache/             — Nim compiler cache
 #   sdk/ts/dist/          — compiled TypeScript SDK
 #   */node_modules/       — npm dependencies
-#   ui/build/             — Wails build output
-#   ui/frontend/dist/     — Vite build output
-#   ui/frontend/wailsjs/  — generated Wails bindings
 #   .git/                 — git metadata
 #   .github/              — CI workflows
 #

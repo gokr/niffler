@@ -141,6 +141,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `NIF_TEST_VERBOSE=1` interleaves each test's captured output after its
   line (`2ecec27`).
 
+### Removed
+
+- **The desktop UI sources are gone from this repository (`ui/`).** The app is
+  the interactive plugin `gokr/niffler-ui`, built and installed through the
+  plugin lifecycle (`make install-ui`), and this checkout no longer carries a
+  second, stale copy of its frontend, Wails bindings, icons and manifest — the
+  split left the copy behind, so a reader (or an agent) could still find and
+  edit a branch of the UI that nothing builds. `make build`/`make test` never
+  included it; the `.gitignore` entries, the CI workflow comment and the
+  manual's path references now point at the plugin repository (the research
+  notes under `docs/research/` keep their historical `ui/…` paths).
+
 ### Fixed
 
 - **A component that outlived its bus's reconnect budget stayed alive but

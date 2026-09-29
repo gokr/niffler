@@ -349,7 +349,7 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`；SDK 先加载当前目录的 `.env`，再加载 harness 根目录的，键的首次定义优先。桌面 UI 桥以相反顺序加载它们（harness 根目录，然后 cwd——`ui/bridge.go`），因此那里根文件优先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
+加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`；SDK 先加载当前目录的 `.env`，再加载 harness 根目录的，键的首次定义优先。桌面 UI 桥以相反顺序加载它们（harness 根目录，然后 cwd——`niffler-ui` 的 `bridge.go`），因此那里根文件优先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
 
 仓库根目录中的 `.env.example` 是参考副本——每个变量都被注释掉，其默认值作为注释值——但它在两个方向上都不详尽（上表中的少数条目在其中缺失，且它携带 harness 在正常操作中不读取的测试/工具变量）；该表是权威。
 
@@ -1036,7 +1036,7 @@ bridge announces mcp_<server>_<tool> schemas  ──►  catalog ──► disco
   其命名参数镜像该提示的参数（每台服务器 ≤32 个提示，每个 ≤16 个参数）；第二个隐藏的通用工具
   `mcp_<server>_prompt` 为客户端按名称渲染任意提示。渲染提示是一次普通的
   总线调用；结果将渲染后的文本作为 `userMessage` 携带，UI 将其作为**用户**消息追加到会话中（斜杠结果约定，
-  `ui/frontend/src/lib/slashResult.ts`）——提示输出永远不会作为 system/assistant 内容注入
+  `niffler-ui` 的 `frontend/src/lib/slashResult.ts`）——提示输出永远不会作为 system/assistant 内容注入
   到记录中。桥接在漂移时像工具一样重新注册它们（包括服务器推送的 `notifications/prompt_list_changed`）。
 - **资源**表现为一个并发工具 `mcp_<server>_resources`
   （`x-harness.effect: "read"`）：`{op: "list"}`、`{op: "templates"}`（URI
@@ -2081,7 +2081,7 @@ make clean          # remove all build artifacts (var/, nimcache/)
 
 | Symptom | Cause / fix |
 |---|---|
-| UI 在桌面应用内显示 "Running in a browser" | `nats.ts` 绑定不匹配——`window.go.main.Bridge` 必须与 Go 结构体名匹配（ui/README.md） |
+| UI 在桌面应用内显示 "Running in a browser" | `nats.ts` 绑定不匹配——`window.go.main.Bridge` 必须与 Go 结构体名匹配（niffler-ui README） |
 | UI 横幅：总线不可达 | 核心自动启动仍在进行或已失败——在终端中启动 `./var/bin/niffler` 以查看引导错误 |
 | 引导时 `core: WARNING missing binary for <name>` | 运行 `make build` |
 | llm 错误 HTTP 401/403 | 先检查活动提供商的密钥或令牌（`provider_status` 查看生效内容的脱敏视图，`provider_list` 查看 `expiresAt`）；只有在没有存储的提供商处于活动状态时，`.env` 或 shell 环境中的 `NIF_OPENAI_API_KEY` 才起作用 |

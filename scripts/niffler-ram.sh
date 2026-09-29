@@ -7,8 +7,8 @@
 #
 # Membership rule: a process belongs to Niffler when its executable lives in
 # a checkout's var/bin/ (niffler, tui, cli, console, session, every
-# component, nats-server, mcp-bridge) or is the desktop UI
-# (ui/build/bin/niffler-ui). This beats a PPID tree walk, which misses both
+# component, nats-server, mcp-bridge) — the desktop UI binary lands in the
+# same var/bin through the plugin install. This beats a PPID tree walk, which misses both
 # shapes a running system actually takes: the tui is the PARENT of an
 # autostarted harness (ensureHarness), and the bench driver (node run.mjs)
 # owns the private bus of a bench harness beside it.
@@ -33,8 +33,6 @@ for d in /proc/[0-9]*; do
   exe=$(readlink "$d/exe" 2>/dev/null) || continue
   if [[ $exe == */var/bin/* ]]; then
     bin=${exe##*/var/bin/}; prefix=${exe%/var/bin/*}
-  elif [[ $exe == */ui/build/bin/niffler-ui ]]; then
-    bin=niffler-ui; prefix=${exe%/ui/build/bin/niffler-ui}
   else
     continue
   fi

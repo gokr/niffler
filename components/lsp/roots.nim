@@ -6,7 +6,7 @@
 ## - rootMarkersForExt/deriveRoot: which directory should a language server
 ##   treat as its root? Defaulting to the conversation workspace (the harness
 ##   clone) makes a server load every nested module in the repo — gopls on
-##   this clone spends its first minute indexing components/*, ui/ and
+##   this clone spends its first minute indexing components/* and
 ##   var/plugins/*. Walk up from the queried file to the nearest marker for
 ##   its language instead.
 ## - fallbackBinDirs/resolveBinIn: a configured command that is not on PATH

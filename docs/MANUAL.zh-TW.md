@@ -355,7 +355,7 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。桌面 UI bridge 以相反順序載入它們（harness root，然後 cwd——`ui/bridge.go`），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
+載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。桌面 UI bridge 以相反順序載入它們（harness root，然後 cwd——`niffler-ui` 的 `bridge.go`），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
 
 repo root 的 `.env.example` 是參考副本——每個變數都被註解掉，其預設值作為註解值——但它在兩個方向上都不完整（上表有少數項目不在其中，而它帶有 harness 在正常運作中不會讀取的測試/工具變數）；表格才是權威。
 
@@ -1275,7 +1275,7 @@ manager 擁有除了快取以外的每一個欄位：當伺服器漂移時，bri
   其具名參數會對應 prompt 的引數（每個伺服器 ≤32 個 prompt，每個 ≤16 個引數）；第二個隱藏泛用工具
   `mcp_<server>_prompt` 則為客戶端依名稱渲染任何 prompt。渲染 prompt 是一般的匯流排呼叫；
   結果會以 `userMessage` 攜帶渲染後文字，而 UI 會將它作為一則 **user** 訊息附加到會話（斜線結果慣例，
-  `ui/frontend/src/lib/slashResult.ts`）——prompt 輸出永遠不會以 system/assistant 內容注入逐字稿。bridge 會在漂移時像工具一樣重新註冊它們（包含伺服器推送的 `notifications/prompt_list_changed`）。
+  `niffler-ui` 的 `frontend/src/lib/slashResult.ts`）——prompt 輸出永遠不會以 system/assistant 內容注入逐字稿。bridge 會在漂移時像工具一樣重新註冊它們（包含伺服器推送的 `notifications/prompt_list_changed`）。
 - **資源**會以一個並行工具 `mcp_<server>_resources`
   浮現（`x-harness.effect: "read"`）：`{op: "list"}`、`{op: "templates"}`（URI
   範本）或 `{op: "read", uri: ...}`。
@@ -2363,7 +2363,7 @@ make clean          # remove all build artifacts (var/, nimcache/)
 
 | Symptom | Cause / fix |
 |---|---|
-| UI 在桌面應用程式內顯示「Running in a browser」 | `nats.ts` 綁定不符——`window.go.main.Bridge` 必須符合 Go 結構名稱（ui/README.md） |
+| UI 在桌面應用程式內顯示「Running in a browser」 | `nats.ts` 綁定不符——`window.go.main.Bridge` 必須符合 Go 結構名稱（niffler-ui README） |
 | UI 橫幅：匯流排無法觸達 | core 自動啟動仍在進行或已失敗——在終端機中啟動 `./var/bin/niffler` 以查看開機錯誤 |
 | 開機時出現 `core: WARNING missing binary for <name>` | 執行 `make build` |
 | llm 錯誤 HTTP 401/403 | 先檢查作用中供應商的 key 或 token（`provider_status` 可看生效內容的遮蔽視圖，`provider_list` 可看 `expiresAt`）；只有在沒有已儲存的供應商作用中時，`.env` 或殼層環境中的 `NIF_OPENAI_API_KEY` 才會決定 |

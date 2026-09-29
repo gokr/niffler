@@ -17,17 +17,9 @@ cc-plugin/node_modules/
 # OS
 .DS_Store
 
-# Wails UI
-ui/build/
-ui/frontend/node_modules/
-ui/frontend/dist/
-
 # local secrets/config
 .env
 /tests/smoke
-ui/niffler-ui
-ui/frontend/wailsjs/
-ui/frontend/package.json.md5
 nimble.develop
 nimble.paths
 nimbledeps
