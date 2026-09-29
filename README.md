@@ -109,7 +109,7 @@ Testing: `make test` runs the bus-contract suite (one private bus per test);
   cancellation and session context.
 - [Architecture](docs/ARCHITECTURE.md) — why core, components and NATS are
   separate, and the invariants contributors must preserve.
-- [Open work](docs/research/PLAN.md) — current deferred work.
+- [Open work](docs/PLAN.md) — current deferred work.
 - [Research index](docs/research/README.md) — design history and prior-art
   studies; research notes are not operating instructions.
 - [Fabric guide](docs/FABRIC_GUIDE.md) — programmable orchestration and

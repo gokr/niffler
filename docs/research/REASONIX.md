@@ -1,7 +1,7 @@
 # Reasonix — prior-art analysis
 
 > Research note — external codebase analysis, not a plan. Each item below is a
-> candidate to become its own plan (or a line in the README quests). The final
+> candidate plan — the open ones are tracked in [PLAN.md](../PLAN.md). The final
 > section ranks the ten highest-leverage items for Niffler.
 >
 > Source: a checkout of [DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix)

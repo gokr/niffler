@@ -6,7 +6,7 @@
 [research/REBOOT.md](research/REBOOT.md)；線協議見
 [WIRE.md](WIRE.md)；core/元件邊界見
 [ARCHITECTURE.md](ARCHITECTURE.md)；進行中的工作彙總在
-[research/PLAN.md](research/PLAN.md)。
+[PLAN.md](PLAN.md)。
 
 > 🤖 AI 自動翻譯，可能與英文版存在偏差；以 [English](MANUAL.md) 為準。
 > 章節標題保留英文，以便跨文檔錨點保持有效。
@@ -41,7 +41,7 @@
 | `core/` | 控制平面：系統載具（`niffler.nim`：匯流排啟動、監督器、目錄、派送）＋會話執行器（`session.nim`）及其驅動的回合迴圈（`conversation.nim` — 最大的模組 — 加上 `compaction.nim`、`approval.nim`、`retry.nim`、`uireg.nim`、`tty.nim`） |
 | `components/` | 隨附的元件原始碼 — 每個元件一個目錄（Nim、Go、TypeScript 及一個 bash 示範）；清單即下方的[隨附元件](#shipped-components)表，這是必須保持最新的部分。有兩個目錄不是匯流排公民：`components/nats` 建置 `var/bin/nats-server`，當匯流排必須啟動時由 core 生成；`components/ctxtest` 是巢狀呼叫測試（`t_fabric`、`t_agent`）為自己編譯的測試夾具 |
 | `sdk/` | Nim SDK（`sdk/niffler`）＋`sdk/go`（Go）＋`sdk/ts`（TypeScript/Node.js，npm 套件 `niffler-sdk`）；`sdk/envelope.nim` 中的信封是產物 |
-| `docs/` | 本手冊、線路規格（`WIRE.md`）、設定設計（`research/SETTINGS.md`）、core 邊界理由（`ARCHITECTURE.md`）、fabric 使用者指南（`FABRIC_GUIDE.md`）、待辦工作（`research/PLAN.md`）及 `research/`（設計歷史） |
+| `docs/` | 本手冊、線路規格（`WIRE.md`）、設定設計（`research/SETTINGS.md`）、core 邊界理由（`ARCHITECTURE.md`）、fabric 使用者指南（`FABRIC_GUIDE.md`）、待辦工作（`PLAN.md`）及 `research/`（設計歷史） |
 | `manifest.yaml` | 啟動 manifest：core 生成哪些元件、重啟原則，以及選用的無狀態 `replicas` 數量；`--minimal` 將其篩選為 `store`、`bash` 和 `llm` |
 | `var/` | **執行時狀態，gitignored，可丟棄** — 儲存庫是快照 |
 | `var/bin/` | 建置的二進位檔（系統 core ＋會話執行器＋元件），加上 `builder.build` 編譯的一切 — 代理建置的元件也落在此處，與系統元件並列。由 `make build` 重建 |

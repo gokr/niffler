@@ -462,5 +462,5 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   the suite breaks, re-run the *narrowest* target that reproduces it
   (`make test-core`, `make test-bash`, …) with output captured, and fix
   before re-running broadly.
-- Milestone status and open quests live in `README.md` — update it when you
+- Milestone status and open quests live in `docs/PLAN.md` — update it when you
   complete one.

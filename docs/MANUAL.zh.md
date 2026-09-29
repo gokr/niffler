@@ -6,7 +6,7 @@
 [research/REBOOT.md](research/REBOOT.md)；线协议见
 [WIRE.md](WIRE.md)；core/组件边界见
 [ARCHITECTURE.md](ARCHITECTURE.md)；进行中的工作汇总在
-[research/PLAN.md](research/PLAN.md)。
+[PLAN.md](PLAN.md)。
 
 > 🤖 AI 自动翻译，可能与英文版存在偏差；以 [English](MANUAL.md) 为准。
 > 章节标题保留英文，以便跨文档锚点保持有效。
@@ -41,7 +41,7 @@
 | `core/` | 控制平面：系统 harness（`niffler.nim`：总线引导、监督器、目录、分发）+ 会话运行器（`session.nim`）及其驱动的回合循环（`conversation.nim` —— 最大的模块 —— 外加 `compaction.nim`、`approval.nim`、`retry.nim`、`uireg.nim`、`tty.nim`） |
 | `components/` | 随附的组件源码 —— 每个组件一个目录（Nim、Go、TypeScript 和一个 bash 演示）；清单是下面的[随附组件](#shipped-components)表，这是必须保持最新的部分。有两个目录不是总线公民：`components/nats` 构建 `var/bin/nats-server`，当需要启动总线时由 core 生成；`components/ctxtest` 是嵌套调用测试（`t_fabric`、`t_agent`）为自己编译的夹具 |
 | `sdk/` | Nim SDK（`sdk/niffler`）+ `sdk/go`（Go）+ `sdk/ts`（TypeScript/Node.js，npm 包 `niffler-sdk`）；`sdk/envelope.nim` 中的信封就是产物 |
-| `docs/` | 本手册、线协议规范（`WIRE.md`）、设置设计（`research/SETTINGS.md`）、核心边界理由（`ARCHITECTURE.md`）、fabric 用户指南（`FABRIC_GUIDE.md`）、待办工作（`research/PLAN.md`）以及 `research/`（设计历史） |
+| `docs/` | 本手册、线协议规范（`WIRE.md`）、设置设计（`research/SETTINGS.md`）、核心边界理由（`ARCHITECTURE.md`）、fabric 用户指南（`FABRIC_GUIDE.md`）、待办工作（`PLAN.md`）以及 `research/`（设计历史） |
 | `manifest.yaml` | 引导清单：core 生成哪些组件、重启策略，以及可选的无状态 `replicas` 数量；`--minimal` 将其过滤为 `store`、`bash` 和 `llm` |
 | `var/` | **运行时状态，已 gitignore，可丢弃** —— 仓库才是快照 |
 | `var/bin/` | 构建出的二进制文件（系统核心 + 会话运行器 + 组件），以及 `builder.build` 编译的一切 —— agent 构建的组件也落在这里，与系统组件并列。由 `make build` 重建 |

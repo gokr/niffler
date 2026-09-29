@@ -33,28 +33,10 @@ Companion docs: [FABRIC.md](FABRIC.md) (the agent component's origin),
 [CONTEXT-REVIEW.md](CONTEXT-REVIEW.md), [../MANUAL.md](../MANUAL.md) §Fabric
 and subagents, [../WIRE.md](../WIRE.md).
 
-## 0. What ships, in one table
+## 0. What shipped
 
-The proposals from SUBAGENTS.md §7, ordered so each phase was independently
-mergeable and the cheap wins landed first. All rows below are now completed
-unless the state column says otherwise.
-
-| phase | # | deliverable | effort | needs |
-|---|---|---|---|---|
-| **P0** | 1 | **Settlement notice** — a durable notice to the parent when a child settles | ≤ 1 d | – |
-| **P0** | 2 | **`list_agents`** — the durable roster of children | ½ d | – |
-| **P1** | 3 | **Continuation** — `session:` on `agent_run`/`agent_spawn` | 2–3 d | P0.1 (notice for continuations) |
-| **P1** | 4 | **Fork** — `fork:` on fresh spawns (balanced completed-turn cut) | ~2 d | P1.3 (shared child-prep path) |
-| **P2** | 5 | **Parallel start** — schema guidance + safe fan-out | ½–1 d | P1.3 (continuations make fan-out useful) |
-| **P2** | 6 | **`NIF_AGENT_MAX_DEPTH`** — depth cap as config (default 1) | ½ d | – |
-| **P3** | 7 | Context-sensitive tool descriptions | hours | P1.4 |
-| **P3** | 8 | Child-side delegation-scope statement | hours | – |
-| **P3** | 9 | `agent_steer` durability (no silent loss to a retired child) | ½ d | P1.3 |
-| **P3** | 10 | `agent_ask` — steer *with* a reply | 1 d | P1.3 |
-| **P3** | 11 | Fork × compaction note in the docs | hours | P1.4 + compaction merge |
-| **P4** | 12 | `session_info` lineage enrichment | hours | P1.4 |
-| **P4** | 13 | TUI/UI surfacing of children + notices | 1 d | P0.1, P0.2 |
-| **P4** | 14 | Bench: subagent scenarios in `bench/` | 1–2 d | P1.3, P1.4 |
+All fourteen items landed — the per-phase status table at the top of this file
+is authoritative.
 
 Phases P0–P2 were the substance (the IanTheReal checklist). P3 was judgment
 and polish; P4 was observability. The original sequencing warning about

@@ -60,7 +60,7 @@ make install-ui         # install the desktop UI plugin (gokr/niffler-ui): the
 - [Manual](docs/MANUAL.md) — 安装细节、配置、工具、提供商、UI、恢复、测试和故障排除（还有[简体中文](docs/MANUAL.zh.md) · [繁體中文](docs/MANUAL.zh-TW.md)）。
 - [Wire protocol](docs/WIRE.md) — JSON 信封、主题、错误、取消和会话上下文。
 - [Architecture](docs/ARCHITECTURE.md) — 为什么核心、组件和 NATS 是分离的，以及贡献者必须保持的不变量。
-- [Open work](docs/research/PLAN.md) — 当前推迟的工作。
+- [Open work](docs/PLAN.md) — 当前推迟的工作。
 - [Research index](docs/research/README.md) — 设计历史和先前技术研究；研究笔记不是操作说明。
 - [Fabric guide](docs/FABRIC_GUIDE.md) — 可编程编排和子智能体。
 - [Model source plugins](docs/MODEL_SOURCES.md) — 目录校正组件的完整示例。

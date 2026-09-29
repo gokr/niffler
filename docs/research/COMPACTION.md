@@ -717,7 +717,7 @@ Cache honesty: the summarization call may hit the warm prefix; the next
 conversation request is a rebuild. `ev.session.status`'s `cacheHitRatio`
 measures exactly that, per turn, as it does today.
 
-**Cache relation** (see [../PI-NEXT.md](PI-NEXT.md) §3.4): compaction is the
+**Cache relation** (see [PI-NEXT.md](PI-NEXT.md) §3.4): compaction is the
 one place Niffler gets real cache leverage, and step 3 above is the mechanism —
 the summarization call replays the conversation's exact prefix and appends only
 the instruction, so a second full-context request arrives as a near-total cache
