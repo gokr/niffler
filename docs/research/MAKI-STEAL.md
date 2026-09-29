@@ -283,12 +283,24 @@ Without it, a zero-TTL DNS record answers public to the guard and
 169.254.169.254 to curl a microsecond later (classic rebinding).
 `https://example.com@127.0.0.1/` userinfo tricks handled.
 
-Niffler today: `components/fetch` — http/https only, redirects followed, **no
-SSRF guard at all**. The agent can be prompt-injected into reading
-`http://169.254.169.254/...` or localhost services.
+Niffler today: `components/fetch` — http/https only, redirects followed by
+hand with every hop re-vetted, and a private/loopback/link-local/metadata
+block-list (`NIF_FETCH_ALLOW_PRIVATE` is the `allowed_private_hosts`
+equivalent). What was missing is the load-bearing half: the guard vetted a
+resolved address and then let `HttpClient` resolve the name **again** when it
+connected, so a zero-TTL record could answer public to the guard and
+169.254.169.254 to the transport a microsecond later.
 
-Borrow: block-list check on connect-time IP + DNS pin + manual redirect
-re-vetting. stdlib `net` gives us everything; ~1 day.
+Shipped: `validateFetchUrl` now returns the vetted address and the transport
+connects to exactly that address — `curl --resolve <host>:<port>:<ip>` per
+hop. Chosen over a hand-rolled `std/net` client because `--resolve` keeps
+curl's HTTP parsing, chunked handling, proxy refusal (`--noproxy '*'`), TLS
+SNI and CA verification against the *hostname* while pinning only the peer;
+re-implementing those around a raw socket is where new holes come from. The
+cost is a `curl` runtime dependency (declared, checked with an actionable
+error, installed by `make setup`). Regression tests cover the pin path
+(pinned IPv4 with `Host` preserved), per-hop re-vetting on redirects,
+non-http redirect targets, HEAD, and fragment handling.
 
 ### 11. Claude-Code-wire-compatible headless mode
 

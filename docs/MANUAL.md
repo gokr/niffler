@@ -1664,7 +1664,9 @@ The `fetch` component is the web access tool (a port of the old niffler
   silently. Set `NIF_TRAFILATURA` to an executable path/name to override
   detection, or to `off`/`0`/`false`/`none` to disable it.
 - Responses are capped at `maxSize` (default 10 MiB, min 1024 bytes, max
-  50 MiB); content over 200 KB after processing is written to a unique
+  50 MiB), and `timeout` bounds the **whole transfer** (curl `--max-time` and
+  the same value for `--connect-timeout`), not each individual read; content
+  over 200 KB after processing is written to a unique
   `fetch_<rand>.txt` under `$NIF_FETCH_DIR` (default `$NIF_ROOT/var/fetch`)
   and the tool result becomes `Content saved to file (over 200000 bytes after
   processing): <path>`, so the agent reads large pages with its own file
@@ -1686,6 +1688,14 @@ The `fetch` component is the web access tool (a port of the old niffler
   resolves to a private address: <host>"`, `"cannot validate hostname <host>:
   <msg>"`). `NIF_FETCH_ALLOW_PRIVATE` (`1`, or `true`/`yes`) bypasses the
   check for trusted local services.
+- The connection goes to **the address that was just checked**: the hop is
+  resolved once, vetted, then pinned with `curl --resolve`, so a DNS answer
+  that changes between the check and the connect (rebinding) cannot reach a
+  different peer. The original hostname still rides in `Host`, TLS SNI and
+  certificate verification. `curl` is therefore a runtime dependency (it is
+  part of `make setup`); without it the tool fails with an actionable error
+  instead of silently skipping the guard. A URL fragment (`#anchor`) is
+  dropped — it is client-side only and never sent on the wire.
 - Redirects: at most 5 hops, each re-validated; 301/302/303 become GET with
   the body and Content-Length/Content-Type/Transfer-Encoding dropped, 307/308
   keep method and body; a missing `Location` or a non-http(s) target is an

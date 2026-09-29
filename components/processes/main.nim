@@ -221,9 +221,12 @@ proc readNew(path: string, cursor: var int): tuple[content: string, truncated: b
   ## raw). Bounded per poll; anything beyond stays pending for the next one.
   ## Caps the spool at read time: the child may have written between the
   ## poll's entry and here, so the cap check must see the final size.
-  let size = spoolSize(path)
+  var size = spoolSize(path)
   if size > spoolCap() and truncateSpool(path, cursor):
     result.truncated = true
+    # The old size referred to the pre-truncation file. Reading against it
+    # can allocate the whole old spool and report bytes that no longer exist.
+    size = spoolSize(path)
   if size <= cursor: return
   var f = open(path, fmRead)
   var chunk: string

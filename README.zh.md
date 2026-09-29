@@ -49,7 +49,71 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 测试：`make test` 运行总线契约套件（每个测试一个私有总线）；`make gotest` 运行 Go 测试、vet 和竞态检查。
 
-## Documentation
+## Commands
+
+以下都是 `make` 目标（Makefile 是入口）；桌面 UI 已是独立插件
+（`gokr/niffler-ui`），其自身的构建目标在那个仓库里。
+
+| 命令 | 作用 |
+|---|---|
+| `make setup` | 安装平台依赖（Ubuntu/macOS）和 Nimble 依赖包 |
+| `make build` | core + 全部组件构建到 `var/bin`（不含 UI 工具链） |
+| `make all` | `build`（默认目标；桌面 UI 已是独立插件） |
+| `make run` | 构建后启动 `./var/bin/niffler`（终端管理 shell） |
+| `make install` | 安装 `niffler`、`niffler-cli`、`niffler-console` 的 PATH 入口（终端上会询问是否安装 TUI） |
+| `make install-tui` | `make install WITH_TUI=1`：上面的全部，外加 `niffler-tui` 聊天客户端 |
+| `make install-ui` | 构建并安装桌面 UI 插件（`gokr/niffler-ui`）及其启动器 |
+| `make install-lsp` | 安装 `lsp` 组件的默认语言服务器 |
+| `make dev` | 已退役：SPA 开发服务器随 UI 移入 `gokr/niffler-ui`（在那里执行 `make dev`） |
+| `make test` | 完整测试门：总线契约测试套件（UI 自身的测试与类型检查在 `gokr/niffler-ui`） |
+| `make test-server` | 总线契约测试套件（每个测试自建私有 NATS + `NIF_ROOT`） |
+| `make test-<name>` | 单个组件的契约测试，例如 `make test-fetch` |
+| `make gotest` | Go 单元测试与 vet（重要模块带 `-race`） |
+| `make clean` | 清除构建产物（不要手工 `rm -rf var`） |
+| `make down` | 停止机器上散落的 harness、组件和总线进程 |
+| `make down-here` | 同上，但只限本 checkout（bench worktree 和其他 clone 不受影响） |
+| `make recover` | 全部停止、重新构建、清理已 spawn 的组件记录、重新启动 |
+| `make doctor` | 检查依赖并报告缺失项 |
+| `make uninstall` | 移除已安装的 PATH 入口 |
+| `make ram` | 报告正在运行的 stack（harness、组件、总线、客户端）的内存占用 |
+| `make install-jev` | 安装 `jev` 顾问背后的 Von 运行时（可选，约 5.4 GB） |
+| `make smoke` | 遗留的一次性端到端脚本（优先用 `make test`） |
+
+### Chat commands (web UI and `niffler-tui`)
+
+在输入框里敲 `/` — `Tab` 补全。`/help` 会实时打印下面这份清单，带每个命令的
+参数和下一节的全部按键。内置命令：`/components`、`/discover`、`/profile`、
+`/provider`、`/model`、`/effort`、`/approvals`、`/limit`、`/compact`、
+`/connect`、`/status`、`/new`、`/session`、`/think`、`/tools`、`/locale`、
+`/info` 和 `/help`；已安装插件贡献的命令会由 `/help` 列在独立标题下。
+
+### Admin shell (`niffler`)
+
+`niffler` 不是聊天 UI：它提供 `help`、`status`、`catalog`、`tools`、
+`sessions`、`exit`/`quit`（或 `Ctrl-D`）。对话在 `niffler-tui` 和桌面 UI 里，
+脚本化操作走 `niffler-cli`（`catalog` / `wait` / `call` / `install`）。
+
+## Keyboard shortcuts
+
+Web UI（桌面应用和浏览器）：
+
+| 按键 | 位置 | 作用 |
+|---|---|---|
+| `Enter` / `Esc` | 输入框 | 发送消息（补全弹窗打开时 `Esc` 先关闭它） |
+| `Shift+Enter` | 输入框 | 换行而不发送 |
+| `↑` / `↓` | 输入框 | 浏览命令历史，未发送的草稿会保留 |
+| `Tab` / `Shift+Tab` | 输入框中的 `/…` | 打开斜杠补全 / 在候选项间循环 |
+| `Enter` / `Esc` | 补全弹窗 | 接受高亮命令 / 关闭弹窗 |
+| `Ctrl+T` | 全局 | 循环切换推理显示：full → brief → off |
+| `Ctrl+E` | 全局 | 循环切换工具卡片：brief → full → off |
+| `Ctrl+G` | 全局 | 循环切换思考强度 |
+| `Enter` / `Esc` | 审批提示 | 批准 / 拒绝被门控的工具调用 |
+
+管理 shell 跟随终端：`↑`/`↓` 行历史、`Tab` 补全、`Ctrl-D`（或 `exit`/`quit`）
+退出、`Ctrl-C` 中断。`niffler-tui` 保持同样的 `Ctrl+T` / `Ctrl+E` / `Ctrl+G`
+显示循环。
+
+## 文档
 
 - [Manual](docs/MANUAL.md) — 安装细节、配置、工具、提供商、UI、恢复、测试和故障排除（还有[简体中文](docs/MANUAL.zh.md) · [繁體中文](docs/MANUAL.zh-TW.md)）。
 - [Wire protocol](docs/WIRE.md) — JSON 信封、主题、错误、取消和会话上下文。

@@ -92,8 +92,74 @@ gokr/niffler-ui` can still fetch it as a package if you want to poke at it).
 `make doctor` inspects prerequisites; `make down-here` stops only this clone's
 processes.
 
-Testing: `make test` runs the bus-contract suite (one private bus per test);
-`make gotest` runs the Go tests, vet and race checks.
+Testing is covered by the command table below: `make test` is the complete
+gate.
+
+## Commands
+
+Everything below is a `make` target (the Makefile is the front door); the
+desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
+
+| Command | What it does |
+|---|---|
+| `make setup` | platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies |
+| `make build` | core + all components into `var/bin` (no UI toolchain) |
+| `make all` | `build` (the default target; the desktop UI is its own plugin now) |
+| `make run` | build, then start `./var/bin/niffler` (the terminal admin shell) |
+| `make install` | PATH entries for `niffler`, `niffler-cli`, `niffler-console`, plus `niffler-tui` on request |
+| `make install-tui` | `make install WITH_TUI=1`: the above plus the `niffler-tui` chat client |
+| `make install-ui` | build + install the desktop UI plugin (`gokr/niffler-ui`) and its launcher |
+| `make install-lsp` | install the default language servers for the `lsp` component |
+| `make dev` | retired: the SPA dev server lives in `gokr/niffler-ui` (`make dev` there) |
+| `make test` | the complete gate: the bus-contract suite (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
+| `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
+| `make test-<name>` | one component's contract test, e.g. `make test-fetch` |
+| `make gotest` | Go unit tests and vet (`-race` where it matters) |
+| `make clean` | remove build artifacts (never `rm -rf var` by hand) |
+| `make down` | stop stray harnesses, components and bus processes anywhere on the machine |
+| `make down-here` | the same, scoped to this checkout — bench worktrees and other clones survive |
+| `make recover` | stop everything, rebuild the shipped binaries, wipe spawned-component records, restart |
+| `make doctor` | check prerequisites and report what is missing |
+| `make uninstall` | remove the installed PATH entries |
+| `make ram` | report the RAM of the running stacks (harness, components, bus, clients) |
+| `make install-jev` | install the Von runtime behind the optional `jev` advisor (~5.4 GB) |
+| `make smoke` | legacy one-shot end-to-end script (prefer `make test`) |
+
+### Chat commands (web UI and `niffler-tui`)
+
+Type `/` in the composer — `Tab` completes. `/help` prints the list below
+live, with each command's arguments and every key combo. The built-ins are:
+`/components`, `/discover`, `/profile`, `/provider`, `/model`, `/effort`,
+`/approvals`, `/limit`, `/compact`, `/connect`, `/status`, `/new`, `/session`,
+`/think`, `/tools`, `/locale`, `/info` and `/help`; commands contributed by
+installed plugins are listed by `/help` under their own heading.
+
+### Admin shell (`niffler`)
+
+`niffler` is not a chat UI: it runs `help`, `status`, `catalog`, `tools`,
+`sessions`, and `exit`/`quit` (or `Ctrl-D`). Conversations run in
+`niffler-tui` and the desktop UI; scripting goes through `niffler-cli`
+(`catalog` / `wait` / `call` / `install`).
+
+## Keyboard shortcuts
+
+Web UI (desktop app and browser):
+
+| Keys | Where | What |
+|---|---|---|
+| `Enter` / `Esc` | composer | send the message (`Esc` first dismisses an open completion popup) |
+| `Shift+Enter` | composer | newline instead of sending |
+| `↑` / `↓` | composer | walk command history; the unsent draft is preserved |
+| `Tab` / `Shift+Tab` | `/…` in the composer | open slash completion / cycle the candidates |
+| `Enter` / `Esc` | completion popup | accept the highlighted command / dismiss the popup |
+| `Ctrl+T` | anywhere | cycle the reasoning display: full → brief → off |
+| `Ctrl+E` | anywhere | cycle tool cards: brief → full → off |
+| `Ctrl+G` | anywhere | cycle the thinking effort |
+| `Enter` / `Esc` | approval prompt | approve / deny a gated tool call |
+
+The admin shell follows the terminal instead: `↑`/`↓` line history, `Tab`
+completion, `Ctrl-D` (or `exit`/`quit`) to leave, `Ctrl-C` to interrupt.
+`niffler-tui` keeps the same `Ctrl+T` / `Ctrl+E` / `Ctrl+G` display cycles.
 
 ## Documentation
 

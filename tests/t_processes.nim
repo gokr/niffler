@@ -20,6 +20,12 @@ import helpers
 proc pidAlive(pid: int): bool =
   dirExists("/proc/" & $pid)
 
+proc spoolPath(root, id, stream: string): string =
+  ## Path of a background child's spool file (stdout or stderr) inside the
+  ## sandbox root. Used where a check must observe the file itself rather than
+  ## a poll: the truncation regression needs the size before the first drain.
+  root / "var" / "processes" / (id & "." & stream)
+
 # --- the notice lane, from the test's side ----------------------------------
 # The processes component publishes exit notices on the same subject the agent
 # uses for settlement notices, so the test subscribes to it directly (shim
@@ -308,10 +314,24 @@ proc main() =
   # --- spool truncation under the cap --------------------------------------
   let s6 = pcall("process_start", %*{"command": "seq 1 5000"})
   let id6 = s6{"id"}.getStr("")
+  # Wait until the child has finished writing so the first poll MUST take the
+  # truncation branch. It must not return the pre-truncation byte count.
+  var preTruncation = 0
+  for i in 0 ..< 100:
+    let spool = spoolPath(tmp, id6, "out")
+    if fileExists(spool): preTruncation = int(getFileSize(spool))
+    if preTruncation > 20_000: break
+    sleep(50)
+  check("fixture exceeded spool cap before first poll", preTruncation > 20_000,
+        $preTruncation)
   # drain fully: with the small poll chunk one call no longer returns the
   # whole (truncated) tail
   var tr1text = ""
   var tr1 = pcall("process_poll", %*{"id": id6, "waitMs": 5000})
+  check("first truncated poll returns bounded bytes",
+        tr1{"new_bytes"}.getInt(0) > 0 and
+        tr1{"new_bytes"}.getInt(0) <= 4096 and
+        tr1{"text"}.getStr("").contains("truncated"), $tr1)
   tr1text.add(tr1{"text"}.getStr(""))
   var trGuard = 0
   while (tr1{"status"}.getStr("") == "running" or
