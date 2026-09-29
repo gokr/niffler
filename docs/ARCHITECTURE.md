@@ -118,7 +118,7 @@ The mechanisms that *are* components, and the capability they carry:
 | `bash` | execution | general-purpose machine access |
 | `plugins` | ecosystem | discovery + install of third-party component packages (topic search, `niffler.json` manifest, source builds) |
 | `edit` | file tools | `read` (one `path` or a batched `reads` array — up to 12 files/ranges, pageable) / `edit` (exact old_string/new_string, uniqueness enforced, guarded fallback cascade, `replace_all`) / `write` (atomic whole-file) / `undo_last_edit`; anchored block moves live in the niffler-hashline plugin |
-| `git` | repo inspection | read-only `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv; mutations stay in bash |
+| `git` | repo inspection | read-only `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv, plus the local `review_receipt` diff-fingerprint write/check pair; mutations stay in bash |
 | `lsp` | language-server seam | one `lsp` tool (`diagnostics`, `documentSymbol`, `workspaceSymbol`, `goToDefinition`, `findReferences`, `goToImplementation`, `hover`, `warmup`) plus `lsp_servers`/`lsp_registry` over any configured stdio language server; the registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`), so adding a language is a config entry or an approval-gated `lsp_registry add` — never code |
 | `observe` | live introspection | bounded raw-bus ring, targeted probes/traces, and server monitoring |
 | `logfile` | diagnostic persistence | rotating best-effort JSONL sink; no JetStream/audit guarantee |
@@ -133,7 +133,7 @@ default Nim SDK pump stays serial and `asyncdispatch` is never used.
 ## Where the boundary shows
 
 `core.kill` works on every component — `bash`, `builder`, `store`, `llm`,
-`plugins`, `hashline-edit`, anything the agent added. What it cannot touch is
+`plugins`, anything the agent added. What it cannot touch is
 exactly the list above: the supervisor's children-ownership, the catalog, the
 loop, the bus. That asymmetry is the architecture, not an implementation detail.
 
