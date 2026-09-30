@@ -584,7 +584,7 @@ doctor:
 			echo "  libclang (futhark, a transitive build dep): OK"; \
 		else echo "  libclang: MISSING — run 'make install-native-deps' (futhark fails to build without it)"; fi; \
 	fi
-	@missing=""; for pkg in yaml htmlparser checksums natsnim bitbarrel; do \
+	@missing=""; for pkg in yaml htmlparser checksums natsnim; do \
 		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
 		[ -d "$$p" ] || missing="$$missing $$pkg"; \
 	done; \
@@ -686,7 +686,7 @@ install-nim-deps:
 	@# nimble can exit 0 even when a dependency's own install failed, and
 	@# 'nimble path' also
 	@# exits 0 for missing packages — verify each one actually landed.
-	@for pkg in yaml htmlparser checksums natsnim bitbarrel; do \
+	@for pkg in yaml htmlparser checksums natsnim; do \
 		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
 		if [ ! -d "$$p" ]; then \
 			echo "nimble: package '$$pkg' did not install — rerun after 'make install-native-deps'"; \
