@@ -548,11 +548,15 @@ proc registryAnswer(cat: Catalog, withHints: bool): JsonNode =
   ## The bus directory: every component as one line. Cheaper and far more
   ## useful than listing every tool name — 201 tools cost 9KB as names alone
   ## and 40KB with descriptions (measured on a loaded harness), and a 65-tool
-  ## MCP server is unreadable either way.
+  ## MCP server is unreadable either way. The trailing `next` line is read at
+  ## the moment a model is deciding whether to keep browsing, which is exactly
+  ## where the exit belongs (three passes of full31 showed cells browsing five
+  ## components and invoking nothing, and cells reading one hint and moving on).
   var components = newJArray()
   for name in cat.sortedComponentNames():
     components.add(componentLine(cat.components[name], withHints))
-  %*{"components": components, "count": components.len}
+  %*{"components": components, "count": components.len,
+     "next": "discover {component: X} lists its tools, {tools: [name]} returns one schema, invoke calls it. If a direct tool already fits, use it — don't keep browsing."}
 
 proc discover*(cat: Catalog, args: JsonNode): JsonNode =
   ## Return deterministic component hints or selected non-hidden schemas.

@@ -10,7 +10,7 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { run, zeroUsage } from "../lib/util.mjs";
+import { run, tail, zeroUsage } from "../lib/util.mjs";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -263,12 +263,22 @@ export class NifflerHarness {
       return { reply: "", error: `niffler round timed out after ${turnTimeoutMs}ms` };
     }
     if (!parsed) {
-      return {
-        reply: "",
-        error: `niffler session call failed (exit ${res.code}): ${(
-          res.stderr || res.stdout
-        ).slice(-400)}`,
-      };
+      // Never fail a cell with an empty message. A cli killed by a signal
+      // (exit -1, no stdout, no stderr) used to produce
+      // "niffler session call failed (exit -1): " and nothing else, which cost
+      // a full investigation of a cell that could not be explained from its own
+      // artifacts. Fall back to the harness log, then to the process facts.
+      let detail = (res.stderr || res.stdout || "").trim().slice(-400);
+      if (!detail) {
+        try {
+          detail = tail(fs.readFileSync(path.join(this.runRoot, "harness.log"), "utf8"), 600).trim();
+        } catch {}
+        const facts = `exit ${res.code}${res.timedOut ? ", timed out" : ""}`;
+        detail = detail
+          ? `no cli output (${facts}); harness log tail: ${detail}`
+          : `no cli output and no harness log (${facts})`;
+      }
+      return { reply: "", error: `niffler session call failed (exit ${res.code}): ${detail}` };
     }
     let reply = parsed.reply ?? "";
     if (typeof reply === "object" && reply !== null) reply = reply.content ?? JSON.stringify(reply);
