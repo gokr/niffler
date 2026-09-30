@@ -347,12 +347,22 @@ proc fetchToolHints(comp: Component,
     let disc = comp.request("core", "discover", %*{}, 10_000)
     if disc{"components"} != nil:
       for c in disc{"components"}:
-        if c{"onDemand"} == nil: continue
-        for t in c{"onDemand"}:
+        # The registry summarises each component (tool counts plus a few
+        # when-to-use hints); the per-tool list with descriptions comes from the
+        # component view. Ask only for components that have on-demand tools at
+        # all, so a harness full of MCP servers does not become a call storm.
+        if c{"onDemand"}.getInt(0) == 0: continue
+        let owner = c{"name"}.getStr("")
+        if owner.len == 0: continue
+        let view = comp.request("core", "discover",
+                                %*{"component": owner, "limit": 200}, 10_000)
+        let onDemandTools = view{"component"}{"onDemand"}
+        if onDemandTools == nil: continue
+        for t in onDemandTools:
           let name = t{"name"}.getStr("")
           if name.len == 0: continue
           if visible.allowlisted and name notin visible.allowlist: continue
-          result.od.add(ToolHint(name: name, component: c{"name"}.getStr(""),
+          result.od.add(ToolHint(name: name, component: owner,
                                  desc: t{"description"}.getStr("")))
   except CatchableError:
     discard

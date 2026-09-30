@@ -175,11 +175,32 @@ proc main() =
   check("discover components are name-sorted", componentNames.isSorted(),
         $componentNames)
   let fixtureSummary = component(summary1, "discover-fixture")
-  check("discover separates direct and on-demand hints",
-        names(fixtureSummary{"direct"}) == @["fixture_direct"] and
-        names(fixtureSummary{"onDemand"}) ==
-          @["fixture_demand_alpha", "fixture_needs_approval", "fixture_times_out"],
-        $fixtureSummary)
+  # The registry is one line per component: what it is, how much of it there is,
+  # and a few when-to-use sentences — the routing signal that used to sit in the
+  # system prompt's roster, fetched on demand instead of re-sent in every
+  # request prefix. Tool names are deliberately NOT enumerated: a loaded harness
+  # lists 201 tools, which cost 9KB as names alone and 40KB with descriptions
+  # (measured), and a single MCP server can own 65 of them.
+  check("registry summarises a component instead of listing its tools",
+        fixtureSummary{"tools"}.getInt(0) == 4 and
+        fixtureSummary{"onDemand"}.getInt(0) == 3 and
+        fixtureSummary{"direct"}.getInt(0) == 1 and
+        fixtureSummary{"more"}.getInt(-1) == 0 and
+        fixtureSummary{"hints"}[0]{"tool"}.getStr("") == "fixture_demand_alpha" and
+        fixtureSummary{"hints"}[0]{"hint"}.getStr("").len > 0 and
+        fixtureSummary{"hints"}.len == 3, $fixtureSummary)
+  let componentHint = call(nc, "core", "discover", %*{"component": "discover-fixture"})
+  check("component view still describes its tools",
+        names(componentHint{"component"}{"onDemand"}) ==
+          @["fixture_demand_alpha", "fixture_needs_approval", "fixture_times_out"] and
+        names(componentHint{"component"}{"direct"}) == @["fixture_direct"] and
+        componentHint{"component"}{"onDemand"}[0]{"description"}.getStr("").len > 0,
+        $componentHint)
+  let filtered = call(nc, "core", "discover", %*{
+    "component": "discover-fixture", "query": "alpha"})
+  check("component query filters inside a component",
+        names(filtered{"component"}{"onDemand"}) == @["fixture_demand_alpha"],
+        $filtered)
   check("discover never leaks hidden names or descriptions",
         not ($summary1).contains("fixture_hidden_needle") and
         not ($summary1).contains("HIDDEN_SENTINEL"), $summary1)

@@ -820,6 +820,11 @@ keys:
 - `hidden`: tool invisible to the LLM catalog (e.g. `chat`, `session`).
 - `onDemand`: kept out of a conversation's frozen direct toolset; reachable
   via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
+- `hint`: the when-to-use sentence `discover` shows for this tool instead of
+  the first sentence of its description. It exists for tools whose choice
+  between shapes needs saying once (fabric: one-shot batch vs long-lived
+  guest; agent: spawn vs run vs continue), and it is the routing line a
+  component contributes to the registry (`discover` with no arguments).
 - `runner`: when `true` on a `hidden` tool, exempts internal runner machinery
   from a conversation's frozen tool allowlist. This is how replaceable
   `chat`, model-resolution, compaction, and recall tools remain available to
