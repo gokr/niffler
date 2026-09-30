@@ -126,7 +126,7 @@ let bashSchema = toolSchema(%*{
   "cwd": {"type": "string",
           "description": "Working directory (default: workspace)"}
 }, required = @["command"],
-  description = "Run a shell command (bash -c). The shell starts in the conversation's workspace (the repository root), so paths can be relative and `cd` to it is unnecessary; each call gets a fresh shell, so a `cd` never persists — use cwd or an absolute path to work elsewhere. One call has a budget (default 120s, up to 570s); a slower command is killed with exit 124, and anything that should outlive the call (servers, watchers, long builds) belongs in run_in_background — it returns an id at once and keeps running across turns, polled with process_poll and stopped with process_kill.")
+  description = "Run a shell command (bash -c) in the conversation's workspace (the repository root): paths can be relative, and each call is a fresh shell, so a `cd` never persists — use cwd or an absolute path to work elsewhere. Default budget 120s (max 570s); a slower command is killed with exit 124. Anything that should outlive the call (servers, watchers, long builds) belongs in run_in_background — it returns an id at once and keeps running across turns, polled with process_poll, stopped with process_kill.")
 bashSchema["x-harness"] = %*{"approval": "always",
                              "timeoutMs": BASH_CALL_TIMEOUT_MS,
                              "sessionId": true,
