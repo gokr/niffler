@@ -1,0 +1,2 @@
+{ "id": "t31-tinyrename", "title": "Rename an exported symbol across code, tests and docs (Go)", "language": "go",
+  "protected": ["test.sh", "queue_test.go", "go.mod", "CHANGELOG.md"] }
