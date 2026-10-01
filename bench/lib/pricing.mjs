@@ -54,6 +54,10 @@ export const PRICING = {
 
 const ALIASES = {
   "hf:deepseek-ai/DeepSeek-V4.1-Flash": "syn-deepseek-v41",
+  // dsh sends DeepSeek's own model ids (deepseek-flash / deepseek-v4-pro),
+  // so its usage is priced through the direct endpoint entry.
+  "deepseek-flash": "deepseek-v4-flash",
+  "deepseek-v4-pro": "deepseek-v4-flash",
 };
 
 export function pricingFor(modelKey) {
