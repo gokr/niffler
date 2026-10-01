@@ -1,0 +1,13 @@
+model,harness,task,verdict,leaked,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,costOfficialUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls,discoverCalls,discoverRegistry,discoverComponent,discoverToolSchemas,discoverQuery,discoverAnswers,discoverBytes,invokeCalls,shopping
+deepseek-v4-flash,niffler,t13-batchrename,pass,false,15.5,15.1,1,45944,6653,1915,37376,0,0.005112,0.004518156,27,27,1904,false,0,0,0,0,0,0,0,0,0,0,8,10,0,0,,5,,,5,1,2,1,1,5,6338,0,true
+deepseek-v4-flash,niffler,t15-pollstats,pass,false,26.1,25.7,1,58531,7127,3532,47872,0,0.007384,0.006663732,1,0,2666,false,0,0,0,0,0,0,0,0,0,0,8,11,4,0,,1,,1,3,1,2,0,0,3,3907,2,false
+deepseek-v4-flash,niffler,t16-apisum,fail,false,11.6,10.4,1,23920,2305,623,20992,0,0.001950,0.001565052,24,0,2668,false,0,0,0,0,0,0,0,0,0,0,6,8,4,0,,2,,1,1,0,0,0,1,1,815,0,true
+deepseek-v4-flash,niffler,t28-docbackfill,pass,false,15.3,14.9,1,45702,4534,1744,39424,0,0.004375,0.003689544,18,9,2700,false,0,0,0,0,0,0,0,0,0,0,8,9,2,0,,7,,,0,0,0,0,0,0,0,0,false
+deepseek-v4-flash,niffler,t29-logrollup,pass,false,7.5,7.4,1,15927,1966,649,13312,0,0.001669,0.001448472,436,0,2685,false,0,0,0,0,0,0,0,0,0,0,4,3,0,1,,2,,,0,0,0,0,0,0,0,0,false
+deepseek-v4-flash,niffler,t30-ifacedrift,pass,false,15.9,15.8,1,68007,8042,1597,58368,0,0.005731,0.004679208,48,48,2683,false,0,0,0,0,0,0,0,0,0,0,8,12,4,0,,6,,,2,1,1,0,0,2,3606,0,true
+deepseek-v4-flash,pi,t13-batchrename,pass,false,4.3,4,1,10497,3715,382,6400,0,0.001666,0.0016113000000000002,27,27,,false,0,0,0,0,0,0,0,0,0,0,3,3,0,0,,3,,,,,,,,,,,
+deepseek-v4-flash,pi,t15-pollstats,pass,false,7,6.7,1,13949,2702,623,10624,0,0.001772,0.001621944,1,0,,false,0,0,0,0,0,0,0,0,0,0,5,7,3,0,,3,,1,,,,,,,,,
+deepseek-v4-flash,pi,t16-apisum,pass,false,11.4,10.2,1,18603,2957,798,14848,0,0.002162,0.0019337879999999999,22,0,,false,0,0,0,0,0,0,0,0,0,0,6,6,0,0,,5,,1,,,,,,,,,
+deepseek-v4-flash,pi,t28-docbackfill,pass,false,12.1,11.9,1,27093,3882,1323,21888,0,0.003220,0.002883528,18,9,,false,0,0,0,0,0,0,0,0,0,0,7,6,0,0,,6,,,,,,,,,,,
+deepseek-v4-flash,pi,t29-logrollup,pass,false,7,7,1,14253,3058,955,10240,0,0.002241,0.0021248400000000002,436,0,,false,0,0,0,0,0,0,0,0,0,0,4,6,3,0,,3,,,,,,,,,,,
+deepseek-v4-flash,pi,t30-ifacedrift,pass,false,8.1,8,1,29465,6718,987,21760,0,0.003636,0.0033303599999999997,48,48,,false,0,0,0,0,0,0,0,0,0,0,5,5,0,0,,5,,,,,,,,,,,
