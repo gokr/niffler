@@ -6,6 +6,53 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Discovery answers as a component registry instead of dumping every tool name,
+a model the resolved provider does not serve is refused before it reaches the
+wire, and the base prompt shed the paragraphs that were buying turns.
+
+### Changed
+
+- **`discover` returns a component registry, not a tool dump.** An empty
+  query now answers with one line per component — name, version, tool counts
+  (`tools`, split into `direct` and `onDemand`) and up to three when-to-use
+  sentences (`hints`, each `{tool, hint}`, drawn from the component's
+  on-demand tools, with `more` counting the rest) — where a loaded harness
+  used to return 9KB of tool names (201 tools) and 40KB before that shape when
+  it carried descriptions. A tool's declared `x-harness.hint` sentence is
+  preferred over its description's first sentence; a component whose choice is
+  between shapes states one (fabric: one-shot batch vs long-lived guest;
+  agent: spawn vs run vs continue). Over a 6000-byte budget the hints are
+  dropped and the answer is rebuilt as name-plus-counts. `discover
+  {component}` also takes `query` and `limit`, so one MCP server can no longer
+  answer with dozens of tools and kilobytes of descriptions.
+- **The base prompt no longer enumerates the on-demand tool roster, and shed
+  the paragraphs that bought turns.** The routing signal moved to `discover`,
+  which serves it per component on demand instead of re-sending it in every
+  request prefix (2668 → 1793 chars, ~350 tokens off every prefix; measured on
+  the ten highest-delta bench tasks, niffler went 9.7 → 7.7 turns and
+  117.4k → 68.9k tokens). The scratch-test licence, the pre-finish ritual and
+  "a compiling edit is not evidence" were cut; batched calls, the workspace
+  statement, the file-tool discipline and the change-scope line stay. Bench
+  lanes now receive byte-identical task text (bench/README.md "Fairness notes
+  / caveats").
+
+### Fixed
+
+- **A model pinned without its provider is refused instead of sent to a
+  foreign endpoint.** The `llm` component checks an explicitly requested model
+  against the models catalog: when the exact id exists and no entry for it
+  names the resolved provider, the call fails naming the model, its real
+  provider(s), the resolved provider and its catalog — instead of a raw
+  provider 400 that says nothing about where the pairing came from. The check
+  is deliberately narrow (only a positive catalog answer refuses), so an
+  unknown or self-hosted model, a missing `models` component and an implicit
+  model pass through. Resolution failures also log the requested and resolved
+  names now.
+- **`make install-nim-deps` and `make doctor` no longer check for `bitbarrel`.**
+  The KV engine left in 0.4.0, so the verification failed on every fresh
+  machine ("package 'bitbarrel' did not install") and `doctor` reported a
+  missing package nobody needs. Only the two loops changed.
+
 ## [0.3.0] — 2026-09-29
 
 Images in a turn, server-side search over the store, and components that

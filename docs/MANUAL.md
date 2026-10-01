@@ -2293,12 +2293,20 @@ The web Components panel provides the same all/direct/discovered/undiscovered fi
 case-insensitively. A multi-word query is a conjunction: every
 whitespace-separated word must appear in the component name or the tool
 name/description — a keyword phrase like "mechanical fan-out" matches even
-though no description contains it verbatim. An empty query returns the bus
-directory with tool names only; `component` and `tools` calls return full
-descriptions and schemas. The result is deterministic: components and tools are
-name-sorted, descriptions are whitespace-normalized one-line hints capped at
-200 characters, and volatile fields such as pid and registration time are
-excluded.
+though no description contains it verbatim. The result is deterministic:
+components and tools are name-sorted, descriptions are whitespace-normalized
+one-line hints capped at 200 characters, and volatile fields such as pid and
+registration time are excluded.
+
+An **empty query** returns the component registry: one line per component with
+its name, version and tool counts (`tools`, split into `direct` and
+`onDemand`), plus up to three when-to-use sentences — `hints`, each
+`{tool, hint}`, drawn from the component's on-demand tools, with `more`
+counting the on-demand tools left unlisted. A tool's declared `x-harness.hint`
+sentence is preferred over the first sentence of its description. When the
+registry would exceed 6000 bytes the hints are dropped and the answer is
+rebuilt as name-plus-counts with a `budget` note, so a pathological component
+set cannot turn one discovery call into tens of kilobytes.
 
 ```json
 {
@@ -2306,18 +2314,23 @@ excluded.
     {
       "name": "fetch",
       "version": "0.1.0",
-      "direct": [],
-      "onDemand": [
-        {"name": "fetch", "description": "Fetch a web page or API endpoint..."}
-      ]
+      "tools": 1,
+      "onDemand": 1,
+      "direct": 0,
+      "hints": [{"tool": "fetch", "hint": "Fetch a web page or API endpoint..."}]
     }
   ],
   "count": 1
 }
 ```
 
-`discover {component: "fetch"}` returns that component's direct and on-demand
-hints. Components with no non-hidden tools are omitted.
+A **non-empty query** returns the matching components with full descriptions
+for their matching non-hidden tools (`direct`/`onDemand` arrays of
+`{name, description}`). `discover {component: "fetch"}` returns that one
+component in the same shape, under a top-level `component` key; `query`
+filters inside it and `limit` bounds each array. The `component` and `tools`
+calls return full descriptions and schemas. Components with no non-hidden
+tools are omitted.
 
 #### Schemas
 
