@@ -6,6 +6,79 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A component can declare its own when-to-use sentence (`x-harness.hint`).**
+  `discover` shows a tool's declared hint instead of the first sentence of its
+  description, and it is the routing line a component contributes to the
+  registry. It exists for tools whose choice is between shapes — fabric:
+  one-shot batch vs long-lived guest; agent: spawn vs run vs continue — prose
+  no single tool's doc comment carries. Documented in docs/WIRE.md.
+
+### Changed
+
+- **`discover` with no query returns a component registry, not a tool dump.**
+  The empty-query answer listed every tool of every component by name — 9 KB on
+  a loaded harness (201 tools), 40 KB before that shape when it carried
+  descriptions, and a 65-tool MCP server is unreadable either way. It is now
+  one line per component: name, version, direct/on-demand tool counts, and up
+  to three when-to-use sentences (a declared `x-harness.hint` first, else the
+  first sentence of the tool's doc comment) plus a count of the rest; over a
+  6000-byte budget the answer is rebuilt as name+counts, so a pathological
+  component set cannot turn discovery into tens of kilobytes. `discover
+  {component}` also takes `query` and `limit` (previously `query` was honoured
+  only on the global path). `tests/t_discover.nim` asserts the registry
+  contract, and the expert component — which iterated the old `onDemand` array
+  and threw, surfacing as a bare timeout on `expert_follow` — now asks for the
+  component view per component that has on-demand tools.
+
+- **The base prompt delegates the tool roster to `discover` and drops general
+  contributor advice.** The enumeration of on-demand tools (git, lsp, repo_map,
+  processes, store, fabric, agent, mcp, fetch, plugins, skills, builder) with
+  its parenthetical hints is gone — that routing signal is what the registry
+  now serves on demand — instead of being re-sent in every request prefix. The
+  scratch-test licence, the pre-finish ritual and "a compiling edit or blocked
+  check is not evidence" are gone too: the transcript review showed them buying
+  turns (a throwaway `TestScratchBoundaries` in t06, three consecutive suite
+  runs). Kept: batching, the workspace statement, file-tool discipline, the
+  change-scope line, the `/tmp` clause and verify-once-per-change-set. 2668 →
+  1793 chars (~350 tokens off every request prefix). Prompt changes affect only
+  new conversations.
+
+- **`llm` refuses a model the resolved provider does not serve.** A model can
+  be pinned without its provider — a UI picker row carrying a model id from
+  another provider's catalog — and the id then rides to whatever provider the
+  environment defaults to, which DeepSeek answers with a raw 400 naming its own
+  models. `resolveRuntimeConfig` now checks an explicitly requested model
+  against the models catalog and fails naming the model, its real provider(s),
+  the resolved provider and its catalog. Deliberately narrow: only a positive
+  catalog answer refuses, so an unknown or self-hosted model, a missing models
+  component (`--minimal`) and a provider without a catalog id pass through, and
+  an implicit (provider-default) model is never checked.
+
+- **bench: every harness now receives byte-identical task text.** `fillPrompt`
+  substituted the absolute repo path for pi/opencode/codewhale/claudecode and
+  "your current working directory" for niffler/dsh, so the lanes never got the
+  same task and anything measured was partly the prompt. All lanes now get the
+  relative form (a harness run with `cwd` = the repo already states the working
+  directory in its own prompt). pi, which read its repo path out of the task
+  text, degraded once that was visible (t06: 5 → 13 turns, 43.4k → 169.9k
+  tokens); the measured effect is recorded in the fairness notes
+  (`bench/README.md`) with the low/high report pair under `bench/reports/`.
+
+### Fixed
+
+- **`make doctor` and `make install-nim-deps` still checked for `bitbarrel`.**
+  The KV engine left `niffler.nimble` in 0.4.0, but both loops still listed it,
+  so `install-nim-deps` failed its verification on every CI run ("nimble:
+  package 'bitbarrel' did not install") and `make doctor` reported a missing
+  package nobody needs. Removed from both loops.
+
+- **`llm` resolution failures were silent.** The error reached the session but
+  nothing reached `var/logs`, which made a reported `unknown provider
+  "synthetic" (have: default)` undiagnosable after the fact. The requested and
+  resolved names are now logged.
+
 ## [0.3.0] — 2026-09-29
 
 Images in a turn, server-side search over the store, and components that
