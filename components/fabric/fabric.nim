@@ -618,7 +618,16 @@ let fabSchema = toolSchema(%*{
                "minimum": 1, "maximum": maxCallsLimit,
                "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @[],
-   description = "Write and run a Nim program that drives Niffler tools itself — complex programmatic tool calling: many calls whose inputs depend on earlier results, fan-out over items, or big intermediate data that must never enter the conversation. WHEN: multi-step mechanical work one command cannot express (sequential fan-out, search-then-read distillation, edit-then-verify in one program, polling loops). NOT for a single shell one-liner (bulk rename, a sed across files), one direct tool call, or per-step judgment in a fresh context (agent_run). HOW: read fabric_help (empty topic) for the reference and example index; callTool(tool, jobj(jpair(name, value))) with jesc/jnum/jbool; pass tools to pin an allowlist; give code or name; only finish()'s value reaches this conversation; every call crosses the approval gate and counts against maxCalls.")
+   description = "Write and run a Nim program that drives Niffler tools itself — for complex programmatic tool calling: " &
+                 "many calls whose inputs depend on earlier results, fan-out over items, or big intermediate data " &
+                 "that must never enter the conversation. Reach for it when the work is multi-step and mechanical " &
+                 "and one command cannot express it (sequential fan-out, search-then-read distillation, " &
+                 "edit-then-verify in one program, polling loops); a single shell one-liner, one direct tool call, " &
+                 "or work needing per-step judgment (agent_run) is better served by those. " &
+                 "HOW: read fabric_help (empty topic) for the reference and example index; " &
+                 "callTool(tool, jobj(jpair(name, value))) with jesc/jnum/jbool; pass tools to pin an allowlist; " &
+                 "give code or name; only finish()'s value reaches this conversation; every call crosses the " &
+                 "approval gate and counts against maxCalls." )
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
 

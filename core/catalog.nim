@@ -556,7 +556,7 @@ proc registryAnswer(cat: Catalog, withHints: bool): JsonNode =
   for name in cat.sortedComponentNames():
     components.add(componentLine(cat.components[name], withHints))
   %*{"components": components, "count": components.len,
-     "next": "discover {component: X} lists its tools, {tools: [name]} returns one schema, invoke calls it. If a direct tool already fits, use it — don't keep browsing."}
+     "next": "If a direct tool already fits, use it and work — discovery is for when you cannot tell which tool does the job."}
 
 proc discover*(cat: Catalog, args: JsonNode): JsonNode =
   ## Return deterministic component hints or selected non-hidden schemas.
