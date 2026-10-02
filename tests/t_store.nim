@@ -141,6 +141,61 @@ proc main() =
         not sPunct{"ok"}.getBool(true) and
         sPunct{"code"}.getStr("") == "bad-request", $sPunct)
 
+  # --- issue #51: idPrefix scoping, ranked mode, snippets ------------------
+  discard call(nc, "store", "put",
+               %*{"kind": "message", "id": "conv-s2:000001",
+                  "value": %*{"role": "user",
+                              "content": "a second retry policy note"}})
+  let sPrefix = call(nc, "store", "search",
+                     %*{"kind": "message", "query": "retry",
+                        "idPrefix": "conv-s1:"})
+  check("search idPrefix narrows to one conversation",
+        sPrefix{"ok"}.getBool(false) and sPrefix{"items"}.len == 1 and
+        sPrefix{"items"}[0]{"id"}.getStr("") == "conv-s1:000001", $sPrefix)
+  let sNoPrefix = call(nc, "store", "search",
+                       %*{"kind": "message", "query": "retry"})
+  check("search without idPrefix crosses conversations",
+        sNoPrefix{"ok"}.getBool(false) and sNoPrefix{"items"}.len == 2,
+        $sNoPrefix)
+
+  let sRanked = call(nc, "store", "search",
+                     %*{"kind": "message", "query": "retry", "rank": true,
+                        "snippet": true})
+  var sRankedOk = sRanked{"ok"}.getBool(false) and
+    sRanked{"ranked"}.kind == JBool and sRanked{"items"}.len == 2
+  for it in sRanked{"items"}:
+    if it{"snippet"}.getStr("").len == 0: sRankedOk = false
+  check("search rank+snippet answers with a ranked flag and span-marked hits",
+        sRankedOk, $sRanked)
+
+  # ranked paging by offset: pages cover the match set without gaps or
+  # overlaps, and the reply names nextOffset when more remain
+  discard call(nc, "store", "put",
+               %*{"kind": "message", "id": "conv-s3:000001",
+                  "value": %*{"role": "user",
+                              "content": "yet another retry policy thought"}})
+  var rPage: seq[string] = @[]
+  var rOffset = 0
+  var rHasMore = true
+  while rHasMore and rPage.len < 10:
+    let pg = call(nc, "store", "search",
+                  %*{"kind": "message", "query": "retry", "rank": true,
+                     "limit": 1, "offset": rOffset})
+    check("ranked page ok", pg{"ok"}.getBool(false), $pg)
+    for it in pg{"items"}:
+      rPage.add(it{"id"}.getStr(""))
+    rHasMore = pg{"hasMore"}.getBool(false)
+    if rHasMore:
+      let nxt = pg{"nextOffset"}.getInt(-1)
+      check("ranked page carries nextOffset", nxt > rOffset, $pg)
+      rOffset = nxt
+  check("ranked offset paging covers the match set exactly once",
+        rPage.len == 3 and rPage == @["conv-s1:000001", "conv-s2:000001",
+                                     "conv-s3:000001"] or
+        (rPage.len == 3 and
+         ("conv-s1:000001" in rPage) and ("conv-s2:000001" in rPage) and
+         ("conv-s3:000001" in rPage)), $rPage)
+
   # pagination: 25 conversations, every 5th not matching → 20 results, paged
   # in ascending id order with no gaps and no repeats (list's cursor rule)
   for i in 0 ..< 25:

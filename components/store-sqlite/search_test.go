@@ -307,3 +307,85 @@ func TestSearchIndexRebuildOnDisagreement(t *testing.T) {
 		t.Fatalf("in-sync index was rebuilt anyway")
 	}
 }
+
+func TestSearchIdPrefixNarrowsAndEscapes(t *testing.T) {
+	db := newTestDB(t)
+	put := putHandler(db.DB)
+	search := searchHandler(db.DB)
+	mustOK(t, call(t, put, `{"kind":"message","id":"conv-a:000001","value":{"role":"user","content":"prefix target"}}`))
+	mustOK(t, call(t, put, `{"kind":"message","id":"conv-ab:000001","value":{"role":"user","content":"prefix other"}}`))
+
+	ids := searchIDs(t, call(t, search, `{"kind":"message","query":"prefix","idPrefix":"conv-a:"}`))
+	if len(ids) != 1 || ids[0] != "conv-a:000001" {
+		t.Fatalf("idPrefix did not narrow: %v", ids)
+	}
+	// LIKE metacharacters in the prefix are literal: "conv-a%" must not
+	// widen into conv-ab (escaping) and "_" must not match one any-char.
+	ids = searchIDs(t, call(t, search, `{"kind":"message","query":"prefix","idPrefix":"conv-a%"}`))
+	if len(ids) != 0 {
+		t.Fatalf("%% in idPrefix widened the match: %v", ids)
+	}
+	ids = searchIDs(t, call(t, search, `{"kind":"message","query":"prefix","idPrefix":"conv-_"}`))
+	if len(ids) != 0 {
+		t.Fatalf("_ in idPrefix widened the match: %v", ids)
+	}
+}
+
+func TestSearchRankedPagingAndSnippets(t *testing.T) {
+	db := newTestDB(t)
+	put := putHandler(db.DB)
+	search := searchHandler(db.DB)
+	mustOK(t, call(t, put, `{"kind":"message","id":"conv-r:000001","value":{"role":"user","content":"a stray needle in a haystack"}}`))
+	mustOK(t, call(t, put, `{"kind":"message","id":"conv-r:000002","value":{"role":"user","content":"needle needle needle here"}}`))
+
+	out := mustOK(t, call(t, search, `{"kind":"message","query":"needle","rank":true,"snippet":true}`))
+	if out["ranked"] != true {
+		t.Fatalf("rank:true reply missing ranked flag: %v", out)
+	}
+	items, _ := out["items"].([]map[string]any)
+	if len(items) != 2 {
+		t.Fatalf("ranked result = %d items, want 2: %v", len(items), out)
+	}
+	for _, it := range items {
+		snip, _ := it["snippet"].(string)
+		if snip == "" || !strings.Contains(snip, "[") || !strings.Contains(snip, "]") {
+			t.Fatalf("snippet not span-marked: %q", snip)
+		}
+	}
+
+	// Offset paging: two pages of one cover the set exactly once; the first
+	// page says hasMore and names nextOffset.
+	p1 := mustOK(t, call(t, search, `{"kind":"message","query":"needle","rank":true,"limit":1,"offset":0}`))
+	pi1, _ := p1["items"].([]map[string]any)
+	if len(pi1) != 1 || p1["hasMore"] != true {
+		t.Fatalf("ranked page 1 = %v", p1)
+	}
+	var next float64
+	switch n := p1["nextOffset"].(type) {
+	case int:
+		next = float64(n)
+	case int64:
+		next = float64(n)
+	case float64:
+		next = n
+	default:
+		t.Fatalf("ranked page 1 nextOffset = %T %v, want 1", p1["nextOffset"], p1["nextOffset"])
+	}
+	if next != 1 {
+		t.Fatalf("ranked page 1 nextOffset = %v, want 1", p1["nextOffset"])
+	}
+	p2 := mustOK(t, call(t, search, `{"kind":"message","query":"needle","rank":true,"limit":1,"offset":1}`))
+	pi2, _ := p2["items"].([]map[string]any)
+	if len(pi2) != 1 || p2["hasMore"] != false {
+		t.Fatalf("ranked page 2 = %v", p2)
+	}
+	if pi1[0]["id"] == pi2[0]["id"] {
+		t.Fatalf("offset pages overlap: %v", pi1[0]["id"])
+	}
+
+	// Unranked stays list-shaped and reports ranked: false.
+	flat := mustOK(t, call(t, search, `{"kind":"message","query":"needle"}`))
+	if flat["ranked"] != false {
+		t.Fatalf("unranked reply mislabeled: %v", flat["ranked"])
+	}
+}

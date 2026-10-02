@@ -83,30 +83,24 @@ proc searchSnippet(m: JsonNode, query: string, maxBytes: int): string =
   (if startAt > 0: "…" else: "") & raw[startAt ..< endAt] &
     (if endAt < raw.len: "…" else: "")
 
-proc searchConversation(c: Component, conv, query, roleFilter: string,
-                        limit: int): JsonNode =
-  ## Grep the conversation's canonical history — including every message a
-  ## trim or compaction removed from the projection, which no ref points at.
-  ## Matches are bounded one-liners: recognize the hit here, then fetch the
-  ## body by ref (mode:full) only if it matters.
-  if conv.len == 0:
-    raise newException(ValueError,
-      "search needs a conversation: pass \"session\" (the runner injects " &
-      "it for session calls; a direct bus call must name one)")
-  if query.len == 0:
-    raise newException(ValueError,
-      "search needs \"query\" (case-insensitive substring)")
-  let needle = query.toLowerAscii()
+proc searchGrep(c: Component, conv, query, roleFilter, scope: string,
+                limit: int): JsonNode =
+  ## Substring fallback lane — used only when the store cannot search
+  ## (issue #51's degraded path). Greps the conversation's canonical
+  ## history — including every message a trim or compaction removed from
+  ## the projection, which no ref points at — returning bounded one-line
+  ## hits whose ids are fetchable as refs.
+  let prefix = if scope == "session": conv & ":" else: ""
   var matches = newJArray()
   var scanned = 0
   var capped = false
-  for item in c.storeListAll("message", conv & ":"):
+  for item in c.storeListAll("message", prefix):
     let m = item.value
     if m == nil or m.kind != JObject: continue
     let role = m{"role"}.getStr("")
     if roleFilter.len > 0 and role != roleFilter: continue
     inc scanned
-    if not ($m).toLowerAscii().contains(needle): continue
+    if not ($m).toLowerAscii().contains(query.toLowerAscii()): continue
     let seqNo = block:
       let colon = item.id.rfind(':')
       var n = -1
@@ -119,9 +113,72 @@ proc searchConversation(c: Component, conv, query, roleFilter: string,
     if matches.len >= limit:
       capped = true
       break
-  %*{"conversation": conv, "query": query, "mode": "search",
+  %*{"conversation": (if scope == "session": conv else: "*"), "query": query,
+     "mode": "search", "scope": scope, "via": "grep", "ranked": false,
      "scanned": scanned, "count": matches.len, "matches": matches,
      "capped": capped}
+
+proc searchViaStore(c: Component, conv, query, roleFilter, scope: string,
+                    limit: int): JsonNode =
+  ## Ranked search over the store's server-side index (issue #51): FTS
+  ## relevance on the sqlite engine, an unranked scan on engines without
+  ## one — the reply's `ranked` flag says which, never silently. Over-
+  ## fetches when a role filter applies (ranking happens before the
+  ## filter). Raises on any store failure: searchConversation then falls
+  ## back to the grep lane.
+  var ask = limit
+  if roleFilter.len > 0:
+    ask = min(limit * 3, 1000)
+  var args = %*{"kind": "message", "query": query,
+                "rank": true, "snippet": true, "limit": ask}
+  if scope == "session":
+    args["idPrefix"] = %(conv & ":")
+  let r = c.requestOk("store", "search", args, 10_000)
+  let ranked = r{"ranked"}.getBool(false)
+  var matches = newJArray()
+  var capped = false
+  for item in r{"items"}:
+    let m = item{"value"}
+    if m == nil or m.kind != JObject: continue
+    let role = m{"role"}.getStr("")
+    if roleFilter.len > 0 and role != roleFilter: continue
+    let id = item{"id"}.getStr("")
+    let seqNo = block:
+      let colon = id.rfind(':')
+      var n = -1
+      if colon >= 0:
+        try: n = parseInt(id[colon + 1 .. ^1])
+        except CatchableError: discard
+      n
+    var snip = item{"snippet"}.getStr("")
+    if snip.len == 0:
+      snip = searchSnippet(m, query, 200)
+    matches.add(%*{"id": id, "role": role, "seq": seqNo, "snippet": snip})
+    if matches.len >= limit:
+      capped = true
+      break
+  %*{"conversation": (if scope == "session": conv else: "*"), "query": query,
+     "mode": "search", "scope": scope, "via": "store.search",
+     "ranked": ranked, "count": matches.len, "matches": matches,
+     "capped": capped}
+
+proc searchConversation(c: Component, conv, query, roleFilter, scope: string,
+                        limit: int): JsonNode =
+  ## The search lane: ranked store search first (issue #51), the
+  ## substring grep only when the store cannot search. Matches are
+  ## bounded one-liners: recognize the hit here, then fetch the body by
+  ## ref (mode:full) only if it matters.
+  if scope == "session" and conv.len == 0:
+    raise newException(ValueError,
+      "search needs a conversation: pass \"session\" (the runner injects " &
+      "it for session calls; a direct bus call must name one)")
+  if query.len == 0:
+    raise newException(ValueError,
+      "search needs \"query\" (words to find — matched as token prefixes)")
+  try:
+    return searchViaStore(c, conv, query, roleFilter, scope, limit)
+  except CatchableError:
+    return searchGrep(c, conv, query, roleFilter, scope, limit)
 
 proc convOf(id: string): string =
   ## "conv-…:000090" / "conv-…#ck3" → the conversation id part.
@@ -223,18 +280,20 @@ proc main() =
     "ref": {"description": "One reference ({source, id}) or an array of them — every notice in the conversation names its ref verbatim; mode:search instead returns ids you can pass here as {source: \"canonical\", id: <hit id>}",
             "oneOf": [{"type": "object"}, {"type": "array", "items": {"type": "object"}}]},
     "mode": {"type": "string", "enum": ["full", "match", "search"],
-             "description": "full (default) returns the paged document for a ref; match greps ONE document's lines; search greps the whole conversation history for messages mentioning something"},
+             "description": "full (default) returns the paged document for a ref; match greps ONE document's lines; search finds messages across the conversation history, ranked by relevance through the store's search index (falling back to a substring grep when the store cannot search)"},
     "query": {"type": "string",
-              "description": "match: return only the lines containing this. search: the substring to find, case-insensitive, across every message — including messages a trim or compaction removed from your context"},
+              "description": "match: return only the lines containing this. search: the words to find, matched as case-insensitive token prefixes, across every message — including messages a trim or compaction removed from your context"},
     "session": {"type": "string",
                 "description": "search: which conversation to search (defaults to this one)"},
+    "scope": {"type": "string", "enum": ["session", "all"],
+              "description": "search: \"session\" (default) searches one conversation; \"all\" searches every stored conversation — a cross-conversation disclosure, so a session call may not use it (direct bus callers only)"},
     "role": {"type": "string",
              "description": "search: only messages with this role (user, assistant, tool, system, error)"},
     "offset": {"type": "integer", "minimum": 1,
                "description": "full mode: start line (default 1)"},
     "limit": {"type": "integer", "minimum": 1,
               "description": "full mode: max lines (default 2000, read's cap); match/search mode: max results (default 50 / 20)"}
-  }, description = "Retrieve original content that was replaced in this conversation's context (pruned tool results, spilled command output, compaction checkpoints). Every notice naming replaced content carries its ref verbatim — pass it back here unchanged. mode:search greps the conversation's ENTIRE history — including the span a trim or compaction dropped, where no notice names individual refs — for messages mentioning a phrase, and returns bounded one-line hits you can then read in full by ref. Reach for it when exact wording or the full body of a large result matters and the ref is unknown (which messages discussed X?), or when a summary lost a detail you need back.")
+  }, description = "Retrieve original content that was replaced in this conversation's context (pruned tool results, spilled command output, compaction checkpoints). Every notice naming replaced content carries its ref verbatim — pass it back here unchanged. mode:search finds messages across the conversation's ENTIRE history — including the span a trim or compaction dropped, where no notice names individual refs — ranked by relevance through the store's search index, returning bounded one-line hits you can then read in full by ref. Reach for it when exact wording or the full body of a large result matters and the ref is unknown (which messages discussed X?), or when a summary lost a detail you need back.")
   schema["x-harness"] = %*{"onDemand": true, "runner": true, "sessionId": true,
                            "timeoutMs": 15_000, "effect": "read"}
 
@@ -256,19 +315,31 @@ proc main() =
         # with an explicit "session". OWNERSHIP (search reads whole
         # conversations — the store's list does not leak whole kinds from a
         # session either): a leased call may search only its own
-        # conversation; an explicit session that is not the caller's own is
-        # refused, so a session cannot read another conversation's history.
+        # conversation — including under scope: "all", which reads every
+        # conversation and is therefore a cross-conversation disclosure for
+        # direct bus calls (cli, operator tooling) only.
+        let scope = args{"scope"}.getStr("session")
+        if scope notin ["session", "all"]:
+          return errResult(
+            "context_recall: scope must be \"session\" or \"all\"",
+            "bad-request")
         let explicit = args{"session"}.getStr("")
         let injected = args{"__session"}{"session"}.getStr("")
         if injected.len > 0 and explicit.len > 0 and explicit != injected:
           return errResult(
             "context_recall: search may only read this conversation's " &
             "history — " & explicit & " does not belong to it", "forbidden")
+        if injected.len > 0 and scope == "all":
+          return errResult(
+            "context_recall: scope: \"all\" reads other conversations' " &
+            "history — only direct bus calls (cli, operator tooling) may " &
+            "do that", "forbidden")
         let conv = if explicit.len > 0: explicit
                    else: injected
         try:
           return okResult(searchConversation(c, conv, query,
-                                            args{"role"}.getStr(""), limit))
+                                            args{"role"}.getStr(""),
+                                            scope, limit))
         except CatchableError as e:
           return errResult("context_recall: " & e.msg, "bad-request")
       let refArg = args{"ref"}

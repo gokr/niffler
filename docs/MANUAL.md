@@ -6,7 +6,8 @@ Everything you need to operate, configure and recover a Niffler harness, plus
 reference chapters for the shipped components. Design rationale lives in
 [research/REBOOT.md](research/REBOOT.md); the wire protocol is
 [WIRE.md](WIRE.md); the core/component boundary is
-[ARCHITECTURE.md](ARCHITECTURE.md); open work is consolidated in
+[ARCHITECTURE.md](ARCHITECTURE.md); context compaction is
+[COMPACTION.md](COMPACTION.md); open work is consolidated in
 [PLAN.md](PLAN.md).
 
 ## Contents
@@ -31,6 +32,9 @@ reference chapters for the shipped components. Design rationale lives in
 - [Recovery](#recovery) · [The store](#the-store) · [Testing](#testing)
 - [Starting and stopping](#starting-and-stopping) · [Common tasks](#common-tasks) · [Troubleshooting](#troubleshooting)
 
+A one-file index of every shipped capability (not a reference) is
+[FEATURES.md](FEATURES.md).
+
 ## Layout of a running system
 
 | Path | What it is |
@@ -39,7 +43,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `components/` | shipped component sources — one directory per component (Nim, Go, TypeScript and one bash demo); the inventory is the [Shipped components](#shipped-components) table below, which is the part that has to stay current. Two directories are not bus citizens: `components/nats` builds the `var/bin/nats-server` core spawns when a bus has to be started, and `components/ctxtest` is a fixture the nested-call tests (`t_fabric`, `t_agent`) compile for themselves |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual, the wire spec (`WIRE.md`), the settings design (`research/SETTINGS.md`), the core-boundary rationale (`ARCHITECTURE.md`), the fabric user guide (`FABRIC_GUIDE.md`), open work (`PLAN.md`) and `research/` (design history) |
-| `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, and `llm` |
+| `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, `llm`, and `systemprompt` |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
 | `var/bin/` | built binaries (system core + session runner + components), plus everything `builder.build` compiles — agent-built components land here too, beside the system ones. Rebuilt by `make build` |
 | `var/store.db` | the store's data file (SQLite is the only file-backed engine) — **single-writer**: exactly one `store` process may open it, and it locks `var/store.db.lock` (flock, kernel-released on crash). A pre-0.4.0 `var/barrel-db` is refused at boot, never overwritten |
@@ -79,7 +83,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches — parameters, caps, exit codes and the effect classification are in [`grep` in detail](#grep-in-detail) |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `compaction` | Nim | optional | default replaceable `compaction_propose` implementation: verifies runner-owned paged snapshots, chooses a permitted cut, and returns a structured checkpoint candidate; the runner alone validates and commits projections — the tool itself is `hidden` + `x-harness.runner: true` (read-effect, 120 s), so no model ever sees it and only a runner or another component calls it; with the component absent or killed, summarization is off and the deterministic ladder (lossless prune, then the lossy fallback rung) still runs |
-| `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a grep over the conversation's whole canonical history (trimmed/compacted-away messages included) |
+| `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a ranked search over the conversation's whole canonical history (trimmed/compacted-away messages included) through the store's search index, with a substring-grep fallback when the store cannot search; `scope: "all"` widens to every conversation but is refused for session calls (a cross-conversation disclosure — direct bus callers only, issue #51) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) — all twelve tools are on demand and none declares `x-harness.effect`, so the fabric batch host schedules even `observe_events`/`observe_logs` as writes |
@@ -213,11 +217,15 @@ useful persistent runtime, start:
 ./var/bin/niffler --minimal
 ```
 
-This filters the manifest boot set to exactly three service components:
+This filters the manifest boot set to exactly four service components:
 
 - `store` — conversation/message persistence and component records
 - `bash` — one general-purpose machine tool
 - `llm` — OpenAI-compatible model access and streaming
+- `systemprompt` — the conversation constitution (product prompt + project
+  context chain); without it every conversation would degrade to core's
+  baked-in minimal fallback prompt. `compaction` is deliberately not in the
+  profile: the runner's deterministic prune/trim ladder needs no component.
 
 Core and NATS still run, and the first conversation starts its normal ephemeral
 `var/bin/session <id>` runner. `builder`, `plugins`, `skills`, `fetch`,
@@ -245,7 +253,7 @@ An autostarted harness uses the normal profile. To run a client against the
 minimal profile, start the command above first and then launch `niffler-tui`;
 it attaches to the existing core. `--minimal --recover` is also
 valid: recovery rebuilds and wipes spawned-component records first, then boots
-the three-component profile. This is a runtime choice only; `make build` still
+the four-component profile. This is a runtime choice only; `make build` still
 builds the full shipped set.
 
 ### Session runners
@@ -315,19 +323,27 @@ binary that was never built is only warned about (the store is `required`, so
 core stops there) and is never silently swapped for another engine's
 database.
 
-**`search`** is the server-side filter (`{kind, query, limit?, after?}` —
-find conversations by id/title or messages by content without downloading
-the whole kind; niffler-tui's `/session` uses it). Semantics are contract
-in every engine: per-kind indexed fields (conversation = id + title,
-message = id + content text capped at 16KB, others = id only),
-case-insensitive **prefix** matching of every query word (AND), everything
-non-alphanumeric inert so user input needs no escaping, and `list`'s
-ordering/cursor/cap. Engines differ only in how they answer: **sqlite**
-keeps an FTS5 index (`docs_fts`, rowids shared with `docs`, maintained in
-the same transaction as the document and rebuilt from `docs` at startup
-whenever the two disagree — derived state, safe to drop), while **tidb**
-has no index and scans the kind in id order with the same
-matcher (equivalent results, O(documents of the kind) per call).
+**`search`** is the server-side filter (`{kind, query, idPrefix?, rank?,
+snippet?, offset?, limit?, after?}` — find conversations by id/title or
+messages by content without downloading the whole kind; niffler-tui's
+`/session` uses it, and `context_recall mode: search` builds transcript
+retrieval on it, issue #51). Semantics are contract in every engine:
+per-kind indexed fields (conversation = id + title, message = id +
+content text capped at 16KB, others = id only), case-insensitive
+**prefix** matching of every query word (AND), everything non-alphanumeric
+inert so user input needs no escaping, `idPrefix` narrowing to one id
+space (LIKE metacharacters escaped, never widened), and two documented
+orderings: `list`'s id cursor by default, or relevance (`rank: true`,
+`offset`/`nextOffset` paging) where an index exists — every reply carries
+`ranked: true|false`, and `snippet: true` attaches a span-marked one-line
+window per hit. Engines differ only in how they answer: **sqlite** keeps
+an FTS5 index (`docs_fts`, rowids shared with `docs`, maintained in the
+same transaction as the document and rebuilt from `docs` at startup
+whenever the two disagree — derived state, safe to drop), ranking with
+bm25 and marking snippets with `snippet()`, while **tidb** has no index
+and scans the kind in id order with the same matcher (equivalent results,
+O(documents of the kind) per call; `rank: true` is accepted and answered
+`ranked: false`, `offset` still pages the match set).
 
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
   contract on SQLite. Documents live verbatim as JSON TEXT; `put` is one
@@ -877,9 +893,14 @@ turn).
 
 ## Context window
 
+The model behind this section — canonical history vs the provider projection,
+the pressure ladder, recall, and how it compares with other harnesses — is
+[COMPACTION.md](COMPACTION.md).
+
 Core watches how much of the model's context window a conversation uses
-and acts *trivially* — no summaries, no token math beyond what the model
-reports:
+and its guard acts *trivially* — no token math beyond what the model
+reports, and no summarization of its own (the optional compactor is a
+separate replaceable component — [COMPACTION.md](COMPACTION.md)):
 
 - The effective window is resolved by hidden `llm_resolve {model?}` before
   each turn, so a newly selected model's limit reaches the context guard
@@ -3590,7 +3611,7 @@ There is no launcher script — the binaries own the lifecycle:
   `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222. Start the harness first —
   `niffler-tui` or `./var/bin/niffler`.
 - **Terminal admin shell** — `./var/bin/niffler` directly, or
-  `./var/bin/niffler --minimal` for the three-component boot profile. A
+  `./var/bin/niffler --minimal` for the four-component boot profile. A
   manually started core never self-terminates; stop it with Ctrl-C / SIGTERM.
   `NIF_AUTOSTART=1` in the environment overrides the shell — that core is
   service mode even on a tty — and while it sits at the prompt it keeps
@@ -3631,7 +3652,7 @@ happens (see Troubleshooting).
 
 ```bash
 ./var/bin/niffler             # full harness in a terminal (admin shell)
-./var/bin/niffler --minimal   # store + bash + llm only at boot
+./var/bin/niffler --minimal   # store + bash + llm + systemprompt only at boot
 niffler-tui                   # the client; autostarts the full profile
 make build          # rebuild what changed
 make install        # PATH entries (niffler, niffler-cli, niffler-console

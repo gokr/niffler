@@ -338,6 +338,16 @@ func rawInt(m map[string]json.RawMessage, key string) int64 {
 	return 0
 }
 
+func rawBool(m map[string]json.RawMessage, key string) bool {
+	if v, ok := m[key]; ok {
+		var b bool
+		if json.Unmarshal(v, &b) == nil {
+			return b
+		}
+	}
+	return false
+}
+
 // sessionID extracts the runner-injected __session.session marker
 // (x-harness.sessionId): non-empty means the caller is a conversation
 // session, not a direct bus caller (core, cli, tests).

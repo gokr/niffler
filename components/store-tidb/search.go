@@ -165,6 +165,10 @@ func searchSchema() map[string]any {
 		"properties": map[string]any{
 			"kind":  map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message)"},
 			"query": map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)"},
+			"idPrefix": map[string]any{"type": "string", "description": "Restrict to ids with this prefix — e.g. one conversation's messages: <convId>:"},
+			"rank": map[string]any{"type": "boolean", "description": "Request relevance ordering; this engine has no index and answers unranked in id order (ranked: false, issue #94)"},
+			"snippet": map[string]any{"type": "boolean", "description": "Attach a best-effort span-marked one-line `snippet` per hit (the first matched word in [brackets])"},
+			"offset": map[string]any{"type": "integer", "description": "Ranked paging only; ignored here — use `after`"},
 			"limit": map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
 			"after": map[string]any{"type": "string", "description": "Exclusive id cursor from a previous page (default = first page)"},
 		},
@@ -174,10 +178,49 @@ func searchSchema() map[string]any {
 			"the whole kind. Indexed fields per kind: conversation = id + title; message = id + content text " +
 			"(capped at 16KB); other kinds = id only. Matching: the query is split into words of letters/digits, " +
 			"each must be a case-insensitive PREFIX of a word in the indexed text, all must match (AND); any other " +
-			"character is just a separator, so user input needs no escaping. Returns the same shape and ordering " +
-			"as list ({items, hasMore, nextAfter?}, ascending id) — pass nextAfter back as `after` to page.",
+			"character is just a separator, so user input needs no escaping. Ordering is ascending id " +
+			"({items, hasMore, nextAfter?}, pass nextAfter back as `after` to page); the reply carries " +
+			"`ranked: false` — this engine scans (docs/WIRE.md \"Store contract\", issue #51/#94).",
 		"x-harness": map[string]any{"onDemand": true},
 	}
+}
+
+// likePrefix escapes a user prefix for `id LIKE ?` — MySQL's default
+// escape character is backslash, so %, _ and \ would widen the match.
+func likePrefix(prefix string) string {
+	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(prefix) + "%"
+}
+
+// naiveSnippet is this engine's best-effort span marking (the sqlite
+// engine marks via FTS5's snippet()): a window of the indexed text around
+// the first occurrence of any query token, the token itself in [brackets].
+func naiveSnippet(text string, terms []string, maxBytes int) string {
+	low := strings.ToLower(text)
+	at, hit := -1, ""
+	for _, t := range terms {
+		i := strings.Index(low, t)
+		if i >= 0 && (at < 0 || i < at) {
+			at, hit = i, t
+		}
+	}
+	if at < 0 {
+		return ""
+	}
+	startAt := max(at-60, 0)
+	endAt := min(at+len(hit)+maxBytes, len(text))
+	var b strings.Builder
+	if startAt > 0 {
+		b.WriteString("…")
+	}
+	b.WriteString(text[startAt:at])
+	b.WriteByte('[')
+	b.WriteString(text[at : at+len(hit)])
+	b.WriteByte(']')
+	b.WriteString(text[at+len(hit) : endAt])
+	if endAt < len(text) {
+		b.WriteString("…")
+	}
+	return b.String()
 }
 
 func searchHandler(db *sql.DB) sdk.ToolHandler {
@@ -188,6 +231,15 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		}
 		kind := rawString(m, "kind")
 		after := rawString(m, "after")
+		idPrefix := rawString(m, "idPrefix")
+		wantSnippet := rawBool(m, "snippet")
+		offset := int(rawInt(m, "offset"))
+		if offset < 0 {
+			offset = 0
+		}
+		// `rank` is accepted and ignored: no index to rank with (issue #94).
+		// The reply always says `ranked: false`; `offset` still pages the
+		// match set so the contract's ranked-paging shape works everywhere.
 		limit := int(rawInt(m, "limit"))
 		if limit == 0 {
 			limit = 100
@@ -209,10 +261,17 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		// silently truncated (docs/WIRE.md "Store contract").
 		items := []map[string]any{} // non-nil: marshals as [] when no match
 		cursor := after
+		skipped := 0
 		for {
-			rows, err := db.Query(
-				`SELECT id, rev, value FROM docs WHERE kind = ? AND id > ? ORDER BY id LIMIT ?`,
-				kind, cursor, searchScanSize)
+			query := `SELECT id, rev, value FROM docs WHERE kind = ? AND id > ?`
+			qargs := []any{kind, cursor}
+			if idPrefix != "" {
+				query += ` AND id LIKE ?`
+				qargs = append(qargs, likePrefix(idPrefix))
+			}
+			query += ` ORDER BY id LIMIT ?`
+			qargs = append(qargs, searchScanSize)
+			rows, err := db.Query(query, qargs...)
 			if err != nil {
 				return nil, fmt.Errorf("search: %w", err)
 			}
@@ -230,10 +289,19 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 				if len(items) >= limit {
 					continue // drain this batch so the cursor advances fully
 				}
-				if matchesTerms(indexedText(kind, id, value), terms) {
-					items = append(items, map[string]any{
+				idx := indexedText(kind, id, value)
+				if matchesTerms(idx, terms) {
+					if skipped < offset {
+						skipped++
+						continue
+					}
+					item := map[string]any{
 						"id": id, "rev": rev, "value": json.RawMessage(value),
-					})
+					}
+					if wantSnippet {
+						item["snippet"] = naiveSnippet(idx, terms, 140)
+					}
+					items = append(items, item)
 				}
 			}
 			if err := rows.Err(); err != nil {
@@ -249,10 +317,15 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 			}
 		}
 		hasMore := len(items) >= limit
-		out := map[string]any{"items": items, "hasMore": hasMore}
+		out := map[string]any{"items": items, "hasMore": hasMore, "ranked": false}
 		if hasMore && len(items) > 0 {
-			out["nextAfter"] = items[len(items)-1]["id"]
+			if offset > 0 {
+				out["nextOffset"] = offset + int(limit)
+			} else {
+				out["nextAfter"] = items[len(items)-1]["id"]
+			}
 		}
 		return sdk.OK(out), nil
 	}
 }
+

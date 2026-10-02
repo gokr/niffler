@@ -929,12 +929,15 @@ exposes the same helper) rather than a single call, because a capped read
 silently truncated a resumed transcript at 1000 messages and the next
 write then targeted an existing id.
 
-`search` takes `{kind, query, limit?, after?}` and returns exactly `list`'s
-shape — `{ok, items: [{id, rev, value}], hasMore, nextAfter?}` — for the
-documents of `kind` whose indexed text matches `query`. It is the
-server-side filter for session browsers (niffler-tui and any other client): find
-conversations by title/id, or messages by content, without downloading the
-whole kind and filtering locally.
+`search` takes `{kind, query, idPrefix?, rank?, snippet?, offset?, limit?,
+after?}` and returns `{ok, items: [{id, rev, value, snippet?}], hasMore,
+nextAfter?|nextOffset?, ranked}` — the documents of `kind` whose indexed
+text matches `query`. It is the server-side filter for session browsers
+(niffler-tui and any other client): find conversations by title/id, or
+messages by content, without downloading the whole kind and filtering
+locally. It is also the retrieval half of context recovery (`context_recall
+mode: search`, issue #51): `idPrefix` scopes to one conversation's
+messages, `rank` orders by relevance, `snippet` marks the matched span.
 
 - **Indexed fields** (documented, per kind): `conversation` = id +
   `value.title`; `message` = id + every string under `value.content`
@@ -946,18 +949,30 @@ whole kind and filtering locally.
   text (AND). There is nothing to escape: no user character can act as an
   operator (`OR` is just a word, `kind:` is just two words). A query that
   tokenizes to nothing fails `bad-request`; a query that matches nothing
-  is `ok: true` with an empty `items`.
-- **Ordering and paging** are `list`'s: ascending id, `after` exclusive,
-  `nextAfter` = last returned id when `hasMore`, `limit` default 100 /
-  cap 1000. Page until `hasMore` is false — `search` never silently
-  truncates a result set.
+  is `ok: true` with an empty `items`. `idPrefix` narrows to ids with that
+  literal prefix — LIKE metacharacters in it are escaped, never widened.
+- **Ordering and paging** come in two documented modes. Default (and
+  `rank: false`): `list`'s — ascending id, `after` exclusive,
+  `nextAfter` = last returned id when `hasMore`. `rank: true`: relevance
+  ordering, paged by `offset` with `nextOffset` when more remain (a
+  ranked order is recomputed per call — a concurrent write can shift
+  items between pages; the id-order cursor does not apply). `limit`
+  default 100 / cap 1000 in both modes; page until `hasMore` is false —
+  `search` never silently truncates a result set. Every reply carries
+  `ranked: true|false` so a caller always knows which ordering it holds.
+- **`snippet: true`** attaches a one-line `snippet` per hit with the
+  matched text in `[brackets]` (engines without an index mark the first
+  matched token's window — best effort, same shape).
 - **Engines**: the sqlite engine (default) answers from an FTS5 index
   (`docs_fts`) whose rowids are `docs`' rowids — put/del maintain it in
   the same transaction, and startup rebuilds it from `docs` whenever the
-  two disagree (derived state: dropping it loses nothing). The tidb engine
-  has no index and applies the same matcher by scanning the
-  kind in id order: equivalent behavior, O(documents of the kind) per
-  call — engine-private detail, consumers see the same contract.
+  two disagree (derived state: dropping it loses nothing). It ranks with
+  FTS5's bm25 (ties broken by id) and marks snippets with FTS5's
+  `snippet()`. The tidb engine has no index (issue #94) and applies the
+  same matcher by scanning the kind in id order: matching is equivalent,
+  `rank: true` is accepted and answered `ranked: false` in id order (with
+  `offset` still paging the match set) — engine-private detail otherwise;
+  consumers see the same contract.
 
 ## Conventions
 

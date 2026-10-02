@@ -120,13 +120,19 @@ proc main() =
                 15_000)
   check("search finds every mentioning message, case-insensitively",
         s1{"ok"}.getBool(false) and s1{"count"}.getInt(0) == 2, $s1)
-  check("search reports the ids a follow-up can fetch",
-        s1{"count"}.getInt(0) == 2 and
-        s1{"matches"}[0]{"id"}.getStr("") == conv & ":000003", $s1)
+  var s1ids: seq[string]
+  for mm in s1{"matches"}: s1ids.add(mm{"id"}.getStr(""))
+  var prefixOk = true
+  for id in s1ids:
+    if not id.startsWith(conv & ":"): prefixOk = false
+  check("search reports the ids a follow-up can fetch (order is the ranking's)",
+        conv & ":000003" in s1ids and prefixOk, $s1)
   check("search snippets show the matching line",
-        "ZEBRAFISH" in s1{"matches"}[0]{"snippet"}.getStr(""), $s1)
-  check("search scanned the whole conversation",
-        s1{"scanned"}.getInt(0) == 4, $s1)
+        "zebrafish" in s1{"matches"}[0]{"snippet"}.getStr("").toLowerAscii(),
+        $s1)
+  check("search runs on the store's search index (fallback only on store failure)",
+        s1{"via"}.getStr("") == "store.search" and
+        s1{"ranked"}.kind == JBool, $s1)
 
   let limited = call(nc, "recall", "context_recall",
                      %*{"mode": "search", "query": "zebrafish",
@@ -183,6 +189,40 @@ proc main() =
   check("a leased session reads its own history (explicit session = own conv)",
         ownRead{"ok"}.getBool(false) and ownRead{"count"}.getInt(0) == 2,
         $ownRead)
+
+  # --- scope: all — cross-conversation search is a disclosure, and a leased
+  # session may never make it (issue #51: opt-in per call, direct callers only).
+  let seeded2 = call(nc, "store", "put",
+                     %*{"kind": "message", "id": "conv-searchother:000001",
+                        "value": %*{"role": "user",
+                                    "content": "ZEBRAFISH migration notes"}},
+                     10_000)
+  check("seeded a second conversation's message", seeded2{"ok"}.getBool(false),
+        $seeded2)
+  let allScope = call(nc, "recall", "context_recall",
+                      %*{"mode": "search", "query": "zebrafish",
+                         "scope": "all"}, 15_000)
+  check("scope:all searches every conversation (direct bus caller)",
+        allScope{"ok"}.getBool(false) and allScope{"count"}.getInt(0) == 3,
+        $allScope)
+  let scoped = call(nc, "recall", "context_recall",
+                    %*{"mode": "search", "query": "zebrafish",
+                       "session": conv}, 15_000)
+  check("scope:session never sees another conversation's hits",
+        scoped{"ok"}.getBool(false) and scoped{"count"}.getInt(0) == 2, $scoped)
+  let leasedAll = call(nc, "recall", "context_recall",
+                       %*{"mode": "search", "query": "zebrafish",
+                          "scope": "all",
+                          "__session": {"session": conv}}, 15_000)
+  check("a leased session cannot widen to scope:all",
+        not leasedAll{"ok"}.getBool(true) and
+        "only direct bus calls" in leasedAll{"error"}.getStr(""), $leasedAll)
+  let badScope = call(nc, "recall", "context_recall",
+                      %*{"mode": "search", "query": "zebrafish",
+                         "session": conv, "scope": "planet"}, 15_000)
+  check("search refuses an unknown scope",
+        not badScope{"ok"}.getBool(true) and
+        "scope" in badScope{"error"}.getStr(""), $badScope)
 
   # --- refusal paths are explicit -------------------------------------------
   let noConv = call(nc, "recall", "context_recall",
