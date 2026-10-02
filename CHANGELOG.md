@@ -80,8 +80,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   turns (a throwaway `TestScratchBoundaries` in t06, three consecutive suite
   runs). Kept: batching, the workspace statement, file-tool discipline, the
   change-scope line, the `/tmp` clause and verify-once-per-change-set. 2668 →
-  1793 chars (~350 tokens off every request prefix). Prompt changes affect only
-  new conversations.
+  1793 chars (~350 tokens off every request prefix). On the ten
+  highest-delta bench tasks with this prompt niffler went 9.7 → 7.7 turns and
+  117.4k → 68.9k tokens (bench/README.md "Fairness notes / caveats"). Prompt
+  changes affect only new conversations.
 
 - **`llm` refuses a model the resolved provider does not serve.** A model can
   be pinned without its provider — a UI picker row carrying a model id from
@@ -156,6 +158,7 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing reached `var/logs`, which made a reported `unknown provider
   "synthetic" (have: default)` undiagnosable after the fact. The requested and
   resolved names are now logged.
+
 
 
 ## [0.3.0] — 2026-09-29
