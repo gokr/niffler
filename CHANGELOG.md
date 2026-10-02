@@ -8,6 +8,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`cli run` — a native headless turn driver (#124).** The cli can now own a
+  turn end to end without being a UI: it attaches to the harness serving its
+  runtime home (refusing a bus whose core serves a different root) or starts an
+  isolated one for `--root` and retires it on exit, streams the conversation's
+  `ev.session.<id>.*` frames as NDJSON on stdout with diagnostics on stderr,
+  accepts prompt/session/cwd/provider/model/thinking (and `--session` to
+  continue a persisted conversation), answers the approval gate itself (deny by
+  default, so a gated tool fails fast instead of stalling a headless turn),
+  cancels a live turn on SIGINT/SIGTERM through the documented `__cancel`
+  control with a bounded settle grace, exports the complete canonical
+  transcript through the store's cursor paging, and finishes with one
+  authoritative result line (reply, `turnId`, `outcome`, per-turn `usage` from
+  #123) plus documented exit codes. Declarative MCP bootstrap
+  (`--mcp`/`--mcp-file`) registers the requested bridges before the first
+  frozen tool snapshot and re-applies the declaration on `--session` resume,
+  with `${NAME}` credential indirection — the store keeps the placeholder, the
+  bridge resolves the value, and only credential NAMES are ever printed.
+  Contract: docs/MANUAL.md "Headless turns"; test: `tests/t_cli_run.nim`.
+
 - **Per-turn usage and a terminal outcome on the session result (#123).** A
   session turn now answers with `turnId`, `outcome` and a `usage` object
   accounting for that activation alone — prompt/completion/total plus the

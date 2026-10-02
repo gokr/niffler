@@ -2877,11 +2877,17 @@ proc deriveTitle(content: string): string =
   ""
 
 proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: string] =
-  ## A conversation workspace is immutable and persisted in the header so
-  ## resumed runners resolve context and paths exactly as the original turn
-  ## did. Any existing directory on the machine is allowed: NIF_ROOT is only
-  ## the default (and the base for relative requests). The harness root is
-  ## the installation/runtime home, not a sandbox for conversation workspaces.
+  ## A conversation workspace is immutable once a user turn has run, and is
+  ## persisted in the header so resumed runners resolve context and paths
+  ## exactly as the original turn did. While the conversation is still
+  ## pristine (no user turn yet), a later call carrying an explicit cwd may
+  ## repin it and re-resolve the constitution — nothing has reached a
+  ## provider, so there is no cached prompt prefix to invalidate. This lets
+  ## a client that pins model or provider before the first message still
+  ## land the workspace its launch directory chose. Any existing directory
+  ## on the machine is allowed: NIF_ROOT is only the default (and the base
+  ## for relative requests). The harness root is the installation/runtime
+  ## home, not a sandbox for conversation workspaces.
   if requested.strip().len == 0:
     return (true, root, "")
   let candidate = normalizedPath(
@@ -2960,8 +2966,46 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       let requested = resolveWorkspace(ct.root, args{"cwd"}.getStr(""))
       if not requested.ok: return %*{"error": requested.error}
       if requested.path != entry.workspace:
-        return %*{"error": "conversation cwd is immutable (currently " &
-                              entry.workspace & ")"}
+        # Pristine repin: a conversation that has not run a user turn has sent
+        # nothing to a provider, so there is no cached prompt prefix to
+        # invalidate — the workspace (and a constitution frozen too early by a
+        # control call against the harness root) can be re-anchored safely.
+        # Once turns exist, the workspace is immutable: resumes must resolve
+        # context and paths exactly as the original turn did. An empty cwd is
+        # not a workspace choice — only an explicit, non-empty request may
+        # repin a pristine conversation (an empty one would just weld the
+        # harness root back in through the side door).
+        let pristine = args{"cwd"}.getStr("").strip().len > 0 and
+          (entry.messages.len == 0 or
+           (entry.messages.len == 1 and
+            entry.messages[0]{"role"}.getStr("") == "system"))
+        if not pristine:
+          return %*{"error": "conversation cwd is immutable once turns exist (currently " &
+                                entry.workspace & "); start a new conversation to work elsewhere"}
+        entry.workspace = requested.path
+        if entry.messages.len == 1:
+          # The constitution was already frozen (legacy control-call freeze):
+          # re-resolve it against the corrected workspace and refresh both the
+          # header and the in-memory system message.
+          let sp = resolveSystemPrompt(ct, sessionId, entry.workspace, "")
+          try:
+            ct.updateConversationHeader(sessionId,
+              %*{"systemPrompt": sp, "cwd": entry.workspace})
+          except CatchableError as e:
+            echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
+          entry.messages[0]{"content"} = %sp
+        else:
+          try:
+            ct.updateConversationHeader(sessionId, %*{"cwd": entry.workspace})
+          except CatchableError as e:
+            echo "core: WARNING cannot persist cwd (store down?): " & e.msg
+        try:
+          ct.nc.publish("ev.workspace.opened",
+            Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: %*{"workspace": entry.workspace,
+                                 "conversationId": sessionId}).encode())
+        except CatchableError as e:
+          echo "core: WARNING workspace.opened publish failed: " & e.msg
   else:
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.

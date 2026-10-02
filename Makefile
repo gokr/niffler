@@ -402,7 +402,7 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 # them per sandbox started a dozen concurrent `nim c` runs per pooled gate and
 # those died under load without any compiler output (issue #108, deterministic
 # in CI). Not part of `build` — they are fixtures, not shipped components.
-FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction
+FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server
 
 var/bin/ctxtest: components/ctxtest/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/main.nim
@@ -415,6 +415,10 @@ var/bin/fixture-mock-llm: tests/mock_llm.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 
 var/bin/fixture-compaction: tests/compaction_contract/fixture.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/compaction_contract/fixture.nim
+
+# A dependency-free stdio MCP server (t_mcp and t_cli_run both need one).
+var/bin/fixture-mcp-server: tests/fixtures/mcp_server.nim $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) -o:$@ tests/fixtures/mcp_server.nim
 
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/$*.nim

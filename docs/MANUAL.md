@@ -787,6 +787,68 @@ bypass the approval gate, the workspace and session injection, a tool's
 `cli call chat …` work. Treat it as an operator tool: give it the trust you
 give the shell you started the harness from.
 
+### Headless turns (`cli run`)
+
+A reusable driver for anything that wants to own a turn without being a UI:
+an orchestrator, a CI job, another agent's backend. It speaks the ordinary
+session contract (docs/WIRE.md), owns or attaches to exactly one harness, and
+reports everything as **NDJSON on stdout** with diagnostics on stderr:
+
+```bash
+cli run 'summarize the failing test'                    # attach, stream, exit
+cli run --session conv-abc123 'now fix it'              # continue a conversation
+cli run --root /srv/niffler-home --own 'first turn'     # own an isolated home
+cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transcript
+```
+
+- **It never attaches by accident.** With no `--bus`/`NIF_NATS_URL` it reads
+  the discovery file of its own runtime home (`--root`, else the clone the
+  binary lives in) and attaches only if the answering core serves *that* root;
+  if none does it starts one (`var/bin/niffler`, `NIF_AUTOSTART=1`) and
+  registers as that harness's interactive client — which is also what keeps it
+  alive — so the stack retires by itself when the driver leaves. An explicit
+  `--bus` attaches to whatever is there (the serving root is reported).
+- **Inputs**: the prompt (positional or `--prompt`), `--session` to continue a
+  persisted conversation, `--cwd`, `--provider`, `--model`, `--thinking`,
+  `--approvals ask|auto` (the conversation's gate mode; default the harness
+  default, `ask`).
+- **Output lines**, in order: `start` (conversation, bus, home, owned,
+  caller), `event` (every `ev.session.<id>.*` frame of the turn), `approval`
+  (a gated tool was offered to the driver), `mcp` (declared server bootstrap),
+  `result`, and `export` when asked — plus a lone `error` line when a
+  startup/protocol failure ends the run.
+  The `result` line carries the authoritative per-turn accounting — `turnId`,
+  `outcome`, `usage` (docs/WIRE.md "Turn usage") — so a driver never sums
+  events to bill a turn.
+- **The gate.** A headless driver cannot ask a human, so it acknowledges each
+  directed approval request and **denies** it: a gated tool fails fast with
+  `approval denied` (the harness's own fail-closed rule) instead of stalling
+  the turn. `NIF_AUTO_APPROVE=1` or `--approvals auto` grants them instead.
+- **Cancellation.** SIGINT/SIGTERM publishes the documented `__cancel`
+  control on the conversation's steer channel and waits up to
+  `--cancel-grace` (default 30 s) for the turn to settle and persist; a result
+  still comes out (`outcome: cancelled`). A cancel that arrives before the
+  turn started is a no-op, exactly as on the wire.
+- **Transcript export.** `--export[=<path>]` writes the COMPLETE canonical
+  transcript (store paging, not the trimmed provider projection; default
+  `<root>/var/exports/<sessionId>.jsonl`), one record per stored message.
+- **Exit codes.** `0` a successful turn, `1` a turn that did not succeed
+  (cancelled, budget/limit exhausted, error — read `outcome` on the result
+  line), `2` a usage error, `3` startup/protocol failure (no harness, no
+  answer, export impossible). `cli run --help` prints the full surface.
+
+- **MCP bootstrap.** `--mcp <json>` (repeatable) or `--mcp-file <path>` (a JSON
+  array of declarations) registers MCP servers **before the first turn** —
+  each declaration is passed to `mcp_add`/`mcp_edit` as-is, so a `--session`
+  resume re-applies it (an existing server is refreshed) and the bridge's tools
+  are in the snapshot the first turn freezes. `--mcp-timeout <secs>` bounds
+  each server's registration (default 120 s), readiness rides the `mcp` output
+  lines, and a server that cannot come up is a startup failure (exit 3) —
+  never a silently degraded turn. Secrets are `${NAME}` env references: the
+  store keeps the placeholder, the bridge resolves the value at connect time,
+  and the driver prints credential NAMES only — a value never reaches stdout,
+  stderr or the store.
+
 ## Approvals
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
@@ -976,9 +1038,14 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   drivers (`agent_run`/`agent_spawn`) surface it as a failure, never a
   text reply.
 - `cwd` pins the conversation's **workspace**: an existing directory inside
-  `NIF_ROOT` (relative paths resolve against the root), immutable after
-  creation and persisted in the header so resumed runners resolve context
-  and paths identically. Session runners rewrite path-shaped tool arguments
+  `NIF_ROOT` (relative paths resolve against the root), persisted in the
+  header so resumed runners resolve context and paths identically. Once a
+  user turn has run the workspace is immutable. While the conversation is
+  still pristine, a later explicit `cwd` may repin it and re-resolve the
+  constitution — nothing has reached a provider, so there is no cached
+  prompt prefix to invalidate; a client that pins model or provider before
+  the first message therefore still lands the workspace its launch
+  directory chose. Session runners rewrite path-shaped tool arguments
   at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read
   resolve relative paths there, and git tools scope at the workspace repo.
   The system prompt component appends a workspace notice when it differs

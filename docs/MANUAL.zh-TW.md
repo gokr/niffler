@@ -500,6 +500,57 @@ catalog 讀取會經過 core），因此其呼叫會繞過核准閘門、工作�
 `x-harness.timeoutMs` 以及隱藏/隨選篩選——`cli call del …` 和 `cli call chat …`
 可以運作。將其視為操作者工具：給予它你給予啟動 harness 之 shell 的同等信任。
 
+### Headless turns (`cli run`)
+
+任何想要擁有一個回合而不成為 UI 的事物的可重複使用驅動程式：編排器、CI 作業、
+另一個 agent 的後端。它講普通的工作階段契約（docs/WIRE.md），擁有或連上恰好一個
+harness，並把一切報告為 **stdout 上的 NDJSON**，診斷走 stderr：
+
+```bash
+cli run 'summarize the failing test'                    # attach, stream, exit
+cli run --session conv-abc123 'now fix it'              # continue a conversation
+cli run --root /srv/niffler-home --own 'first turn'     # own an isolated home
+cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transcript
+```
+
+- **它絕不會意外連上。** 不帶 `--bus`/`NIF_NATS_URL` 時，它讀取自己執行期
+  主目錄（`--root`，否則是二進位檔所在的克隆）的探索檔案，並且僅當回應的
+  core 服務**該**根目錄時才連上；若沒有這樣的 core，它就啟動一個
+  （`var/bin/niffler`，`NIF_AUTOSTART=1`）並註冊為該 harness 的互動式
+  用戶端——這也正是讓它保持存活的原因——因此驅動程式離開時整套堆疊自行
+  退出。明確的 `--bus` 則連上那裡現有的任何東西（會回報所服務的根目錄）。
+- **輸入**：提示（位置引數或 `--prompt`）、`--session` 續接一個已持久化的
+  工作階段、`--cwd`、`--provider`、`--model`、`--thinking`、
+  `--approvals ask|auto`（該工作階段的閘門模式；預設是 harness 的預設值 `ask`）。
+- **輸出行**，依序：`start`（工作階段、匯流排、主目錄、是否自有、呼叫者）、
+  `event`（該回合的每一個 `ev.session.<id>.*` 訊框）、`approval`（一個受閘門
+  管制的工具被交給驅動程式）、`mcp`（宣告的伺服器引導）、`result`，以及在
+  被要求時的 `export`——另有單獨一行 `error`，當啟動/協定故障結束執行時出現。
+  `result` 行帶有權威的每回合計量——`turnId`、`outcome`、`usage`
+  （docs/WIRE.md "Turn usage"）——因此驅動程式絕不需要對事件加總來計費。
+- **閘門。** 無頭驅動程式無法詢問人類，因此它確認每一個定向核准請求並
+  **拒絕**它：受閘門管制的工具以 `approval denied` 快速失敗（harness 自己的
+  fail-closed 規則），而不是讓回合停擺。`NIF_AUTO_APPROVE=1` 或
+  `--approvals auto` 則核准它們。
+- **取消。** SIGINT/SIGTERM 在工作階段的 steer 通道上發佈文件化的 `__cancel`
+  控制，並最多等待 `--cancel-grace`（預設 30 秒）讓回合落定並持久化；
+  結果仍然會產出（`outcome: cancelled`）。在回合開始之前到達的取消是
+  空操作，與匯流排上的語意完全一致。
+- **Transcript 匯出。** `--export[=<path>]` 寫出完整的標準 transcript
+  （儲存分頁，而非被裁剪的 provider 投影；預設
+  `<root>/var/exports/<sessionId>.jsonl`），每則儲存訊息一筆記錄。
+- **MCP 引導。** `--mcp <json>`（可重複）或 `--mcp-file <path>`（一個宣告的
+  JSON 陣列）在**第一個回合之前**註冊 MCP 伺服器——每則宣告原樣傳給
+  `mcp_add`/`mcp_edit`，因此 `--session` 的續接會重新套用它（刷新），橋接
+  的工具會進入第一個回合所凍結的快照。`--mcp-timeout <secs>` 限制每個
+  伺服器的註冊預算（預設 120 秒），就緒狀態隨 `mcp` 輸出行回報，而起不來
+  的伺服器是啟動失敗（結束碼 3）——絕不是一個被悄悄降級的回合。機密使用
+  `${NAME}` 環境變數引用：儲存保留佔位符，橋接在連線時解析值，驅動程式只
+  印出憑證的**名稱**——值絕不會出現在 stdout、stderr 或儲存中。
+- **結束碼。** `0` 成功的回合，`1` 未成功的回合（取消、預算/上限耗盡、
+  錯誤——在 result 行上讀 `outcome`），`2` 用法錯誤，`3` 啟動/協定故障
+  （沒有 harness、沒有回應、無法匯出）。`cli run --help` 印出完整的介面。
+
 ## Approvals
 
 其 schema 帶有 `x-harness.approval: "always"` 的工具——目前為 `bash`、`build`
@@ -615,7 +666,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   （每回合的 LLM 回合數，1–`NIF_MAX_TURN_ROUNDS`，收窄硬性上限）、
   `maxCalls`（每回合的工具分派總數，1-500——每次分派嘗試都計數，無論成功或錯誤），以及 `maxTokens`（每回合累計的 provider 回報 token 數，在每個新回合前檢查）。
   預算耗盡會以 budget-exhausted 錯誤結束該回合——subagent 驅動程式（`agent_run`/`agent_spawn`）會將其呈現為失敗，而非文字回覆。
-- `cwd` 釘住會話的**工作區**：`NIF_ROOT` 內一個既存的目錄（相對路徑會對根目錄解析），建立後不可變，並持續保存於標頭中，使續接的 runner 以相同方式解析 context 與路徑。Session runner 會在分派時改寫路徑形狀的工具引數：bash 以 `cwd` 設為工作區執行，edit/grep/read 在該處解析相對路徑，git 工具則以工作區 repo 為範圍。當工作區與根目錄不同時，system prompt 元件會附加一則工作區通知。預設工作區即 `NIF_ROOT` 本身。
+- `cwd` 釘住會話的**工作區**：`NIF_ROOT` 內一個既存的目錄（相對路徑會對根目錄解析），並持續保存於標頭中，使續接的 runner 以相同方式解析 context 與路徑。一旦跑過使用者回合，工作區即不可變。當會話仍處原始狀態（尚無使用者回合）時，後續帶有明確 `cwd` 的呼叫可以重新釘住它並重新解析 constitution——尚無任何內容到達 provider，因此沒有需要失效的快取提示前綴；於是在第一則訊息之前就釘住 model 或 provider 的用戶端，仍然會落在其啟動目錄所選擇的那個工作區。Session runner 會在分派時改寫路徑形狀的工具引數：bash 以 `cwd` 設為工作區執行，edit/grep/read 在該處解析相對路徑，git 工具則以工作區 repo 為範圍。當工作區與根目錄不同時，system prompt 元件會附加一則工作區通知。預設工作區即 `NIF_ROOT` 本身。
 - 每次 chat 呼叫後，core 會記錄 prompt token，並使用 `usage.total_tokens`（或 prompt + completion 後備）作為當前最佳佔用量。Provider、model、context、佔用量與覆寫也會鏡射進會話標頭，因此計量器無需載入整份逐字稿即可在重啟後存續。
 - Core 會發出 `ev.session.<id>.status`，帶有已解析的 provider/model/context 與當前 `usedTokens`；用戶端直接呈現 `usedTokens / context`。
   當 provider 回報快取的輸入（`prompt_tokens_details.cached_tokens`）時，status 事件也會攜帶該會話的累計快取拆分為 `cache {prompt, read, hitRate}`（prompt 與快取 token 的加總，比率以百分比表示）；會話標頭以 `cachePrompt`、`cacheRead` 與 `cacheHitRate` 保留相同數字。由於 prompt 前綴已凍結，第一次請求後多數 prompt token 應已被快取，因此偏低的比率是值得留意的訊號（web UI 在每則訊息顯示 `⚡ <cached>/<prompt> cached`，並在 `/info` 顯示累計拆分；TUI 在其標頭顯示 `cache NN%` 標籤，並在 `/status` 顯示相同拆分）。

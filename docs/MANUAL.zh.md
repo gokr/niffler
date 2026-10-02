@@ -513,6 +513,57 @@ lost` 行并每 2 秒重试，每次重新读取 `var/nats-url`——一个
 `cli call chat …` 可以工作。将其视为运维工具：给予它你
 启动 harness 所用 shell 的同等信任。
 
+### Headless turns (`cli run`)
+
+任何想要拥有一个回合而不成为 UI 的事物的可复用驱动者：编排器、CI 作业、
+另一个 agent 的后端。它讲普通的会话契约（docs/WIRE.md），拥有或附着到
+恰好一个 harness，并把一切报告为 **stdout 上的 NDJSON**，诊断走 stderr：
+
+```bash
+cli run 'summarize the failing test'                    # attach, stream, exit
+cli run --session conv-abc123 'now fix it'              # continue a conversation
+cli run --root /srv/niffler-home --own 'first turn'     # own an isolated home
+cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transcript
+```
+
+- **它绝不会意外附着。** 不带 `--bus`/`NIF_NATS_URL` 时，它读取自己运行时
+  主目录（`--root`，否则是二进制所在的克隆）的发现文件，并且仅当应答的
+  core 服务**该**根目录时才附着；若没有这样的 core，它就启动一个
+  （`var/bin/niffler`，`NIF_AUTOSTART=1`）并注册为该 harness 的交互式
+  客户端——这也正是让它保持存活的原因——因此驱动者离开时整套栈自行
+  退出。显式的 `--bus` 则附着到那里现有的任何东西（会报告所服务的根目录）。
+- **输入**：提示词（位置参数或 `--prompt`）、`--session` 继续一个持久化的
+  对话、`--cwd`、`--provider`、`--model`、`--thinking`、
+  `--approvals ask|auto`（该对话的门控模式；默认是 harness 的默认值 `ask`）。
+- **输出行**，按顺序：`start`（对话、总线、主目录、是否自有、调用者）、
+  `event`（该回合的每一个 `ev.session.<id>.*` 帧）、`approval`（一个受门控
+  的工具被交给驱动者）、`mcp`（声明的服务器引导）、`result`，以及在被要求
+  时的 `export`——另有单独一行 `error`，当启动/协议故障结束运行时出现。
+  `result` 行携带权威的每回合计量——`turnId`、`outcome`、`usage`
+  （docs/WIRE.md "Turn usage"）——因此驱动者绝不需要对事件求和来计费。
+- **门控。** 无头驱动者无法询问人类，因此它确认每一个定向审批请求并
+  **拒绝**它：受门控的工具以 `approval denied` 快速失败（harness 自己的
+  fail-closed 规则），而不是让回合停摆。`NIF_AUTO_APPROVE=1` 或
+  `--approvals auto` 则批准它们。
+- **取消。** SIGINT/SIGTERM 在对话的 steer 通道上发布文档化的 `__cancel`
+  控制，并最多等待 `--cancel-grace`（默认 30 秒）让回合落定并持久化；
+  结果仍然会产出（`outcome: cancelled`）。在回合开始之前到达的取消是
+  空操作，与总线上的语义完全一致。
+- **Transcript 导出。** `--export[=<path>]` 写出完整的规范 transcript
+  （存储分页，而非被裁剪的提供方投影；默认
+  `<root>/var/exports/<sessionId>.jsonl`），每条存储消息一条记录。
+- **MCP 引导。** `--mcp <json>`（可重复）或 `--mcp-file <path>`（一个声明
+  的 JSON 数组）在**第一个回合之前**注册 MCP 服务器——每条声明按原样传给
+  `mcp_add`/`mcp_edit`，因此 `--session` 的续接会重新应用它（刷新），桥接
+  的工具会进入第一个回合所冻结的快照。`--mcp-timeout <secs>` 限制每个
+  服务器的注册预算（默认 120 秒），就绪状态随 `mcp` 输出行报告，而起不来
+  的服务器是启动失败（退出码 3）——绝不是一个被悄悄降级的回合。秘密使用
+  `${NAME}` 环境变量引用：存储保留占位符，桥接在连接时解析值，驱动者只
+  打印凭据的**名称**——值绝不会出现在 stdout、stderr 或存储中。
+- **退出码。** `0` 成功的回合，`1` 未成功的回合（取消、预算/上限耗尽、
+  错误——在 result 行上读 `outcome`），`2` 用法错误，`3` 启动/协议故障
+  （没有 harness、没有应答、无法导出）。`cli run --help` 打印完整的接口面。
+
 ## Approvals
 
 schema 携带 `x-harness.approval: "always"` 的工具——目前包括
@@ -644,7 +695,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
   `discovery {…}` 是显式的客户端发现：它运行 `discover`，将模式记录到持久发现摘要中，并将它们作为用户消息追加——没有 LLM 轮次，也不会提升到直接工具集。
   Core 将该选择存储在对话头中，并在一个轮次内的所有工具轮次中固定已解析的模型。
 - 每会话控制项在第一次调用时冻结并持久化在头中：`tools`（子级可以分派的工具允许列表；最多接受 32 个名称，且接受的参数不会在 `session` 工具模式中声明）、`maxRounds`（每轮 LLM 轮次数，1–`NIF_MAX_TURN_ROUNDS`，收窄硬上限）、`maxCalls`（每轮工具分派总数，1-500——每次分派尝试都计数，无论成功还是错误），以及 `maxTokens`（每轮提供方报告的累计 token 数，在每一新轮次之前检查）。预算耗尽会以预算耗尽错误结束该轮次——子代理驱动（`agent_run`/`agent_spawn`）将其作为失败呈现，而绝不是文本回复。
-- `cwd` 固定对话的**工作区**：`NIF_ROOT` 内的一个现有目录（相对路径相对于根解析），创建后不可变，并持久化在头中，以便恢复的运行器以相同方式解析上下文和路径。会话运行器在分派时重写路径形状的工具参数：bash 以 `cwd` 设置为工作区运行，edit/grep/read 在那里解析相对路径，git 工具以工作区仓库为范围。当工作区与根不同时，系统提示组件会追加一条工作区通知。默认工作区是 `NIF_ROOT` 本身。
+- `cwd` 固定对话的**工作区**：`NIF_ROOT` 内的一个现有目录（相对路径相对于根解析），持久化在头中，以便恢复的运行器以相同方式解析上下文和路径。一旦运行过用户回合，工作区即不可变。当对话仍处于原始状态（尚无用户回合）时，后续携带显式 `cwd` 的调用可以重新固定它并重新解析 constitution——尚无任何内容到达提供方，因此没有需要失效的缓存提示前缀；于是在首条消息之前就固定模型或提供方的客户端，仍然会落到其启动目录所选择的那个工作区。会话运行器在分派时重写路径形状的工具参数：bash 以 `cwd` 设置为工作区运行，edit/grep/read 在那里解析相对路径，git 工具以工作区仓库为范围。当工作区与根不同时，系统提示组件会追加一条工作区通知。默认工作区是 `NIF_ROOT` 本身。
 - 每次聊天调用后，core 记录提示 token，并使用 `usage.total_tokens`（或提示 + 完成回退）作为当前最佳占用。提供方、模型、上下文、占用和覆盖也会镜像到对话头中，因此计量器在重启后无需加载整个记录即可存活。
 - Core 发出 `ev.session.<id>.status`，包含已解析的提供方/模型/上下文和当前 `usedTokens`；客户端直接渲染 `usedTokens / context`。当提供方报告缓存输入（`prompt_tokens_details.cached_tokens`）时，状态事件还会携带对话的累计缓存拆分作为 `cache {prompt, read, hitRate}`（提示和缓存 token 的总和，比率为百分比）；对话头保留相同的数字作为 `cachePrompt`、`cacheRead` 和 `cacheHitRate`。由于提示前缀被冻结，大多数提示 token 在第一次请求后应被缓存，因此低比率是一个值得注意的信号（Web UI 在每条消息上显示 `⚡ <cached>/<prompt> cached`，并在 `/info` 中显示累计拆分；TUI 在其头中显示 `cache NN%` 标记，并在 `/status` 中显示相同的拆分）。
 - 持久化消息携带永远不会到达 LLM 的审计元数据：每条消息上的 `createdAt`，所有地方的 `turnId`，以及 assistant、tool 和 error 记录上的 `startedAt` / `durationMs`（当 LLM 调用本身失败时会持久化一条 `error` 记录，重放会跳过 error 角色）。
