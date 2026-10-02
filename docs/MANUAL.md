@@ -481,7 +481,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |
 | `NIF_AUTOSTART_BOOT_S` | seconds an autostarted core waits for its first interactive client before giving up | `60` |
 | `NIF_ENSURE_ATTACH` | `0` makes `ensureHarness` skip attaching and always spawn a core (tests) | `1` |
-| `NIF_STORE_BACKEND` | store engine selected at boot: `sqlite` (default → `var/bin/store-sqlite`) or `tidb` (→ `var/bin/store-tidb`); anything else refuses to boot. All engines register as component `store` with identical tools — see [Store engines](#store-engines). An un-migrated barrel (history in `var/barrel-db`, no `var/store.db` yet) makes core refuse to boot with the `niffler-store-migrate` instructions; `barrel` here is the escape hatch. An **unset** value whose engine binary is missing (`var/bin/store-sqlite` absent) warns and falls back to `var/bin/store` — an explicit request never falls back | `sqlite` |
+| `NIF_STORE_BACKEND` | store engine selected at boot: `sqlite` (default → `var/bin/store-sqlite`) or `tidb` (→ `var/bin/store-tidb`); anything else refuses to boot. All engines register as component `store` with identical tools — see [Store engines](#store-engines). An un-migrated barrel (history in `var/barrel-db`, no `var/store.db` yet) makes core refuse to boot rather than open an empty database over it. A missing engine binary (`var/bin/store-sqlite` absent) warns and skips the store like any other missing component binary — there is no barrel fallback | `sqlite` |
 | `NIF_STORE_TIDB_DSN` | TiDB/MySQL DSN for the `tidb` store engine, e.g. `root@tcp(127.0.0.1:4000)/niffler` (docker single-node: `docker run -p 4000:4000 pingcap/tidb`). Required for that engine — no local default; the component refuses to boot without it. Sessions are forced to UTC unless the DSN sets `time_zone`. The account needs rights for goose's DDL migrations, applied at every boot (a fresh database, then each new migration as it ships); the connect/read/write timeouts (5 s/60 s/30 s) and the single pooled connection are code-resident, not env-tunable | unset |
 | `NIF_GIT_MIRROR` | host prefix replacing `https://github.com` when the `plugins` component clones packages (e.g. `https://cnb.cool` or a Gitee mirror) — API/search endpoints stay on GitHub | unset |
 | `NIF_NPM_REGISTRY` | npm registry for `builder` ts-component installs (e.g. `https://registry.npmmirror.com`) | npm default |
@@ -2310,16 +2310,35 @@ The web Components panel provides the same all/direct/discovered/undiscovered fi
 {"query": "web"}
 ```
 
-`query` is optional and matches component names, tool names, and descriptions
-case-insensitively. A multi-word query is a conjunction: every
+`query` is optional. An empty query returns the **component registry**: one
+line per component — `name`, `version`, a total `tools` count split into
+`direct` and `onDemand`, and up to three `hints` (`{"tool", "hint"}`) with a
+`more` count of the remaining on-demand tools. A hint is the component's
+declared `x-harness.hint` (docs/WIRE.md) when it has one, otherwise the first
+sentence of the tool's description — the routing signal the system prompt no
+longer re-sends on every request. When the whole answer would exceed 6 000
+bytes it is rebuilt without hints (name and counts only) and carries a
+`budget` field; every registry answer ends with a `next` line.
+
+A non-empty `query` filters instead, matching component names, tool names, and
+descriptions case-insensitively. A multi-word query is a conjunction: every
 whitespace-separated word must appear in the component name or the tool
 name/description — a keyword phrase like "mechanical fan-out" matches even
-though no description contains it verbatim. An empty query returns the bus
-directory with tool names only; `component` and `tools` calls return full
-descriptions and schemas. The result is deterministic: components and tools are
-name-sorted, descriptions are whitespace-normalized one-line hints capped at
-200 characters, and volatile fields such as pid and registration time are
-excluded.
+though no description contains it verbatim. The result is deterministic:
+components and tools are name-sorted, descriptions are whitespace-normalized
+one-line hints capped at 200 characters, and volatile fields such as pid and
+registration time are excluded.
+
+An **empty query** returns the component registry: one line per component with
+its name, version and tool counts (`tools`, split into `direct` and
+`onDemand`), plus up to three when-to-use sentences — `hints`, each
+`{tool, hint}`, drawn from the component's on-demand tools, with `more`
+counting the on-demand tools left unlisted. A tool's declared `x-harness.hint`
+sentence is preferred over the first sentence of its description. When the
+registry would exceed 6000 bytes the hints are dropped and the answer is
+rebuilt as name-plus-counts with a `budget` note, so a pathological component
+set cannot turn one discovery call into tens of kilobytes.
+
 
 ```json
 {
@@ -2327,18 +2346,24 @@ excluded.
     {
       "name": "fetch",
       "version": "0.1.0",
-      "direct": [],
-      "onDemand": [
-        {"name": "fetch", "description": "Fetch a web page or API endpoint..."}
-      ]
+      "tools": 1,
+      "onDemand": 1,
+      "direct": 0,
+      "hints": [{"tool": "fetch", "hint": "Fetch a web page or API endpoint..."}]
     }
   ],
   "count": 1
 }
 ```
 
-`discover {component: "fetch"}` returns that component's direct and on-demand
-hints. Components with no non-hidden tools are omitted.
+A **non-empty query** returns the matching components with full descriptions
+for their matching non-hidden tools (`direct`/`onDemand` arrays of
+`{name, description}`). `discover {component: "fetch"}` returns that one
+component in the same shape, under a top-level `component` key; `query`
+filters inside it and `limit` bounds each array. The `component` and `tools`
+calls return full descriptions and schemas. Components with no non-hidden
+tools are omitted.
+
 
 #### Schemas
 

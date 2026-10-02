@@ -27,7 +27,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 
 ## Quick start
 
-需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 僅在 TypeScript 元件與網頁 UI 時需要；選用的桌面 UI 在 Linux 上還需要 Wails 與 WebKitGTK 4.1。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
+需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 僅在 TypeScript 元件時需要。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
 
 ```bash
 git clone https://github.com/gokr/niffler.git
@@ -62,9 +62,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make run` | 建置後啟動 `./var/bin/niffler`（終端管理 shell） |
 | `make install` | 安裝 `niffler`、`niffler-cli`、`niffler-console` 的 PATH 項目（終端上會詢問是否安裝 TUI） |
 | `make install-tui` | `make install WITH_TUI=1`：上面的全部，外加 `niffler-tui` 聊天用戶端 |
-| `make install-ui` | 建置並安裝桌面 UI 外掛（`gokr/niffler-ui`）及其啟動器 |
 | `make install-lsp` | 安裝 `lsp` 元件的預設語言伺服器 |
-| `make dev` | 已退役：SPA 開發伺服器隨 UI 移入 `gokr/niffler-ui`（在那裡執行 `make dev`） |
 | `make test` | 完整測試門：匯流排契約測試套件（UI 自身的測試與型別檢查在 `gokr/niffler-ui`） |
 | `make test-server` | 匯流排契約測試套件（每個測試自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 單一元件的契約測試，例如 `make test-fetch` |
@@ -133,6 +131,6 @@ Nim、Go 與 TypeScript 元件使用 `sdk/` 中的 SDK。正常的擴充路徑�
 ## Philosophies
 
 - **開放模型，所有供應商。** 本機、開放權重與代管模型獲得相同的一流路徑：OpenAI 相容的預設、在供應商不提供其他選擇時的訂閱 OAuth，以及由 models.dev 支援、將限制、能力與價格視為資料的目錄。新增 OpenAI 相容供應商是設定項目，而非程式碼路徑。
-- **改進是被測量的，而非被斷言的。** `bench/` 在相同任務與模型上讓 Niffler 對上 pi、opencode、CodeWhale 與 Claude Code，在 full30、SWE-bench Verified 與 DeepSWE 套件中比較達到綠燈的時間、token 成本與修補品質。功能以該證據為依據上線——有時也附帶閘門，例如 repo map 的自動附加，預設開啟，但會扣下過小或空殼的 map，因為 A/B 測試結果不一致——報告則提交於 `bench/reports/` 之下。
+- **改進是被測量的，而非被斷言的。** `bench/` 在相同任務與模型上讓 Niffler 對上 pi、opencode、CodeWhale 與 Claude Code，在 full31、SWE-bench Verified 與 DeepSWE 套件中比較達到綠燈的時間、token 成本與修補品質。功能以該證據為依據上線——有時也附帶閘門，例如 repo map 的自動附加，預設開啟，但會扣下過小或空殼的 map，因為 A/B 測試結果不一致——報告則提交於 `bench/reports/` 之下。
 - **中文在這裡是一流語言。** README 有英文、簡體中文與繁體中文，且網頁 UI 完全在地化（`en`/`zh`/`zh-TW`），附帶具型別的目錄——缺少翻譯會導致型別檢查失敗。
 - **帶著驕傲與感激地借鏡。** 我們從其他 harness 中汲取能找到的最佳想法——Pi、DeepSeek Harness、CodeWhale、OpenCode、Reasonix、Aider、OpenHands……——並在隨附前逐一對照 Niffler 的不變條件重新檢查。這些研究會標明其來源與鎖定的 commit，內嵌的程式碼保留其授權，且一切都在 [docs/research/](docs/research/) 中。

@@ -108,9 +108,7 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 | `make run` | build, then start `./var/bin/niffler` (the terminal admin shell) |
 | `make install` | PATH entries for `niffler`, `niffler-cli`, `niffler-console`, plus `niffler-tui` on request |
 | `make install-tui` | `make install WITH_TUI=1`: the above plus the `niffler-tui` chat client |
-| `make install-ui` | build + install the desktop UI plugin (`gokr/niffler-ui`) and its launcher |
 | `make install-lsp` | install the default language servers for the `lsp` component |
-| `make dev` | retired: the SPA dev server lives in `gokr/niffler-ui` (`make dev` there) |
 | `make test` | the complete gate: the bus-contract suite (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
 | `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
 | `make test-<name>` | one component's contract test, e.g. `make test-fetch` |
@@ -201,7 +199,7 @@ Community components are installed through the `plugins` component; see the
   OpenAI-compatible provider is a config entry, not a code path.
 - **Improvements are measured, not asserted.** `bench/` runs Niffler against
   pi, opencode, CodeWhale and Claude Code on the same tasks and models,
-  comparing time-to-green, token cost and patch quality across the full30,
+  comparing time-to-green, token cost and patch quality across the full31,
   SWE-bench Verified and DeepSWE suites. Features land on that evidence — and
   sometimes only behind a gate, like the repo map's auto-append, which ships on
   by default but withholds small or stub maps because the A/Bs disagreed — with

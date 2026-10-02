@@ -775,6 +775,16 @@ chosen from:
   resolved is an error naming it; it never silently falls through to the
   harness-global default (which would send the model to a foreign provider).
   The no-provider case still resolves through the active provider, by design.
+- **A model the catalog places under another provider is refused at call
+  time.** The `llm` component checks an explicitly requested model against the
+  models catalog: when the exact id exists and no entry for it names the
+  resolved provider, the call fails naming the model, its real provider(s),
+  the resolved provider and its catalog — the last line of defense against a
+  pairing created before the pin invariant (a UI that pinned a model without
+  its provider), instead of a raw provider 400. The check is deliberately
+  narrow: it fires only on a positive catalog answer, so an unknown or
+  self-hosted model, a missing `models` component and an implicit model (the
+  provider default) pass through untouched.
 
 Agents inherit the whole pin: a fresh subagent gets the parent's provider
 pin alongside its effective model, so the child cannot drift under a later
