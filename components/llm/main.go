@@ -631,35 +631,70 @@ func (c *retryAfterHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	if err != nil || resp == nil || resp.StatusCode < 400 {
 		return resp, err
 	}
-	raw := resp.Header.Get("Retry-After")
-	if raw == "" {
-		return resp, err
-	}
-	ms := retryAfterMillis(raw)
-	if ms <= 0 {
-		return resp, err
-	}
 	body, readErr := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if readErr != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return resp, err
 	}
-	var envelope map[string]any
-	if json.Unmarshal(body, &envelope) == nil {
-		if apiErr, ok := envelope["error"].(map[string]any); ok {
-			if message, ok := apiErr["message"].(string); ok {
-				apiErr["message"] = message + "; retry-after-ms: " + strconv.Itoa(ms)
-			}
-		} else if message, ok := envelope["message"].(string); ok {
-			envelope["message"] = message + "; retry-after-ms: " + strconv.Itoa(ms)
-		}
-		if updated, marshalErr := json.Marshal(envelope); marshalErr == nil {
-			body = updated
+	body = normalizeSSEErrorBody(body)
+	raw := resp.Header.Get("Retry-After")
+	if raw != "" {
+		if ms := retryAfterMillis(raw); ms > 0 {
+			body = annotateRetryAfter(body, ms)
 		}
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return resp, err
+}
+
+// normalizeSSEErrorBody unwraps an SSE-framed error response. Some gateways
+// answer a failed request with a stream frame (`data: {"error": …}`) even
+// though nothing is streaming; the client library then fails to parse the
+// body ("invalid character 'd' looking for beginning of value") and the
+// provider's actual refusal never reaches the caller. Rewrite the body to
+// the first data line's JSON payload when it parses, so the error carries
+// the provider's own message and code.
+func normalizeSSEErrorBody(body []byte) []byte {
+	trimmed := bytes.TrimSpace(body)
+	if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return body
+	}
+	for _, line := range strings.Split(string(trimmed), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(line[len("data:"):])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		if json.Valid([]byte(payload)) {
+			return []byte(payload)
+		}
+		return body // not JSON: leave the raw frame — still readable evidence
+	}
+	return body
+}
+
+// annotateRetryAfter appends the parsed wait hint to the error message the
+// way the previous inline path did (core's retry policy reads it).
+func annotateRetryAfter(body []byte, ms int) []byte {
+	var envelope map[string]any
+	if json.Unmarshal(body, &envelope) != nil {
+		return body
+	}
+	if apiErr, ok := envelope["error"].(map[string]any); ok {
+		if message, ok := apiErr["message"].(string); ok {
+			apiErr["message"] = message + "; retry-after-ms: " + strconv.Itoa(ms)
+		}
+	} else if message, ok := envelope["message"].(string); ok {
+		envelope["message"] = message + "; retry-after-ms: " + strconv.Itoa(ms)
+	}
+	if updated, marshalErr := json.Marshal(envelope); marshalErr == nil {
+		return updated
+	}
+	return body
 }
 
 func retryAfterMillis(raw string) int {
@@ -1254,7 +1289,7 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	resp := map[string]any{
 		"ok":       true,
 		"provider": resolved.ProviderName, "providerSource": resolved.ProviderSource,
 		"model": resolved.Model, "catalog": resolved.Catalog,
@@ -1262,7 +1297,19 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		"output": resolved.Output, "outputSource": resolved.OutputSource,
 		"protocol": resolved.Provider.Protocol, "authType": resolved.Provider.AuthType,
 		"hasKey": resolved.Provider.APIKey != "",
-	}, nil
+	}
+	// A fallback window is a guess, and the context guard measures against it:
+	// the common cause is a drifted pin — a model chosen under one provider
+	// carried over to another (observed as provider=synthetic + a xiaomi model,
+	// resolving to a 128000-token window for a model whose catalog window is
+	// far larger). Surface it where the pins are set instead of silently
+	// admission-controlling against the wrong window.
+	if resolved.ContextSource == "fallback" {
+		resp["warning"] = fmt.Sprintf(
+			"no catalog match for provider %q + model %q — using the %d-token fallback window; check the conversation's provider/model pins",
+			resolved.ProviderName, resolved.Model, resolved.Context)
+	}
+	return resp, nil
 }
 
 // Chat tool timeout. Slow reasoning models (e.g. GLM with thinking=max via

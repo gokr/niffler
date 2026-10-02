@@ -54,6 +54,49 @@ func (d roundTripperDoer) Do(req *http.Request) (*http.Response, error) {
 	return d.fn(req)
 }
 
+func TestNormalizeSSEErrorBodyUnwrapsDataPrefix(t *testing.T) {
+	// The observed failure: a gateway answers a 400 with an SSE frame, the
+	// client library fails on 'd' and the provider's own message is lost.
+	in := []byte(`data:{"error":{"code":"400","message":"Invalid request parameters","type":"BadRequestError"}}`)
+	out := normalizeSSEErrorBody(in)
+	if !json.Valid(out) || !strings.Contains(string(out), "Invalid request parameters") {
+		t.Fatalf("expected the unwrapped JSON payload, got %q", out)
+	}
+	// Space after the colon (the shape synthetic.new actually sends):
+	out = normalizeSSEErrorBody([]byte("data: {\"error\":{\"message\":\"nope\"}}\n\n"))
+	if !strings.Contains(string(out), "nope") || strings.Contains(string(out), "data:") {
+		t.Fatalf("expected the first data line's payload, got %q", out)
+	}
+	// Plain JSON bodies and non-JSON payloads must pass through untouched.
+	for _, in := range []string{
+		`{"error":{"message":"plain"}}`,
+		"data:not-json\n",
+		"data: [DONE]\n",
+	} {
+		if got := normalizeSSEErrorBody([]byte(in)); string(got) != in {
+			t.Fatalf("normalizeSSEErrorBody(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+func TestRetryAfterHTTPClientUnwrapsSSEError(t *testing.T) {
+	base := roundTripperDoer{fn: func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 400,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`data:{"error":{"message":"Invalid request parameters"}}`)),
+		}, nil
+	}}
+	resp, err := (&retryAfterHTTPClient{base: base}).Do(httptest.NewRequest(http.MethodPost, "http://example.test", nil))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "data:") || !strings.Contains(string(body), "Invalid request parameters") {
+		t.Fatalf("SSE frame not unwrapped: %s", body)
+	}
+}
+
 func TestInferCatalogProviderPrefersEndpoint(t *testing.T) {
 	tests := []struct {
 		name     string
