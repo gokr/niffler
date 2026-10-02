@@ -22,7 +22,7 @@ import supervisor
 import tty
 import uireg
 
-const minimalComponents = ["store", "bash", "llm"]
+const minimalComponents = ["store", "bash", "llm", "systemprompt"]
 
 var gStop = false
 
@@ -281,7 +281,7 @@ proc usage(): string =
   ## Command-line help for the system harness.
   """Usage: niffler [--minimal] [--recover]
 
-  --minimal  start only store, bash and llm; do not restore spawned components
+  --minimal  start only store, bash, llm and systemprompt; do not restore spawned components
   --recover  rebuild shipped binaries and wipe spawned-component records
   -h, --help show this help
 """
@@ -312,7 +312,7 @@ proc main() =
   if recovering:
     echo "core: RECOVER mode — rebuild shipped binaries, wipe spawned-component records"
   if minimalMode:
-    echo "core: MINIMAL mode — starting store, bash and llm only"
+    echo "core: MINIMAL mode — starting store, bash, llm and systemprompt only"
   let root = getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
   # The clone is the home of a Niffler instance: its .env is the master
   # config, and a NIF_NATS_URL declared there is this harness's home bus —

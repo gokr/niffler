@@ -200,7 +200,7 @@ make install          # PATH entries: niffler, niffler-cli, niffler-console
 make uninstall        # remove those PATH entries again
 make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler     # the harness itself (admin shell) — UIs autostart it too
-./var/bin/niffler --minimal  # boot only store + bash + llm; skip persisted extras
+./var/bin/niffler --minimal  # boot only store + bash + llm + systemprompt; skip persisted extras
 niffler-tui           # the client: autostarts core on demand; the last
                       # interactive client stops it
 make test             # the full gate: the bus-contract suite
@@ -380,7 +380,10 @@ is the precedent for steps 2–6.
   the SDK serializes them through a promise chain (the Nim single-thread
   model).
 - `--minimal` is a boot profile, not a lockdown: it starts only `store`,
-  `bash`, and `llm`, does not restore persisted spawned components (records
+  `bash`, `llm`, and `systemprompt` (without it a conversation would degrade
+  to core's baked-in fallback prompt; compaction stays out — the runner's
+  deterministic prune/trim ladder needs no component), does not restore
+  persisted spawned components (records
   remain), and uses `NIF_OPENAI_*` without `models`/`provider`. Session runners
   still start on demand; a normal boot restores the full shape.
 - Harness in service mode (for the UI, no tty):

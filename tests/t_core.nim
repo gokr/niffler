@@ -5,7 +5,8 @@
 ## → tool live → kill → remove → record gone), duplicate-tool rejection,
 ## and — on a second bus without NIF_AUTO_APPROVE — that approval-gated
 ## tools are denied when no human/UI is reachable. A third isolated root
-## verifies --minimal starts only store/bash/llm and skips persisted children.
+## verifies --minimal starts only store/bash/llm/systemprompt and skips
+## persisted children.
 
 import std/[json, os, osproc, streams, strutils, times]
 import natsnim
@@ -524,7 +525,8 @@ proc main() =
   # Seed a persisted component record first: --minimal must neither start it
   # nor delete it, while also filtering non-minimal manifest components.
   let minimalSandbox = newCoreSandbox(
-    "minimal", ["store", "bash", "builder", "plugins", "llm"])
+    "minimal", ["store", "bash", "builder", "plugins", "llm",
+                "systemprompt"])
   defer: removeDir(minimalSandbox.root)
   let (server3, url3) = startNats()
   defer: stopServer(server3)
@@ -572,6 +574,7 @@ proc main() =
   var sawStore = false
   var sawBash = false
   var sawLlm = false
+  var sawSystemprompt = false
   var sawUnexpected = false
   if minimalStatus{"components"} != nil:
     for c in minimalStatus{"components"}:
@@ -580,11 +583,13 @@ proc main() =
       of "store": sawStore = true
       of "bash": sawBash = true
       of "llm": sawLlm = true
+      of "systemprompt": sawSystemprompt = true
       of "core": discard  # core lists itself since progressive discovery
       else: sawUnexpected = true
-  check("--minimal supervises exactly store, bash and llm",
-        minimalStatus{"error"} == nil and childCount == 4 and
-        sawStore and sawBash and sawLlm and not sawUnexpected,
+  check("--minimal supervises exactly store, bash, llm and systemprompt",
+        minimalStatus{"error"} == nil and childCount == 5 and
+        sawStore and sawBash and sawLlm and sawSystemprompt and
+        not sawUnexpected,
         $minimalStatus)
 
   let persisted = call(nc3, "store", "get",
