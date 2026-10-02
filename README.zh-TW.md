@@ -27,7 +27,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 
 ## Quick start
 
-需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 僅在 TypeScript 元件與網頁 UI 時需要；選用的桌面 UI 在 Linux 上還需要 Wails 與 WebKitGTK 4.1。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
+需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 僅在 TypeScript 元件時需要。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
 
 ```bash
 git clone https://github.com/gokr/niffler.git
@@ -62,9 +62,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make run` | 建置後啟動 `./var/bin/niffler`（終端管理 shell） |
 | `make install` | 安裝 `niffler`、`niffler-cli`、`niffler-console` 的 PATH 項目（終端上會詢問是否安裝 TUI） |
 | `make install-tui` | `make install WITH_TUI=1`：上面的全部，外加 `niffler-tui` 聊天用戶端 |
-| `make install-ui` | 建置並安裝桌面 UI 外掛（`gokr/niffler-ui`）及其啟動器 |
 | `make install-lsp` | 安裝 `lsp` 元件的預設語言伺服器 |
-| `make dev` | 已退役：SPA 開發伺服器隨 UI 移入 `gokr/niffler-ui`（在那裡執行 `make dev`） |
 | `make test` | 完整測試門：匯流排契約測試套件（UI 自身的測試與型別檢查在 `gokr/niffler-ui`） |
 | `make test-server` | 匯流排契約測試套件（每個測試自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 單一元件的契約測試，例如 `make test-fetch` |
