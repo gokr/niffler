@@ -3,7 +3,7 @@ module llm
 go 1.24
 
 require (
-	github.com/sashabaranov/go-openai v1.42.0
+	github.com/sashabaranov/go-openai v1.43.0
 	niffler.dev/sdk v0.0.0
 )
 

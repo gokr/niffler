@@ -447,6 +447,43 @@ func TestChatStreamCapturesZaiReasoningField(t *testing.T) {
 	}
 }
 
+// A stream the network cuts mid-frame must not lose the turn. Providers and
+// proxies truncate long streams (observed on the direct DeepSeek API: two
+// DeepSWE cells died at ~908s with a partial frame, i.e. a ~15-minute cap), and
+// go-openai hands us those bytes as-is. The error therefore has to carry the
+// "stream error" marker core/retry.nim classifies as transient, so the request
+// is retried instead of a fifteen-minute turn being recorded as a failure.
+func TestChatStreamTruncatedFrameIsTransient(t *testing.T) {
+	server := newSSEChatServer(t, []string{
+		`{"model":"m1","choices":[{"delta":{"content":"partial"}}]}`,
+		`{"choices":[{"delta":{"content":"cut`,
+	})
+	defer server.Close()
+
+	cfg := openai.DefaultConfig("test-key")
+	cfg.BaseURL = server.URL
+	client := openai.NewClientWithConfig(cfg)
+
+	_, err := chatStream(t.Context(), nil, client, "m1", "test", chatArgs{}, 128000, 4096)
+	if err == nil {
+		t.Fatal("chatStream: want an error for a truncated frame")
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "stream error") {
+		t.Fatalf("error = %q, want the transient \"stream error\" marker", err)
+	}
+	if strings.Contains(msg, "bad stream chunk") {
+		t.Fatalf("error = %q, must not be the old hard failure", err)
+	}
+	// The classifier checks the permanent phrases first, so nothing in the
+	// message may look like a status code or a quota problem.
+	for _, permanent := range []string{"400", "401", "403", "quota", "billing"} {
+		if strings.Contains(msg, permanent) {
+			t.Fatalf("error = %q contains permanent marker %q", err, permanent)
+		}
+	}
+}
+
 // newSSEChatServer serves an OpenAI-compatible SSE chat stream with the
 // given JSON chunk payloads, terminated by [DONE].
 func newSSEChatServer(t *testing.T, chunks []string) *httptest.Server {

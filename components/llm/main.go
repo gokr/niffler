@@ -907,6 +907,15 @@ func interruptErr(reason string) error {
 	return errors.New("stream error: the provider ended the generation early (provider resource pressure)")
 }
 
+// streamTruncErr classifies a stream that died mid-frame as transient, the
+// same lane interruptErr uses: core/retry.nim matches the "stream error"
+// marker and retries, which is the only sane response to a payload the network
+// cut in half. The byte count rides along for the log and must never look like
+// a status code ("400"/"401" would classify as permanent).
+func streamTruncErr(size int) error {
+	return fmt.Errorf("stream error: provider stream ended mid-frame (truncated payload, %d bytes)", size)
+}
+
 // canonicalFinish maps a provider's stop/terminal reason onto the
 // finish_reason vocabulary the conversation loop understands (OpenAI's names),
 // so truncation surfaces the same way on every lane. Unknown reasons pass
@@ -1088,10 +1097,25 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 			logStreamStats(usage, reasoning.Len(), true)
 			return nil, err
 		}
+		if len(bytes.TrimSpace(raw)) == 0 || bytes.HasPrefix(bytes.TrimSpace(raw), []byte(":")) {
+			// SSE keepalive/comment line, not a frame. Failing the turn on one
+			// would be a harness-caused loss.
+			continue
+		}
 		var resp llmChunk
 		if err := json.Unmarshal(raw, &resp); err != nil {
+			// A truncated frame is a transport event, not a protocol error:
+			// providers and proxies cut long streams mid-payload. Observed on
+			// the direct DeepSeek API, where two DeepSWE cells died at ~908s (a
+			// ~15-minute stream cap) with go-openai handing us the partial
+			// bytes. Classify it as a transient stream error so core's retry
+			// policy (core/retry.nim matches "stream error") re-issues the
+			// request, instead of throwing away a turn that had already produced
+			// fifteen minutes of work.
 			logStreamStats(usage, reasoning.Len(), true)
-			return nil, fmt.Errorf("bad stream chunk: %w", err)
+			log.Printf("WARN chat truncated stream chunk bytes=%d after=%s err=%v",
+				len(raw), time.Since(startedAt).Truncate(time.Millisecond), err)
+			return nil, streamTruncErr(len(raw))
 		}
 		if resp.Model != "" {
 			usedModel = resp.Model
