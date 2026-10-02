@@ -40,7 +40,7 @@ export class NifflerHarness {
     this.stopped = false;
     this.expertEnabled = opts.expertEnabled || false;
     this.thinking = opts.thinking || "";
-    this.maxTurnRounds = opts.maxTurnRounds || 100;
+    this.maxTurnRounds = opts.maxTurnRounds || 1000;
     // LLM per-request ceiling: must exceed the longest legitimate thinking
     // stream, not the 5-min default (bench: a 19m41s high-effort thinking
     // call died at 300s and the retry re-did the whole turn). Sourced from
@@ -169,8 +169,8 @@ export class NifflerHarness {
       // interactive client registers: the run dies mid-cell with the cli
       // calls left waiting on a dead bus. Pin it off explicitly.
       NIF_AUTOSTART: "0",
-      // Agentic bench tasks need more than the default 20 LLM rounds per
-      // turn; interactive use keeps the default (env only raises it here).
+      // Long-horizon tasks (DeepSWE) run far past an interactive turn's round
+      // count; this only ever raises the ceiling for the bench harness.
       NIF_MAX_TURN_ROUNDS: String(this.maxTurnRounds),
       ...(this.llmTimeoutMs
         ? { NIF_LLM_TIMEOUT_MS: String(this.llmTimeoutMs) }

@@ -49,10 +49,13 @@ let taskTimeoutMs = Number(opt("task-timeout-min", cfg.defaults.taskTimeoutMin))
 let turnTimeoutMs = Number(opt("turn-timeout-min", cfg.defaults.turnTimeoutMin)) * 60_000;
 const testTimeoutMs = Number(opt("test-timeout-sec", cfg.defaults.testTimeoutSec)) * 1000;
 const JOBS = Number(opt("jobs", cfg.defaults.jobs));
-// Niffler-only: LLM round budget per turn (NIF_MAX_TURN_ROUNDS). Default 100:
+// Niffler-only: LLM round budget per turn (NIF_MAX_TURN_ROUNDS). Default 1000
+// (core's own ceiling): the old 100 ended long-horizon DeepSWE turns mid-problem
+// -- three cells hit it, one of them with a patch that still verified green, and
+// a "budget exhausted" turn is indistinguishable from a hang to the model.
 // the env default (50) clipped long agentic SWE turns (sympy-13031 exhausted it and
 // submitted an empty patch).
-const maxTurnRounds = Number(opt("max-turn-rounds", 100));
+const maxTurnRounds = Number(opt("max-turn-rounds", 1000));
 const KEEP_REPOS = opt("keep-repos", false) === true;
 
 // ---------- thinking profile ----------
