@@ -59,6 +59,7 @@ let mockEnforceCtx = block:
   except CatchableError: 0
 let mockRawOverflow = getEnv("NIF_MOCK_RAW_OVERFLOW", "").len > 0
 let mockHideCtx = getEnv("NIF_MOCK_HIDE_CTX", "").len > 0
+let mockUsageDetails = getEnv("NIF_MOCK_USAGE_DETAILS", "").len > 0
 let mockRounds = block:
   let v = getEnv("NIF_MOCK_ROUNDS", "0")
   try: parseInt(v)
@@ -77,6 +78,17 @@ var currentEmitTokens = true
 var currentPurpose = ""
 var currentProvider = ""
 var currentModel = ""
+
+proc addUsageDetails(usage: JsonNode) =
+  ## NIF_MOCK_USAGE_DETAILS=1: attach the optional provider breakdowns core's
+  ## per-turn accounting reads (#123) — the cache split (Anthropic-style read +
+  ## write counts) and the reasoning count — with deterministic values so a
+  ## contract test can assert exact sums across rounds.
+  if not mockUsageDetails or usage == nil or usage.kind != JObject: return
+  usage["prompt_tokens_details"] = %*{
+    "cached_tokens": usage{"prompt_tokens"}.getInt(0) div 2,
+    "cache_write_tokens": 100}
+  usage["completion_tokens_details"] = %*{"reasoning_tokens": 7}
 
 proc estimateTokens(messages: JsonNode, tools: JsonNode): int =
   ## Same chars/4 proxy core's estimateTokens uses (plus per-message
@@ -248,6 +260,10 @@ proc(c: Component, args: JsonNode): JsonNode =
     let served = roundsServed.getOrDefault(sessionId, 0)
     if served < mockRounds * max(userTurns, 1):
       roundsServed[sessionId] = served + 1
+      var roundUsage = %*{"prompt_tokens": providerCount,
+                          "completion_tokens": 0,
+                          "total_tokens": providerCount}
+      addUsageDetails(roundUsage)
       return %*{"content": "",
                 "tool_calls": [%*{"id": "c" & $served, "type": "function",
                                   "function": {"name": "bash",
@@ -255,9 +271,7 @@ proc(c: Component, args: JsonNode): JsonNode =
                 "model": "mock-model",
                 # Real providers report usage on tool-call rounds too; the
                 # core measures its calibration offset from every response.
-                "usage": {"prompt_tokens": providerCount,
-                          "completion_tokens": 0,
-                          "total_tokens": providerCount}}
+                "usage": roundUsage}
     var objective = ""
     if messages != nil and messages.kind == JArray:
       for m in messages:
@@ -269,6 +283,7 @@ proc(c: Component, args: JsonNode): JsonNode =
           break
     var usage = %*{"prompt_tokens": providerCount, "completion_tokens": 10,
                    "total_tokens": providerCount + 10}
+    addUsageDetails(usage)
     if mockCtx > 0 and not mockHideCtx:
       usage["context"] = %mockCtx
     return %*{"content": "done — " & objective, "model": "mock-model",

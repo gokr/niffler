@@ -200,7 +200,7 @@ func chatAnthropic(ctx context.Context, c *sdk.Component, p provider, model, pro
 	openAIUsage.TotalTokens = openAIUsage.PromptTokens + openAIUsage.CompletionTokens
 	usageSeen := openAIUsage.PromptTokens > 0 || openAIUsage.CompletionTokens > 0
 	return resultJSON(providerName, usedModel, contextSize, content.String(), reasoning.String(),
-		calls, openAIUsage, usageSeen, stopReason)
+		calls, openAIUsage, usage.CacheCreationInputTokens, usageSeen, stopReason)
 }
 
 func anthropicRequest(model string, args chatArgs, outputSize int, isOAuth bool) ([]byte, error) {

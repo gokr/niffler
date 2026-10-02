@@ -8,6 +8,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Per-turn usage and a terminal outcome on the session result (#123).** A
+  session turn now answers with `turnId`, `outcome` and a `usage` object
+  accounting for that activation alone — prompt/completion/total plus the
+  provider-reported cache-read, cache-write and reasoning splits when the
+  provider sends them — so a headless driver no longer sums status events and
+  re-reads canonical history to bill a turn, and a resumed turn never
+  re-charges an earlier execution of the same conversation. The SAME object
+  rides the turn's single terminal `ev.session.<id>.turn {phase: "done"}`
+  frame, so a client whose request reply was lost reconciles by `turnId` from
+  the event stream; the legacy `done` frame deliberately stays reply/error-only
+  so nothing double counts. `outcome` distinguishes success, cancellation, hard
+  budgets, human limits, errors and the aborted path; partial turns report the
+  usage they spent, a counter the provider never reported is absent rather than
+  a fabricated zero, and descendants are excluded explicitly. The `llm`
+  component now forwards `completion_tokens_details.reasoning_tokens` and the
+  Anthropic cache-creation count as `prompt_tokens_details.cache_write_tokens`.
+  Contract: docs/WIRE.md "Turn usage"; test: `tests/t_session_usage.nim`.
+
 - **A component can declare its own when-to-use sentence (`x-harness.hint`).**
   `discover` shows a tool's declared hint instead of the first sentence of its
   description, and it is the routing line a component contributes to the

@@ -174,7 +174,7 @@ func chatCodex(ctx context.Context, c *sdk.Component, p provider, model, provide
 
 	toolCalls := orderedCodexCalls(calls)
 	return resultJSON(providerName, usedModel, contextSize, content.String(), reasoning.String(),
-		toolCalls, usage, usageSeen, finish)
+		toolCalls, usage, 0, usageSeen, finish)
 }
 
 func codexRequest(model string, args chatArgs) (openai.CreateResponseRequest, error) {

@@ -1030,7 +1030,7 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 		args.Purpose, providerName, usedModel, effort, total.Truncate(time.Millisecond),
 		resp.Usage.PromptTokens, resp.Usage.CompletionTokens, tps)
 	return resultJSON(providerName, usedModel, contextSize, msg.Content,
-		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true, finish)
+		msg.ReasoningContent, msg.ToolCalls, resp.Usage, 0, true, finish)
 }
 
 // llmChunk mirrors go-openai's ChatCompletionStreamResponse, but keeps the
@@ -1212,13 +1212,13 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	}
 	logStreamStats(usage, reasoning.Len(), false)
 	return resultJSON(providerName, usedModel, contextSize, content.String(),
-		reasoning.String(), calls, usage, usageSeen, finish)
+		reasoning.String(), calls, usage, 0, usageSeen, finish)
 }
 
 // resultJSON builds the wire result — the same shape llm-openai returns,
 // so core's conversation loop consumes it unchanged — plus `reasoning`.
 func resultJSON(providerName, model string, ctx int, content, reasoning string,
-	calls []openai.ToolCall, usage openai.Usage, usageSeen bool, finish string) (any, error) {
+	calls []openai.ToolCall, usage openai.Usage, cacheWriteTokens int, usageSeen bool, finish string) (any, error) {
 	r := map[string]any{"content": content, "reasoning": reasoning}
 	finish = canonicalFinish(providerName, finish)
 	// finish_reason is additive: core ignores fields it does not know, and a
@@ -1261,11 +1261,27 @@ func resultJSON(providerName, model string, ctx int, content, reasoning string,
 			"completion_tokens": usage.CompletionTokens,
 			"total_tokens":      usage.TotalTokens,
 		}
-		// Cache economics (docs/research/EXPERT.md §8): forward the provider's cached-input
-		// breakdown when reported, so callers can measure prompt-cache hits.
+		// Cache economics (docs/research/EXPERT.md §8): forward the provider's
+		// cached-input breakdown when reported, so callers can measure
+		// prompt-cache hits and (since #123) writes. cache_write_tokens is the
+		// provider's cache-CREATION count (Anthropic bills it at write rates) —
+		// it is not part of prompt_tokens_details' OpenAI shape, so only the
+		// Anthropic adapter supplies it.
+		details := map[string]any{}
 		if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
-			u["prompt_tokens_details"] = map[string]any{
-				"cached_tokens": usage.PromptTokensDetails.CachedTokens,
+			details["cached_tokens"] = usage.PromptTokensDetails.CachedTokens
+		}
+		if cacheWriteTokens > 0 {
+			details["cache_write_tokens"] = cacheWriteTokens
+		}
+		if len(details) > 0 {
+			u["prompt_tokens_details"] = details
+		}
+		// Reasoning tokens (#123): only some providers report thinking spend;
+		// omit the field rather than inventing a zero.
+		if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			u["completion_tokens_details"] = map[string]any{
+				"reasoning_tokens": usage.CompletionTokensDetails.ReasoningTokens,
 			}
 		}
 		r["usage"] = u

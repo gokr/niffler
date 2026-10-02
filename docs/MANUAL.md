@@ -636,11 +636,15 @@ svc.session.<id>.advise  turn-bound advisory request/reply (the expert peer):
 svc.session.<id>.map     repomap → runner: the workspace map to append once
 ev.workspace.opened    core → components: {workspace, conversationId} — a
                        conversation's workspace, for pre-warm and the repo-map append
-ev.session.<id>.turn        {sessionId, turnId, phase: start|done, content?, error?}
+ev.session.<id>.turn        {sessionId, turnId, phase: start|done, content?, error?,
+                            outcome?, usage?}
                        #   per-conversation event namespace: a client watching
                        #   one conversation subscribes ev.session.<id>.>, an
                        #   observer subscribes ev.session.> for everything
                        #   (ev.session.*.token for every token stream)
+                       #   the single phase:done frame is the terminal one:
+                       #   it carries the same outcome + per-turn usage object
+                       #   the session result returns (see "Turn accounting")
 ev.session.<id>.assistant   {sessionId, turnId?, content, provider?, model?, context?, usage?}
 ev.session.<id>.status      {sessionId, turnId?, provider?, model?, context?, usedTokens?}
 ev.session.<id>.token       {sessionId, turnId?, content, reasoning}  (live token deltas)
@@ -651,7 +655,9 @@ ev.session.<id>.notice      {sessionId, turnId?, kind?, content?, jobId?, child?
                              status?} runtime machinery was folded in (subagent
                              settlement, background process exit, autonomous wake);
                              `content` is the rendered text UIs show
-ev.session.<id>.done        {sessionId, turnId?, reply} | {sessionId, turnId?, error}
+ev.session.<id>.done        {sessionId, turnId, reply} | {sessionId, turnId, error}
+                            # legacy end-of-turn frame: reply/error only, no
+                            # accounting (the terminal `turn` frame has it)
 ev.session.<id>.context     {sessionId, turnId?, promptTokens, usedTokens, context, warning?|trimmed?}
 ev.catalog.updated     direct (prompt-facing) tool projection after any
                        registration change; `catalog {op: snapshot}` still
@@ -679,6 +685,18 @@ cancel.<component>     cancellation side-channel: a runner publishes it when a
                        turn cancel lands while a dispatch is in flight; bash
                        kills the command's process group (see WIRE.md)
 ```
+
+**Turn accounting.** A session turn answers with `turnId`, `outcome` and a
+`usage` object for THAT turn — the successful provider responses of this
+activation only, so a resumed turn never re-charges an earlier one. The same
+object rides the turn's terminal `ev.session.<id>.turn {phase: "done"}` frame,
+so a driver that lost the request reply reconciles by `turnId` from the event
+stream alone (the legacy `done` frame deliberately carries no accounting, so
+nothing double counts). `usageReported`, `providerResponses` and `toolCalls`
+describe partial turns honestly, a counter the provider never reported is
+absent rather than a fabricated zero, and descendants are excluded explicitly
+(`descendantsExcluded`) — a subagent's tokens belong to the child conversation.
+Full field list and the outcome vocabulary: WIRE.md, "Turn usage".
 
 **Streaming.** The `llm` component streams tokens while generating:
 `ev.llm.token` deltas (content + reasoning) → core forwards them for the

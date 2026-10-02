@@ -252,6 +252,63 @@ proc configuredMaxTurnRounds(): int =
   if result < 1:
     result = defaultMaxTurnRounds
 
+type
+  TurnAccounting* = object
+    ## Authoritative accounting for ONE turn (one activation of a
+    ## conversation): docs/WIRE.md "Turn usage". Only the successful provider
+    ## responses of this turn contribute, so a turn resumed in a fresh runner
+    ## never re-charges an earlier execution of the same conversation, and a
+    ## retried (failed) request contributes nothing. Descendants are excluded
+    ## by construction: a subagent runs its own conversation and its usage is
+    ## that conversation's own accounting.
+    turnId*: string
+    outcome*: string       ## success | cancelled | budget-exhausted |
+                           ## limit-exhausted | error | aborted
+    startedAt*: float
+    durationMs*: int
+    rounds*: int           ## provider responses that returned successfully
+    usageRounds*: int      ## of those, how many carried provider usage
+    toolCalls*: int        ## tool dispatches this turn (attempts included)
+    promptTokens*: int     ## Σ prompt_tokens over usageRounds responses
+    completionTokens*: int ## Σ completion_tokens
+    totalTokens*: int      ## Σ total_tokens (provider-reported, else p+c)
+    cacheReadTokens*: int  ## Σ prompt_tokens_details.cached_tokens
+    cacheWriteTokens*: int ## Σ prompt_tokens_details.cache_write_tokens
+    reasoningTokens*: int  ## Σ completion_tokens_details.reasoning_tokens
+    cacheReadReported*: bool    ## the provider sent the cache breakdown
+    cacheWriteReported*: bool
+    reasoningReported*: bool
+    provider*: string      ## provider/model of the last successful response
+    model*: string
+
+proc usageJson*(a: TurnAccounting): JsonNode =
+  ## The per-turn usage object, shared verbatim by the final session result
+  ## and the terminal `turn`/`done` frame, so a driver that lost the request
+  ## reply can reconcile by turnId without double counting. A counter the
+  ## provider never reported is ABSENT, never a fabricated zero (an OpenAI-
+  ## style provider reports no cache-write split; Anthropic reports no
+  ## reasoning split); `usageReported: false` means no response of the turn
+  ## carried a usage object at all. `descendantsExcluded` is the explicit
+  ## statement that a subagent's tokens are not mixed in here — the child
+  ## conversation carries its own accounting.
+  result = %*{"turnId": a.turnId,
+              "outcome": a.outcome,
+              "providerResponses": a.rounds,
+              "responsesWithUsage": a.usageRounds,
+              "toolCalls": a.toolCalls,
+              "durationMs": a.durationMs,
+              "usageReported": a.usageRounds > 0,
+              "descendantsExcluded": true}
+  if a.provider.len > 0: result["provider"] = %a.provider
+  if a.model.len > 0: result["model"] = %a.model
+  if a.usageRounds > 0:
+    result["promptTokens"] = %a.promptTokens
+    result["completionTokens"] = %a.completionTokens
+    result["totalTokens"] = %a.totalTokens
+  if a.cacheReadReported: result["cacheReadTokens"] = %a.cacheReadTokens
+  if a.cacheWriteReported: result["cacheWriteTokens"] = %a.cacheWriteTokens
+  if a.reasoningReported: result["reasoningTokens"] = %a.reasoningTokens
+
 proc newPersister*(ct: CoreTools): Persister =
   ## Create a conversation header in the store and a persister for it.
   result = Persister(ct: ct, convId: "conv-" & newId())
@@ -1976,6 +2033,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   result.reason = "compacted"
 
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
+              turnAcctOut: var TurnAccounting,
               providerOverride, modelOverride: string,
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
@@ -1986,12 +2044,15 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
-  ## ("turn", {sessionId, turnId, phase: start|done, content?, error?}),
+  ## ("turn", {sessionId, turnId, phase: start|done, content?, error?,
+  ##            outcome?, usage?}),
   ## ("assistant", {sessionId, turnId, content}), ("toolcall", {sessionId,
   ## turnId, callId, phase, tool, args, result|error, errorCode?}),
   ## ("token", {sessionId, turnId, content, reasoning} live deltas),
   ## ("status", {...turnId...}), ("advice", {sessionId, turnId, source,
-  ## content}) and ("done", {sessionId, turnId, reply}) as they happen.
+  ## content}) and ("done", {sessionId, turnId, reply|error}) as they happen.
+  ## turnAcctOut receives the authoritative per-turn accounting — the SAME
+  ## object the terminal `turn` frame carries (docs/WIRE.md "Turn usage").
   ## turnContent is the user request that started this turn
   ## (ev.session.<id>.turn).
   let sessionId = p.convId
@@ -2006,14 +2067,51 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if ct.activeTurn != nil:
       ct.activeTurn.session = ""
       ct.activeTurn.id = ""
+  # ---- authoritative per-turn accounting (docs/WIRE.md "Turn usage") ------
+  # A LOCAL mirror, not the `var` out-parameter: the nested procs below
+  # (emitTurnDone, finishTurn, endTurnOnLimit) may not capture a var parameter
+  # (memory safety), and the counters must be reachable from every terminal
+  # path. Published to the caller by the defer — including when an exception
+  # escapes the turn.
+  var turnAcct: TurnAccounting
+  turnAcct.turnId = turnId
+  turnAcct.startedAt = epochTime()
+  defer:
+    # emitTurnDone has already finalized the counters — it is registered AFTER
+    # this defer, so it runs FIRST — and the copy is verbatim: the session
+    # result and the terminal frame must carry byte-identical accounting.
+    turnAcctOut = turnAcct
   # Every exit path closes the turn event — including exceptions.
   var turnClosed = false
-  proc emitTurnDone(err = "") =
-    if onEvent != nil and not turnClosed:
-      var ev = %*{"sessionId": sessionId, "turnId": turnId, "phase": "done"}
+  proc emitTurnDone(err = "", outcome = "") =
+    ## The turn's terminal frame — exactly ONE per turn, and the authoritative
+    ## accounting carrier: a client disconnected from the request reply
+    ## reconciles by turnId from here, and `usage` is the same object the final
+    ## session result carries (so a driver never double counts; the legacy
+    ## `done` frame keeps its historic reply/error-only shape).
+    if turnClosed: return
+    if outcome.len > 0: turnAcct.outcome = outcome
+    if turnAcct.outcome.len == 0:
+      turnAcct.outcome = if err.len > 0: "error" else: "success"
+    turnAcct.durationMs = int((epochTime() - turnAcct.startedAt) * 1000)
+    if onEvent != nil:
+      var ev = %*{"sessionId": sessionId, "turnId": turnId, "phase": "done",
+                  "outcome": turnAcct.outcome,
+                  "usage": turnAcct.usageJson()}
       if err.len > 0: ev["error"] = %err
       onEvent("turn", ev)
     turnClosed = true
+  proc finishTurn(outcome: string, err = "", reply = "") =
+    ## Close the turn on a terminal path: the legacy `done` frame first, then
+    ## the authoritative terminal frame. Every terminal path calls exactly one
+    ## of these, and the deferred aborted-close below is a no-op afterwards.
+    turnAcct.outcome = outcome
+    if onEvent != nil:
+      var ev = %*{"sessionId": sessionId, "turnId": turnId}
+      if err.len > 0: ev["error"] = %err
+      if reply.len > 0: ev["reply"] = %reply
+      onEvent("done", ev)
+    emitTurnDone(err)
   if onEvent != nil:
     onEvent("turn", %*{"sessionId": sessionId, "turnId": turnId,
                        "phase": "start", "content": turnContent})
@@ -2057,7 +2155,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       # keep the nested proxy answerable with it)
       ct.nested.leases = initTable[string, NestedLease]()
   defer:
-    emitTurnDone("aborted")
+    emitTurnDone("aborted", outcome = "aborted")
   # Live LLM token stream: subscribe before the first chat call so no
   # delta is missed, and forward every frame to the caller as a "token"
   # event (the UI renders them as streaming text/thinking). The frames
@@ -2149,10 +2247,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     p.persistMsg(%*{"role": "error", "content": msg,
                     "error": "limit-" & dimension, "turnId": turnId},
                  %*{"limit": detail})
-    if onEvent != nil:
-      onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                         "error": msg})
-    emitTurnDone(msg)
+    finishTurn("limit-exhausted", err = msg)
 
   while rounds < max(effMaxRounds, 1):
     rounds += 1
@@ -2163,10 +2258,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if ct.steerStream != nil and ct.steerStream.cancelRequested:
       let msg = "cancelled by request"
       turnError = msg
-      if onEvent != nil:
-        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                           "error": msg})
-      emitTurnDone(msg)
+      finishTurn("cancelled", err = msg)
       return ""
     # Per-turn token budget (subagent jobs): once the cumulative usage of
     # the completed rounds reaches the cap, no further LLM round starts —
@@ -2175,10 +2267,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       let msg = "turn token budget exhausted (" & $turnTokens &
         " tokens; capped at " & $maxTokens & ")"
       turnError = msg
-      if onEvent != nil:
-        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                           "error": msg})
-      emitTurnDone(msg)
+      finishTurn("budget-exhausted", err = msg)
       return ""
     # The human's soft limits (rounds/tokens/seconds), checked before the next
     # LLM round for exactly the reason the hard caps are: no further round
@@ -2256,10 +2345,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       p.persistMsg(%*{"role": "error", "content": recovery,
                       "error": "context-recovery-required", "turnId": turnId})
       turnError = recovery
-      if onEvent != nil:
-        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                           "error": recovery})
-      emitTurnDone(recovery)
+      finishTurn("error", err = recovery)
       return recovery
     var llmArgs = %*{"messages": messages,
                      "tools": toolsJson,
@@ -2424,10 +2510,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                      %*{"startedAt": llmStartedAt,
                         "durationMs": durationMs})
         turnError = failMsg
-        if onEvent != nil:
-          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                             "error": failMsg})
-        emitTurnDone(failMsg)
+        finishTurn("error", err = failMsg)
         return failMsg
     if overflowRecovered:
       # the retried logical request succeeded — close out the receipt (§6.5)
@@ -2446,9 +2529,43 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     var usageObj = newJObject()
     if usage != nil:
       for k in ["prompt_tokens", "completion_tokens", "total_tokens",
-                "prompt_tokens_details"]:
+                "prompt_tokens_details", "completion_tokens_details"]:
         if usage{k} != nil:
           usageObj[k] = usage{k}
+    # ---- per-turn authority: this response's usage, summed into the turn
+    # (docs/WIRE.md "Turn usage"). Done HERE, after the response proved
+    # successful: a retried or failed request contributes nothing, so a driver
+    # is never charged twice for one logical round.
+    turnAcct.rounds += 1
+    if usageObj.len > 0:
+      let respPrompt = usageObj{"prompt_tokens"}.getInt(0)
+      let respCompletion = usageObj{"completion_tokens"}.getInt(0)
+      let respTotal = usageObj{"total_tokens"}.getInt(0)
+      inc turnAcct.usageRounds
+      turnAcct.promptTokens += respPrompt
+      turnAcct.completionTokens += respCompletion
+      turnAcct.totalTokens +=
+        (if respTotal > 0: respTotal else: respPrompt + respCompletion)
+      let promptDetails = usageObj{"prompt_tokens_details"}
+      if promptDetails != nil and promptDetails.kind == JObject:
+        # The provider sent the cache breakdown: report the counters even when
+        # they are zero (honest zero) — absence means the provider never
+        # reported that split at all.
+        turnAcct.cacheReadReported = true
+        turnAcct.cacheReadTokens +=
+          promptDetails{"cached_tokens"}.getInt(0)
+        if promptDetails{"cache_write_tokens"} != nil:
+          turnAcct.cacheWriteReported = true
+          turnAcct.cacheWriteTokens +=
+            promptDetails{"cache_write_tokens"}.getInt(0)
+      let completionDetails = usageObj{"completion_tokens_details"}
+      if completionDetails != nil and completionDetails.kind == JObject and
+          completionDetails{"reasoning_tokens"} != nil:
+        turnAcct.reasoningReported = true
+        turnAcct.reasoningTokens +=
+          completionDetails{"reasoning_tokens"}.getInt(0)
+    if usedProvider.len > 0: turnAcct.provider = usedProvider
+    if usedModel.len > 0: turnAcct.model = usedModel
     # token accounting for the context check on the next round
     if usageObj{"prompt_tokens"} != nil:
       p.promptTokens = usageObj{"prompt_tokens"}.getInt(0)
@@ -2540,10 +2657,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         let msg = "cancelled by request"
         turnError = msg
         ct.steerStream.cancelRequested = false
-        if onEvent != nil:
-          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                             "error": msg})
-        emitTurnDone(msg)
+        finishTurn("cancelled", err = msg)
         return ""
       # No tool calls: the model wants to stop. But if the client injected a
       # steering message while this response was in flight, fold it in and keep
@@ -2585,10 +2699,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                      %*{"startedAt": llmStartedAt,
                         "durationMs": (getMonoTime() - llmStarted).inMilliseconds})
         turnError = msg
-        if onEvent != nil:
-          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                             "error": msg})
-        emitTurnDone(msg)
+        finishTurn("error", err = msg)
         return ""
       if content.len == 0 and emptyRounds < emptyReplyRetries:
         inc emptyRounds
@@ -2607,10 +2718,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                      %*{"startedAt": llmStartedAt,
                         "durationMs": (getMonoTime() - llmStarted).inMilliseconds})
         turnError = msg
-        if onEvent != nil:
-          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                             "error": msg})
-        emitTurnDone(msg)
+        finishTurn("error", err = msg)
         return ""
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
@@ -2674,10 +2782,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
             turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
         turnError = msg
-        if onEvent != nil:
-          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                             "error": msg})
-        emitTurnDone(msg)
+        finishTurn("budget-exhausted", err = msg)
         return ""
       # A wave is a maximal run of consecutive parallel-safe calls, bounded
       # by the remaining budget. Serial calls and parse failures run alone.
@@ -2688,6 +2793,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         wave.add((items[idx].id, items[idx].name, items[idx].args))
         inc idx
         inc toolCallsMade
+        inc turnAcct.toolCalls
       if wave.len > 0:
         let waveStartedAt = epochTime()
         let waveStarted = getMonoTime()
@@ -2712,6 +2818,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       let it = items[idx]
       inc idx
       inc toolCallsMade  # every dispatch attempt counts, success or error
+      inc turnAcct.toolCalls
       let toolStartedAt = epochTime()
       let toolStarted = getMonoTime()
       var oc: ToolCallOutcome
@@ -2746,10 +2853,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   p.persistMsg(%*{"role": "error", "content": msg, "error": "rounds",
                  "turnId": turnId},
                %*{"rounds": rounds})
-  if onEvent != nil:
-    onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                       "error": msg})
-  emitTurnDone(msg)
+  finishTurn("budget-exhausted", err = msg)
   return msg
 
 # ---------------------------------------------------------------------------
@@ -3556,7 +3660,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       ct.approval.approvalMode = ""
 
   var turnError = ""
-  let reply = runTurn(ct, entry.persister, entry.messages,
+  var turnAcct: TurnAccounting
+  let reply = runTurn(ct, entry.persister, entry.messages, turnAcct,
                       entry.providerOverride, entry.modelOverride, entry.exposure, onEvent,
                       entry.thinkingEffort, turnContent, entry.workspace,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
@@ -3565,7 +3670,15 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
   # drivers (agent_run) report child LLM failures as failures, not text.
+  # turnId/outcome/usage are the authoritative per-turn accounting for THIS
+  # activation (docs/WIRE.md "Turn usage"): the same object the terminal
+  # `turn` frame carries, so a driver reconciles a disconnected turn by turnId
+  # without double counting. Descendants (subagent conversations) are not
+  # mixed in.
   var sessionResult = %*{"ok": true, "sessionId": sessionId, "reply": reply,
+                  "turnId": turnAcct.turnId,
+                  "outcome": turnAcct.outcome,
+                  "usage": turnAcct.usageJson(),
                   "providerOverride": entry.providerOverride,
                   "modelOverride": entry.modelOverride,
                   "approvals": entry.approvalMode,

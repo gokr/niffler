@@ -265,7 +265,7 @@ func TestResolveHandlerNeverReturnsCredentials(t *testing.T) {
 }
 
 func TestResultJSONIncludesProvider(t *testing.T) {
-	result, err := resultJSON("deepseek", "deepseek-chat", 1_000_000, "ok", "", nil, openai.Usage{}, false, "")
+	result, err := resultJSON("deepseek", "deepseek-chat", 1_000_000, "ok", "", nil, openai.Usage{}, 0, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,9 +561,12 @@ func TestResultJSONForwardsCachedTokenDetails(t *testing.T) {
 		PromptTokensDetails: &openai.PromptTokensDetails{
 			CachedTokens: 800,
 		},
+		CompletionTokensDetails: &openai.CompletionTokensDetails{
+			ReasoningTokens: 120,
+		},
 	}
 	result, err := resultJSON("deepseek", "deepseek-chat", 128000,
-		"ok", "", nil, usage, true, finishLength)
+		"ok", "", nil, usage, 0, true, finishLength)
 	if err != nil {
 		t.Fatalf("resultJSON: %v", err)
 	}
@@ -582,17 +585,29 @@ func TestResultJSONForwardsCachedTokenDetails(t *testing.T) {
 	if details["cached_tokens"] != 800 {
 		t.Fatalf("cached_tokens = %v, want 800", details["cached_tokens"])
 	}
+	// Reasoning spend, when the provider reports it, rides in the
+	// completion-side breakdown core's per-turn accounting reads (#123).
+	cdetails, ok := u["completion_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("completion_tokens_details missing: %#v", u)
+	}
+	if cdetails["reasoning_tokens"] != 120 {
+		t.Fatalf("reasoning_tokens = %v, want 120", cdetails["reasoning_tokens"])
+	}
 
 	// Without a details breakdown the field is omitted entirely (WIRE.md:
 	// missing fields are omitted, never null).
 	plain, err := resultJSON("deepseek", "deepseek-chat", 128000,
-		"ok", "", nil, openai.Usage{PromptTokens: 10, TotalTokens: 10}, true, "")
+		"ok", "", nil, openai.Usage{PromptTokens: 10, TotalTokens: 10}, 0, true, "")
 	if err != nil {
 		t.Fatalf("resultJSON plain: %v", err)
 	}
 	u2 := plain.(map[string]any)["usage"].(map[string]any)
 	if _, present := u2["prompt_tokens_details"]; present {
 		t.Fatalf("prompt_tokens_details should be omitted without details: %#v", u2)
+	}
+	if _, present := u2["completion_tokens_details"]; present {
+		t.Fatalf("completion_tokens_details should be omitted without details: %#v", u2)
 	}
 }
 

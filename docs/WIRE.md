@@ -190,10 +190,15 @@ receives only its frames, while observers subscribe `ev.session.>` for
 everything — UIs render live from the narrow subscription):
 
 ```
-ev.session.<id>.turn        # {sessionId, turnId, phase: start|done, content?, error?}
+ev.session.<id>.turn        # {sessionId, turnId, phase: start|done, content?, error?,
+                       #   outcome?, usage?}
                        #   turn lifecycle; content (the user request) on start.
                        #   turnId identifies the turn — advisory delivery binds
-                       #   to it and every session event carries it
+                       #   to it and every session event carries it. The ONE
+                       #   phase:done frame per turn is the authoritative
+                       #   terminal frame: it carries the same `outcome` and
+                       #   `usage` object the session result returns (see
+                       #   "Turn usage")
 ev.session.<id>.assistant   # {sessionId, turnId?, content, provider?, model?,
                        #   context?, usage?}
                        #   complete model text + actual backend metadata per LLM round
@@ -244,12 +249,73 @@ ev.session.<id>.map         # {sessionId, workspace, bytes} the workspace map wa
 ev.session.<id>.diagnostics # {sessionId, path, bytes} asynchronously delivered
                             #   diagnostics for an edited file were appended to
                             #   history (the append arrives on svc.session.<id>.diag)
-ev.session.<id>.done        # {sessionId, turnId?, reply} or {sessionId, turnId?, error}
+ev.session.<id>.done        # {sessionId, turnId, reply} or {sessionId, turnId, error}
+                       #   the legacy end-of-turn frame; it deliberately carries
+                       #   NO accounting, so a client that reads both this and
+                       #   the terminal `turn` frame cannot double count (see
+                       #   "Turn usage")
 ```
 
 Wildcards compose: `ev.session.>` observes every conversation's frames,
 `ev.session.<id>.>` one conversation, `ev.session.*.token` every token
 stream. The payload keeps `sessionId` for clients that subscribe wide.
+
+### Turn usage
+
+A headless driver must be able to bill one turn without replaying the event
+stream or re-reading canonical history. A session turn therefore answers with
+`turnId`, `outcome` and `usage` beside the legacy `reply`/`turnError`:
+
+```
+{"ok": true, "sessionId": "...", "reply": "...",
+ "turnId": "turn-...", "outcome": "success",
+ "usage": {"turnId": "turn-...", "outcome": "success",
+           "providerResponses": 3, "responsesWithUsage": 3,
+           "toolCalls": 2, "durationMs": 3126,
+           "usageReported": true, "descendantsExcluded": true,
+           "provider": "...", "model": "...",
+           "promptTokens": 3345, "completionTokens": 10, "totalTokens": 3355,
+           "cacheReadTokens": 1671, "cacheWriteTokens": 300,
+           "reasoningTokens": 21},
+ "providerOverride": "", "modelOverride": "", "approvals": "",
+ "limits": {"rounds": 0, "tokens": 0, "seconds": 0}, "cwd": "..."}
+```
+
+The SAME `usage` object rides the turn's one terminal frame
+(`ev.session.<id>.turn {phase: "done", outcome, usage, error?}`), so a client
+whose request reply was lost — a reconnect, a cancelled wait — reconciles by
+`turnId` from the event stream alone. The legacy `done` frame carries no
+accounting, so summing frames can never double count.
+
+- **Scope is one activation, not the conversation.** Only the successful
+  provider responses of THIS turn contribute; a turn resumed in a fresh runner
+  starts at zero, so a driver is never charged again for an earlier execution
+  of the same conversation. `promptTokens` is the sum of the per-round
+  `prompt_tokens` (the whole prompt of each round, cache hits included — the
+  provider's own accounting), not a delta.
+- **`outcome`** is `success`, `cancelled` (a `__cancel` control),
+  `budget-exhausted` (a hard job budget: rounds, tool calls, tokens),
+  `limit-exhausted` (a human soft limit the human declined or never answered),
+  `error` (LLM failure, empty reply, context-recovery-required) or `aborted`
+  (the turn left through an unexpected path). `turnError` keeps its string
+  detail; `reply` is empty for everything but `success`.
+- **Partial turns are honest.** A cancelled or budget-ended turn still reports
+  the usage of the rounds that completed, and `providerResponses` /
+  `toolCalls` say how far it got. A failed (retried) request contributes
+  nothing. A control-only session call — status readback, `/compact`,
+  discovery, a declined wake — runs no turn and returns no `turnId`/`usage`.
+- **Unknown counters are absent, never zero.** `cacheReadTokens` and
+  `cacheWriteTokens` appear only when the provider sent
+  `prompt_tokens_details`; `reasoningTokens` only with
+  `completion_tokens_details.reasoning_tokens` (Anthropic reports cache
+  writes and no reasoning split; an OpenAI-style provider reports the
+  reverse). `usageReported: false` with no counters means no response of the
+  turn carried a usage object at all.
+- **Descendants are excluded explicitly** (`descendantsExcluded: true`): a
+  subagent runs its own conversation and its tokens belong to that child's own
+  accounting, never to the parent's. There is no mixed-in descendant total.
+- `provider`/`model` name the last successful response's backend — the same
+  values the turn's `status` frames reported.
 
 LLM streaming (adapter → core → UI): the `llm` component emits
 `ev.llm.token {sessionId, content, reasoning}` deltas while generating;
