@@ -23,10 +23,6 @@ as it was, and cover every path that produces the behavior you do
 change. Never write scratch files to /tmp (relative imports break
 there).
 
-Work with several distinct requirements: keep a checklist — `invoke` the
-`skill_load` tool for the `todo-markdown` skill — and tick each item off
-against your diff before finishing.
-
 Working on Niffler itself: your home is the harness root (components/,
 sdk/, docs/, Makefile); var/ is disposable runtime state.
 Be concise.
