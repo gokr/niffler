@@ -1,7 +1,9 @@
 # Replaceable compaction — continuity, recall, and bounded context recovery
 
 Status: **shipped** on `main`. This is the design and implementation record;
-the operating contract is [MANUAL.md](../MANUAL.md#context-window). It
+the operating contract is [MANUAL.md](../MANUAL.md#context-window) and the
+reader-facing explanation (the model, the recall reference space, and the
+comparison with other harnesses) is [../COMPACTION.md](../COMPACTION.md). It
 supersedes the first draft of this file (2026-09); the changes are listed in §10.
 
 The three deliverables landed:
@@ -612,6 +614,24 @@ now atomic on the default one). Content:
 Commit order: **validate → single acknowledged store put → replace in-memory
 context → emit event.** A failed put leaves the old projection installed. A
 crash after the put reloads the new projection even if no event was published.
+
+**The reload reproduces the recorded edits, not the recorded refs verbatim.**
+`retained` is the commit-time tail, so a later lossy trim (§6.3) can drop a
+message that a recorded prune still names — the header's `trimThrough` then
+sits past that ref. Such a ref is *dead weight, not drift*: the projection is
+exactly reproducible without it, and re-applying the prune is neither possible
+nor wanted (the message is not in the projection at all). The reload therefore
+honors the watermark first and only replays a prune whose ref survives it. A
+ref that *is* still retained but whose `bytesBefore`/`bytesAfter` no longer
+match the stored body is real corruption and stays fatal
+(`context-recovery-required`) — the byte-exactness check keeps its teeth.
+
+This ordering is the whole point of the `trimThrough` record: a projection
+commit and a trim are independent writes, the trim is the newer one, and the
+reload must land on the trim's projection rather than refusing the
+conversation. Refusing here is a dead end — the durable state is fine and
+nothing the operator can do (`context_recall`, a bigger window) helps,
+because the ref will never come back into the projection.
 
 Candidate coverage names **projection nodes**; persisted `covered` endpoints
 name **canonical messages**. When an endpoint is a prior checkpoint, the

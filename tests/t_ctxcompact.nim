@@ -15,7 +15,7 @@
 ## The long-turn regression, admission and the fallback ladder land here in
 ## step 2 (§6.1–6.5) against the mock-LLM sandbox.
 
-import std/[json, os, osproc, strutils, times]
+import std/[json, os, osproc, strutils, tables, times]
 import natsnim
 import ../core/[catalog, compaction, conversation, dispatch]
 import helpers
@@ -805,6 +805,95 @@ proc main() =
     check("gate keeps the original when the spill doc is missing",
           savedGated == 0 and
           gmsgs[0]{"content"}.getStr("").contains("[full output:"), $savedGated)
+
+  # --- 11. projection + prune + later trim: the reload must still resolve --
+  # Regression: a committed projection records its prunes in the record's
+  # `prunes` list, and §6.3 trim may run AFTER that commit (header
+  # trimThrough lands past the projection's canonicalHigh). The reload then
+  # honors the watermark and drops the trimmed retained refs — but the
+  # prune-replay loop used to search for every recorded prune ref in the
+  # rebuilt projection regardless, so a prune on a message the trim had
+  # already dropped was reported as unreproducible drift
+  # ("projection prune ref cannot be reproduced: <id>") and the whole
+  # conversation refused to resume. The ref is not drift: the projection is
+  # exactly reproducible without it. Fixture is the observed shape
+  # (conv-87168cb47358): a pruned tool result inside the retained tail, then
+  # a trim whose watermark sits past it.
+  block pruneThenTrim:
+    let sessionId = conv & "-prunetrim"
+    proc mkey(n: int): string = sessionId & ":" & align($n, 6, '0')
+    let bigA = repeat('a', 20_000)
+    let bigB = repeat('b', 20_000)
+    # roles chosen so the retained refs are provider messages; the two long
+    # tool results sit at :000003 and :000005.
+    for i in 1 .. 8:
+      discard ct.storePutRev("message", mkey(i),
+        %*{"role": (if i mod 2 == 1: "user" else: "tool"),
+           "content": (if i == 3: bigA elif i == 5: bigB else: "short-" & $i),
+           "conversationId": sessionId})
+    # Produce the prune records with the SAME routine the runner uses, so the
+    # byte bounds in the projection are exactly reproduction-verified bounds.
+    proc pruneRecord(key, body: string): JsonNode =
+      var ms: seq[JsonNode] = @[%*{"role": "tool", "content": body}]
+      var lp = newPersister(ct)
+      lp.convId = sessionId
+      lp.nodes = @[CtxNode(source: nsCanonical, id: key, projectionIndex: 0)]
+      let saved = lp.pruneContext(ms)
+      check("fixture prune of " & key & " actually shrank", saved > 0, $saved)
+      %*{"ref": {"source": "canonical", "id": key},
+         "bytesBefore": body.len,
+         "bytesAfter": ms[0]{"content"}.getStr("").len}
+    let pruneA = pruneRecord(mkey(3), bigA)
+    let pruneB = pruneRecord(mkey(5), bigB)
+    # Trim watermark PAST both prune refs — the observed failure: a §6.3 trim
+    # landed after the projection commit and dropped :000003/:000005 from the
+    # retained tail. (updateConversationHeader is not exported; merge the same
+    # field into the header the way it does.)
+    var hdr = ct.storeGetItem("conversation", sessionId).value
+    if hdr == nil or hdr.kind != JObject: hdr = newJObject()
+    hdr["trimThrough"] = %6
+    discard ct.storePutRev("conversation", sessionId, hdr)
+    let record = buildProjectionRecord(2, 8, %*{
+      "objective": "x", "constraints": %*[], "decisions": %*[],
+      "completedWork": %*[], "currentBlocker": "", "nextSteps": %*[],
+      "files": %*[]}, mkey(1), mkey(2),
+      @[mkey(3), mkey(5), mkey(7), mkey(8)],
+      %*[pruneA, pruneB], nil, nil)
+    discard ct.storePutRev("context_projection", sessionId, record)
+    # Drive the real reload: a session call with no content still rebuilds the
+    # conversation from the store (resume) — where the old code returned
+    # context-recovery-required for a ref the trim had already dropped.
+    var sessions: Table[string, Session]
+    let r = ct.handleSessionCall(%*{"sessionId": sessionId},
+                                 sessions, caller = "test")
+    let err = r{"error"}.getStr("")
+    check("a prune ref dropped by a later trim does not block the reload",
+          not err.contains("prune ref cannot be reproduced"), err)
+    check("the projection reload succeeds", err.len == 0, err)
+    # The fix must not weaken the drift check: a prune ref that IS retained
+    # (watermark below it) but whose recorded bounds no longer match the
+    # stored body is real corruption and still refuses the reload.
+    let driftId = conv & "-prunedrift"
+    proc dkey(n: int): string = driftId & ":" & align($n, 6, '0')
+    for i in 1 .. 4:
+      discard ct.storePutRev("message", dkey(i),
+        %*{"role": (if i == 3: "tool" else: "user"),
+           "content": (if i == 3: bigA else: "short-" & $i),
+           "conversationId": driftId})
+    var wrongPrune = pruneRecord(dkey(3), bigA)
+    wrongPrune["bytesAfter"] = %1  # recorded bound that cannot reproduce
+    let driftRec = buildProjectionRecord(1, 4, %*{
+      "objective": "x", "constraints": %*[], "decisions": %*[],
+      "completedWork": %*[], "currentBlocker": "", "nextSteps": %*[],
+      "files": %*[]}, dkey(1), dkey(2), @[dkey(3), dkey(4)],
+      %*[wrongPrune], nil, nil)
+    discard ct.storePutRev("context_projection", driftId, driftRec)
+    var sessions2: Table[string, Session]
+    let r2 = ct.handleSessionCall(%*{"sessionId": driftId},
+                                  sessions2, caller = "test")
+    check("a retained prune ref with drifted bounds is still fatal",
+          r2{"error"}.getStr("").contains("prune ref cannot be reproduced"),
+          r2{"error"}.getStr(""))
 
   report("CTXCOMPACT")
 

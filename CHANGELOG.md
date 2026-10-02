@@ -6,6 +6,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A conversation that pruned a tool result and later trimmed could refuse
+  to resume** (`context-recovery-required: projection prune ref cannot be
+  reproduced: <id>`). A projection commit records the prunes it applied, and
+  §6.3 trim is a separate, later write — so `trimThrough` could sit past a
+  prune ref, meaning the trim had already dropped that message from the
+  projection. The reload honored the watermark when rebuilding the projection
+  but then still demanded that every recorded prune ref be found and
+  byte-verified, so an unreachable ref ended the conversation. The reload now
+  replays only the prunes whose refs survive the watermark; a ref that is
+  still retained but whose recorded bounds no longer match the stored body
+  stays fatal (real drift is still caught). Regression covered by
+  `t_ctxcompact`'s `pruneThenTrim` block, in both directions.
+
 ## [0.3.0] — 2026-09-29
 
 Images in a turn, server-side search over the store, and components that

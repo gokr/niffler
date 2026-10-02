@@ -2,7 +2,8 @@
 
 Design-history documents: the ideas, reviews and deep-dives behind what
 shipped. Not operating documentation — for that, see
-[../MANUAL.md](../MANUAL.md) and [../ARCHITECTURE.md](../ARCHITECTURE.md).
+[../MANUAL.md](../MANUAL.md), [../ARCHITECTURE.md](../ARCHITECTURE.md) and the
+capability inventory in [../FEATURES.md](../FEATURES.md).
 
 Cited code lives in the sibling clone shelf `~/git/harnesses/` — all 20
 checkouts, their pinned commits and which note read each one are indexed in
