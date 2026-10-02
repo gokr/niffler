@@ -34,11 +34,11 @@ var/bench/results/<runId>/   # raw output, disposable (gitignored, make clean wi
 
 ## Tasks
 
-The custom suite is **full30** (formerly full27, before that full17): thirty self-contained
-repos, all "make the visible test suite pass" (like SWE-bench's FAIL_TO_PASS,
-but lightweight and dependency-free so every harness starts equal) — the base
-seventeen t01–t17, the mid tier t18–t27 and the fan-out tier t28–t30. `meta.json` tags each with a
-`kind`:
+The custom suite is **full31** (formerly full30, before that full27 and full17): thirty-one
+self-contained repos, all "make the visible test suite pass" (like SWE-bench's
+FAIL_TO_PASS, but lightweight and dependency-free so every harness starts
+equal) — the base seventeen t01–t17, the mid tier t18–t27, the fan-out tier
+t28–t30 and the waste probe t31. `meta.json` tags most tasks with a `kind`:
 `general` (bug fixes, implementations, refactors), `fabric` (mechanical
 fan-out work a guest program excels at), `expert` (tasks with Niffler-
 specific tool-selection traps) and `selfextend` (build your own tool).
@@ -96,6 +96,13 @@ solvable either way; red at base, verified green with a reference solution.
 | t29-logrollup | Python | aggregate 36 log files (~450KB) into a byte-exact summary.json |
 | t30-ifacedrift | Node | migrate 24 modules to a new API, args driven by per-module header directives |
 
+**Waste probe (t31)** — `t31-tinyrename` (Go) is deliberately trivial: rename
+one exported function across code, tests and documentation. Its oracle covers
+three surfaces — it compiles, the README documents the new name, and the
+CHANGELOG still records the old one — so a blind rename is not enough and the
+protected list blocks editing the test or the changelog. A competent harness
+finishes it in 2–4 turns; more is the signal being measured.
+
 Every repo ships its tests + `./test.sh` (exit 0 = green) in the base commit;
 all are red at `base` and verified green with a reference solution. The same
 prompt text (with the repo path substituted) goes to every harness.
@@ -132,7 +139,7 @@ node bench/run.mjs --all --jobs 2 --run-id pilot1
 
 # paired first-party DeepSeek lanes (DSH is opt-in, not part of --harness all)
 node bench/run.mjs --harness niffler,dsh --model deepseek-v4-flash \
-  --thinking low --task all --rounds 1 --jobs 2 --run-id full30-direct-low
+  --thinking low --task all --rounds 1 --jobs 2 --run-id full31-direct-low
 
 # report
 node bench/report.mjs --run pilot1     # prints table, writes report.md/.csv

@@ -110,9 +110,10 @@ working in every language.
   e.g. `chat`), `x-harness.onDemand` (kept out of a conversation's frozen
   direct toolset; reachable via `discover` + `invoke` — docs/MANUAL.md,
   "Progressive tool discovery"),
-  `x-harness.hint` (the when-to-use sentence `discover` shows for the tool
-  instead of its description's first sentence — the routing line a component
-  contributes to the registry; docs/WIRE.md),
+  `x-harness.hint` (the when-to-use sentence `discover`'s component registry
+  shows for a tool instead of the first sentence of its description — the
+  routing line a component contributes to the no-argument registry;
+  docs/WIRE.md "x-harness schema extensions"),
   `x-harness.approval` (**enforced**: terminal y/N prompt; session-driven
   requests route to the caller's private UI approval subject with broadcast
   fallback; deny when no human is reachable — `NIF_AUTO_APPROVE=1` bypasses),

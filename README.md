@@ -197,7 +197,7 @@ Community components are installed through the `plugins` component; see the
   OpenAI-compatible provider is a config entry, not a code path.
 - **Improvements are measured, not asserted.** `bench/` runs Niffler against
   pi, opencode, CodeWhale and Claude Code on the same tasks and models,
-  comparing time-to-green, token cost and patch quality across the full30,
+  comparing time-to-green, token cost and patch quality across the full31,
   SWE-bench Verified and DeepSWE suites. Features land on that evidence — and
   sometimes only behind a gate, like the repo map's auto-append, which ships on
   by default but withholds small or stub maps because the A/Bs disagreed — with
