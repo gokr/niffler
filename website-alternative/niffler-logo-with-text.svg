@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 96" role="img" aria-label="Niffler logo">
+  <g fill="none" stroke="#42E6A4" stroke-width="8" stroke-linecap="round">
+    <path d="M12 30h46"/><path d="M4 48h54"/><path d="M18 66h40"/>
+  </g>
+  <rect x="52" y="14" width="76" height="68" rx="12" fill="#0B1826"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M75 32l18 16-18 16"/><path d="M99 64h14"/>
+  </g>
+  <text x="150" y="68" fill="#08111D" font-family="Inter, Arial, Helvetica, sans-serif" font-size="58" font-weight="700" letter-spacing="-2">Niffler</text>
+</svg>
