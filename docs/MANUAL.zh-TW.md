@@ -1380,11 +1380,16 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
 ```
 
 `query` 是選用的，會以不區分大小寫的方式比對元件名稱、工具名稱與描述。多字查詢是合取：每個以空白分隔的字都必須出現在元件名稱或工具
-名稱／描述中——像 "mechanical fan-out" 這樣的關鍵詞片語即使沒有任何描述逐字包含它，也會相符。空查詢會傳回匯流排
-目錄，僅含工具名稱；`component` 與 `tools` 呼叫會傳回完整
-描述與結構描述。結果是確定性的：元件與工具會
+名稱／描述中——像 "mechanical fan-out" 這樣的關鍵詞片語即使沒有任何描述逐字包含它，也會相符。結果是確定性的：元件與工具會
 依名稱排序，描述是經空白正規化、上限為
 200 字元的單行提示，且會排除諸如 pid 與註冊時間等易變欄位。
+
+**空查詢**會傳回元件登錄表：每個元件一行，帶有其名稱、版本與工具計數
+（`tools`，拆分為 `direct` 與 `onDemand`），以及最多三句使用時機句子——
+`hints`，每項為 `{tool, hint}`，取自該元件的 on-demand 工具，並以 `more`
+計數未列出的 on-demand 工具數。工具的宣告式 `x-harness.hint` 句子優先於其描述的第一句。
+當登錄表超過 6000 位元組時，提示會被捨棄，答案會以名稱加計數重建，並附帶 `budget` 註記，
+因此病態的元件集合無法讓一次發現呼叫變成數十 KB。
 
 ```json
 {
@@ -1392,18 +1397,21 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
     {
       "name": "fetch",
       "version": "0.1.0",
-      "direct": [],
-      "onDemand": [
-        {"name": "fetch", "description": "Fetch a web page or API endpoint..."}
-      ]
+      "tools": 1,
+      "onDemand": 1,
+      "direct": 0,
+      "hints": [{"tool": "fetch", "hint": "Fetch a web page or API endpoint..."}]
     }
   ],
   "count": 1
 }
 ```
 
-`discover {component: "fetch"}` 會傳回該元件的直接與 on-demand
-提示。沒有非 hidden 工具的元件會被省略。
+**非空查詢**會傳回相符的元件，並附上其相符非 hidden 工具的完整描述
+（`direct`/`onDemand` 陣列，每項為 `{name, description}`）。
+`discover {component: "fetch"}` 會以相同形狀傳回該單一元件，置於頂層 `component` 鍵下；
+`query` 在其中篩選，`limit` 為每個陣列設限。`component` 與 `tools` 呼叫會傳回完整的
+描述與結構描述。沒有非 hidden 工具的元件會被省略。
 
 #### Schemas
 

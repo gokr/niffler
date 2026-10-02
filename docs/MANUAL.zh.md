@@ -1129,7 +1129,9 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
 {"query": "web"}
 ```
 
-`query` 是可选的，并以不区分大小写的方式匹配组件名、工具名和描述。多词查询是合取：每个以空白分隔的词都必须出现在组件名或工具名/描述中——像 "mechanical fan-out" 这样的关键词短语即使没有任何描述逐字包含它也会匹配。空查询返回仅含工具名的总线目录；`component` 和 `tools` 调用返回完整描述和 schema。结果是确定性的：组件和工具按名称排序，描述是空白归一化的一行提示，上限为 200 个字符，并且排除 pid 和注册时间等易变字段。
+`query` 是可选的，并以不区分大小写的方式匹配组件名、工具名和描述。多词查询是合取：每个以空白分隔的词都必须出现在组件名或工具名/描述中——像 "mechanical fan-out" 这样的关键词短语即使没有任何描述逐字包含它也会匹配。结果是确定性的：组件和工具按名称排序，描述是空白归一化的一行提示，上限为 200 个字符，并且排除 pid 和注册时间等易变字段。
+
+**空查询**返回组件登记表：每个组件一行，带有其名称、版本和工具计数（`tools`，拆分为 `direct` 和 `onDemand`），以及最多三句使用时机句子——`hints`，每项为 `{tool, hint}`，取自该组件的按需工具，并以 `more` 计数未列出的按需工具数。工具的声明式 `x-harness.hint` 句子优先于其描述的第一句。当登记表超过 6000 字节时，提示会被丢弃，答案会以名称加计数重建，并附带 `budget` 注记，因此病态的组件集合无法让一次发现调用变成数十 KB。
 
 ```json
 {
@@ -1137,17 +1139,17 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
     {
       "name": "fetch",
       "version": "0.1.0",
-      "direct": [],
-      "onDemand": [
-        {"name": "fetch", "description": "Fetch a web page or API endpoint..."}
-      ]
+      "tools": 1,
+      "onDemand": 1,
+      "direct": 0,
+      "hints": [{"tool": "fetch", "hint": "Fetch a web page or API endpoint..."}]
     }
   ],
   "count": 1
 }
 ```
 
-`discover {component: "fetch"}` 返回该组件的直接和按需提示。没有非隐藏工具的组件会被省略。
+**非空查询**返回匹配的组件，并附上其匹配非隐藏工具的完整描述（`direct`/`onDemand` 数组，每项为 `{name, description}`）。`discover {component: "fetch"}` 以相同形状返回该单个组件，置于顶层 `component` 键下；`query` 在其中筛选，`limit` 为每个数组设限。`component` 和 `tools` 调用返回完整的描述和 schema。没有非隐藏工具的组件会被省略。
 
 #### Schemas
 
