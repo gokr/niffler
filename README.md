@@ -81,7 +81,7 @@ asks about the plugin on a terminal instead.
 
 `niffler-tui` is the conversation client; `niffler` (or `./var/bin/niffler`) is
 the terminal admin shell — status, catalog, sessions, not a chat UI — and
-`niffler --minimal` boots only the minimal store/bash/LLM profile.
+`niffler --minimal` boots only the minimal store/bash/LLM/systemprompt profile.
 
 A Wails-based desktop UI does exist, but it is an **experimental side project**
 in its own repository — [gokr/niffler-ui](https://github.com/gokr/niffler-ui).
@@ -170,6 +170,8 @@ completion, `Ctrl-D` (or `exit`/`quit`) to leave, `Ctrl-C` to interrupt.
   cancellation and session context.
 - [Architecture](docs/ARCHITECTURE.md) — why core, components and NATS are
   separate, and the invariants contributors must preserve.
+- [Features](docs/FEATURES.md) — the complete capability inventory (an
+  index, not a reference).
 - [Open work](docs/PLAN.md) — current deferred work.
 - [Research index](docs/research/README.md) — design history and prior-art
   studies; research notes are not operating instructions.
