@@ -74,17 +74,19 @@ const systemPromptTimeoutMs = 8_000
   ## Generous: the component only reads a few files, but a first-call compile
   ## hiccup on a loaded machine should not degrade every conversation.
 
-proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId, cwd: string): string =
+proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId, cwd,
+                     firstMessage: string): string =
   ## One request/reply attempt; "" on timeout or any failure.
   try:
     let r = dispatchSubjectCall(ct, "svc.systemprompt.call", "systemprompt",
-      %*{"cwd": cwd, "sessionId": sessionId}, waitMs)
+      %*{"cwd": cwd, "sessionId": sessionId, "firstMessage": firstMessage},
+      waitMs)
     result = r{"systemPrompt"}.getStr("")
   except CatchableError:
     result = ""
 
 proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
-                          cwd = ""): string =
+                          cwd = "", firstMessage = ""): string =
   ## The conversation's system prompt: ask the systemprompt component once
   ## per conversation and freeze the answer for the conversation's lifetime
   ## (the prompt prefix must stay stable so providers reuse it). Falls back
@@ -96,9 +98,10 @@ proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
   # timeout. Only when the catalog says the component IS registered do we
   # grant the full budget (covers a boot race or a slow first call).
   let promptCwd = if cwd.len > 0: cwd else: ct.root
-  result = askSystemPrompt(ct, 500, sessionId, promptCwd)
+  result = askSystemPrompt(ct, 500, sessionId, promptCwd, firstMessage)
   if result.len == 0 and ct.cat.components.hasKey("systemprompt"):
-    result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId, promptCwd)
+    result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId, promptCwd,
+                             firstMessage)
   if result.len > 200_000:
     result = result[0 ..< 200_000] &
       "\n\n[system prompt truncated at 200000 bytes]\n"
@@ -2888,7 +2891,13 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     if sp.len == 0:
       sp = args{"systemPrompt"}.getStr("")
     if sp.len == 0:
-      sp = resolveSystemPrompt(ct, sessionId, entry.workspace)
+      # The first user message goes along so the systemprompt component can size
+      # the request: a long one is usually a requirement list, and that is where
+      # a missed clause hides. Only the FRESH path passes it — a resume reads
+      # the stored prompt verbatim, and "first message" would then be the wrong
+      # message.
+      sp = resolveSystemPrompt(ct, sessionId, entry.workspace,
+                               args{"content"}.getStr(""))
     try:
       ct.updateConversationHeader(sessionId,
         %*{"systemPrompt": sp, "cwd": entry.workspace})
@@ -2991,6 +3000,10 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     var stored: seq[JsonNode]
     var storedNodes: seq[CtxNode]
     var lastSeqNo = 0
+    # §6.3 watermark, read once at function scope: the durable trim can land
+    # AFTER a projection commit, so both the retained loop below and the
+    # prune-replay block further down must honor the same value.
+    let trimThrough = header{"trimThrough"}.getInt(0)
     let projectedHigh = if projection != nil:
                           projection{"canonicalHigh"}.getInt(0)
                         else: 0
@@ -3023,7 +3036,6 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       # message a later trim dropped returns on restart, re-inflating the
       # request that trim had just made fit while the meter restores
       # post-trim usage (the failure the ordinary path was fixed for).
-      let trimThrough = header{"trimThrough"}.getInt(0)
       for idNode in retainedNode:
         let id = idNode.getStr("")
         let seqNo = canonicalSeqOf(id)
@@ -3093,7 +3105,6 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       # full pre-trim context while the meter restores the post-trim
       # usage, and admission would wave the re-inflated request straight
       # through to the provider.
-      let trimThrough = header{"trimThrough"}.getInt(0)
       if trimThrough > 0:
         var keptM: seq[JsonNode] = @[]
         var keptN: seq[CtxNode] = @[]
@@ -3176,18 +3187,36 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       p.canonicalHigh = projectedHigh
       if storedNodes.len > 0:
         p.canonicalHigh = max(p.canonicalHigh, storedNodes[^1].canonicalSeq)
+      # Reapply exactly the recorded projection edits. Only refs the rebuilt
+      # projection still carries are replayable: `retained` is the commit-time
+      # tail, and a later lossy trim (§6.3, header trimThrough) may have
+      # dropped a pruned message from it — the prune is then dead weight, not
+      # drift, and demanding its bytes back would refuse a projection that is
+      # perfectly reproducible. A ref that IS retained but whose node is
+      # absent from the rebuilt projection is real drift and stays fatal.
+      # The same deterministic routine verifies spill durability again, so any
+      # byte drift makes the projection explicitly unrecoverable rather than
+      # quietly sending a different prompt after restart.
       let prunes = projection{"prunes"}
+      var replayable: seq[PruneRec]
       if prunes != nil and prunes.kind == JArray:
         for pr in prunes:
-          p.prunes.add(PruneRec(
+          let rec = PruneRec(
             id: pr{"ref"}{"id"}.getStr(pr{"id"}.getStr("")),
             bytesBefore: pr{"bytesBefore"}.getInt(0),
-            bytesAfter: pr{"bytesAfter"}.getInt(0)))
-      # Reapply exactly the recorded projection edits. The same deterministic
-      # routine verifies spill durability again; any missing ref or byte drift
-      # makes the projection explicitly unrecoverable rather than quietly
-      # sending a different prompt after restart.
-      for pr in p.prunes:
+            bytesAfter: pr{"bytesAfter"}.getInt(0))
+          var inProjection = false
+          if trimThrough > 0 and canonicalSeqOf(rec.id) > 0 and
+              canonicalSeqOf(rec.id) <= trimThrough:
+            discard  # the trim removed it from the projection — not drift
+          else:
+            for n in p.nodes:
+              if n.id == rec.id: inProjection = true; break
+            if not inProjection:
+              return %*{"error": "context-recovery-required: projection prune ref is not in the rebuilt projection: " & rec.id}
+            replayable.add(rec)
+          p.prunes.add(rec)
+      for pr in replayable:
         var idx = -1
         for i, n in p.nodes:
           if n.id == pr.id: idx = i; break

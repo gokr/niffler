@@ -143,6 +143,39 @@ proc main() =
         directPrompt.contains("cover every path that produces the behavior"),
         $direct)
 
+  # Validation-review guidance is appended ONLY for long first messages: a
+  # request that arrives as many clauses is where a missed clause hides, and a
+  # short request must not pay for it. Both directions are pinned, and the
+  # block is pinned as a TAIL — the frozen head has to stay byte-identical so
+  # the provider's prompt cache still hits for the prefix.
+  check("short first message gets no validation-review block",
+        not directPrompt.contains("<validation_review>"), $direct)
+  let longRequest = repeat("Requirement: do the thing exactly as described. ", 30)
+  check("the long probe exceeds the trigger threshold",
+        longRequest.len >= 1200, $longRequest.len)
+  let longPrompt = call(nc, "systemprompt", "systemprompt",
+                        %*{"cwd": root, "firstMessage": longRequest},
+                        10_000){"systemPrompt"}.getStr("")
+  check("long first message earns the validation-review guidance",
+        longPrompt.contains("verify it independently") and
+        longPrompt.contains("agent_spawn"), $longPrompt.len)
+  # Plain prose with the standing instructions -- no XML wrapper, above the
+  # workspace and project-context blocks. Position and framing were the
+  # difference between the arm that converted three DeepSWE tasks and the
+  # arms that converted none, so both are pinned here.
+  let reviewAt = longPrompt.find("verify it independently")
+  let ctxAt = longPrompt.find("<project_context>")
+  check("the review guidance sits with the standing instructions, not the tail",
+        reviewAt > 0 and (ctxAt < 0 or reviewAt < ctxAt) and
+        longPrompt.startsWith(directPrompt[0 ..< min(directPrompt.len, 400)]),
+        "review at " & $reviewAt & ", project_context at " & $ctxAt)
+  check("the guidance is plain prose, not an XML block",
+        not longPrompt.contains("<validation_review>"), "xml wrapper returned")
+  check("a short first message cannot trigger it either",
+        call(nc, "systemprompt", "systemprompt",
+             %*{"cwd": root, "firstMessage": "fix the bug in main"},
+             10_000){"systemPrompt"}.getStr("").len == directPrompt.len,
+        "short probe changed the prompt length")
   let hintA = call(nc, "systemprompt", "prompt_hint", %*{
     "slot": "efficient_tools", "source": "z-plugin", "key": "z",
     "content": "Prefer the z-plugin batch helper.", "mode": "aggregate"}, 10_000)
