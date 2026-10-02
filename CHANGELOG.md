@@ -6,6 +6,88 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The Wails desktop UI is no longer an official part of the harness.** Its
+  code has been behind `niffler-tui` for a while and nobody is maintaining it, so
+  it is now presented for what it is: an experimental side project in its own
+  repository ([gokr/niffler-ui](https://github.com/gokr/niffler-ui)), neither
+  built, installed nor tested from this repo. `make install-ui` (and the Wails /
+  WebKitGTK prerequisites it dragged into `make setup` and `make doctor`) are
+  gone, `make install` no longer links a `niffler-ui` binary, `make dev` — the
+  stub that pointed at its SPA dev server — is gone, `scripts/install-ui.sh` is
+  deleted, and the website no longer shows the app (screenshot, component-table
+  row, quickstart step, `svelte` badge, "what's new" card) with the client
+  surface instead named after `niffler-tui`. The plugin lifecycle that installs
+  a client as a package stays — `niffler-tui` uses it, and `cli install
+  gokr/niffler-ui` can still fetch the experimental UI if you want to poke at
+  it. Docs (READMEs, MANUAL in all three languages, WIRE's client-identity note)
+  now say this once, where it is useful, instead of advertising it.
+
+- **`make test-server` builds the fixture components once instead of per
+  sandbox.** Every pooled run started a dozen concurrent `nim c` invocations —
+  one per session sandbox, each with a cold cache, plus `t_nested`'s second
+  fixture and `t_compaction`'s mock-llm and contract fixtures. Under load those
+  compiles died without emitting a byte of compiler output, so the failure read
+  as "component failed to compile" and made CI red for every PR at jobs=4
+  (issue #108). The fixtures now build once into `var/bin` (`FIXTURE_BINS`) and
+  `tests/helpers.nim` copies the binary into each sandbox. The per-sandbox
+  compile stays as a fallback for a hand-invoked single test, but it captures
+  its output and reports the exit status, so a real compile error is
+  diagnosable instead of guessed at.
+
+- **The README documents the full command surface and the keyboard
+  shortcuts.** It covered only part of the `make` surface, no slash commands
+  and no key combinations; it now has a `Commands` table (every user-facing
+  make target, the chat commands with a pointer to the live `/help`, and the
+  admin shell's own verbs) and a `Keyboard shortcuts` table (the composer's
+  send/newline/history/completion keys, the global Ctrl+T/E/G display cycles,
+  the approval prompt and the terminal shell's line editor). README.zh.md and
+  README.zh-TW.md carry the same content with English headings so the anchors
+  keep working.
+
+### Removed
+
+- **The Nim/bitbarrel store engine and the migration tool are gone.** `store`
+  has been serving from Go + SQLite for a while (source-independent default,
+  atomic doc+rev writes, FTS5-backed `search`), so the last Nim component of the
+  store retired with its dependency: `components/store/main.nim` and
+  `gokr/bitbarrel` left `niffler.nimble`, and `tools/store_migrate.nim`
+  (`niffler-store-migrate`, plus `tools/bench_stores.nim`, whose only job was
+  comparing the two engines) is deleted. `NIF_STORE_BACKEND` now takes `sqlite`
+  (default) or `tidb`, and anything else still refuses to boot. A harness whose
+  history is in `var/barrel-db` is refused at boot with a plain error instead of
+  the migrate instructions — nothing is touched, and a 0.3.x checkout still
+  moves the data (`niffler-store-migrate --root <root>`). The store contract
+  tests are unchanged: `make test-store` runs them against the default engine,
+  `make test-store-tidb` against TiDB (`make test-store-sqlite` is gone — it had
+  become an alias for the default).
+
+### Fixed
+
+- **`fetch` connects to the address the SSRF guard checked (DNS pinning).** The
+  guard resolved the hostname, vetted every address and then handed the URL to
+  std/httpclient, which resolved the name a second time when it connected — a
+  zero-TTL record could answer public to the guard and `169.254.169.254` to the
+  transport a microsecond later (classic rebinding), so the check filtered
+  nothing against a hostile name. `validateFetchUrl` now returns the vetted
+  address and the transport connects to exactly that address with one `curl
+  --resolve <host>:<port>:<ip>` per hop; `--resolve` pins only the peer, so
+  Host, TLS SNI and CA verification still use the hostname, `--noproxy '*'`
+  keeps a proxy from resolving the destination, and `--proto` restricts the
+  wire to http(s). `curl` is therefore a runtime dependency (part of `make
+  setup`), and a missing curl is reported instead of silently skipping the
+  guard. Alongside: `timeout` now bounds the whole transfer rather than each
+  read, `HEAD` uses `--head` instead of `-X HEAD`, URL fragments are stripped
+  and hostname/port shapes rejected up front, and an over-`maxSize` response is
+  still refused.
+
+- **`processes` re-measures the spool after truncating it.** `readNew` kept the
+  size it measured before calling `truncateSpool`, so the first drain after the
+  cap was hit sliced the freshly truncated file against the old (larger) size
+  and reported a `new_bytes` count for bytes that no longer exist. It now
+  re-measures and reads only what is actually there.
+
 ## [0.3.0] — 2026-09-29
 
 Images in a turn, server-side search over the store, and components that
@@ -111,40 +193,7 @@ UI left this repository for its own plugin (`gokr/niffler-ui`), and
   rule is a pure function of the refs so a restart rebuilds the same request.
   `conversation_delete` sweeps the pixels with the conversation.
 
-### Removed
-
-- **The Nim/bitbarrel store engine and the migration tool are gone.** `store`
-  has been serving from Go + SQLite for a while (source-independent default,
-  atomic doc+rev writes, FTS5-backed `search`), so the last Nim component of the
-  store retired with its dependency: `components/store/main.nim` and
-  `gokr/bitbarrel` left `niffler.nimble`, and `tools/store_migrate.nim`
-  (`niffler-store-migrate`, plus `tools/bench_stores.nim`, whose only job was
-  comparing the two engines) is deleted. `NIF_STORE_BACKEND` now takes `sqlite`
-  (default) or `tidb`, and anything else still refuses to boot. A harness whose
-  history is in `var/barrel-db` is refused at boot with a plain error instead of
-  the migrate instructions — nothing is touched, and a 0.3.x checkout still
-  moves the data (`niffler-store-migrate --root <root>`). The store contract
-  tests are unchanged: `make test-store` runs them against the default engine,
-  `make test-store-tidb` against TiDB (`make test-store-sqlite` is gone — it had
-  become an alias for the default).
-
 ### Changed
-
-- **The Wails desktop UI is no longer an official part of the harness.** Its
-  code has been behind `niffler-tui` for a while and nobody is maintaining it, so
-  it is now presented for what it is: an experimental side project in its own
-  repository ([gokr/niffler-ui](https://github.com/gokr/niffler-ui)), neither
-  built, installed nor tested from this repo. `make install-ui` (and the Wails /
-  WebKitGTK prerequisites it dragged into `make setup` and `make doctor`) are
-  gone, `make install` no longer links a `niffler-ui` binary, `make dev` — the
-  stub that pointed at its SPA dev server — is gone, `scripts/install-ui.sh` is
-  deleted, and the website no longer shows the app (screenshot, component-table
-  row, quickstart step, `svelte` badge, "what's new" card) with the client
-  surface instead named after `niffler-tui`. The plugin lifecycle that installs
-  a client as a package stays — `niffler-tui` uses it, and `cli install
-  gokr/niffler-ui` can still fetch the experimental UI if you want to poke at
-  it. Docs (READMEs, MANUAL in all three languages, WIRE's client-identity note)
-  now say this once, where it is useful, instead of advertising it.
 
 - **repomap auto-append is on by default, still behind the admission gates.**
   `NIF_REPOMAP_AUTOAPPEND` flipped from opt-in to on: a workspace open injects
