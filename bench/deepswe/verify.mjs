@@ -130,6 +130,26 @@ console.log(
     `partial ${reward.partial ?? 0}` +
     (reward.apply_failed ? ", apply_failed" : ""),
 );
+// Which tests failed, not just how many. The verifier already writes this
+// (ctrf.json next to reward.json) and the bench used to drop it, so a cell that
+// missed by three tests out of 355 read as an opaque "partial 0.99" — for two
+// days. One line here puts the failing ids into result.json's testOutputTail,
+// where every failure analysis starts.
+const ctrfPath = path.join(verifierDir, "ctrf.json");
+if (fs.existsSync(ctrfPath)) {
+  try {
+    const ctrf = JSON.parse(fs.readFileSync(ctrfPath, "utf8"));
+    const tests = (ctrf.results || ctrf).tests || [];
+    const failed = tests.filter((t) => t.status && t.status !== "passed" && t.status !== "skipped");
+    if (failed.length > 0) {
+      console.log(`DeepSWE failures (${failed.length}):`);
+      for (const t of failed.slice(0, 40)) console.log(`  - ${t.name}`);
+      if (failed.length > 40) console.log(`  … ${failed.length - 40} more`);
+    }
+  } catch (err) {
+    console.error(`could not read ctrf.json: ${err.message}`);
+  }
+}
 if (Number(reward.reward) === 1) {
   console.log(`DeepSWE resolved: ${task}`);
   process.exit(0);
