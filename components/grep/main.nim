@@ -57,10 +57,11 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
             hidden: bool = false, max_results: int = 200,
             timeoutMs: int = 30000): JsonNode =
     ## Search file contents with ripgrep (path:line:match). Prefer it over
-    ## bash grep: the pattern is an argument (no shell escaping), it skips
-    ## gitignored/hidden/binary files, and globs narrow without un-hiding.
-    ## Rust regex, no lookarounds (use bash grep -P for those). Narrow with
-    ## path/glob — broad patterns are capped (max_results lines, 32KB).
+    ## bash grep or rg: the pattern is an argument (no shell escaping),
+    ## gitignored/hidden/binary files are skipped, globs narrow without
+    ## un-hiding, and results are capped (max_results lines, 32KB) so a broad
+    ## search cannot flood the conversation. Rust regex, no lookarounds. Narrow
+    ## with path/glob.
     ## - pattern: Regex to search for (no shell escaping)
     ## - path: File or directory to search (default: workspace, else root)
     ## - glob: Only files matching this glob (e.g. "*.nim"), like rg -g —

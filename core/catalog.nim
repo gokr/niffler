@@ -161,7 +161,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find components/tools outside the fixed direct set. Query words must match a name/description; component or tools (≤16) return full schemas; an empty query lists names.",
+      "description": "Find components/tools outside the fixed direct set. No query returns the component registry: one line per component with its tool counts and a few when-to-use hints — look there before picking a tool. `component` returns that component's tools with descriptions (add `query` to filter inside it, `limit` to bound the answer); `tools` (up to 16, with or without a component) returns full schemas — prefer `tools: [name]` when you already know which tool you need.",
       "properties": {
         "query": {"type": "string", "description": "Name/description filter (case-insensitive)"},
         "component": {"type": "string", "description": "Component whose tools to inspect"},
@@ -420,19 +420,36 @@ proc profileTokens*(direct: JsonNode): int =
   for tool in direct:
     result += ($(tool{"schema"})).len div 4 + 16
 
-proc shortDescription(schema: JsonNode): string =
+proc shortDescription(schema: JsonNode, cap = 200): string =
   result = schema{"description"}.getStr("").splitWhitespace().join(" ")
-  if result.len > 200:
+  # A declared hint wins: it is the routing sentence the component wants read
+  # first, and it is not a truncation of the doc comment.
+  let declared = schema{"x-harness"}{"hint"}.getStr("").splitWhitespace().join(" ")
+  if declared.len > 0:
+    result = declared
+  if result.len > cap:
     # Snap the cut to a UTF-8 boundary: descriptions can contain CJK text
     # (e.g. a localized tool doc comment), and a split rune would make the
     # hint JSON invalid.
-    var cut = 197
+    var cut = cap - 3
     while cut > 0 and (result[cut].uint8 and 0xC0) == 0x80:
       dec cut
     result = result[0 ..< cut] & "..."
 
 proc toolHint(tool: ToolReg): JsonNode =
   %*{"name": tool.name, "description": shortDescription(tool.schema)}
+
+proc hintedLine(tool: ToolReg): JsonNode =
+  ## A registry line: the tool plus its when-to-use sentence, kept short (the
+  ## registry repeats once per component, and the caller may render dozens).
+  %*{"tool": tool.name, "hint": shortDescription(tool.schema, 110)}
+
+proc declaredHint(schema: JsonNode): string =
+  ## A component may state its own routing sentence in the schema. It is used
+  ## verbatim: for a component whose choice is between shapes (fabric: one-shot
+  ## batch vs long-lived guest; agent: spawn vs run vs continue) the tools' own
+  ## doc comments cannot carry that, and 65 MCP tools certainly cannot.
+  schema{"x-harness"}{"hint"}.getStr("").splitWhitespace().join(" ")
 
 proc allWordsIn(words: seq[string], text: string): bool =
   ## Every whitespace-separated query word must appear in the haystack.
@@ -445,7 +462,56 @@ proc allWordsIn(words: seq[string], text: string): bool =
     if not text.contains(w): return false
   return true
 
-proc componentSummary(reg: ComponentReg, words: seq[string], nameOnly = false): JsonNode =
+const registryHintCount = 3
+  ## Registry lines carry at most this many when-to-use sentences per
+  ## component; the rest is a count, because a 65-tool MCP server listed even
+  ## by name costs kilobytes on every call (measured: 9KB names-only for 201
+  ## tools, 40KB with descriptions).
+
+const registryBudgetBytes = 6000
+  ## Hard ceiling for a whole registry answer. Over it, the answer is rebuilt
+  ## without hints (name + counts only) rather than growing without bound.
+
+proc visibleTools(reg: ComponentReg): seq[ToolReg] =
+  for tool in reg.tools:
+    if not tool.schema.isHidden():
+      result.add(tool)
+  result.sort(proc(a, b: ToolReg): int = cmp(a.name, b.name))
+
+proc componentLine(reg: ComponentReg, withHints: bool): JsonNode =
+  ## One registry line per component: what it is, how much of it there is, and
+  ## a few when-to-use sentences — the routing signal the roster in the
+  ## system prompt used to carry, but fetched on demand instead of re-sent in
+  ## every request prefix.
+  let tools = visibleTools(reg)
+  var onDemandCount = 0
+  for tool in tools:
+    if tool.schema.isOnDemand(): inc onDemandCount
+  result = %*{"name": reg.name, "version": reg.version,
+              "tools": tools.len, "onDemand": onDemandCount,
+              "direct": tools.len - onDemandCount}
+  if not withHints:
+    return
+  var declared: seq[ToolReg] = @[]
+  var derived: seq[ToolReg] = @[]
+  for tool in tools:
+    if tool.schema.isOnDemand():
+      if declaredHint(tool.schema).len > 0: declared.add(tool)
+      else: derived.add(tool)
+  # A component's own statements come first, then its tools in name order.
+  var picked: seq[ToolReg] = declared
+  for tool in derived:
+    if picked.len >= registryHintCount: break
+    picked.add(tool)
+  if picked.len > registryHintCount: picked.setLen(registryHintCount)
+  var hints = newJArray()
+  for tool in picked: hints.add(hintedLine(tool))
+  if hints.len > 0:
+    result["hints"] = hints
+    result["more"] = %max(0, onDemandCount - hints.len)
+
+proc componentSummary(reg: ComponentReg, words: seq[string],
+                      limit = 0): JsonNode =
   let componentMatches = allWordsIn(words, reg.name.toLowerAscii())
   var direct = newJArray()
   var onDemand = newJArray()
@@ -461,17 +527,36 @@ proc componentSummary(reg: ComponentReg, words: seq[string], nameOnly = false): 
     let toolMatches = componentMatches or allWordsIn(words, haystack)
     if not toolMatches:
       continue
-    # Empty query = bus directory: tool names only — full descriptions
-    # across every component serialized ~19KB per dump (bench evidence).
-    let hint = if nameOnly: %*{"name": tool.name} else: toolHint(tool)
+    let hint = toolHint(tool)
     if tool.schema.isOnDemand():
       onDemand.add(hint)
     else:
       direct.add(hint)
   if direct.len == 0 and onDemand.len == 0:
     return nil
+  if limit > 0:
+    # `component` + `query` filters inside a component; without a bound, one
+    # MCP server answers with dozens of tools and kilobytes of descriptions.
+    if direct.len > limit:
+      direct = direct[0 ..< limit]
+    if onDemand.len > limit:
+      onDemand = onDemand[0 ..< limit]
   return %*{"name": reg.name, "version": reg.version,
             "direct": direct, "onDemand": onDemand}
+
+proc registryAnswer(cat: Catalog, withHints: bool): JsonNode =
+  ## The bus directory: every component as one line. Cheaper and far more
+  ## useful than listing every tool name — 201 tools cost 9KB as names alone
+  ## and 40KB with descriptions (measured on a loaded harness), and a 65-tool
+  ## MCP server is unreadable either way. The trailing `next` line is read at
+  ## the moment a model is deciding whether to keep browsing, which is exactly
+  ## where the exit belongs (three passes of full31 showed cells browsing five
+  ## components and invoking nothing, and cells reading one hint and moving on).
+  var components = newJArray()
+  for name in cat.sortedComponentNames():
+    components.add(componentLine(cat.components[name], withHints))
+  %*{"components": components, "count": components.len,
+     "next": "If a direct tool already fits, use it and work — discovery is for when you cannot tell which tool does the job."}
 
 proc discover*(cat: Catalog, args: JsonNode): JsonNode =
   ## Return deterministic component hints or selected non-hidden schemas.
@@ -516,19 +601,31 @@ proc discover*(cat: Catalog, args: JsonNode): JsonNode =
       return result
     let query = args{"query"}.getStr("").strip().toLowerAscii()
     let words = query.split(Whitespace)
-    # Empty query = bus directory: names only ("component or tools" calls
-    # return the full descriptions/schemas).
-    let nameOnly = query.len == 0
+    if query.len == 0:
+      # Registry, hints first; over the budget it is rebuilt as name+counts
+      # only, so a pathological component set (many MCP servers) can never
+      # turn one discovery call into tens of kilobytes.
+      result = registryAnswer(cat, withHints = true)
+      if ($result).len > registryBudgetBytes:
+        result = registryAnswer(cat, withHints = false)
+        result["budget"] = %*{"bytes": registryBudgetBytes, "hints": "dropped"}
+      return result
     var components = newJArray()
     for name in cat.sortedComponentNames():
-      let summary = componentSummary(cat.components[name], words, nameOnly)
+      let summary = componentSummary(cat.components[name], words)
       if summary != nil:
         components.add(summary)
     return %*{"components": components, "count": components.len}
 
   if not cat.components.hasKey(component):
     return %*{"error": "no discoverable component '" & component & "'"}
-  let summary = componentSummary(cat.components[component], @[])
+  # `query` filters inside the component and `limit` bounds it: one MCP server
+  # answers with dozens of tools otherwise (65 tools x ~200 chars = 10KB).
+  let words = args{"query"}.getStr("").strip().toLowerAscii().split(Whitespace)
+  var limit = args{"limit"}.getInt(0)
+  if limit < 0: limit = 0
+  if limit > 200: limit = 200
+  let summary = componentSummary(cat.components[component], words, limit = limit)
   if summary == nil:
     return %*{"error": "no discoverable component '" & component & "'"}
   if requested == nil or requested.kind == JNull or

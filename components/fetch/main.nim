@@ -336,7 +336,8 @@ proc requestSafe(url: string, methodName: string, body: string,
       discard
   raise newException(ValueError, "redirect failed")
 
-comp.tool(%*{"onDemand": true}):
+comp.tool(%*{"onDemand": true,
+            "hint": "Fetch a public http(s) URL and get clean text; private/loopback is refused — use bash+curl for a local server"}):
   proc fetch(url: string, `method`: string = "GET",
              headers: JsonNode = newJObject(), body: string = "",
              timeout: int = 30000, maxSize: int = DefaultMaxSize,

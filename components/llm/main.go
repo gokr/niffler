@@ -179,6 +179,12 @@ func resolveOutputWindow(ctx context.Context, c *sdk.Component, catalogProvider,
 func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverride, modelOverride string) (resolvedConfig, error) {
 	p, providerName, providerSource, err := resolveProvider(c, providerOverride)
 	if err != nil {
+		// Resolution failures used to be silent: the caller returned the error
+		// to the session and nothing reached var/logs, which made a reported
+		// mismatch ("unknown provider … (have: default)") undiagnosable after
+		// the fact. Name the request and the path that failed.
+		log.Printf("ERROR chat status=resolve-failed requestedProvider=%q resolved=%q error=%v",
+			providerOverride, providerName, err)
 		return resolvedConfig{}, err
 	}
 	model := strings.TrimSpace(modelOverride)
@@ -187,6 +193,17 @@ func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverrid
 	}
 	if model == "" {
 		model = "deepseek-chat"
+	}
+	if modelOverride != "" {
+		catalogProvider := p.Catalog
+		if catalogProvider == "" {
+			catalogProvider = inferCatalogProvider(providerName, p.BaseURL, model)
+		}
+		if msg, mismatch := crossCatalogMismatch(ctx, c, model, catalogProvider, providerName); mismatch {
+			log.Printf("ERROR chat status=model-provider-mismatch provider=%s model=%s error=%s",
+				providerName, model, msg)
+			return resolvedConfig{}, fmt.Errorf("%s", msg)
+		}
 	}
 	contextSize, catalogProvider, contextSource := resolveContextWindow(ctx, c, p, providerName, model)
 	outputSize, outputSource := resolveOutputWindow(ctx, c, catalogProvider, model)
@@ -217,6 +234,71 @@ func inferCatalogProvider(providerName, baseURL, model string) string {
 		return providerName
 	}
 	return ""
+}
+
+// crossCatalogMismatch refuses a model the catalog places under a different
+// provider than the one this call resolved to. That pairing is what a UI can
+// create by pinning a model without its provider: the model id then rides to
+// whatever provider the environment defaults to, and the provider answers with
+// a raw 400 naming its own models ("The supported API model names are …").
+//
+// It fires only on a positive answer — the model id exists in the catalog and
+// no entry with that exact id names the resolved provider (by catalog id or by
+// provider nickname). An unknown model (self-hosted, or newer than the
+// catalog), an unavailable models component and an implicit model (the
+// provider's own default is right by construction) all pass through untouched.
+func crossCatalogMismatch(ctx context.Context, c *sdk.Component, model, catalogProvider, providerName string) (string, bool) {
+	if c == nil || model == "" || catalogProvider == "" {
+		return "", false
+	}
+	rpcCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	raw, err := c.RequestContext(rpcCtx, "models", "models_list",
+		map[string]any{"query": model, "limit": 50})
+	if err != nil {
+		return "", false
+	}
+	var resp struct {
+		Models []catalogEntry `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", false
+	}
+	return decideCatalogMismatch(resp.Models, model, catalogProvider, providerName)
+}
+
+// catalogEntry is the shape models_list returns per model: the descriptor's own
+// fields plus the provider id it belongs to.
+type catalogEntry struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+}
+
+// decideCatalogMismatch is the pure decision behind crossCatalogMismatch: the
+// model exists, and no entry for it names the resolved provider.
+func decideCatalogMismatch(entries []catalogEntry, model, catalogProvider, providerName string) (string, bool) {
+	// Nothing to judge when the model is implicit or the provider names no
+	// catalog: an unknown provider must not block its own models.
+	if strings.TrimSpace(model) == "" || strings.TrimSpace(catalogProvider) == "" {
+		return "", false
+	}
+	owners := []string{}
+	exact := 0
+	for _, e := range entries {
+		if !strings.EqualFold(strings.TrimSpace(e.ID), model) {
+			continue
+		}
+		exact++
+		if strings.EqualFold(e.Provider, catalogProvider) || strings.EqualFold(e.Provider, providerName) {
+			return "", false
+		}
+		owners = append(owners, e.Provider)
+	}
+	if exact == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("model %q is served by provider %s, but this call resolved provider %q (catalog %q): pin the provider together with the model, or choose a model that provider serves",
+		model, strings.Join(owners, ", "), providerName, catalogProvider), true
 }
 
 func loadProviders() (map[string]provider, error) {

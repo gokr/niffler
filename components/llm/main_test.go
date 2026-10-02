@@ -636,3 +636,65 @@ func TestFitOutputClampsToWindowHeadroom(t *testing.T) {
 		t.Fatalf("full prompt fitOutput = %d, want positive floor", got)
 	}
 }
+
+// TestDecideCatalogMismatch pins the guard that catches a model pinned without
+// its provider: the model id exists in the catalog under other providers only,
+// which is how a UI can send Synthetic's model id to the environment's default
+// provider and get a raw 400 back. Everything short of that positive answer
+// must pass: an unknown model, an empty catalog answer, and a match by either
+// catalog id or provider nickname.
+
+// The reproduction, verbatim: hf:deepseek-ai/DeepSeek-V4.1-Flash is a Synthetic
+// model id; the call resolved the environment default provider (api.deepseek.com
+// → catalog "deepseek"), and DeepSeek answered
+// "The supported API model names are deepseek-flash, deepseek-v4-pro, but you
+// passed hf:deepseek-ai/DeepSeek-V4.1-Flash".
+func TestDecideCatalogMismatchCatchesForeignModel(t *testing.T) {
+	entries := []catalogEntry{
+		{ID: "hf:deepseek-ai/DeepSeek-V4.1-Flash", Provider: "synthetic"},
+		{ID: "deepseek-v4-flash", Provider: "deepseek"},
+	}
+	msg, mismatch := decideCatalogMismatch(entries, "hf:deepseek-ai/DeepSeek-V4.1-Flash", "deepseek", "default")
+	if !mismatch {
+		t.Fatal("expected a mismatch for a Synthetic model id resolved to the deepseek catalog")
+	}
+	for _, want := range []string{"hf:deepseek-ai/DeepSeek-V4.1-Flash", "synthetic", "deepseek"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message %q does not name %q", msg, want)
+		}
+	}
+}
+
+func TestDecideCatalogMismatchAllowsLegitimatePairings(t *testing.T) {
+	cases := []struct {
+		name            string
+		entries         []catalogEntry
+		model           string
+		catalogProvider string
+		providerName    string
+	}{
+		{"same catalog", []catalogEntry{{ID: "glm-5.3-flash", Provider: "synthetic"}}, "glm-5.3-flash", "synthetic", "synthetic"},
+		{"stored nickname differs from catalog id", []catalogEntry{{ID: "deepseek-chat", Provider: "deepseek"}}, "deepseek-chat", "deepseek", "work"},
+		{"match by provider nickname", []catalogEntry{{ID: "mimo-v2.6-flash", Provider: "xiaomi"}}, "mimo-v2.6-flash", "xiaomi", "xiaomi"},
+		{"model the catalog does not know (self-hosted)", []catalogEntry{{ID: "other-model", Provider: "elsewhere"}}, "internal-ft-7b", "deepseek", "default"},
+		{"empty catalog answer", nil, "any-model", "deepseek", "default"},
+		{"no catalog id to judge against", []catalogEntry{{ID: "m", Provider: "other"}}, "m", "", "default"},
+		{"model id differs only in case", []catalogEntry{{ID: "GLM-5.3-Flash", Provider: "Synthetic"}}, "glm-5.3-flash", "synthetic", "default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if msg, mismatch := decideCatalogMismatch(tc.entries, tc.model, tc.catalogProvider, tc.providerName); mismatch {
+				t.Fatalf("unexpected mismatch: %s", msg)
+			}
+		})
+	}
+}
+
+func TestCrossCatalogMismatchSkipsWithoutComponent(t *testing.T) {
+	// No component (a bare unit context) must never block a call: the guard is
+	// best-effort by design, because a missing models component is a valid
+	// harness shape (--minimal boots store/bash/llm only).
+	if _, mismatch := crossCatalogMismatch(context.Background(), nil, "some-model", "deepseek", "default"); mismatch {
+		t.Fatal("guard fired without a component")
+	}
+}

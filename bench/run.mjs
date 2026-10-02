@@ -339,15 +339,16 @@ function feedbackPrompt(meta, testOut) {
   ].join("\n");
 }
 
-// Fill the {{REPO}} placeholder per harness. Pi/OpenCode run the agent with
-// cwd = the repo; Niffler sessions get the repo as their workspace (cwd), so
-// the prompt points at the working directory instead of an absolute path —
-// relative paths keep every tool inside the workspace by construction.
+// Fill the {{REPO}} placeholder. EVERY harness gets the same text: the task
+// prompt must be byte-identical across lanes or the comparison measures the
+// prompt, not the harness. Workspace-model harnesses (niffler, dsh) need the
+// relative form anyway — their session workspace IS the repo, and relative
+// paths keep every tool inside it by construction. Harnesses that run the
+// agent with cwd = the repo (pi, opencode, codewhale, claudecode) lose
+// nothing: their own system prompt states the current working directory, so
+// none of them has to be told the absolute path by us.
 function fillPrompt(template, combo, repo) {
-  if (isWorkspaceHarness(combo.harness)) {
-    return template.replaceAll("{{REPO}}", "your current working directory");
-  }
-  return template.replaceAll("{{REPO}}", repo);
+  return template.replaceAll("{{REPO}}", "your current working directory");
 }
 
 // ---------- adapters registry ----------
@@ -384,7 +385,6 @@ const ADAPTERS = {
 
 const isNifflerHarness = (name) => name === "niffler" || name === "niffler-expert";
 const isDshHarness = (name) => name === "dsh";
-const isWorkspaceHarness = (name) => isNifflerHarness(name) || isDshHarness(name);
 
 // ---------- one task run ----------
 async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {

@@ -1322,7 +1322,7 @@ discard comp.tool("read", toolSchema(%*{
   "force": {"type": "boolean",
             "description": "Re-dump even if unchanged since your last read/write"}
 }, @[],
-  "Read files for editing. Canonical: \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges in one call, per-item errors, several items under a \"### path\" heading, 512KB cap; one \"reads\" item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) with a language server for its type returns the symbol outline instead — read windows with offset/limit (batch them), or offset=1 to read the whole file anyway. Batch known-relevant reads (grep hits, imports) instead of one per turn. Lines are verbatim — copy into edit's old_string; unchanged full re-reads return [unchanged]."), hReadTool,
+  "Read files for editing. \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges per call, per-item errors, 512KB cap; a single item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) returns its symbol outline when a language server knows the type — read windows with offset/limit, or offset=1 for the whole file. Batch known-relevant reads (grep hits, imports) rather than one per turn; lines are verbatim (copy into edit's old_string), and an unchanged re-read returns [unchanged]."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      # `effect: read` is deliberate: fabric's batch host would otherwise
      # classify `read` as a write and serialize every batch read. The tool is

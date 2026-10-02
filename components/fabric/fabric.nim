@@ -618,7 +618,16 @@ let fabSchema = toolSchema(%*{
                "minimum": 1, "maximum": maxCallsLimit,
                "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @[],
-   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — call fabric_help (empty topic) for the reference and the example index before writing a program; an example topic returns its source. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. The program is human-approved as a whole (bash's trust class); approved native code can import any std module.")
+   description = "Write and run a Nim program that drives Niffler tools itself — for complex programmatic tool calling: " &
+                 "many calls whose inputs depend on earlier results, fan-out over items, or big intermediate data " &
+                 "that must never enter the conversation. Reach for it when the work is multi-step and mechanical " &
+                 "and one command cannot express it (sequential fan-out, search-then-read distillation, " &
+                 "edit-then-verify in one program, polling loops); a single shell one-liner, one direct tool call, " &
+                 "or work needing per-step judgment (agent_run) is better served by those. " &
+                 "HOW: read fabric_help (empty topic) for the reference and example index; " &
+                 "callTool(tool, jobj(jpair(name, value))) with jesc/jnum/jbool; pass tools to pin an allowlist; " &
+                 "give code or name; only finish()'s value reaches this conversation; every call crosses the " &
+                 "approval gate and counts against maxCalls." )
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
 

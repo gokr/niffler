@@ -172,7 +172,7 @@ const outMd = path.join(runDir, "report.md");
 fs.writeFileSync(outMd, md.join("\n") + "\n");
 
 // CSV
-const csv = ["model,harness,task,verdict,leaked,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,costOfficialUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls"];
+const csv = ["model,harness,task,verdict,leaked,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,costOfficialUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls,discoverCalls,discoverRegistry,discoverComponent,discoverToolSchemas,discoverQuery,discoverAnswers,discoverBytes,invokeCalls,shopping"];
 for (const r of results) {
   csv.push(
     [
@@ -213,6 +213,20 @@ for (const r of results) {
       r.shape?.tools?.bash ?? "",
       r.shape?.tools?.edit ?? "",
       r.shape?.tools?.write ?? "",
+      // Discovery shape: the roster moved out of the system prompt into
+      // discover's registry, so these columns are how we see whether that
+      // worked (registry reads, component views, named schemas, answer bytes)
+      // rather than inferring it from tokens. shopping = discover with no
+      // invoke after it.
+      r.shape?.discoverCalls ?? "",
+      r.shape?.discoverRegistry ?? "",
+      r.shape?.discoverComponent ?? "",
+      r.shape?.discoverToolSchemas ?? "",
+      r.shape?.discoverQuery ?? "",
+      r.shape?.discoverAnswers ?? "",
+      r.shape?.discoverBytes ?? "",
+      r.shape?.invokeCalls ?? "",
+      r.shape?.shopping ?? "",
     ].join(","),
   );
 }

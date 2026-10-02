@@ -223,11 +223,21 @@ patch instead of burning the remaining feedback rounds.
   the bench's throwaway harness, never a developer's.
   - **Workspace isolation**: the task repo is handed to the session as its
     immutable `cwd` workspace (mirrored under the harness root via
-    `var/bench`), and the prompt says "your current working directory"
-    instead of an absolute path — relative paths stay inside the workspace
-    by construction, so no tool can wander into the harness root. Core
+    `var/bench`), so relative paths stay inside the workspace by
+    construction and no tool can wander into the harness root. Core
     resolves path-shaped tool args against that workspace at dispatch
     (bash `cd`, edit/grep/read windows, git `repo`).
+  - **One task prompt for every harness**: `fillPrompt` substitutes the same
+    text (`your current working directory`) for all lanes, so the task text is
+    byte-identical across harnesses — anything else measures the prompt rather
+    than the harness. Harnesses that run the agent with `cwd` = the repo lose
+    nothing from the relative form: their own system prompt already states the
+    current working directory (measured: pi's first command was
+    `cd <abs repo> && ls -la && cat README.md` — it knows), and none of them
+    needs us to hand it an absolute path. Before this, pi/opencode/codewhale/
+    claudecode got the absolute path while niffler/dsh got the relative phrase,
+    which also made pi's prompt differ per task and cost it prefix-cache reuse
+    (first call: 512 cached of 1785 prompt tokens, vs 2560 of 2966 for niffler).
   - **No prompt-context asymmetry**: Niffler's own `AGENTS.md` and `AGENTS.local.md` are excluded
     from the bench harness root, so the system prompt carries no contributor
     guidance other harnesses don't get.

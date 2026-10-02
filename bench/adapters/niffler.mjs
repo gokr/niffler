@@ -10,7 +10,7 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { run, zeroUsage } from "../lib/util.mjs";
+import { run, tail, zeroUsage } from "../lib/util.mjs";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -263,12 +263,22 @@ export class NifflerHarness {
       return { reply: "", error: `niffler round timed out after ${turnTimeoutMs}ms` };
     }
     if (!parsed) {
-      return {
-        reply: "",
-        error: `niffler session call failed (exit ${res.code}): ${(
-          res.stderr || res.stdout
-        ).slice(-400)}`,
-      };
+      // Never fail a cell with an empty message. A cli killed by a signal
+      // (exit -1, no stdout, no stderr) used to produce
+      // "niffler session call failed (exit -1): " and nothing else, which cost
+      // a full investigation of a cell that could not be explained from its own
+      // artifacts. Fall back to the harness log, then to the process facts.
+      let detail = (res.stderr || res.stdout || "").trim().slice(-400);
+      if (!detail) {
+        try {
+          detail = tail(fs.readFileSync(path.join(this.runRoot, "harness.log"), "utf8"), 600).trim();
+        } catch {}
+        const facts = `exit ${res.code}${res.timedOut ? ", timed out" : ""}`;
+        detail = detail
+          ? `no cli output (${facts}); harness log tail: ${detail}`
+          : `no cli output and no harness log (${facts})`;
+      }
+      return { reply: "", error: `niffler session call failed (exit ${res.code}): ${detail}` };
     }
     let reply = parsed.reply ?? "";
     if (typeof reply === "object" && reply !== null) reply = reply.content ?? JSON.stringify(reply);
@@ -449,7 +459,9 @@ export class NifflerHarness {
 // a 1-item "reads" array returns plain content, so it counts as single).
 export function transcriptShape(items) {
   const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0,
-                  leakUrls: [] };
+                  leakUrls: [], discoverCalls: 0, discoverRegistry: 0,
+                  discoverComponent: 0, discoverToolSchemas: 0, discoverQuery: 0,
+                  discoverAnswers: 0, discoverBytes: 0, invokeCalls: 0 };
   for (const it of items || []) {
     const v = it.value || {};
     if (v.role !== "assistant") continue;
@@ -469,7 +481,22 @@ export function transcriptShape(items) {
           (Array.isArray(a.windows) && a.windows.length > 1);
         if (batched) shape.readBatch += 1;
         else shape.readSingle += 1;
+      } else if (n === "discover") {
+        // The roster moved out of the system prompt into discover's registry,
+        // so the shape of discovery is now a result, not just an anecdote:
+        // registry (no arguments), a component view, named tool schemas, or a
+        // keyword query. "shopping" is a discover with no invoke after it.
+        let a = {};
+        try {
+          a = JSON.parse(tc.function.arguments || "{}");
+        } catch {}
+        shape.discoverCalls += 1;
+        if (Array.isArray(a.tools) && a.tools.length > 0) shape.discoverToolSchemas += 1;
+        else if (typeof a.component === "string" && a.component.length > 0) shape.discoverComponent += 1;
+        else if (typeof a.query === "string" && a.query.length > 0) shape.discoverQuery += 1;
+        else shape.discoverRegistry += 1;
       } else if (n === "invoke" || n === "bash") {
+        if (n === "invoke") shape.invokeCalls += 1;
         // Knowledge-isolation check. A SWE-bench instance is derived from a
         // real merged pull request, so fetching the upstream project (its
         // issues, PRs, patch) hands the model the graded answer. Prompt rules
@@ -499,6 +526,17 @@ export function transcriptShape(items) {
       }
     }
   }
+  // Answer size, not just call count: the registry exists to make discovery
+  // cheap, so a component dump that answers with kilobytes is a regression we
+  // want to see per cell rather than argue about.
+  for (const it of items || []) {
+    const v = it.value || {};
+    if (v.role === "tool" && v.name === "discover") {
+      shape.discoverAnswers += 1;
+      shape.discoverBytes += String(v.content || "").length;
+    }
+  }
+  shape.shopping = shape.discoverCalls > 0 && shape.invokeCalls === 0;
   shape.leaked = shape.leakUrls.length > 0;
   return shape;
 }
