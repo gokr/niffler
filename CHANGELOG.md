@@ -106,6 +106,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tokens); the measured effect is recorded in the fairness notes
   (`bench/README.md`) with the low/high report pair under `bench/reports/`.
 
+- **`discover`'s registry answer leads with the exit, and `fabric` states its
+  usage threshold positively.** The registry `next` line taught the drill-down
+  ("`discover {component: X}` lists its tools, `{tools: [name]}` returns one
+  schema") and only then added the exit; over three passes that read as an
+  invitation — component views went 21 → 31 while invokes fell 16 → 4 — so the
+  line now names only the exit ("if a direct tool already fits, use it and
+  work; discovery is for when you cannot tell which tool does the job") and
+  points at no way to browse further. `fabric`'s description drops its NOT-list
+  ("NOT for a single shell one-liner, one direct tool call, or per-step
+  judgment") for a positive bar ("reach for it when the work is multi-step and
+  mechanical and one command cannot express it"), so the model gets a threshold
+  to clear rather than a yes/no it can answer by browsing. On the six
+  discovery-prone tasks over three passes, component views 31 → 24, shopping
+  cells 11 → 8, invokes 3 → 10; turns and tokens on that slice are dominated by
+  one task that swings 7–14 turns between passes, so they say nothing about
+  cost (`bench/reports/full31-disc3-*`, `1e90b14`).
+
 ### Removed
 
 - **The Nim/bitbarrel store engine and the migration tool are gone.** `store`
