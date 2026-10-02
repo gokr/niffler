@@ -1,6 +1,6 @@
 ---
 name: todo-markdown
-description: How to track multi-step work in this project - maintain a TODO.md file in the repository root (or a docs/ subdirectory for larger projects) instead of using any todo tool. Use when starting a task with several steps, when the user asks for a plan or a todo list, or when resuming unfinished work.
+description: How to track multi-step work in this project - maintain a TODO.md file in the repository root (or a docs/ subdirectory for larger projects) instead of using any todo tool. Use when starting a task with several steps, when the user asks for a plan or a todo list, when the task is a long list of rules or clauses to satisfy, or when resuming unfinished work.
 ---
 
 # Todo Lists as Markdown in the Repository
@@ -19,6 +19,25 @@ editor, shows up in diffs and commits, and needs no special tooling.
 Reach for a todo file when a task has **3 or more distinct steps**, involves
 multiple files, or will span more than one exchange. Skip it for one-shot edits
 and quick questions — a todo list for trivial work is overhead, not organization.
+
+## Long requirement lists (specs, briefs, clause-heavy tasks)
+
+When the task arrives as a **list of rules** — an API spec, a feature brief with
+many bullets, a protocol description — the failure mode is not forgetting the
+task. It is dropping *one clause* while implementing everything around it, and
+the clause is usually the difference between a working change and a failed one.
+Such a list earns a file even when no other part of the work would:
+
+- **Enumerate before coding**: one item per clause, in the instruction's own
+  wording where it is precise (thresholds, orderings, defaults, exclusions).
+- **Give interactions their own items.** A clause most often breaks where it
+  meets another — a run length meeting a boundary, an ordering meeting a filter,
+  two defaults colliding. Write those pairs down as items too.
+- **Check the diff, not your memory, at the end**: walk the list against what
+  the change actually does and tick an item only when the diff shows it.
+- **Keep the list out of a graded or handed-off diff**: use an untracked scratch
+  file (e.g. `.todo.md`, never committed) or delete it before finishing, so the
+  checklist never becomes part of the change you deliver.
 
 ## File conventions
 
