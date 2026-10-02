@@ -133,6 +133,6 @@ Nim、Go 和 TypeScript 组件使用 `sdk/` 中的 SDK。正常的扩展路径�
 ## Philosophies
 
 - **开放模型，支持所有提供商。** 本地、开放权重和托管模型获得同等的一等路径：OpenAI 兼容默认、当供应商不提供其他方式时的订阅 OAuth，以及 models.dev 支持的目录，将限制、能力和价格作为数据保存。添加 OpenAI 兼容提供商是配置条目，而非代码路径。
-- **改进是衡量的，而非断言的。** `bench/` 在相同任务和模型上运行 Niffler 对比 pi、opencode、CodeWhale 和 Claude Code，在 full30、SWE-bench Verified 和 DeepSWE 套件中比较 time-to-green、token 成本和补丁质量。功能基于该证据落地——有时还附带门控，比如 repo map 的自动追加，默认开启，但会扣下过小或空壳的 map，因为 A/B 测试结果不一致——报告提交在 `bench/reports/` 下。
+- **改进是衡量的，而非断言的。** `bench/` 在相同任务和模型上运行 Niffler 对比 pi、opencode、CodeWhale 和 Claude Code，在 full31、SWE-bench Verified 和 DeepSWE 套件中比较 time-to-green、token 成本和补丁质量。功能基于该证据落地——有时还附带门控，比如 repo map 的自动追加，默认开启，但会扣下过小或空壳的 map，因为 A/B 测试结果不一致——报告提交在 `bench/reports/` 下。
 - **中文在这里是一等语言。** README 有英文、简体和繁体中文，Web UI 完全本地化（`en`/`zh`/`zh-TW`）并带类型化目录——缺失翻译会导致类型检查失败。
 - **带着自豪和感激地借鉴。** 我们采纳在其他 harness 中找到的最佳想法——Pi、DeepSeek Harness、CodeWhale、OpenCode、Reasonix、Aider、OpenHands 等——并在发布前对照 Niffler 的不变量重新检查每一项。研究注明其来源和固定提交，vendored 代码保留其许可证，一切都在 [docs/research/](docs/research/) 中。

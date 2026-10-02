@@ -1129,7 +1129,9 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
 {"query": "web"}
 ```
 
-`query` 是可选的，并以不区分大小写的方式匹配组件名、工具名和描述。多词查询是合取：每个以空白分隔的词都必须出现在组件名或工具名/描述中——像 "mechanical fan-out" 这样的关键词短语即使没有任何描述逐字包含它也会匹配。空查询返回仅含工具名的总线目录；`component` 和 `tools` 调用返回完整描述和 schema。结果是确定性的：组件和工具按名称排序，描述是空白归一化的一行提示，上限为 200 个字符，并且排除 pid 和注册时间等易变字段。
+`query` 是可选的。空查询返回**组件注册表**：每个组件一行——`name`、`version`、拆分为 `direct` 和 `onDemand` 的 `tools` 总数，以及最多三条 `hints`（`{"tool", "hint"}`）和一个表示其余按需工具数量的 `more`。一条 hint 是组件声明的 `x-harness.hint`（docs/WIRE.md），没有声明时则是工具描述的第一句话——这正是系统提示词不再在每个请求中重发的路由信号。当整个应答超过 6 000 字节时，它会以不含 hint 的形式重建（仅名称和计数），并带上 `budget` 字段；每个注册表应答都以一行 `next` 结尾。
+
+非空 `query` 则改为过滤，以不区分大小写的方式匹配组件名、工具名和描述。多词查询是合取：每个以空白分隔的词都必须出现在组件名或工具名/描述中——像 "mechanical fan-out" 这样的关键词短语即使没有任何描述逐字包含它也会匹配。`component` 和 `tools` 调用返回完整描述和 schema。结果是确定性的：组件和工具按名称排序，描述是空白归一化的一行提示，上限为 200 个字符，并且排除 pid 和注册时间等易变字段。
 
 ```json
 {
@@ -1147,7 +1149,7 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
 }
 ```
 
-`discover {component: "fetch"}` 返回该组件的直接和按需提示。没有非隐藏工具的组件会被省略。
+`discover {component: "fetch"}` 返回该组件的直接和按需提示。`component` 还接受 `query`（同样的词-AND 过滤，在组件内部应用）和 `limit`（对 `direct`/`onDemand` 各自设限，最大 200），因此工具繁多的服务器不会应答出数千字节的描述。没有非隐藏工具的组件会被省略。
 
 #### Schemas
 

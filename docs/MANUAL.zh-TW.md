@@ -1379,12 +1379,9 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
 {"query": "web"}
 ```
 
-`query` 是選用的，會以不區分大小寫的方式比對元件名稱、工具名稱與描述。多字查詢是合取：每個以空白分隔的字都必須出現在元件名稱或工具
-名稱／描述中——像 "mechanical fan-out" 這樣的關鍵詞片語即使沒有任何描述逐字包含它，也會相符。空查詢會傳回匯流排
-目錄，僅含工具名稱；`component` 與 `tools` 呼叫會傳回完整
-描述與結構描述。結果是確定性的：元件與工具會
-依名稱排序，描述是經空白正規化、上限為
-200 字元的單行提示，且會排除諸如 pid 與註冊時間等易變欄位。
+`query` 是選用的。空查詢會傳回**元件註冊表**：每個元件一行——`name`、`version`、拆分為 `direct` 與 `onDemand` 的 `tools` 總數，以及最多三條 `hints`（`{"tool", "hint"}`）和一個代表其餘隨需工具數量的 `more`。一條 hint 是元件宣告的 `x-harness.hint`（docs/WIRE.md），沒有宣告時則是工具描述的第一句話——這正是系統提示詞不再於每個請求中重送的路由訊號。當整個回應超過 6 000 位元組時，會以不含 hint 的形式重建（僅名稱與計數），並帶上 `budget` 欄位；每個註冊表回應都以一行 `next` 結尾。
+
+非空 `query` 則改為過濾，會以不區分大小寫的方式比對元件名稱、工具名稱與描述。多字查詢是合取：每個以空白分隔的字都必須出現在元件名稱或工具名稱／描述中——像 "mechanical fan-out" 這樣的關鍵詞片語即使沒有任何描述逐字包含它，也會相符。`component` 與 `tools` 呼叫會傳回完整描述與結構描述。結果是確定性的：元件與工具會依名稱排序，描述是經空白正規化、上限為 200 字元的單行提示，且會排除諸如 pid 與註冊時間等易變欄位。
 
 ```json
 {
@@ -1403,7 +1400,9 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
 ```
 
 `discover {component: "fetch"}` 會傳回該元件的直接與 on-demand
-提示。沒有非 hidden 工具的元件會被省略。
+提示。`component` 也接受 `query`（同樣的字-AND 過濾，在元件內部套用）與
+`limit`（分別對 `direct`/`onDemand` 設限，最大 200），因此工具繁多的伺服器
+不會回應出數千位元組的描述。沒有非 hidden 工具的元件會被省略。
 
 #### Schemas
 

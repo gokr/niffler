@@ -2289,16 +2289,25 @@ The web Components panel provides the same all/direct/discovered/undiscovered fi
 {"query": "web"}
 ```
 
-`query` is optional and matches component names, tool names, and descriptions
-case-insensitively. A multi-word query is a conjunction: every
+`query` is optional. An empty query returns the **component registry**: one
+line per component — `name`, `version`, a total `tools` count split into
+`direct` and `onDemand`, and up to three `hints` (`{"tool", "hint"}`) with a
+`more` count of the remaining on-demand tools. A hint is the component's
+declared `x-harness.hint` (docs/WIRE.md) when it has one, otherwise the first
+sentence of the tool's description — the routing signal the system prompt no
+longer re-sends on every request. When the whole answer would exceed 6 000
+bytes it is rebuilt without hints (name and counts only) and carries a
+`budget` field; every registry answer ends with a `next` line.
+
+A non-empty `query` filters instead, matching component names, tool names, and
+descriptions case-insensitively. A multi-word query is a conjunction: every
 whitespace-separated word must appear in the component name or the tool
 name/description — a keyword phrase like "mechanical fan-out" matches even
-though no description contains it verbatim. An empty query returns the bus
-directory with tool names only; `component` and `tools` calls return full
-descriptions and schemas. The result is deterministic: components and tools are
-name-sorted, descriptions are whitespace-normalized one-line hints capped at
-200 characters, and volatile fields such as pid and registration time are
-excluded.
+though no description contains it verbatim. `component` and `tools` calls
+return full descriptions and schemas. The result is deterministic: components
+and tools are name-sorted, descriptions are whitespace-normalized one-line
+hints capped at 200 characters, and volatile fields such as pid and
+registration time are excluded.
 
 ```json
 {
@@ -2317,7 +2326,10 @@ excluded.
 ```
 
 `discover {component: "fetch"}` returns that component's direct and on-demand
-hints. Components with no non-hidden tools are omitted.
+hints. `component` also accepts `query` (the same word-AND filter, applied
+inside the component) and `limit` (bounds each of `direct`/`onDemand`, max
+200), so a tool-heavy server cannot answer with kilobytes of descriptions.
+Components with no non-hidden tools are omitted.
 
 #### Schemas
 
