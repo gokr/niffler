@@ -52,6 +52,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one-shot batch vs long-lived guest; agent: spawn vs run vs continue — prose
   no single tool's doc comment carries. Documented in docs/WIRE.md.
 
+- **`search` ranks, narrows and snippets — and transcript recall builds on it
+  (issue #51).** The store's `search` op gains `idPrefix` (narrow to one
+  conversation's messages; LIKE metacharacters escaped, never widened),
+  `rank: true` (relevance ordering, paged by `offset`/`nextOffset` — the order
+  is recomputed per call, so a concurrent write can shift items between pages,
+  documented) and `snippet: true` (a one-line window per hit with the matched
+  span marked), and every reply carries `ranked: true|false` so a caller always
+  knows which ordering it holds. The sqlite engine ranks with FTS5's bm25 (ties
+  broken by id) and marks snippets with `snippet()`; tidb has no index and
+  answers `rank: true` with `ranked: false` in id order, `offset` still paging
+  the match set. `context_recall mode: "search"` now runs on that index — the
+  old substring grep stays as a fallback lane only when the store cannot search
+  — and gains `scope: "session"|"all"`, where a cross-conversation search is a
+  disclosure decision: a leased session call is refused `scope: "all"` and only
+  a direct bus caller may widen it. Contract: docs/WIRE.md store `search`,
+  docs/MANUAL.md; tests `t_store`, `t_recall`.
+
+- **`docs/FEATURES.md` — a one-file capability inventory.** An exhaustive but
+  coarse index of what Niffler ships, grouped by area, naming capabilities and
+  where each is documented without repeating reference detail; MANUAL.md links
+  it as an index rather than a reference, and README.md links it alongside
+  Architecture and Open work.
+
 ### Changed
 
 - **The Wails desktop UI is no longer an official part of the harness.** Its
@@ -160,6 +183,39 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one task that swings 7–14 turns between passes, so they say nothing about
   cost (`bench/reports/full31-disc3-*`, `1e90b14`).
 
+- **`--minimal` boots `systemprompt` too (four components).** Without the
+  component every conversation degraded to core's baked-in fallback prompt,
+  losing the real constitution and the AGENTS.md project-context chain, so the
+  minimal profile now starts `store`, `bash`, `llm` and `systemprompt`;
+  `compaction` deliberately stays out — the runner's deterministic prune/trim
+  ladder needs no component. `t_core` pins the exact supervised set, and
+  AGENTS.md, the `--help` text, README and the manual all name the
+  four-component profile.
+
+- **A long first message earns independent-review guidance.** A conversation's
+  first user message now travels with the systemprompt request — on the fresh
+  path only, since a resume reads the stored prompt verbatim and "first message"
+  would then be the wrong message — and the component appends a review
+  instruction when that message is at least 1200 characters
+  (`NIF_REVIEW_HINT_MIN_CHARS` overrides; ≤ 0 disables, which drives the A/B
+  arms). The instruction rides with the standing instructions as plain prose
+  above the workspace and project-context blocks: no XML wrapper and no branch,
+  because the two conditional arms converted none of the spec-heavy tasks while
+  reviewing as much or more, and "where running it is allowed" keeps a graded
+  task's own no-test-runs constraint intact. Measured on four spec-heavy DeepSWE
+  tasks; `tests/t_systemprompt` pins both the byte-identical short-message
+  prompt and the guidance's position.
+
+- **The `todo-markdown` skill covers long requirement lists.** Two spec-heavy
+  cells failed by dropping one clause while implementing everything around it,
+  and the trajectories showed no todo file touched at all. The skill now treats
+  a list of rules (an API spec, a clause-heavy brief) as its own case —
+  enumerate clauses before coding, give interactions their own items, check the
+  diff rather than memory at the end, and keep the list out of a graded or
+  handed-off diff — and its frontmatter description names the case so
+  `skill_list` surfaces it. The base-prompt sentence that pointed at the skill
+  by name in the same window was measured to have no effect and removed again.
+
 ### Removed
 
 - **The Nim/bitbarrel store engine and the migration tool are gone.** `store`
@@ -225,6 +281,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing reached `var/logs`, which made a reported `unknown provider
   "synthetic" (have: default)` undiagnosable after the fact. The requested and
   resolved names are now logged.
+
+- **An SSE-framed error body reached the caller raw.** Some gateways answer a
+  failed request with a stream frame (`data: {"error": …}`) even though nothing
+  is streaming; the client library then failed to parse it ("invalid character
+  'd' looking for beginning of value") and the provider's own refusal never
+  reached the caller. `normalizeSSEErrorBody` now unwraps the body to the first
+  `data:` line's JSON payload (a non-JSON frame is left as raw evidence), and
+  `annotateRetryAfter` appends the parsed `retry-after-ms` hint to either shape
+  — previously the hint was spliced only into well-formed JSON envelopes, so a
+  429 on a streaming request carried no hint and the retry policy guessed. The
+  `llm_resolve` reply also carries a `warning` when a pinned provider/model pair
+  resolves to the fallback window instead of a catalog match.
+
+- **A provider stream cut mid-frame is a transient retry, not a lost turn.**
+  Two DeepSWE cells died at ~908 s — a ~15-minute cap on the direct DeepSeek API
+  — with "bad stream chunk: unexpected end of JSON input", each after fifteen
+  minutes of real work, and both counted as agent failures. The truncated frame
+  is now classified the way `interruptErr` already classifies an early finish,
+  carrying the "stream error" marker core's retry policy treats as transient, so
+  the request is re-issued instead of the turn being discarded; SSE
+  keepalive/comment lines (empty or ":"-prefixed) are skipped rather than parsed
+  as frames.
 
 
 ## [0.3.0] — 2026-09-29
