@@ -816,14 +816,31 @@ cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transc
   caller), `event` (every `ev.session.<id>.*` frame of the turn), `approval`
   (a gated tool was offered to the driver), `mcp` (declared server bootstrap),
   `result`, and `export` when asked — plus a lone `error` line when a
-  startup/protocol failure ends the run.
-  The `result` line carries the authoritative per-turn accounting — `turnId`,
-  `outcome`, `usage` (docs/WIRE.md "Turn usage") — so a driver never sums
-  events to bill a turn.
+  startup/protocol failure ends the run. The `result` line carries the
+  authoritative per-turn accounting — `turnId`, `outcome`, `usage`
+  (docs/WIRE.md "Turn usage") — so a driver never sums events to bill a turn.
 - **The gate.** A headless driver cannot ask a human, so it acknowledges each
-  directed approval request and **denies** it: a gated tool fails fast with
+  approval request and answers it: inside the MCP bootstrap window it grants
+  exactly what its own command line declared (`mcp_add`/`mcp_edit` and the
+  `spawn`/`kill` of their `mcp-<name>` bridges — never `remove`), and
+  everywhere else it **denies**, so a gated tool fails fast with
   `approval denied` (the harness's own fail-closed rule) instead of stalling
-  the turn. `NIF_AUTO_APPROVE=1` or `--approvals auto` grants them instead.
+  the turn. Every decision is a visible `approval` line (`verdict:
+  grant|deny`). `NIF_AUTO_APPROVE=1` or `--approvals auto` keeps the gate from
+  asking at all.
+- **MCP bootstrap.** `--mcp <json>` (repeatable) or `--mcp-file <path>` (a JSON
+  array of declarations, or `{"servers": [...]}`) registers MCP servers
+  **before the first turn** — each declaration is passed to
+  `mcp_add`/`mcp_edit` as-is, so a `--session` resume re-applies it (an
+  existing server is refreshed) and the bridge's tools are in the snapshot the
+  first turn freezes. `--mcp-timeout <secs>` bounds each server's registration
+  (default 120 s), readiness rides the `mcp` output lines — which carry
+  `durationMs` for the whole registration, so a first-run `npx` download or a
+  loaded host is visible instead of looking like a hang — and a server that
+  cannot come up is a startup failure (exit 3) — never a silently degraded
+  turn. Secrets are `${NAME}` env references: the store keeps the placeholder,
+  the bridge resolves the value at connect time, and the driver prints
+  credential NAMES only — a value never reaches stdout, stderr or the store.
 - **Cancellation.** SIGINT/SIGTERM publishes the documented `__cancel`
   control on the conversation's steer channel and waits up to
   `--cancel-grace` (default 30 s) for the turn to settle and persist; a result
@@ -835,19 +852,8 @@ cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transc
 - **Exit codes.** `0` a successful turn, `1` a turn that did not succeed
   (cancelled, budget/limit exhausted, error — read `outcome` on the result
   line), `2` a usage error, `3` startup/protocol failure (no harness, no
-  answer, export impossible). `cli run --help` prints the full surface.
-
-- **MCP bootstrap.** `--mcp <json>` (repeatable) or `--mcp-file <path>` (a JSON
-  array of declarations) registers MCP servers **before the first turn** —
-  each declaration is passed to `mcp_add`/`mcp_edit` as-is, so a `--session`
-  resume re-applies it (an existing server is refreshed) and the bridge's tools
-  are in the snapshot the first turn freezes. `--mcp-timeout <secs>` bounds
-  each server's registration (default 120 s), readiness rides the `mcp` output
-  lines, and a server that cannot come up is a startup failure (exit 3) —
-  never a silently degraded turn. Secrets are `${NAME}` env references: the
-  store keeps the placeholder, the bridge resolves the value at connect time,
-  and the driver prints credential NAMES only — a value never reaches stdout,
-  stderr or the store.
+  answer, a declared MCP server that could not be made ready, export
+  impossible). `cli run --help` prints the full surface.
 
 ## Approvals
 
