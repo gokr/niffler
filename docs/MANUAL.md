@@ -84,7 +84,7 @@ A one-file index of every shipped capability (not a reference) is
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `compaction` | Nim | optional | default replaceable `compaction_propose` implementation: verifies runner-owned paged snapshots, chooses a permitted cut, and returns a structured checkpoint candidate; the runner alone validates and commits projections — the tool itself is `hidden` + `x-harness.runner: true` (read-effect, 120 s), so no model ever sees it and only a runner or another component calls it; with the component absent or killed, summarization is off and the deterministic ladder (lossless prune, then the lossy fallback rung) still runs |
 | `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a ranked search over the conversation's whole canonical history (trimmed/compacted-away messages included) through the store's search index, with a substring-grep fallback when the store cannot search; `scope: "all"` widens to every conversation but is refused for session calls (a cross-conversation disclosure — direct bus callers only, issue #51) |
-| `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |
+| `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) and the headless turn driver (`run` — attach to a home or `--own` one, stream or `--quiet`, optional `--export` transcript) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) — all twelve tools are on demand and none declares `x-harness.effect`, so the fabric batch host schedules even `observe_events`/`observe_logs` as writes |
 | `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) — both tools are on demand and neither declares `x-harness.effect`, so the fabric batch host schedules even `logfile_search` as a write |
@@ -547,6 +547,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_AUTO_CONTINUE` | `1` → a turn that reaches one of the conversation's soft limits (`/limit`) keeps going without asking (`NIF_AUTO_APPROVE=1` implies it). For headless automation only | unset |
 | `NIF_MAX_TURN_ROUNDS` | hard LLM-round ceiling per turn; an explicit per-session `maxRounds` may narrow it | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | estimated-token cap on a conversation's direct toolset for `invoke {sticky: true}` promotion; a promotion that would exceed it is deferred and reported in the tool result | `4000` |
+| `NIF_REVIEW_HINT_MIN_CHARS` | character length of a fresh conversation's first user message at or above which the `systemprompt` component appends its independent-review instruction; `0` or a negative value disables the guidance | `1200` |
 | `NIF_PROFILE` | default named tool profile for new conversations, used when the `session` call carries no `profile` argument | unset |
 | `NIF_AGENT_MAX_DEPTH` | caps how deep `agent_spawn` delegation may nest (core enforces at dispatch; the agent component mirrors it). `0` forbids delegation; spawn tools stay visible at the cap | `1` |
 | `NIF_HOOKS_EVENTS` | comma-separated bus subjects the hooks component watches, with NATS wildcards (`*` one token, a trailing `>` the rest). Read at boot — a config change is `core.kill` + `core.spawn` | `ev.session.*.turn` |
@@ -990,7 +991,10 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   model, catalog, context and output provenance plus the provider's `protocol`,
   `authType` and `hasKey` for interactive clients; it still needs a resolvable
   provider, so with no stored and no environment credential it fails instead of
-  reporting a window. See [Model catalog](#model-catalog-models).
+  reporting a window. When the window came from the fallback rather than a
+  catalog match, the result also carries a `warning` naming the provider/model
+  pair and the window it got instead — the usual cause is a pin that drifted.
+  See [Model catalog](#model-catalog-models).
 
 - The **output** window is resolved alongside the context window and comes
   back as `output`/`outputSource`: the catalog's `model.limit.output`, else a
@@ -2838,6 +2842,17 @@ itself.
   subagent children before their first turn and passes it via the session
   call's `systemPrompt` field (best effort — the runner's own fallback
   covers a missing component).
+- **Size-gated review guidance.** A fresh conversation's first user message
+  rides along to `svc.systemprompt.call` as the `firstMessage` argument (a
+  resume reads the stored prompt verbatim, so it is not passed then). The
+  default component appends an independent-review instruction — verify the
+  change and have a subagent that did not write it read the diff against the
+  original request — when that message is at least 1200 characters
+  (`NIF_REVIEW_HINT_MIN_CHARS` overrides; `<= 0` disables it): a long opening
+  message is usually a requirement list, and a missed clause is how that work
+  fails. It sits with the standing instructions, above the workspace and
+  project-context blocks, as plain prose (no XML wrapper and no branch to
+  evaluate), and a short request pays nothing.
 - **Prompt slots (extension seam).** Components and plugins contribute
   fragments through the hidden `prompt_hint {slot, content, source?, key?,
   mode?}` tool: the named slots (`tool_usage`, `efficient_tools`,

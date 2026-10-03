@@ -287,8 +287,9 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
   interop.
 - `systemprompt` — the replaceable conversation constitution, with the project
   context chain (override/AGENTS/CLAUDE per directory, ancestor walk, worktree
-  shadow rule, lazy subtree loading, workspace tail) and a prompt-slot seam
-  for component-contributed fragments.
+  shadow rule, lazy subtree loading, workspace tail), a prompt-slot seam
+  for component-contributed fragments, and size-gated independent-review
+  guidance for long first messages.
 - `compaction` / `recall` — the shipped implementations behind the two
   seam tools.
 
@@ -336,8 +337,9 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
 
 ### Clients, demos and the bus itself
 
-- `cli` — the scripting driver: catalog, wait, call, install, with exit codes
-  and its own timeout budget.
+- `cli` — the scripting driver: catalog, wait, call, install, and the headless
+  turn driver (`run`, attach-or-own a home, stream or `--quiet`, export a
+  transcript), with exit codes and its own timeout budget.
 - `console` — renders every envelope on the bus, with reconnect handling.
 - `dialog` — an SDK-free bash component demonstrating the protocol with two
   desktop dialog tools.
