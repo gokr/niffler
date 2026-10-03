@@ -83,7 +83,7 @@
 | `systemprompt` | Nim | 可选 | 会话宪法：会话运行器每个会话从 `svc.systemprompt.call` 获取一次系统提示（见[系统提示（`systemprompt`）](#system-prompt-systemprompt)） |
 | `compaction` | Nim | 可选 | 默认可替换的 `compaction_propose` 实现：验证运行器拥有的分页快照，选择允许的切割，并返回结构化检查点候选；只有运行器验证并提交投影 —— 该工具本身是 `hidden` + `x-harness.runner: true`（read-effect，120 秒），因此没有模型能看到它，只有运行器或其他组件调用它；组件缺失或被杀死时，摘要关闭，确定性阶梯（无损修剪，然后有损回退梯级）仍然运行 |
 | `recall` | Nim | 可选 | 按需的 `context_recall` 解析器，用于规范消息、完整溢出文档和当前持久检查点 —— 加上 `mode: search`，对会话的整个规范历史（包括被修剪/压缩掉的消息）进行 grep |
-| `cli` | Nim | — | 用于脚本/CI 的按需总线驱动（`catalog`/`wait`/`call`/`install`）—— 一个从不发布 `reg.publish` 的纯客户端，因此它从不出现在 `catalog` 中，`cli wait cli` 也永远不会成功 |
+| `cli` | Nim | — | 用于脚本/CI 的按需总线驱动（`catalog`/`wait`/`call`/`install`）以及无头回合驱动（`run`—— 附加到某个 home 或 `--own` 一个，串流或 `--quiet`，可选 `--export` 转录）—— 一个从不发布 `reg.publish` 的纯客户端，因此它从不出现在 `catalog` 中，`cli wait cli` 也永远不会成功 |
 | `console` | Nim | — | 按需总线查看器（在 stdout 上渲染每个信封） |
 | `observe` | Nim | 可选 | 有界实时总线环、监听/跟踪探针、安全捕获导出和 NATS 监控（见[观察与日志](#observation-and-logs)）—— 所有十二个工具都是按需的，且没有一个声明 `x-harness.effect`，因此 fabric 批处理主机即使对 `observe_events`/`observe_logs` 也按写入调度 |
 | `logfile` | Nim | 可选 | 轮转 JSONL 接收器和有界持久日志搜索（见[观察与日志](#observation-and-logs)）—— 两个工具都是按需的，且都没有声明 `x-harness.effect`，因此 fabric 批处理主机即使对 `logfile_search` 也按写入调度 |
@@ -302,6 +302,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | `NIF_AUTO_CONTINUE` | `1` → 达到对话软限制之一（`/limit`）的轮次继续而不询问（`NIF_AUTO_APPROVE=1` 隐含它）。仅用于无头自动化 | 未设置 |
 | `NIF_MAX_TURN_ROUNDS` | 每轮次的硬 LLM 轮次上限；显式的每会话 `maxRounds` 可以收窄它 | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | 对话直接工具集的估计 token 上限，用于 `invoke {sticky: true}` 提升；会超过它的提升被推迟并在工具结果中报告 | `4000` |
+| `NIF_REVIEW_HINT_MIN_CHARS` | 全新对话第一条用户消息的字符长度，达到或超过该值时 `systemprompt` 组件会附加其独立审查指示；`0` 或负值禁用该指引 | `1200` |
 | `NIF_PROFILE` | 新对话的默认命名工具 profile，当 `session` 调用不携带 `profile` 参数时使用 | 未设置 |
 | `NIF_AGENT_MAX_DEPTH` | 限制 `agent_spawn` 委托可以嵌套的深度（core 在分派时强制执行；agent 组件镜像它）。`0` 禁止委托；生成工具在上限处仍可见 | `1` |
 | `NIF_HOOKS_EVENTS` | hooks 组件监视的逗号分隔总线主题，带 NATS 通配符（`*` 一个 token，尾随 `>` 其余）。启动时读取——配置更改是 `core.kill` + `core.spawn` | `ev.session.*.turn` |
@@ -687,7 +688,7 @@ true`，加上窗口——否则上下文仪表会一直显示
 
 Core 会监视对话使用了模型上下文窗口的多少，并以*简单直接*的方式采取行动——不做摘要，也不做超出模型所报告范围之外的 token 计算：
 
-- 有效窗口在每一轮之前由隐藏的 `llm_resolve {model?}` 解析，因此新选择的模型的限制会在推理之前到达上下文守卫。按提供方的 `context` 和 `NIF_OPENAI_CONTEXT` 会覆盖模型目录；如果 `models` 被移除，一个小型内置表和保守的 128K 会作为回退保留。结果包含不含密钥的提供方、模型、目录、上下文和输出来源信息，以及供交互式客户端使用的提供方 `protocol`、`authType` 和 `hasKey`；它仍然需要一个可解析的提供方，因此当既没有存储的凭据也没有环境凭据时，它会失败，而不是报告一个窗口。参见 [Model catalog](#model-catalog-models)。
+- 有效窗口在每一轮之前由隐藏的 `llm_resolve {model?}` 解析，因此新选择的模型的限制会在推理之前到达上下文守卫。按提供方的 `context` 和 `NIF_OPENAI_CONTEXT` 会覆盖模型目录；如果 `models` 被移除，一个小型内置表和保守的 128K 会作为回退保留。结果包含不含密钥的提供方、模型、目录、上下文和输出来源信息，以及供交互式客户端使用的提供方 `protocol`、`authType` 和 `hasKey`；它仍然需要一个可解析的提供方，因此当既没有存储的凭据也没有环境凭据时，它会失败，而不是报告一个窗口。当窗口来自回退而非目录匹配时，结果还会携带一个 `warning`，指明提供方/模型对以及实际得到的窗口——通常的原因是固定的选择发生了漂移。参见 [Model catalog](#model-catalog-models)。
 
 - **输出**窗口与上下文窗口一起解析，并以 `output`/`outputSource` 返回：目录中的 `model.limit.output`，否则是一个刻意设定的 32768 默认值——如果没有显式上限，提供方会应用其自己的服务端上限，并在流中途截断长回答。每次调用的 `maxTokens` 只会降低已解析的值（专家裁判的微小裁决），而 Codex 通道完全忽略它。
 
@@ -1570,6 +1571,14 @@ OAuth、环境凭据、headers、请求转换和原生 API
 - **Agent 预取。** `agent` 组件在子 agent 的第一轮之前为其请求提示，并通过会话
   调用的 `systemPrompt` 字段传递它（尽力而为——运行器自己的回退
   覆盖缺失的组件）。
+- **按大小闸控的审查指引。** 全新对话的第一条用户消息会作为 `firstMessage`
+  参数一并送往 `svc.systemprompt.call`（恢复会逐字读取已存储的提示，因此
+  届时不会传递）。当该消息至少 1200 字符时（`NIF_REVIEW_HINT_MIN_CHARS`
+  可覆盖；`<= 0` 禁用），默认组件会附加一段独立审查指示——验证变更，并让
+  一位未撰写它的子 agent 对照原始请求阅读 diff。冗长的开场消息通常是需求
+  清单，而漏掉一个子句正是这类工作失败的方式。它与常驻指令并列，位于
+  workspace 与 project-context 区块之上，以纯文本呈现，且短请求不付任何
+  代价。
 - **提示槽（扩展接缝）。** 组件和插件通过隐藏的 `prompt_hint {slot, content, source?, key?,
   mode?}` 工具贡献片段：命名槽（`tool_usage`、`efficient_tools`、
   `after_instructions`）以确定性顺序（按 `source`，然后 `key`）渲染为 `<prompt_slot name="…">` 块；

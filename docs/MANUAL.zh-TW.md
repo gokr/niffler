@@ -83,7 +83,7 @@
 | `systemprompt` | Nim | optional | 會話憲章：會話執行器每個會話從 `svc.systemprompt.call` 取得一次系統提示（見[系統提示（`systemprompt`）](#system-prompt-systemprompt)） |
 | `compaction` | Nim | optional | 預設可替換的 `compaction_propose` 實作：驗證執行器擁有的分頁快照，選擇允許的切割，並返回結構化檢查點候選；只有執行器驗證並提交投影 — 該工具本身是 `hidden` ＋ `x-harness.runner: true`（讀取效應，120 秒），因此沒有模型見過它，只有執行器或其他元件呼叫它；當元件不存在或被殺死時，摘要關閉，確定性階梯（無損修剪，然後是有損後備層級）仍然執行 |
 | `recall` | Nim | optional | 隨需的 `context_recall` 解析器，用於規範訊息、完整溢出文件和當前持久檢查點 — 加上 `mode: search`，對會話的整個規範歷史（包括被修剪/壓縮掉的消息）進行 grep |
-| `cli` | Nim | — | 用於腳本/CI 的隨需匯流排驅動程式（`catalog`/`wait`/`call`/`install`）— 一個從不發佈 `reg.publish` 的純客戶端，因此它從不出現在 `catalog` 中，且 `cli wait cli` 永遠不可能成功 |
+| `cli` | Nim | — | 用於腳本/CI 的隨需匯流排驅動程式（`catalog`/`wait`/`call`/`install`）以及無頭回合驅動程式（`run`—— 附加至某個 home 或 `--own` 一個，串流或 `--quiet`，可選 `--export` 轉錄）— 一個從不發佈 `reg.publish` 的純客戶端，因此它從不出現在 `catalog` 中，且 `cli wait cli` 永遠不可能成功 |
 | `console` | Nim | — | 隨需匯流排檢視器（在 stdout 上渲染每個信封） |
 | `observe` | Nim | optional | 有界的即時匯流排環、監聽/追蹤探針、安全擷取匯出和 NATS 監控（見[觀察與日誌](#observation-and-logs)）— 全部十二個工具都是隨需的，且沒有一個宣告 `x-harness.effect`，因此 fabric 批次主機將甚至 `observe_events`/`observe_logs` 排程為寫入 |
 | `logfile` | Nim | optional | 輪替的 JSONL 接收器和有界的持久日誌搜尋（見[觀察與日誌](#observation-and-logs)）— 兩個工具都是隨需的，且兩者都不宣告 `x-harness.effect`，因此 fabric 批次主機將甚至 `logfile_search` 排程為寫入 |
@@ -308,6 +308,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | `NIF_AUTO_CONTINUE` | `1` → 到達對話軟性限制（`/limit`）之一的回合會不詢問地繼續（`NIF_AUTO_APPROVE=1` 隱含它）。僅供無介面自動化 | unset |
 | `NIF_MAX_TURN_ROUNDS` | 每回合的 LLM 回合硬上限；明確的每會話 `maxRounds` 可縮小它 | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | 對話直接工具集用於 `invoke {sticky: true}` 提升的估計 token 上限；會超過它的提升會被延後並在工具結果中回報 | `4000` |
+| `NIF_REVIEW_HINT_MIN_CHARS` | 全新對話第一則使用者訊息的字元長度，達到或超過該值時 `systemprompt` 元件會附加其獨立審查指示；`0` 或負值停用該指引 | `1200` |
 | `NIF_PROFILE` | 新對話的預設具名工具 profile，在 `session` 呼叫未帶 `profile` 引數時使用 | unset |
 | `NIF_AGENT_MAX_DEPTH` | 限制 `agent_spawn` 委派可嵌套的深度（core 在 dispatch 時強制；agent 元件鏡像它）。`0` 禁止委派；到達上限時 spawn 工具仍可見 | `1` |
 | `NIF_HOOKS_EVENTS` | hooks 元件監看的逗號分隔匯流排主體，支援 NATS 萬用字元（`*` 一個 token，結尾的 `>` 代表其餘）。於開機時讀取——配置變更是 `core.kill` + `core.spawn` | `ev.session.*.turn` |
@@ -655,7 +656,7 @@ mid-turn — retry when the turn finishes」），而非等待：回合永遠不
 
 Core 會監看一段會話使用了模型 context window 的多少，並以*極簡*方式因應——不做摘要，除了模型回報的數字外不做任何 token 計算：
 
-- 有效的 window 會在每一回合前由隱藏的 `llm_resolve {model?}` 解析，因此新選取模型的限制會在推論前送達 context 守衛。各 provider 的 `context` 與 `NIF_OPENAI_CONTEXT` 會覆寫 models catalog；若 `models` 被移除，則以一個小型內建表與保守的 128K 作為後備。結果包含不含機密的 provider、model、catalog、context 與 output 來源資訊，以及供互動式用戶端使用的 provider `protocol`、`authType` 與 `hasKey`；它仍需要一個可解析的 provider，因此若無已儲存的憑證也無環境憑證，它會失敗而非回報 window。參見 [Model catalog](#model-catalog-models)。
+- 有效的 window 會在每一回合前由隱藏的 `llm_resolve {model?}` 解析，因此新選取模型的限制會在推論前送達 context 守衛。各 provider 的 `context` 與 `NIF_OPENAI_CONTEXT` 會覆寫 models catalog；若 `models` 被移除，則以一個小型內建表與保守的 128K 作為後備。結果包含不含機密的 provider、model、catalog、context 與 output 來源資訊，以及供互動式用戶端使用的 provider `protocol`、`authType` 與 `hasKey`；它仍需要一個可解析的 provider，因此若無已儲存的憑證也無環境憑證，它會失敗而非回報 window。當 window 來自後備而非目錄匹配時，結果也會帶上一個 `warning`，指名 provider/model 對以及實際取得的 window——通常的原因是固定的選取發生了漂移。參見 [Model catalog](#model-catalog-models)。
 
 - **output** window 會與 context window 一併解析，並以 `output`/`outputSource` 回傳：catalog 的 `model.limit.output`，否則為刻意設定的 32768 預設值——若無明確上限，provider 會套用其自身的伺服器端上限，並在串流中途截斷冗長的回答。每次呼叫的 `maxTokens` 只會調降已解析的值（expert judge 的微小裁決），而 Codex 通道則完全忽略它。
 
@@ -1738,6 +1739,13 @@ system prompt 不是 LLM 呼叫的工具 —— 它是每個會話開始時所�
 - **Fallback。** 元件不存在、緩慢（500 ms 探測，接著當目錄顯示它已註冊時有 8 秒預算），或損壞 → 核心內建的極簡 prompt。核心絕不為了開機而硬依賴元件。
 - **上限。** 答案會在 200 KB 截斷（雙方）—— 元件本身會在 200 000 位元組停止（標記 `[systemprompt: truncated at 200000 bytes]`；核心會加上自己的），並最多收集 16 個 context 檔案。兩個數字都是編譯期常數，沒有環境變數旋鈕：不同的上限意味著重建元件。
 - **Agent 預先抓取。** `agent` 元件會在其子代理的第一回合前為它們請求 prompt，並透過會話呼叫的 `systemPrompt` 欄位傳遞（盡力而為 —— runner 自身的 fallback 會涵蓋缺少的元件）。
+- **依大小閘控的審查指引。** 全新對話的第一則使用者訊息會以 `firstMessage`
+  引數一併送往 `svc.systemprompt.call`（恢復會逐字讀取已儲存的提示，因此
+  屆時不會傳遞）。當該訊息至少 1200 字元時（`NIF_REVIEW_HINT_MIN_CHARS`
+  可覆寫；`<= 0` 停用），預設元件會附加一段獨立審查指示——驗證變更，並讓
+  一位未撰寫它的子代理對照原始請求閱讀 diff。冗長的開場訊息通常是需求清單，
+  而漏掉一個子句正是這類工作失敗的方式。它與常設指令並列，位於 workspace 與
+  project-context 區塊之上，以純文字呈現，且短請求不付出任何代價。
 - **Prompt slots（擴充接縫）。** 元件與外掛透過隱藏工具 `prompt_hint {slot, content, source?, key?, mode?}` 貢獻片段：具名 slot（`tool_usage`、`efficient_tools`、`after_instructions`）會以確定性順序（依 `source`，再依 `key`）渲染為 `<prompt_slot name="…">` 區塊；`mode: aggregate`（預設）保留每個貢獻，而 `mode: singleton` 只保留該 slot 最後註冊的一個，而沒有貢獻的 slot 不會渲染任何內容。註冊是元件本機狀態，且只影響在其*之後*組成的 prompt —— 凍結的會話絕不會被重寫。`prompt_hint` 也是 `x-harness.hidden`，因此它與 `systemprompt` 都不會出現在 LLM 工具集中。
 
 ### The default component's prompt assembly
