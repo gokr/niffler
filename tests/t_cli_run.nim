@@ -398,9 +398,13 @@ proc main() =
     let decl = """{"name":"fixture","type":"stdio","command":"@FIXTURE_BIN@",
   "env":{"FIXTURE_TOKEN":"${NIF_CLI_MCP_TOKEN}"},"expose":"direct"}"""
       .replace("@FIXTURE_BIN@", fixture)
+    # Explicit budgets: a bridge bootstrap spawns a component (and, for a real
+    # server, an npx/uvx child), which is the slowest thing this test does —
+    # a loaded CI runner needs minutes where a warm laptop needs seconds.
     let first = runCliOnce(cliBin, root, "",
                            @["run", "--root=" & root, "--quiet",
-                             "--mcp=" & decl, "list your tools"])
+                             "--mcp-timeout=240", "--mcp=" & decl,
+                             "list your tools"], timeoutMs = 420_000)
     check("a declared MCP server drives the turn", first.code == 0,
           "code=" & $first.code & "\n" & first.output)
     let mcpLine = firstOf(first.lines, "mcp")
@@ -410,6 +414,9 @@ proc main() =
           mcpLine{"ready"}.getBool(false) and
           mcpLine{"component"}.getStr("") == "mcp-fixture" and
           mcpLine{"tools"}.getInt(0) >= 4, $mcpLine)
+    check("the mcp line reports how long registration took",
+          mcpLine{"durationMs"} != nil and
+          mcpLine{"durationMs"}.getInt(-1) >= 0, js(mcpLine))
     check("the declaration's credential NAMES are reported, never a value",
           mcpLine{"credentials"}{0}.getStr("") == "NIF_CLI_MCP_TOKEN" and
           not first.output.contains(token), $mcpLine)
@@ -465,9 +472,9 @@ proc main() =
     #     toolset keeps the bridge's tools.
     let second = runCliOnce(cliBin, root, "",
                             @["run", "--root=" & root, "--quiet",
-                              "--session=" & sid, "--mcp=" & decl,
-                              "use the fixture tool"],
-                            timeoutMs = 300_000)
+                              "--mcp-timeout=240", "--session=" & sid,
+                              "--mcp=" & decl, "use the fixture tool"],
+                            timeoutMs = 420_000)
     check("a resumed run re-applies the declaration", second.code == 0,
           "code=" & $second.code & "\n" & second.output)
     let editLine = firstOf(second.lines, "mcp")

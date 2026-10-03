@@ -292,7 +292,7 @@ proc runUsage() =
   echo "  {\"type\":\"start\", sessionId, bus, root, owned, servingRoot, caller}"
   echo "  {\"type\":\"event\", subject, data}        every ev.session.<id>.* frame"
   echo "  {\"type\":\"approval\", tool, sessionId, verdict, bootstrap?}"
-  echo "  {\"type\":\"mcp\", name, action, ready, component?, tools?, credentials?, warning?, error?}"
+  echo "  {\"type\":\"mcp\", name, action, ready, component?, tools?, credentials?, durationMs, warning?, error?}"
   echo "  {\"type\":\"result\", sessionId, turnId, outcome, reply, turnError, usage}"
   echo "  {\"type\":\"export\", path, messages}"
   echo "  {\"type\":\"error\", message}"
@@ -455,7 +455,8 @@ proc noteMcp(name, action: string, payload: JsonNode) =
   ## One NDJSON line per declared server. Only names, counters and credential
   ## REFERENCES are ever printed — never a declaration's values.
   var ev = %*{"type": "mcp", "name": name, "action": action}
-  for key in ["ready", "component", "tools", "warning", "error", "enabled"]:
+  for key in ["ready", "component", "tools", "warning", "error", "enabled",
+              "durationMs"]:
     if payload != nil and payload{key} != nil: ev[key] = payload{key}
   if payload != nil and payload{"credentials"} != nil:
     ev["credentials"] = payload{"credentials"}
@@ -567,32 +568,41 @@ proc bootstrapMcp(b: Bootstrap, specs: seq[JsonNode],
   if not waitForComponent(b.nc, "mcp", 20):
     for spec in specs:
       noteMcp(spec{"name"}.getStr(""), "none",
-              %*{"enabled": true,
+              %*{"enabled": true, "durationMs": 0,
                  "error": "no mcp component is registered on this harness " &
                           "(add it to the manifest and `make build`, or " &
                           "core.spawn it)"})
     return 3
   var existing = initHashSet[string]()
-  try:
-    let listing = b.callCore("mcp_servers", %*{}, 60_000)
-    for key in ["servers", "items"]:
-      let arr = listing{key}
-      if arr != nil and arr.kind == JArray:
-        for item in arr:
-          let n = item{"name"}.getStr("")
-          if n.len > 0: existing.incl(n)
-  except CatchableError:
-    discard
+  # A read-only listing: cheap budget, and its failure is REPORTED — a silent
+  # timeout here used to hide a slow harness behind a fixed 60 s wait.
+  let listing = b.callCore("mcp_servers", %*{}, 10_000)
+  if listing{"error"} != nil:
+    note("cannot list existing MCP servers (" & listing{"error"}.getStr("") &
+         ") — treating every declaration as new")
+  for key in ["servers", "items"]:
+    let arr = listing{key}
+    if arr != nil and arr.kind == JArray:
+      for item in arr:
+        let n = item{"name"}.getStr("")
+        if n.len > 0: existing.incl(n)
   var failed = false
   for spec in specs:
     let name = spec{"name"}.getStr("")
     let credentials = spec.envRefNames()
     let action = if existing.contains(name): "mcp_edit" else: "mcp_add"
+    # Registration is allowed to be slow (a first-run npx/uvx download, a cold
+    # bridge, a loaded box), so the line reports how long it actually took:
+    # a timeout on a slow host is then diagnosable from the NDJSON alone
+    # instead of looking like a hang.
+    let startedAt = epochTime()
     var report = %*{"credentials": %credentials}
+    note(action & " " & name & " ...")
     let res = b.callCore(action, spec, timeoutMs)
     if res{"error"} != nil or not res{"ok"}.getBool(false):
       report["error"] = %(if res{"error"} != nil: res{"error"}.getStr("")
                           else: "mcp " & action & " failed")
+      report["durationMs"] = %int((epochTime() - startedAt) * 1000)
       noteMcp(name, action, report)
       failed = true
       continue
@@ -602,13 +612,16 @@ proc bootstrapMcp(b: Bootstrap, specs: seq[JsonNode],
       # deliberately false, and that is not a failure.
       report["ready"] = %false
       report["enabled"] = %false
+      report["durationMs"] = %int((epochTime() - startedAt) * 1000)
       noteMcp(name, action, report)
       continue
+    note(action & " " & name & ": waiting for its bridge to register ...")
     let ready = waitBridge(b.nc, name,
                            epochTime() + timeoutMs.float / 1000.0)
     report["ready"] = %ready.ready
     report["component"] = %("mcp-" & name)
     report["tools"] = %ready.tools
+    report["durationMs"] = %int((epochTime() - startedAt) * 1000)
     if not ready.ready:
       report["error"] = %("the bridge for " & name &
         " did not register within " & $(timeoutMs div 1000) & "s")
