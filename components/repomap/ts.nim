@@ -15,6 +15,13 @@ import std/os
 
 const csrcDir = currentSourcePath().parentDir / "csrc"
 {.passC: "-I\"" & csrcDir & "\" ".}
+# tree_sitter's unicode/utf8.h includes "unicode/umachine.h" against its own
+# lib/src dir (the vendored ICU header subset in unicode/). Without this
+# second -I the include falls through to SYSTEM ICU headers — present on dev
+# machines, missing on a pristine box: "unicode/umachine.h: No such file or
+# directory". macOS has no system ICU headers at all, so this also un-breaks
+# repomap there.
+{.passC: "-I\"" & csrcDir & "/tree_sitter/lib/src\" ".}
 
 {.compile: "csrc/tree_sitter/lib/src/alloc.c".}
 {.compile: "csrc/tree_sitter/lib/src/get_changed_ranges.c".}

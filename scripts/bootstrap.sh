@@ -140,7 +140,7 @@ else
       run $SUDO apt-get update
       run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing ca-certificates
     else
-      die "missing:$missing — install them with your package manager and re-run"
+      die "missing:$missing — install them first. macOS: xcode-select --install (plus Homebrew from brew.sh); Linux: your package manager. Then re-run."
     fi
   fi
 
@@ -161,7 +161,7 @@ else
       run $SUDO ln -sf /usr/local/go/bin/go /usr/local/bin/go
       run $SUDO ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
     else
-      die "Go is missing — install it from https://go.dev/dl and re-run"
+      die "Go is missing — brew install go (macOS), or install from https://go.dev/dl, then re-run"
     fi
   fi
 
@@ -172,16 +172,22 @@ else
       say "step 1/5 — installing Node.js (brew)"
       run brew install node
     elif command -v apt-get >/dev/null 2>&1; then
-      say "step 1/5 — installing Node.js 22 (NodeSource — apt's nodejs is too old for the TS SDK)"
-      run bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -'
-      run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+      say "step 1/5 — installing Node.js (apt; switching to NodeSource 22 only if apt's node is older than 20)"
+      run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm
+      nodeMajor="$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
+      if [ "$nodeMajor" -lt 20 ] 2>/dev/null; then
+        say "step 1/5 — apt shipped Node $nodeMajor — adding the NodeSource 22 repository"
+        run $SUDO bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -'
+        run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+      fi
     else
-      die "Node.js 20+ is missing — install it from https://nodejs.org and re-run"
+      die "Node.js 20+ is missing — brew install node (macOS), or install from https://nodejs.org, then re-run"
     fi
   fi
 
   if [ -d "$ROOT/.git" ]; then
-    info "reusing the existing clone at $ROOT"
+    info "reusing the existing clone at $ROOT — updating it (git pull --ff-only)"
+    run git -C "$ROOT" pull --ff-only || info "git pull skipped (local changes or offline) — continuing with the clone as-is"
   else
     info "cloning $REPO_URL"
     run git clone "$REPO_URL" "$ROOT"
