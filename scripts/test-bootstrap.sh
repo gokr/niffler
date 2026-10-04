@@ -82,7 +82,7 @@ $RUNTIME run --rm -i "$IMAGE" bash -c '
 ' < "$BS" || fail=1
 
 if [ "$fail" = 0 ]; then
-  say "BOOTSTRAP TEST PASSED (A full · B dry-run · C help · D consent)"
+  say "BOOTSTRAP TEST PASSED (A full · B dry-run · C help · D consent · E re-run)"
 else
   say "BOOTSTRAP TEST FAILED"
 fi

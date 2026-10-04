@@ -554,8 +554,7 @@ clean:
 # and Clang must exist before Nimble builds Futhark and BitBarrel.
 setup:
 	@set -e; for target in install-native-deps install-nim install-nim-deps \
-		install-go install-node \
-		install-natscli install-jq install-zenity; do \
+		install-go install-node; do \
 		$(MAKE) --no-print-directory $$target; \
 	done
 	@echo "setup done — verify with 'make doctor', then 'make'"
@@ -678,7 +677,9 @@ install-nats:
 	@echo "nats-server: built from source by 'make build' (components/nats) — nothing to install"
 
 # nats CLI + jq + zenity back the bash-written `dialog` component
-# (components/dialog/dialog.sh — optional demo, not autostarted).
+# (components/dialog/dialog.sh — optional demo, not autostarted). Deliberately
+# NOT part of 'make setup': they serve only that demo. Install on demand
+# (doctor lists them under "Optional") when you actually want dialog popups.
 install-natscli:
 	@if command -v nats >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/nats" ]; then \
 		echo "nats CLI: already installed"; \
