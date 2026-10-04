@@ -124,6 +124,7 @@ h1 em {
   color: var(--ink-soft);
 }
 .lede strong { color: var(--ink); font-weight: 600; }
+.lede + .lede { margin-top: .9rem; }
 
 .hero-cta {
   display: flex;
