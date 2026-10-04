@@ -70,6 +70,14 @@ run() {
   fi
 }
 
+# Root, or sudo for the privileged installs below. Defined once, at the top:
+# every step uses $SUDO and `set -u` dies on an unset one (a re-run that
+# skips the prerequisite block used to hit exactly that).
+SUDO=""
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+  SUDO="sudo"
+fi
+
 # Always say up front exactly what is about to happen.
 say "Niffler installer — the plan, five steps:"
 info "1. find or create the clone   (asks before creating ~/niffler; installs every"
@@ -134,8 +142,6 @@ else
   done
   if [ -n "$missing" ]; then
     if command -v apt-get >/dev/null 2>&1; then
-      SUDO=""
-      [ "$(id -u)" -ne 0 ] && SUDO="sudo"
       say "step 1/5 — pristine machine, installing:$missing (apt)"
       run $SUDO apt-get update
       run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing ca-certificates

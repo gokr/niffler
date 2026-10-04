@@ -58,6 +58,17 @@ $RUNTIME run --rm -i -v "$BS":/bs.sh:ro "$IMAGE" bash -c '
   echo "ok: plan confirmed, location declined, nothing created"
 ' || fail=1
 
+say "scenario E: re-run path (prerequisites present must not trip set -u)"
+if e_out="$($RUNTIME run --rm -i "$IMAGE" bash -c '
+  apt-get update -qq >/dev/null 2>&1
+  apt-get install -y -qq git make curl ca-certificates >/dev/null 2>&1
+  bash -s -- --dry-run /opt/x
+' < "$BS" 2>&1)" && echo "$e_out" | grep -q "would install Node"; then
+  echo "ok: second-run path clean (reached the Node step without dying)"
+else
+  echo "E fail: bootstrap broke with prerequisites already present"; echo "$e_out" | tail -6; fail=1
+fi
+
 say "scenario A: one line on a pristine image (slow — prereqs, toolchains, full build)"
 $RUNTIME run --rm -i "$IMAGE" bash -c '
   bash -s -- /opt/niffler || { echo "A fail: bootstrap exited non-zero"; exit 1; }
