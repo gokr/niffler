@@ -14,9 +14,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   isolated one for `--root` and retires it on exit, streams the conversation's
   `ev.session.<id>.*` frames as NDJSON on stdout with diagnostics on stderr,
   accepts prompt/session/cwd/provider/model/thinking (and `--session` to
-  continue a persisted conversation), answers the approval gate itself (deny by
-  default, so a gated tool fails fast instead of stalling a headless turn),
-  cancels a live turn on SIGINT/SIGTERM through the documented `__cancel`
+  continue a persisted conversation), answers the approval gate itself —
+  granting exactly the registrations its own command line declared
+  (`mcp_add`/`mcp_edit` and the `spawn`/`kill` of their `mcp-<name>` bridges,
+  never `remove`) inside the MCP bootstrap window and denying everywhere else
+  (fail-fast `approval denied`, so a gated tool does not stall a headless
+  turn), with every decision visible as an `approval` line (`verdict:
+  grant|deny`) — cancels a live turn on SIGINT/SIGTERM through the documented `__cancel`
   control with a bounded settle grace, exports the complete canonical
   transcript through the store's cursor paging, and finishes with one
   authoritative result line (reply, `turnId`, `outcome`, per-turn `usage` from
@@ -24,8 +28,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`--mcp`/`--mcp-file`) registers the requested bridges before the first
   frozen tool snapshot and re-applies the declaration on `--session` resume,
   with `${NAME}` credential indirection — the store keeps the placeholder, the
-  bridge resolves the value, and only credential NAMES are ever printed.
-  Contract: docs/MANUAL.md "Headless turns"; test: `tests/t_cli_run.nim`.
+  bridge resolves the value, and only credential NAMES are ever printed. Each
+  `mcp` output line carries `durationMs` and prints progress notes while a
+  registration runs, so a slow first-run `npx`/`uvx` download or a loaded host
+  is diagnosable from the NDJSON instead of looking like a hang, and a declared
+  server that cannot be made ready is a startup failure (exit 3) — never a
+  silently degraded turn. Contract: docs/MANUAL.md "Headless turns"; test:
+  `tests/t_cli_run.nim`.
 
 - **Per-turn usage and a terminal outcome on the session result (#123).** A
   session turn now answers with `turnId`, `outcome` and a `usage` object
