@@ -135,11 +135,11 @@ h1 em {
 }
 .hero-cmd {
   font-family: var(--mono);
-  font-size: .95rem;
+  font-size: .78rem;
   background: var(--navy);
   color: #e8f4ee;
   border-radius: 999px;
-  padding: .85rem 1.5rem;
+  padding: .65rem 1.1rem;
 }
 .hero-cmd .prompt { color: var(--mint); margin-right: .5rem; }
 .btn {
@@ -624,7 +624,7 @@ h2 em {
   .top nav a:nth-child(4),
   .top nav a:nth-child(5),
   .top nav a:nth-child(6) { display: none; } /* keep Install + the two pills */
-  .hero-cmd { font-size: .8rem; padding: .7rem 1.1rem; white-space: normal; text-align: center; }
+  .hero-cmd { font-size: .7rem; padding: .6rem 1rem; white-space: normal; text-align: center; }
   .btn { padding: .7rem 1.2rem; font-size: .85rem; }
   .term pre { font-size: .8rem; }
 }
