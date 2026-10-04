@@ -1,433 +1,510 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Niffler — a self-extending agent harness</title>
-<meta name="description" content="Niffler is an extremely modular, self-extending agent harness. Components are processes, the bus is NATS, and the agent writes, builds and spawns its own tools mid-conversation.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f8f7">
+  <meta name="description" content="Niffler is a self-extending agent harness built from small Unix-style processes over one NATS wire: the agent writes, compiles and spawns its own tools mid-conversation. Lean and cache-stable like the leanest coding agents — and sub-agents, background processes, approvals, MCP and LSP are in the box as well.">
+  <title>Niffler — a small, self-extending agent harness</title>
+  <link rel="icon" href="niffler-logo-icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
 
-<header class="nav">
-  <a class="nav-brand" href="#top"><span class="caret">$</span> niffler</a>
-  <nav class="nav-links">
-    <a href="#whatsnew" data-i18n="nav.whatsnew">what's new</a>
-    <a href="#why" data-i18n="nav.why">why</a>
-    <a href="#architecture" data-i18n="nav.architecture">architecture</a>
-    <a href="#quickstart" data-i18n="nav.quickstart">quickstart</a>
-    <a href="components.html" data-i18n="nav.components">components</a>
-    <a href="components.html#status" data-i18n="nav.status">status</a>
-    <a href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener">discord</a>
-    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener" data-i18n="nav.gitclone">git clone</a>
-    <span class="locales" role="group" aria-label="Language">
-      <button type="button" data-locale-btn="en">EN</button>
-      <button type="button" data-locale-btn="zh">中文</button>
-      <button type="button" data-locale-btn="zh-TW">繁中</button>
-    </span>
-  </nav>
-</header>
+  <header class="top">
+    <a class="brand" href="#top">
+      <img src="niffler-logo-with-text.svg" alt="Niffler" width="427" height="64">
+    </a>
+    <nav aria-label="Main">
+      <a href="#fast">Fast</a>
+      <a href="#features">Features</a>
+      <a href="#everyday">Everyday</a>
+      <a href="#clients">Clients</a>
+      <a href="#unix">Unix</a>
+      <a href="#credits">Credits</a>
+      <a href="#install">Install</a>
+      <a class="nav-gh" href="https://github.com/gokr/niffler">GitHub ↗</a>
+      <a class="nav-gh nav-discord" href="https://discord.gg/ThJFEAJUAk">Discord ↗</a>
+    </nav>
+  </header>
 
-<main id="top">
-
-<!-- ============ HERO ============ -->
-<section class="hero">
-  <div class="hero-ascii" aria-hidden="true">
-<pre>
- _ _   ___    _____    _____    ___   _____    ____
-| \ |  |_  |  |  ___|  |  ___|  |  |  |  ___|  |  _ \
-|  \|   |  |  | |_     | |_     |  |  | |__    | |_) |
-|   |   |  |  |  _|    |  _|    |  |  |  __|   |  _ <
-|_  |   |  |  |_|      |_|      |_|   |_____|  |_| \_\
-</pre>
-  </div>
-  <h1 data-i18n-html="hero.h1">A harness that builds<br><span class="accent">itself out</span> — mid-conversation.</h1>
-  <p class="hero-sub" data-i18n-html="hero.sub">
-    Niffler is an extremely modular, self-extending agent harness. Components are
-    <strong>processes</strong> in <strong>any language</strong>, the bus is
-    <strong>NATS</strong>, and the agent writes, compiles and spawns its own
-    tools while you talk to it.
-  </p>
-  <div class="hero-cta">
-    <a class="btn btn-primary" href="#quickstart" data-i18n="hero.ctaMake">make install-tui && niffler-tui</a>
-    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener" data-i18n="hero.ctaGithub">github →</a>
-    <a class="btn" href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener" data-i18n="hero.ctaDiscord">discord →</a>
-  </div>
-  <p class="release-line"><a href="https://github.com/gokr/niffler/releases/tag/v0.3.0" target="_blank" rel="noopener">v0.3.0</a><span data-i18n-html="hero.release"> — images in a turn on every provider protocol, server-side <code>search</code> over the store, and SDK components that re-attach after a bus outage</span></p>
-  <div class="badges">
-    <span class="badge badge-hl" data-i18n="hero.badgeAny">any language</span><span class="badge">nim</span><span class="badge">go</span><span class="badge">typescript</span><span class="badge">nats</span>
-  </div>
-</section>
-
-<!-- ============ SCREENS ============ -->
-<section class="section screens-top" id="screens">
-  <div class="screens screens-show">
-    <figure class="shot">
-      <a class="shot-frame" href="img/niffler-tui.png" target="_blank" rel="noopener" data-lightbox="niffler-tui — the terminal chat client">
-        <img src="img/niffler-tui.png" alt="niffler-tui — the terminal chat client" loading="lazy" width="1200" height="686">
-      </a>
-      <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — the installed niffler-tui wrapper boots the harness on demand and re-runs the client after /restart)</span></figcaption>
-    </figure>
-  </div>
-  <p class="screens-note" data-i18n-html="screens.note"><code>./var/bin/niffler</code> in a terminal is the admin shell — help/status/catalog/tools/sessions, no chat. Conversations live in <code>niffler-tui</code>; scripting goes through <code>./var/bin/cli</code>.</p>
-</section>
-
-<!-- ============ TERMINAL ============ -->
-<section class="term-wrap" aria-label="Terminal demo">
-  <div class="term">
-    <div class="term-bar">
-      <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-      <span class="term-title">gokr@dev: ~/niffler</span>
-    </div>
-    <div class="term-body">
-      <p><span class="p">$</span> make install-tui && niffler-tui</p>
-      <p class="dim" data-i18n="term.build">install the niffler-tui terminal client (a plugin) · the client boots the harness on demand</p>
-      <p class="dim" data-i18n="term.l1">→ home bus: claimed nats://127.0.0.1:4222 · root ~/niffler @ 8094748</p>
-      <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
-      <p class="dim">→ catalog: store, bash, builder, plugins, skills, systemprompt, recall, compaction, fetch, models, provider, llm, grep, mcp, edit, lsp, repomap, processes, git, observe, logfile, agent, expert, fabric</p>
-      <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
-      <p class="dim small" data-i18n="term.note">that terminal is the admin shell (no chat) — conversations live in niffler-tui</p>
-    </div>
-  </div>
-</section>
-
-<!-- ============ WHAT'S NEW ============ -->
-<section class="section" id="whatsnew">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="whatsnew.title">what's new in 0.3.0</span></h2>
-  <div class="cards">
-    <article class="card">
-      <h3 data-i18n-html="whatsnew.1h"><span class="num">01</span> a client is a package</h3>
-      <p data-i18n-html="whatsnew.1p">A package can declare a manifest-v2 recipe that builds a real language
-      project through <code>builder.build_package</code> — its own dependency
-      manifests and lockfiles, bounded argv steps, a validated artifact —
-      instead of a single source file. <code>niffler-tui</code>, the client this
-      release ships, installs that way through the plugin lifecycle into
-      <code>var/bin</code>.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="whatsnew.2h"><span class="num">02</span> a context ladder you can watch</h3>
-      <p data-i18n-html="whatsnew.2p">Pressure walks a visible ladder — prune tool results, compact
-      with a checkpoint, then a lossy trim — and every step reaches the wire:
-      each compaction refusal arrives as a <code>context</code> event with its
-      reason, both clients render them, and a trim is durable, so a restart
-      rebuilds the trimmed projection instead of resurrecting what was
-      dropped. A pinned provider/model pair that has to fall back to a
-      smaller window now says so instead of quietly shrinking.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="whatsnew.3h"><span class="num">03</span> images reach the model</h3>
-      <p data-i18n-html="whatsnew.3p">A client can attach images: turns are multimodal end to end —
-      attachments are stored like any other document, budgeted against the
-      context window, and rebuilt into the provider projection on resume.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="whatsnew.4h"><span class="num">04</span> the store answers questions</h3>
-      <p data-i18n-html="whatsnew.4p">A new <code>search</code> op does server-side full-text over
-      stored documents, so a session finds things without downloading a whole
-      transcript. SQLite is the default engine (TiDB stays selectable for a
-      shared cluster), with an FTS5 index maintained in the same transaction as
-      the documents it answers from.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="whatsnew.5h"><span class="num">05</span> fabric, plus an opt-in advisor</h3>
-      <p data-i18n-html="whatsnew.5p"><code>fabric</code> runs LLM-authored Nim guest programs inside a
-      turn, so a control flow over many tool calls becomes one component call.
-      This release also lands an experimental advisor lane (<code>jev</code>,
-      plus the supervised <code>von</code> launcher) — explicitly opt-in and
-      unproven: it advises, it never grants anything.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="whatsnew.6h"><span class="num">06</span> hardening you notice only when it is missing</h3>
-      <p data-i18n-html="whatsnew.6p">A component that outlives a bus outage re-attaches itself instead
-      of going deaf; a session runner keeps answering while it waits for a
-      human approval; cancelling a turn aborts a concurrent tool-call wave;
-      stale clients are swept from the catalog; and repo-map auto-append is on
-      by default, still behind the admission gates.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="whatsnew.7h"><span class="num">07</span> a gate that finishes</h3>
-      <p data-i18n-html="whatsnew.7p">The bus-contract suite — one binary per component, each with its
-      own NATS server and temporary root — runs in a bounded pool: ~15
-      minutes sequential, about 2 minutes pooled. CI runs that gate,
-      components grew selftests, and the test sandboxes are hermetic.</p>
-    </article>
-  </div>
-  <p class="screens-note" data-i18n-html="whatsnew.more">…and a long tail of smaller fixes and additions. The full list is in the
-  <a href="https://github.com/gokr/niffler/blob/main/CHANGELOG.md" target="_blank" rel="noopener">changelog</a>,
-  every release is on the <a href="https://github.com/gokr/niffler/releases" target="_blank" rel="noopener">releases page</a>,
-  and the previous one was <a href="https://github.com/gokr/niffler/releases/tag/v0.2.0" target="_blank" rel="noopener">v0.2.0</a>.</p>
-</section>
-
-<!-- ============ WHY ============ -->
-<section class="section" id="why">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="why.title">why</span></h2>
-  <div class="cards">
-    <article class="card">
-      <h3 data-i18n-html="why.1h"><span class="num">01</span> processes, not plugins</h3>
-      <p data-i18n-html="why.1p">No dlopen, no ABI borders, no image rot. A component is a process —
-      teardown is <code>exit()</code>, and the OS is the perfect disposer.
-      A component crash does not take core or its peers down.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="why.2h"><span class="num">02</span> one protocol</h3>
-      <p data-i18n-html="why.2p">Core speaks exactly one wire format: JSON envelopes over NATS.
-      The codec is ~77 lines and pure <code>std/json</code> — SDKs in Nim,
-      Go, TypeScript, or whatever you port next.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="why.3h"><span class="num">03</span> self-extension</h3>
-      <p data-i18n-html="why.3p">The agent writes source → calls <code>builder.build</code> → calls
-      <code>core.spawn</code> → the tool is live — and a spawn the catalog
-      refuses (a clashing tool name; the namespace is flat and globally
-      unique) fails the call with the reason and rolls the attempt back, so
-      the name is free for a corrected retry. Adding a capability is a
-      tool call, and the LLM does it to itself mid-conversation. Community
-      packages install the same way: <code>plugin_install</code> clones,
-      compiles from source and spawns — approval-gated, always built from
-      the published code. <code>fabric</code> goes further: the LLM writes
-      whole control flows as Nim guest programs that compile to native
-      processes. External MCP servers join
-      the same bus: the <code>mcp</code> manager spawns one bridge process
-      per server, and its tools appear as ordinary catalog tools.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="why.4h"><span class="num">04</span> persistence of shape</h3>
-      <p data-i18n-html="why.4p">Capabilities survive restarts: spawned components are recorded in the
-      store and restored on boot. The repo holds the reproducible source;
-      <code>var/bin/</code> can be rebuilt, while the store engine holds
-      persistent state (SQLite at <code>var/store.db</code> by default —
-      or TiDB via <code>NIF_STORE_BACKEND</code>). A component that
-      outlives a bus outage re-attaches on its own — it re-resolves the bus,
-      rebuilds its subscriptions and re-announces, with no process kill.</p>
-    </article>
-  </div>
-</section>
-
-<!-- ============ ARCHITECTURE ============ -->
-<section class="section" id="architecture">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="arch.title">architecture</span></h2>
-  <div class="arch">
-    <div class="arch-core box">
-      <span class="box-tag">core (nim)</span>
-      <span data-i18n-html="arch.core">conversation loop · supervisor<br>
-      catalog · dispatch</span>
-    </div>
-    <p class="arch-note" data-i18n-html="arch.note1">one conversation = one process: the system spawns a
-      <code>var/bin/session &lt;id&gt;</code> runner per conversation — kill a
-      runner, every other session keeps going.</p>
-    <div class="arch-bus">
-      <span class="bus-label">svc.core.call · ev.* · NATS</span>
-      <div class="bus-line"></div>
-    </div>
-    <div class="arch-cols">
-      <div class="box">bash<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">builder<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">store<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">plugins<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">skills<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">systemprompt<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">recall<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">compaction<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">fetch<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">models<br><span class="box-lang">go sdk</span></div>
-      <div class="box">provider<br><span class="box-lang">go sdk</span></div>
-      <div class="box">llm<br><span class="box-lang">go sdk</span></div>
-      <div class="box">mcp<br><span class="box-lang">go sdk</span></div>
-      <div class="box">edit<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">lsp<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">repomap<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">processes<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">grep<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">git<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">observe<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">logfile<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">agent<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">expert<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">fabric<br><span class="box-lang">nim sdk</span></div>
-      <div class="box box-your"><span data-i18n="arch.yourtool">your tool</span><br><span class="box-lang" data-i18n="arch.anylang">any language</span></div>
-    </div>
-    <p class="arch-note" data-i18n-html="arch.note2">every box is a small binary using its language's component SDK —<br>peers, isolated, individually killable.</p>
-  </div>
-</section>
-
-<!-- ============ LOOP ============ -->
-<section class="section" id="loop">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="loop.title">the self-extension loop</span></h2>
-  <div class="loop">
-    <div class="step">
-      <span class="step-cmd">write</span>
-      <pre>comp.tool:
-  proc weather(city: string): JsonNode =
-    ## Current weather for a city
-    ## - city: the city name</pre>
-    </div>
-    <span class="step-arrow">→</span>
-    <div class="step">
-      <span class="step-cmd">build</span>
-      <pre>builder.build {
-  lang: "nim",
-  source: ... }</pre>
-    </div>
-    <span class="step-arrow">→</span>
-    <div class="step">
-      <span class="step-cmd">spawn</span>
-      <pre>core.spawn {
-  name: "weather",
-  binary: ... }</pre>
-    </div>
-    <span class="step-arrow">→</span>
-    <div class="step">
-      <span class="step-cmd">call</span>
-      <pre>{"tool": "weather",
- "args": {"city": "Berlin"}}</pre>
-    </div>
-  </div>
-</section>
-
-<!-- ============ VERIFIED ============ -->
-<section class="section" id="verified">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="bench.title">measured, not claimed</span></h2>
-  <div class="cards">
-    <article class="card">
-      <h3 data-i18n-html="bench.1h"><span class="num">01</span> SWE-bench pilots</h3>
-      <p data-i18n-html="bench.1p">10 sympy instances, one-shot, graded by the official
-        <code>swebench</code> Docker harness — niffler, pi, opencode and
-        claudecode side by side over several models. On the GLM lanes niffler
-        resolves fewer tasks, at 2.3–2.9× less total tokens per task; on
-        DeepSeek V4.1 Flash (Synthetic, thinking=high) it takes the same
-        pilot 10/10 vs claudecode 8/10 — its first perfect pilot score. A
-        second pilot, SWE-bench Multilingual (10 real OSS tasks across 7
-        languages), runs on a sibling <code>swebench</code> 5.0.2 venv for
-        datasets that embed their eval specs; its first run landed 6/10
-        official on all three lanes (niffler / pi / claudecode), with
-        perfect cross-lane agreement on 9 of 10 tasks. Reports:
-        <code>bench/reports/swe-sympy10-*.md</code>.</p>
-    </article>
-    <article class="card">
-      <h3 data-i18n-html="bench.2h"><span class="num">02</span> harness bench</h3>
-      <p data-i18n-html="bench.2p">A harness-comparison framework — thirty red-at-base
-        tasks (17 core, 10 mid-tier targeting 2–10 min/cell, and a 3-task
-        fan-out tier whose mechanical work varies per item or carries
-        oversized intermediates — the shapes where guest programs and
-        scripted bulk work earn their keep) tagged by
-        kind (general / fabric / expert / selfextend), each verified
-        green by a reference implementation, with per-turn feedback
-        loops, protected-file guards and provider token accounting —
-        niffler / pi / opencode / codewhale / claudecode / dsh × several
-        models, a <code>--thinking low|max</code> matrix, plus a paired
-        niffler-expert variant that measures the advisory peer. SWE-bench
-        Verified and Datacurve's DeepSWE (113 long-horizon tasks) run as
-        additional benchmarks; <code>bench/container</code> ships a Docker
-        job image and <code>bench/launch.mjs</code> is a guided launcher.
-        The full 17-task matrix ran green across all lanes (340/340);
-        the mid-tier set calibrated 20/20 (niffler vs pi, GLM low); on
-        the full 30-task set the suite is green on both syn-large
-        (Synthetic's GLM-5.3-Flash) and deepseek-v4.1-flash — niffler
-        30/30 on both models at thinking=low, with pi 30/30 on deepseek
-        low and high
-        (<code>bench/reports/full30-{syn-large,deepseek-v4.1-flash}-*-report.md</code>);
-        the first claudecode pairing on full30 ended 30/30 vs 30/30, with
-        niffler leaner per turn (7.3 vs 9.7 avg turns); the fresh
-        direct-DeepSeek pairing against DeepSeek Harness itself (no gateway,
-        DSH's sdk-minimal profile) ended 30/30 vs 30/30 at thinking=low, with
-        niffler averaging fewer turns, ~17 s vs ~45 s and 39k vs 51k tokens
-        per cell
-        (<code>bench/reports/full30-direct-dsh-rc3-low-report.md</code>); a niffler-only rerun
-        on the optimized stack holds 30/30 at roughly half the prompt volume
-        (48 s / 20.5k prompt tokens vs 63 s / 38.9k per cell)
-        (<code>bench/reports/full30-synlarge-low-niffler-report.md</code>);
-        and the post-diet trimmed-prefix runs stay green while uncached
-        input drops ~40% at high effort
-        (<code>bench/reports/full27-syn-large-{low,high}-trimmed-report.md</code>).</p>
-    </article>
-  </div>
-</section>
-
-<!-- ============ QUICKSTART ============ -->
-<section class="section" id="quickstart">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="qs.title">quickstart</span></h2>
-  <div class="qs">
-    <div class="term term-sm">
-      <div class="term-bar">
-        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-        <span class="term-title">terminal</span>
+  <main id="main">
+    <!-- ═══ HERO ═══ -->
+    <section class="hero" id="top">
+      <p class="hero-kicker">A self-extending agent harness</p>
+      <h1>Small harness.<br><em>It builds the rest.</em></h1>
+      <p class="lede">Niffler is built from small Unix-style processes — every
+        capability is a component on one NATS wire — so the agent can write,
+        compile and spawn <strong>its own tools mid-conversation</strong>: the
+        harness extends itself while you talk to it. It is as simple and quick
+        to use as the leanest coding agents, and it keeps token use low — the
+        numbers are measured, not promised.
+        Sub-agents, background processes, a permission gate, MCP, LSP? In the
+        box as well.</p>
+      <div class="hero-cta">
+        <code class="hero-cmd"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash</code>
+        <a class="btn" href="https://github.com/gokr/niffler">GitHub ↗</a>
       </div>
-      <div class="term-body">
-        <p><span class="p">$</span> <span data-i18n="qs.clone">git clone git@github.com:gokr/niffler.git && cd niffler</span></p>
-        <p><span class="p">$</span> make setup        <span class="dim" data-i18n="qs.setup"># prerequisites (Ubuntu / macOS)</span></p>
-        <p><span class="p">$</span> cp .env.example .env <span class="dim" data-i18n="qs.env"># add an LLM API key; edit other settings as needed</span></p>
-        <p><span class="p">$</span> make build        <span class="dim" data-i18n="qs.make"># core + components (no UI toolchain), once</span></p>
-        <p><span class="p">$</span> make install      <span class="dim" data-i18n="qs.install"># niffler / niffler-cli / niffler-console on PATH (niffler-tui on request)</span></p>
-        <p><span class="p">$</span> make install-tui  <span class="dim" data-i18n="qs.installtui"># same, installing the niffler-tui terminal client quietly</span></p>
-        <p><span class="p">$</span> niffler-tui        <span class="dim" data-i18n="qs.tui"># terminal chat — boots the harness on demand if none runs</span></p>
-        <p><span class="p">$</span> make install-lsp  <span class="dim" data-i18n="qs.installlsp"># idempotent installer for the lsp component's default language servers</span></p>
-        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># the bus-contract suite — the full gate, isolated per-test NATS + temp root</span></p>
-        <p class="dim">│</p>
-        <p class="dim" data-i18n="qs.see">└─ make run / recover / down / down-here / ram / uninstall · see docs/MANUAL.md</p>
+      <p class="release-line"><a href="https://github.com/gokr/niffler/releases/tag/v0.3.0" target="_blank" rel="noopener">v0.3.0</a><span> — images in a turn on every provider protocol, server-side <code>search</code> over the store, and SDK components that re-attach after a bus outage</span></p>
+
+      <figure class="hero-shot">
+        <a href="img/niffler-tui.png" target="_blank" rel="noopener">
+          <img src="img/niffler-tui.png" alt="niffler-tui, the terminal chat client: a conversation with tool calls, an approval prompt and per-turn cache statistics" width="1198" height="686">
+        </a>
+        <figcaption>niffler-tui — one client of a shared, local instance. Cache hit rate reported on every turn.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ═══ FAST ═══ -->
+    <section class="sec" id="fast">
+      <header class="sec-head">
+        <p class="kicker"><span class="num">01</span> Fast &amp; cache-effective</p>
+        <h2>Strict cache regime,<br><em>token efficient.</em></h2>
+      </header>
+      <p class="body">The request prefix is tiny and stays byte-stable for the
+        conversation's lifetime: a very small base prompt and a deliberately
+        small frozen direct toolset, so provider caches stay hot turn after
+        turn. Everything else is progressive discovery — one
+        <code>discover</code>/<code>invoke</code> away, entering as history
+        instead of prompt bloat. Fewer tokens per turn, quicker round trips —
+        and the numbers are measured in <code>bench/</code> against pi,
+        opencode and claudecode, not asserted.</p>
+      <div class="cache-meter" role="img" aria-label="Illustration: of a 252k token turn, only 1.8k tokens are new — the rest hits the prompt cache. Hit rate 99.3%.">
+        <div class="cache-bar"><span class="cache-hit" style="width:99.2%"></span><span class="cache-miss" style="width:0.8%"></span></div>
+        <div class="cache-legend">
+          <span>cache hit · 250.3k</span>
+          <span>new this turn · 1.8k</span>
+          <span class="legend-dim">99.3% — printed in the UI, every turn</span>
+        </div>
       </div>
-    </div>
-    <div class="qs-side">
-      <h3 data-i18n="qs.requirements">requirements</h3>
-      <ul class="reqs">
-        <li><span class="check">✓</span> <span data-i18n="qs.req.nim">nim 2.2.12+</span></li>
-        <li><span class="check">✓</span> <span data-i18n="qs.req.go">go</span></li>
-        <li><span class="check">✓</span> <span data-i18n="qs.req.nats">nats-server (built from source)</span></li>
-        <li><span class="check">✓</span> <span data-i18n="qs.req.node">node / npm</span></li>
-        <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
+      <div class="grid grid-3 grid-compare">
+        <article>
+          <h3>Pi <span class="ver">0.99.2</span></h3>
+          <p class="cmp-tools">read · bash · edit · write</p>
+          <p class="cmp-note">3 more built in — grep · find · ls — off by default (<code>+grep</code> to enable)</p>
+          <p class="cmp-row"><span>base prompt</span><b>≈0.68k</b></p>
+          <p class="cmp-row"><span>base prompt + tools</span><b>≈1.4k</b></p>
+        </article>
+        <article class="cmp-us">
+          <h3>Niffler <span class="ver">0.3.0</span></h3>
+          <p class="cmp-tools">discover · invoke · bash · read · write · edit · grep</p>
+          <p class="cmp-note">the whole catalog (~25 components) sits behind discover / invoke</p>
+          <p class="cmp-row"><span>base prompt</span><b>≈0.36k</b></p>
+          <p class="cmp-row"><span>base prompt + tools</span><b class="b-hero">≈2.25k</b></p>
+        </article>
+        <article>
+          <h3>Claude Code <span class="ver">2.1.286</span></h3>
+          <p class="cmp-tools">23 tools — Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</p>
+          <p class="cmp-row"><span>base prompt</span><b>≈1.5k</b></p>
+          <p class="cmp-row"><span>base prompt + tools</span><b>≈18k</b></p>
+        </article>
+        <article>
+          <h3>DSH <span class="ver">0.2.0-rc.2</span></h3>
+          <p class="cmp-tools">25 tools — bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</p>
+          <p class="cmp-note">out of the box — every base-backed profile
+            (tui · web · headless)</p>
+          <p class="cmp-row"><span>base prompt</span><b>≈6.5k</b></p>
+          <p class="cmp-row"><span>base prompt + tools</span><b>≈11.7k</b></p>
+        </article>
+        <article>
+          <h3>Opencode <span class="ver">1.18.32 · v2.0.22 out</span></h3>
+          <p class="cmp-tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</p>
+          <p class="cmp-note">captured from the v1.18.32 wire — v2's docs list
+            a slightly different set (adds apply_patch · question ·
+            websearch)</p>
+          <p class="cmp-row"><span>base prompt</span><b>≈10.7k</b></p>
+          <p class="cmp-row"><span>base prompt + tools</span><b>≈16k</b></p>
+        </article>
+        <article class="cmp-method">
+          <h3>How to read this</h3>
+          <p class="cmp-note">≈ k tokens (chars/4) from the exact first-request
+          bytes each harness sends into an empty workspace — captured from live
+          wire requests, Oct 2026. User content excluded (Pi lists your
+          installed skills in its prompt by default, Niffler adds the repo's
+          AGENTS.md chain, Claude Code the CLAUDE.md) — all five captured the
+          same way.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ═══ FEATURES ═══ -->
+    <section class="sec" id="features">
+      <header class="sec-head">
+        <p class="kicker"><span class="num">02</span> Interesting features, relatively rare</p>
+        <h2>Not one of a kind —<br><em>rarely all together.</em></h2>
+      </header>
+      <p class="body">None of the following is exclusive to Niffler. But the lean
+        harnesses make you give most of it up, and the big ones hide it behind
+        their UI. Here it is all in one small box:</p>
+      <div class="grid">
+        <article>
+          <h3>Sub-agents</h3>
+          <p>Delegate and walk away — a background child job runs, and when it
+            settles it <em>wakes your conversation</em> with the result. Steer,
+            continue or fork it later.</p>
+        </article>
+        <article>
+          <h3>Background processes</h3>
+          <p>Servers, watchers and builds run under the harness: start, poll,
+            kill. No second terminal, no tmux discipline.</p>
+        </article>
+        <article>
+          <h3>Permission gate</h3>
+          <p>A tool can ask first. You answer <code>y/N</code> per call —
+            sub-agents included: their gated calls route to you, their budgets
+            are hard-wired. With no human reachable, the call is denied. Fail
+            closed, never silently allowed.</p>
+        </article>
+        <article>
+          <h3>Self-extension</h3>
+          <p>The agent writes a source file, compiles it, spawns it as a process
+            and calls the new tool — <em>mid-conversation</em>, in any language.
+            Community packages install the same way, always built from
+            source.</p>
+        </article>
+        <article>
+          <h3>Programmable tool calling</h3>
+          <p><code>fabric</code> compiles a small guest program the agent
+            writes: typed wrappers over pinned tool schemas turn a dozen tool
+            calls into one native loop — effect-aware batching, budgets,
+            approvals by content digest.</p>
+        </article>
+        <article>
+          <h3>Compaction as a projection</h3>
+          <p>Context pressure walks a visible ladder — byte-exact prune, then a
+            checkpointed projection compactor (a replaceable seam), then trim as
+            a last resort. Nothing degrades silently, a trim is durable, and
+            everything dropped stays <em>recallable</em>.</p>
+        </article>
+        <article>
+          <h3>One conversation = one process</h3>
+          <p>Each conversation gets its own session runner, so conversations run
+            truly in parallel and one dead runner loses only its in-flight turn.
+            An advisory peer (<code>expert</code>) can watch a session and
+            advise — turn-bound, never steering by itself.</p>
+        </article>
+        <article>
+          <h3>Any language</h3>
+          <p>Components are plain processes: Nim, Go, TypeScript — or a shell
+            script with no SDK at all. The language is a preference.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ═══ EVERYDAY ═══ -->
+    <section class="sec" id="everyday">
+      <header class="sec-head">
+        <p class="kicker"><span class="num">03</span> Everything you take for granted</p>
+        <h2>The table stakes,<br><em>all of them.</em></h2>
+      </header>
+      <p class="body">None of this is exotic — you expect it in a serious
+        harness. Some minimal ones make you give it up. Niffler ships all of
+        it:</p>
+
+      <div class="grid grid-3">
+        <article>
+          <h3>Providers, no JSON</h3>
+          <p>Add a backend with one call and hop with <code>/model</code> and
+            <code>/effort</code> — no config files to hand-edit. OpenAI-compatible,
+            Anthropic and Codex lanes, or log in with your ChatGPT/Claude
+            <em>subscription</em> over OAuth. Pins are per-conversation.</p>
+        </article>
+        <article>
+          <h3>MCP in, tools out</h3>
+          <p>Register any MCP server once (stdio, http or sse): a supervised
+            bridge process per server announces its tools and prompts as
+            <em>ordinary catalog tools</em> — same discovery, same approval
+            gate, same call path.</p>
+        </article>
+        <article>
+          <h3>LSP for your language</h3>
+          <p>Diagnostics, definitions, references, hover over real language
+            servers: Go, Nim, TypeScript/JavaScript, Python, Rust, C/C++, Bash,
+            Java, PHP, Ruby, C# ship configured. Yours missing? One entry in
+            <code>servers.json</code> — the agent can add it itself.</p>
+        </article>
+      </div>
+
+      <div class="feat-group">
+        <p class="feat-label">Code, files &amp; the web</p>
+        <ul class="features">
+          <li><strong>File tools</strong><span>batched windowed reads, exact-match edit with a guarded fallback, atomic write, persistent undo</span></li>
+          <li><strong>Search</strong><span>gitignore-aware grep and file finding — stateless replicas so parallel calls really run in parallel</span></li>
+          <li><strong>Git</strong><span>status, diff, log, show, blame — read-only and approval-free</span></li>
+          <li><strong>Web fetch</strong><span>real HTML extraction, SSRF-validated, oversized bodies spill to disk</span></li>
+          <li><strong>Images</strong><span>screenshot in, multimodal turn out — MIME checks, caps and pixel budgets included</span></li>
+          <li><strong>Repo map</strong><span>ranked symbols auto-appended where a repo earns it</span></li>
+        </ul>
+      </div>
+      <div class="feat-group">
+        <p class="feat-label">Conversations &amp; context</p>
+        <ul class="features">
+          <li><strong>Steering</strong><span>course-correct mid-turn without cancelling the work in flight</span></li>
+          <li><strong>Full recall</strong><span>trimmed or compacted-away messages stay searchable through <code>context_recall</code></span></li>
+          <li><strong>Durable resume</strong><span>canonical append-only history in the store — restart mid-task and continue, attachments included</span></li>
+          <li><strong>Per-conversation controls</strong><span>tool allowlists, budgets, workspace pin, provider/model/effort pins</span></li>
+          <li><strong>Introspection</strong><span><code>/export</code> the exact provider request, <code>prompt_preview</code>, per-role counts, <code>/compact</code> now</span></li>
+          <li><strong>Slash commands</strong><span>built in — plus ones contributed by installed plugins and MCP servers</span></li>
+        </ul>
+      </div>
+      <div class="feat-group">
+        <p class="feat-label">Trust &amp; safety</p>
+        <ul class="features">
+          <li><strong>Approvals everywhere</strong><span>any gated caller, sub-agents included — routed to the human driving the turn, denied when none is reachable</span></li>
+          <li><strong>Sub-agent limits</strong><span>hard budgets that cannot be talked around; soft limits negotiate over the approval channel</span></li>
+          <li><strong>Remembered grants</strong><span>per-tool “don't ask again”, digest-keyed for program-shaped calls</span></li>
+          <li><strong>Fail closed</strong><span>timeouts deny, unknown limits refuse, a missing component degrades explicitly — never silently</span></li>
+          <li><strong>Least privilege</strong><span>MCP environment allowlists and guard processes, no bus access or secrets in fabric's executor, redacted listings</span></li>
+        </ul>
+      </div>
+      <div class="feat-group">
+        <p class="feat-label">Ecosystem &amp; extension</p>
+        <ul class="features">
+          <li><strong>Agent Skills</strong><span>SKILL.md skills: list, search, install and audit — interop with the wider skills ecosystem</span></li>
+          <li><strong>Plugins</strong><span>GitHub packages cloned and built from source, approval-gated, manifest v1 or v2 recipes</span></li>
+          <li><strong>Three SDKs</strong><span>Nim, Go and TypeScript around one tiny portable codec — or no SDK at all, a shell script speaks the wire</span></li>
+          <li><strong>Tool profiles</strong><span>named toolset selectors resolved once per conversation, or sticky tools promoted on demand</span></li>
+          <li><strong>A store that answers</strong><span>server-side full-text search; SQLite or TiDB behind one contract</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ═══ CLIENTS ═══ -->
+    <section class="sec" id="clients">
+      <header class="sec-head">
+        <p class="kicker"><span class="num">04</span> Clients, not containers</p>
+        <h2>The harness<br><em>isn't a UI.</em></h2>
+      </header>
+      <p class="body">Niffler runs headless as a shared local service: the agent,
+        its tools, background jobs and history live in the <em>instance</em> —
+        not in a window. Clients are thin attachers over the bus; several can
+        share one running instance at once. A client boots the harness on
+        demand, an autostarted core turns itself off when the last client
+        leaves — and closing your terminal mid-task loses nothing: background
+        jobs keep running and wake the conversation when they settle.</p>
+      <ul class="features">
+        <li><strong>niffler-tui</strong><span>the terminal chat client — a plugin that boots the harness on demand</span></li>
+        <li><strong>cli</strong><span>the headless driver: call tools, install packages, run whole turns from a script or CI</span></li>
+        <li><strong>console</strong><span>subscribes the bus and renders every envelope live — better than <code>nats sub</code></span></li>
+        <li><strong>desktop UI</strong><span>an experimental spin-off package (<code>gokr/niffler-ui</code>) — same wire, its own repo</span></li>
       </ul>
-      <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, checksums, natsnim — installed automatically on first build.</p>
-      <h3 data-i18n="qs.clonehome.h">one clone = one instance</h3>
-      <p class="dim small" data-i18n-html="qs.clonehome.p">a harness claims its home bus (<code>.env</code>'s <code>NIF_NATS_URL</code>, default <code>nats://127.0.0.1:4222</code>) only when the answering core serves this root — every catalog response carries <code>root</code> + <code>gitHash</code> — and yields loudly to a foreign one. Dev clones set <code>NIF_NATS_SPAWN=1</code> for an isolated random-port bus, and no child (component, nats-server) outlives its harness.</p>
-    </div>
-  </div>
-</section>
+      <p class="fineprint">Service mode runs with no terminal at all
+        (<code>niffler &lt; /dev/null</code>) — and <code>niffler</code> in a
+        terminal is an admin shell (status, catalog, sessions), not a chat.</p>
+    </section>
 
-<!-- ============ WIRE ============ -->
-<section class="section" id="wire">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="wire.title">one wire to rule them</span></h2>
-  <div class="wire">
-    <div class="term term-sm">
-      <div class="term-bar">
-        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-        <span class="term-title">envelope.json</span>
+    <!-- ═══ UNIX ═══ -->
+    <section class="sec" id="unix">
+      <header class="sec-head">
+        <p class="kicker"><span class="num">05</span> Unix-style architecture</p>
+        <h2>Small programs,<br><em>one wire.</em></h2>
+      </header>
+      <p class="body">Every capability is a separate process that does one thing —
+        its own lifecycle, its own failures, isolated from the agent's mind. One
+        wire connects them all: JSON envelopes over NATS. So the agent can write,
+        compile and spawn a new tool <em>mid-conversation</em>, and teardown is
+        just <code>exit()</code>. The OS is the disposer.</p>
+      <figure class="arch" role="img" aria-label="Process anatomy of a Niffler instance: optional clients connect to one NATS bus (nats-server, one process); core (one process) supervises child component processes — store, bash, llm and systemprompt in the minimal profile, twenty-one more in a stock boot — and every conversation gets its own ephemeral session runner process.">
+        <svg viewBox="0 0 920 540" aria-hidden="true" focusable="false">
+          <text class="a-tag" x="40" y="24">CLIENTS — THIN ATTACHERS, ANY NUMBER AT ONCE</text>
+          <g class="a-client"><rect x="180" y="36" width="170" height="40" rx="8"/><text x="265" y="61">niffler-tui</text></g>
+          <g class="a-client"><rect x="380" y="36" width="170" height="40" rx="8"/><text x="465" y="61">cli · console</text></g>
+          <g class="a-client"><rect x="580" y="36" width="170" height="40" rx="8"/><text x="665" y="61">desktop UI · exp.</text></g>
+          <path class="a-drop" d="M265 76v34M465 76v34M665 76v34"/>
+
+          <text class="a-bus-label" x="880" y="102">NATS — ONE JSON ENVELOPE · NATS-SERVER · 1 PROCESS</text>
+          <path class="a-bus" d="M40 110h840"/>
+          <circle class="a-pulse" cy="110" r="4"><animate attributeName="cx" values="48;872" dur="5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.08;.92;1" dur="5s" repeatCount="indefinite"/></circle>
+
+          <path class="a-drop" d="M155 110v50"/>
+          <g class="a-box a-min">
+            <rect x="40" y="160" width="230" height="64" rx="8"/>
+            <text class="a-t" x="55" y="187">core · 1 process</text>
+            <text class="a-sub" x="55" y="207">supervisor · dispatch · catalog</text>
+          </g>
+
+          <path class="a-drop" d="M600 110v40"/>
+          <rect class="a-frame" x="320" y="150" width="560" height="330" rx="10"/>
+          <text class="a-tag" x="336" y="176">COMPONENTS — CHILD PROCESSES OF CORE</text>
+          <g class="a-chip a-min"><rect x="336" y="188" width="123" height="32" rx="6"/><text x="397.5" y="209">store</text></g>
+          <g class="a-chip a-min"><rect x="467" y="188" width="123" height="32" rx="6"/><text x="528.5" y="209">bash</text></g>
+          <g class="a-chip a-min"><rect x="598" y="188" width="123" height="32" rx="6"/><text x="659.5" y="209">llm</text></g>
+          <g class="a-chip a-min"><rect x="729" y="188" width="135" height="32" rx="6"/><text x="796.5" y="209">systemprompt</text></g>
+          <g class="a-chip"><rect x="336" y="232" width="99" height="32" rx="6"/><text x="385.5" y="253">agent</text></g>
+          <g class="a-chip"><rect x="443" y="232" width="99" height="32" rx="6"/><text x="492.5" y="253">builder</text></g>
+          <g class="a-chip"><rect x="550" y="232" width="99" height="32" rx="6"/><text x="599.5" y="253">compaction</text></g>
+          <g class="a-chip"><rect x="657" y="232" width="99" height="32" rx="6"/><text x="706.5" y="253">edit</text></g>
+          <g class="a-chip"><rect x="764" y="232" width="99" height="32" rx="6"/><text x="813.5" y="253">expert</text></g>
+          <g class="a-chip"><rect x="336" y="276" width="99" height="32" rx="6"/><text x="385.5" y="297">fabric</text></g>
+          <g class="a-chip"><rect x="443" y="276" width="99" height="32" rx="6"/><text x="492.5" y="297">fetch</text></g>
+          <g class="a-chip"><rect x="550" y="276" width="99" height="32" rx="6"/><text x="599.5" y="297">git</text></g>
+          <g class="a-chip"><rect x="657" y="276" width="99" height="32" rx="6"/><text x="706.5" y="297">grep ×4</text></g>
+          <g class="a-chip"><rect x="764" y="276" width="99" height="32" rx="6"/><text x="813.5" y="297">jev</text></g>
+          <g class="a-chip"><rect x="336" y="320" width="99" height="32" rx="6"/><text x="385.5" y="341">lsp</text></g>
+          <g class="a-chip"><rect x="443" y="320" width="99" height="32" rx="6"/><text x="492.5" y="341">logfile</text></g>
+          <g class="a-chip"><rect x="550" y="320" width="99" height="32" rx="6"/><text x="599.5" y="341">mcp</text></g>
+          <g class="a-chip"><rect x="657" y="320" width="99" height="32" rx="6"/><text x="706.5" y="341">models</text></g>
+          <g class="a-chip"><rect x="764" y="320" width="99" height="32" rx="6"/><text x="813.5" y="341">observe</text></g>
+          <g class="a-chip"><rect x="336" y="364" width="99" height="32" rx="6"/><text x="385.5" y="385">plugins</text></g>
+          <g class="a-chip"><rect x="443" y="364" width="99" height="32" rx="6"/><text x="492.5" y="385">processes</text></g>
+          <g class="a-chip"><rect x="550" y="364" width="99" height="32" rx="6"/><text x="599.5" y="385">provider</text></g>
+          <g class="a-chip"><rect x="657" y="364" width="99" height="32" rx="6"/><text x="706.5" y="385">recall</text></g>
+          <g class="a-chip"><rect x="764" y="364" width="99" height="32" rx="6"/><text x="813.5" y="385">repomap</text></g>
+          <g class="a-chip"><rect x="336" y="408" width="99" height="32" rx="6"/><text x="385.5" y="429">skills</text></g>
+          <g class="a-chip a-more"><rect x="443" y="408" width="420" height="32" rx="6"/><text x="653" y="429">your tool — write → build → spawn (any language)</text></g>
+          <text class="a-note" x="336" y="462">25 components · 28 processes in a stock boot — one process per capability, a crash kills nothing but itself</text>
+
+          <rect class="a-frame" x="40" y="286" width="230" height="136" rx="10"/>
+          <text class="a-tag" x="56" y="312">SESSION RUNNERS · EPHEMERAL</text>
+          <g class="a-chip"><rect x="56" y="324" width="198" height="26" rx="6"/><text x="155" y="342">session conv-a4f…</text></g>
+          <g class="a-chip"><rect x="56" y="356" width="198" height="26" rx="6"/><text x="155" y="374">session conv-9d1…</text></g>
+          <g class="a-chip"><rect x="56" y="388" width="198" height="26" rx="6"/><text x="155" y="406">session conv-77b…</text></g>
+          <path class="a-sup" d="M155 224v62"/>
+          <path class="a-drop a-dash" d="M40 354h-14V110"/>
+
+          <text class="a-note a-totals" x="40" y="510">a minimal boot: 6 processes · a stock boot: 30 · +1 session runner per active conversation</text>
+        </svg>
+      </figure>
+
+      <div class="inv">
+        <div class="inv-row">
+          <span class="inv-k">minimal profile · 6 processes</span>
+          <span class="inv-v">nats-server · core · store · bash · llm · systemprompt</span>
+        </div>
+        <div class="inv-row">
+          <span class="inv-k">stock boot · +21 components</span>
+          <span class="inv-v">agent · builder · compaction · edit · expert · fabric · fetch · git · grep ×4 · jev · lsp · logfile · mcp · models · observe · plugins · processes · provider · recall · repomap · skills</span>
+        </div>
+        <div class="inv-row">
+          <span class="inv-k">+9 more ship in the box</span>
+          <span class="inv-v">store-tidb <em>· alternate store engine</em> — llm-openai <em>· example adapter</em> — mcp-bridge <em>· one per MCP server</em> — fabric-exec <em>· fabric's executor</em> — hooks <em>· event hooks, off by default</em> — von <em>· optional decision-runtime launcher</em> — cli · console <em>· scripting · live bus viewer</em> — dialog <em>· SDK-free bash demo, now in examples/dialog</em></span>
+        </div>
       </div>
-      <div class="term-body">
+
+      <div class="loop" role="img" aria-label="The self-extension loop: the agent writes source, builds it, spawns it as a process, then calls it as a tool.">
+        <span class="step">write</span><span class="arrow">→</span>
+        <span class="step">build</span><span class="arrow">→</span>
+        <span class="step">spawn</span><span class="arrow">→</span>
+        <span class="step step-live">call</span>
+        <p class="loop-note">the agent extends itself, in any language, while you talk to it</p>
+      </div>
+
+      <div class="wire">
+        <div class="term term-sm">
+          <div class="term-bar"><span>envelope.json</span></div>
+          <div class="term-body">
 <pre>{
   "v": 1,
-  "id": "01J…",
-  "op": "call",
-  "svc": "bash",
-  "tool": "exec",
-  "args": { "cmd": "uname -a" },
-  "meta": { "sessionId": "s-01J…" }
-}
-</pre>
+  "id": "1760825…-4242-1",
+  "kind": "call",
+  "tool": "bash",
+  "args": { "command": "uname -a" },
+  "caller": "cli"
+}</pre>
+          </div>
+        </div>
+        <div class="wire-notes">
+          <p>Calls land on <code>svc.&lt;component&gt;.call</code> (core serves
+          <code>svc.core.call</code>), events fan out on <code>ev.*</code> —
+          four kinds: <code>call</code> · <code>result</code> ·
+          <code>event</code> · <code>error</code>. That is the whole bus
+          contract.</p>
+          <p>The codec is ~77 lines of pure <code>std/json</code>, mirrored 1:1
+          by the Nim, Go and TypeScript SDKs — spec:
+          <a href="https://github.com/gokr/niffler/blob/main/docs/WIRE.md" target="_blank" rel="noopener">docs/WIRE.md</a> ·
+          rationale:
+          <a href="https://github.com/gokr/niffler/blob/main/docs/research/REBOOT.md" target="_blank" rel="noopener">research/REBOOT.md</a></p>
+        </div>
       </div>
-    </div>
-    <div class="wire-notes">
-      <p data-i18n-html="wire.note1">core → <code>svc.core.call</code>, components → <code>svc.&lt;name&gt;.call</code>,<br>
-      events on <code>ev.*</code>. that's the whole bus contract.</p>
-      <p class="dim" data-i18n-html="wire.note2">spec: <a href="https://github.com/gokr/niffler/blob/main/docs/WIRE.md" target="_blank" rel="noopener">docs/WIRE.md</a> · rationale: <a href="https://github.com/gokr/niffler/blob/main/docs/research/REBOOT.md" target="_blank" rel="noopener">docs/research/REBOOT.md</a></p>
-    </div>
-  </div>
-</section>
+    </section>
 
-</main>
+    <!-- ═══ CREDITS ═══ -->
+    <section class="sec" id="credits">
+      <header class="sec-head">
+        <p class="kicker"><span class="num">06</span> Sources of inspiration</p>
+        <h2>Credit where<br><em>credit is due.</em></h2>
+      </header>
+      <p class="body">Niffler is meant to be easily extended — a trait it shares
+        with Pi, its biggest influence. It wears its sources on its sleeve.
+        What we took, and from where:</p>
+      <div class="grid">
+        <article>
+          <h3>Pi</h3>
+          <p>Token efficiency, a small initial toolset and self-aware
+            extendability — a harness meant to be easily extended. Niffler is
+            built the same way and pushes a variant architecture: loosely
+            coupled components, <em>replaceable at runtime</em>.</p>
+        </article>
+        <article>
+          <h3>DSH</h3>
+          <p>The more advanced component model, and the serious techniques most
+            harnesses never attempt: <em>projection-based compaction</em> and
+            the sub-agent model.</p>
+        </article>
+        <article>
+          <h3>Opencode</h3>
+          <p>Simplicity of use — the standing reminder that a powerful harness
+            can still be obvious to drive.</p>
+        </article>
+        <article>
+          <h3>Reasonix</h3>
+          <p>The strict cache regime, working especially well for models with
+            cheap cached tokens like DeepSeek — where cache hits are the
+            economics of the turn.</p>
+        </article>
+      </div>
+    </section>
 
-<footer class="footer">
-  <pre class="footer-ascii" aria-hidden="true">
- ══════════════════════════════════════════ 
-║ niffler — a self-extending agent harness ║
- ══════════════════════════════════════════ 
-  </pre>
-  <p class="dim" data-i18n-html="footer.text">niffler — a self-extending agent harness · <a href="https://github.com/gokr/niffler" target="_blank" rel="noopener">github.com/gokr/niffler</a> · <a href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener">discord.gg/ThJFEAJUAk</a></p>
-</footer>
+    <!-- ═══ INSTALL ═══ -->
+    <section class="sec" id="install">
+      <header class="sec-head">
+        <p class="kicker"><span class="num">07</span> Install</p>
+        <h2>Two minutes in.</h2>
+      </header>
+      <div class="term">
+        <div class="term-bar">
+          <span>terminal</span>
+          <button class="copy" type="button" data-copy-target="setup-code">copy</button>
+        </div>
+        <pre id="setup-code"><code>curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash
+<span class="dim"># asks before creating ~/niffler — or pick a location: | bash -s -- /your/dir</span>
+<span class="dim"># or manually, from a clone:</span>
+git clone https://github.com/gokr/niffler.git &amp;&amp; cd niffler
+make setup &amp;&amp; make build
+cp .env.example .env   <span class="dim"># add a model API key</span>
+make install-tui       <span class="dim"># the terminal client (a plugin)</span>
+niffler-tui            <span class="dim"># boots the harness on demand</span></code></pre>
+      </div>
+      <ul class="reqs">
+        <li><span class="check">✓</span> nim 2.2.12+</li>
+        <li><span class="check">✓</span> go</li>
+        <li><span class="check">✓</span> node / npm <span class="dim">— optional: npx skills, npm MCP servers, TypeScript components (the core, clients and the TUI are Nim/Go — the installer asks)</span></li>
+        <li><span class="check">✓</span> trafilatura <span class="dim">— optional, richer HTML extraction</span></li>
+      </ul>
+      <p class="fineprint">Niffler is built from source and distributed that way —
+        there are no prebuilt binaries. The one-line installer brings in
+        everything missing (git, make, Go, Node.js, the Nim toolchain and
+        nimble packages); building by hand, <code>make doctor</code> reports
+        what is missing. The bus is bundled — core spawns its own nats-server.
+        The desktop UI is an experimental spin-off — install it like any
+        package: <code>cli install gokr/niffler-ui</code>. Full story in the
+        <a href="https://github.com/gokr/niffler/blob/main/docs/MANUAL.md">manual ↗</a>.</p>
+    </section>
+  </main>
 
-<script src="i18n.js"></script>
-<script src="app.js"></script>
+  <footer class="foot">
+    <img class="foot-logo" src="niffler-logo-with-text.svg" alt="Niffler" width="132" height="20">
+    <p class="foot-line">Small by default. It builds the rest.</p>
+    <p class="foot-links">
+      <a href="https://github.com/gokr/niffler">GitHub</a>
+      <a href="https://github.com/gokr/niffler/releases/tag/v0.3.0">v0.3.0</a>
+      <a href="https://discord.gg/ThJFEAJUAk">Discord</a>
+    </p>
+  </footer>
 </body>
 </html>

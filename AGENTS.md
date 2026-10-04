@@ -299,11 +299,8 @@ is the precedent for steps 2–6.
    section may describe unshipped behavior.
 4. **Move the release pointers.** `README.md` ("The current release is …"),
    `README.zh.md`, `README.zh-TW.md` and the website's release line
-   (`website/index.html` plus the `hero.release` entry in every
-   `website/i18n.js` locale) all still name the previous release. The
-   published site is currently `website-alternative/` (GitHub Pages at
-   `niffler.flatout.works`) — its `release-line` in `index.html` is a release
-   pointer too, until the two sites are merged.
+   (`website/index.html`'s `release-line`, published at
+   `niffler.flatout.works`) all still name the previous release.
 5. **Refresh the translations last.** English first, then the localized
    READMEs/manuals and the website locales — they are AI autotranslations of
    the English source, so cutting them ahead of it just bakes in staleness.
