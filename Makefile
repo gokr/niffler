@@ -723,11 +723,16 @@ install-zenity:
 	else $(SUDO) apt-get install -y zenity; fi
 
 install-node:
+	@# Node is OPTIONAL (Niffler core is Nim + Go): it serves TypeScript
+	@# components, npx skills and npm-based MCP servers. Never fatal.
 	@if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then \
 		if [ -n "$(IS_MAC)" ]; then brew install node; \
 		elif command -v snap >/dev/null 2>&1; then $(SUDO) snap install node --classic --channel=22; \
-		else echo "Install Node.js 20+ and npm from https://nodejs.org/ (or your version manager)"; exit 1; fi; \
-	fi
-	@node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error("Node.js 20+ required by the frontend dependencies; upgrade Node and check PATH."); process.exit(1); }'
+		else echo "note: node/npm absent — optional; needed only for TS components,"; \
+		     echo "      npx skills and npm MCP servers. Install Node.js 20+ from"; \
+		     echo "      https://nodejs.org/ (or your version manager) when you want them"; fi; \
+	elif node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' 2>/dev/null; then \
+		echo "node: OK (20+)"; \
+	else echo "note: node is older than 20 — TS components want 20+; upgrade when it matters"; fi
 
 # Ubuntu 24.04 apt ships Node 18; the TypeScript SDK and ts components want 20+.

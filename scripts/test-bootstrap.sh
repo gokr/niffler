@@ -63,8 +63,8 @@ if e_out="$($RUNTIME run --rm -i "$IMAGE" bash -c '
   apt-get update -qq >/dev/null 2>&1
   apt-get install -y -qq git make curl ca-certificates >/dev/null 2>&1
   bash -s -- --dry-run /opt/x
-' < "$BS" 2>&1)" && echo "$e_out" | grep -q "would install Node"; then
-  echo "ok: second-run path clean (reached the Node step without dying)"
+' < "$BS" 2>&1)" && echo "$e_out" | grep -q "would ask about optional Node.js"; then
+  echo "ok: second-run path clean (reached the optional-Node step without dying)"
 else
   echo "E fail: bootstrap broke with prerequisites already present"; echo "$e_out" | tail -6; fail=1
 fi
@@ -77,8 +77,8 @@ $RUNTIME run --rm -i "$IMAGE" bash -c '
   test -f /opt/niffler/.env || { echo "A fail: .env not seeded"; exit 1; }
   echo "ok: .env seeded"
   ls ~/bin 2>/dev/null | sed "s/^/  bin: /"
-  test -e ~/bin/niffler-tui || { echo "A fail: niffler-tui wrapper missing"; exit 1; }
-  echo "ok: niffler-tui wrapper installed"
+  command -v niffler-tui >/dev/null 2>&1 || { echo "A fail: niffler-tui wrapper missing from PATH"; exit 1; }
+  echo "ok: niffler-tui wrapper installed ($(command -v niffler-tui))"
 ' < "$BS" || fail=1
 
 if [ "$fail" = 0 ]; then

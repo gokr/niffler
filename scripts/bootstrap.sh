@@ -24,6 +24,7 @@
 #   NIF_INSTALL_DIR    clone target when not already in one (default ~/niffler)
 #   NIF_BIN_DIR        where the PATH entries go (default ~/bin, see `make install`)
 #   NIF_SKIP_SETUP=1   skip `make setup` (prerequisites already present)
+#   NIF_WITH_NODE=1    install optional Node.js without asking (automation)
 #   NIF_ASSUME_YES=1   skip the proceed prompt (automation; a no-tty run
 #                      announces itself and proceeds regardless)
 set -euo pipefail
@@ -45,8 +46,9 @@ usage: bootstrap.sh [--dry-run] [<dir>]
 
 Adopts the checkout you run it in, or clones Niffler (asking before
 creating ~/niffler — <dir> or NIF_INSTALL_DIR pick the location),
-installs every missing prerequisite (git, make, Go, Node.js), then runs
-make setup, make build and make install-tui. Idempotent.
+installs every missing prerequisite (git, make, Go — and asks about
+optional Node.js, for npx skills / npm MCP servers / TypeScript components),
+then runs make setup, make build and make install-tui. Idempotent.
 EOF
 }
 
@@ -80,14 +82,14 @@ fi
 
 # Always say up front exactly what is about to happen.
 say "Niffler installer — the plan, five steps:"
-info "1. find or create the clone   (asks before creating ~/niffler; installs every"
-info "                              missing prerequisite: git, make, Go, Node.js)"
+info "1. find or create the clone   (asks before creating ~/niffler; installs git,"
+info "                              make, Go — and asks about optional Node.js)"
 info "2. make setup                 the Nim toolchain + nimble packages"
 info "3. make build                 core + every component into var/bin"
 info "4. seed .env                  provider/API-key settings — only if missing"
-info "5. make install-tui           PATH entries in \${NIF_BIN_DIR:-~/bin}: niffler, niffler-cli,"
-info "                              niffler-console + the niffler-tui wrapper (niffler-prefixed"
-info "                              names only — component binaries never shadow Unix tools)"
+info "5. make install-tui           PATH entries (NIF_BIN_DIR, else auto-detected): niffler,"
+info "                              niffler-cli, niffler-console + the niffler-tui wrapper"
+info "                              (niffler-prefixed names only — component binaries never shadow Unix tools)"
 [ "$DRY_RUN" = 1 ] && say "(dry run — nothing will be changed)"
 echo
 
@@ -171,23 +173,43 @@ else
     fi
   fi
 
+  # Node is OPTIONAL: Niffler itself is Nim + Go — core, every component and
+  # the TUI build without it. It earns its place for npx skills, npm-based
+  # MCP servers and TypeScript components — so ask, and default to no.
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    if [ "$DRY_RUN" = 1 ]; then
-      say "step 1/5 — would install Node.js 22 (NodeSource — apt's nodejs is too old)"
-    elif command -v brew >/dev/null 2>&1; then
-      say "step 1/5 — installing Node.js (brew)"
-      run brew install node
-    elif command -v apt-get >/dev/null 2>&1; then
-      say "step 1/5 — installing Node.js (apt; switching to NodeSource 22 only if apt's node is older than 20)"
-      run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm
-      nodeMajor="$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
-      if [ "$nodeMajor" -lt 20 ] 2>/dev/null; then
-        say "step 1/5 — apt shipped Node $nodeMajor — adding the NodeSource 22 repository"
-        run $SUDO bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -'
-        run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
-      fi
+    wantNode=""
+    if [ -n "${NIF_WITH_NODE:-}" ]; then
+      wantNode=1
+      say "step 1/5 — installing Node.js (NIF_WITH_NODE=1)"
+    elif [ "$DRY_RUN" = 1 ]; then
+      say "step 1/5 — would ask about optional Node.js ([y/N] — npx skills, npm MCP servers, TypeScript components)"
+    elif hasTty; then
+      printf 'niffler-bootstrap: Node.js is not needed for Niffler itself but is useful for\n  installing skills with npx, installing some MCP servers, and making Niffler\n  components in TypeScript. Install it anyway? [y/N] '
+      answer=""
+      read -r answer </dev/tty 2>/dev/null || answer=""
+      case "$answer" in
+        [Yy]*) wantNode=1 ;;
+        *) say "step 1/5 — skipping optional Node.js (NIF_WITH_NODE=1 whenever you want it)" ;;
+      esac
     else
-      die "Node.js 20+ is missing — brew install node (macOS), or install from https://nodejs.org, then re-run"
+      say "step 1/5 — no tty to ask — skipping optional Node.js (NIF_WITH_NODE=1 to include)"
+    fi
+    if [ -n "$wantNode" ]; then
+      if command -v brew >/dev/null 2>&1; then
+        say "step 1/5 — installing Node.js (brew)"
+        run brew install node
+      elif command -v apt-get >/dev/null 2>&1; then
+        say "step 1/5 — installing Node.js (apt; switching to NodeSource 22 only if apt's node is older than 20)"
+        run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm
+        nodeMajor="$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
+        if [ "$nodeMajor" -lt 20 ] 2>/dev/null; then
+          say "step 1/5 — apt shipped Node $nodeMajor — adding the NodeSource 22 repository"
+          run $SUDO bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -'
+          run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+        fi
+      else
+        die "Node.js could not be installed here — install it from https://nodejs.org (or brew) and re-run"
+      fi
     fi
   fi
 
