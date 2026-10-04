@@ -398,6 +398,11 @@ export class NifflerHarness {
       // model catalog (GET /openai/v1/models → pricing, $/M): prompt 0.8,
       // completion 1.2, input_cache_reads 0.16, input_cache_writes 0.
       "hf:deepseek-ai/DeepSeek-V4.1-Flash": { input: 0.8, output: 1.2, cacheRead: 0.16 },
+      // Synthetic catalog (GET /openai/v1/models → pricing, $/M) for the two
+      // frontier lanes: GLM-5.3 prompt 1.4 / completion 4.4 / cache read 0.26;
+      // Kimi-K3 3.0 / 15.0 / 0.45.
+      "hf:zai-org/GLM-5.3": { input: 1.4, output: 4.4, cacheRead: 0.26 },
+      "hf:moonshotai/Kimi-K3": { input: 3.0, output: 15.0, cacheRead: 0.45 },
     };
     const usage = zeroUsage();
     if (!items) items = await this.transcript(sessionId);

@@ -19,6 +19,13 @@ export function resolveKeys(benchRoot, want = new Set(["deepseek-v4-flash", "glm
     dot.NIF_OPENAI_API_KEY ||
     "";
 
+  // The niffler .env's own LLM variable name. A lane that needs no key of its
+  // own — ChatGPT OAuth served by a stored `openai-codex` provider — still has
+  // to name a resolvable apiKeyEnv, and this is the honest one to point at
+  // (the adapter's NIF_OPENAI_* pin is then ignored: an active stored provider
+  // wins over the environment default).
+  keys.NIF_OPENAI_API_KEY = env.NIF_OPENAI_API_KEY || dot.NIF_OPENAI_API_KEY || "";
+
   if (!keys.LLMGATEWAY_API_KEY) {
     try {
       const auth = JSON.parse(

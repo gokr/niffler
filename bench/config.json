@@ -53,7 +53,37 @@
         "thinking": "low"
       }
     },
-    "syn-large": {
+    "gpt-6-sol": {
+    "label": "GPT-6-Sol (ChatGPT OAuth; harness provider 'openai-codex')",
+    "$comment": "OAuth lane: the private bench harness is seeded with the main store's openai-codex provider record (authType oauth, protocol openai-codex), which the provider component refreshes. NIF_OPENAI_* is still set by the adapter but the active stored provider wins. No published price (subscription), so cost reports 0.",
+    "niffler": {
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "model": "gpt-6-sol",
+      "apiKeyEnv": "NIF_OPENAI_API_KEY",
+      "thinking": "medium"
+    }
+  },
+  "glm-5.3": {
+    "label": "GLM-5.3 (Synthetic)",
+    "$comment": "Synthetic lists reasoning efforts low|high|max for this model — there is no 'medium', so runs use high.",
+    "niffler": {
+      "baseUrl": "https://api.synthetic.new/openai/v1",
+      "model": "hf:zai-org/GLM-5.3",
+      "apiKeyEnv": "SYNTHETIC_API_KEY",
+      "thinking": "high"
+    }
+  },
+  "kimi-k3": {
+    "label": "Kimi-K3 (Synthetic)",
+    "$comment": "Synthetic lists reasoning efforts low|high|max for this model — there is no 'medium', so runs use high.",
+    "niffler": {
+      "baseUrl": "https://api.synthetic.new/openai/v1",
+      "model": "hf:moonshotai/Kimi-K3",
+      "apiKeyEnv": "SYNTHETIC_API_KEY",
+      "thinking": "high"
+    }
+  },
+  "syn-large": {
       "label": "Synthetic Large Text (GLM-5.3-Flash)",
       "niffler": {
         "baseUrl": "https://api.synthetic.new/openai/v1",
