@@ -22,6 +22,9 @@
 #   --dry-run          print the plan and what would run, change nothing
 #   <dir>              clone target (first non-flag argument; overrides all)
 #   NIF_INSTALL_DIR    clone target when not already in one (default ~/niffler)
+#   NIF_REF=stable|main|vX.Y.Z
+#                      version to install without asking (stable = latest
+#                      release tag, resolved from GitHub at run time)
 #   NIF_BIN_DIR        where the PATH entries go (default ~/bin, see `make install`)
 #   NIF_SKIP_SETUP=1   skip `make setup` (prerequisites already present)
 #   NIF_WITH_NODE=1    install optional Node.js without asking (automation)
@@ -44,11 +47,12 @@ usage: bootstrap.sh [--dry-run] [<dir>]
   curl -fsSL .../scripts/bootstrap.sh | bash
   curl -fsSL .../scripts/bootstrap.sh | bash -s -- /where/you/want/niffler
 
-Adopts the checkout you run it in, or clones Niffler (asking before
-creating ~/niffler — <dir> or NIF_INSTALL_DIR pick the location),
-installs every missing prerequisite (git, make, Go — and asks about
-optional Node.js, for npx skills / npm MCP servers / TypeScript components),
-then runs make setup, make build and make install-tui. Idempotent.
+ Adopts the checkout you run it in, or clones Niffler (asking: the latest
+ stable release or latest main — NIF_REF pins either — and before creating
+ ~/niffler: <dir> or NIF_INSTALL_DIR pick the location), installs every
+ missing prerequisite (git, make, Go — and asks about optional Node.js, for
+ npx skills / npm MCP servers / TypeScript components), then runs make
+ setup, make build and make install-tui. Idempotent.
 EOF
 }
 
@@ -82,8 +86,9 @@ fi
 
 # Always say up front exactly what is about to happen.
 say "Niffler installer — the plan, five steps:"
-info "1. find or create the clone   (asks before creating ~/niffler; installs git,"
-info "                              make, Go — and asks about optional Node.js)"
+info "1. find or create the clone   (asks: stable release or main, and where to"
+info "                              put ~/niffler; installs git, make, Go — and"
+info "                              asks about optional Node.js)"
 info "2. make setup                 the Nim toolchain + nimble packages"
 info "3. make build                 core + every component into var/bin"
 info "4. seed .env                  provider/API-key settings — only if missing"
@@ -213,12 +218,59 @@ else
     fi
   fi
 
+  # Version: the latest stable release tag (resolved from GitHub), or latest
+  # main. NIF_REF skips the question; an existing checkout keeps whatever it
+  # has — a tag checkout is a pin (a release tag never moves; delete the
+  # clone or pass NIF_REF=main to change versions).
+  REF="${NIF_REF:-}"
   if [ -d "$ROOT/.git" ]; then
-    info "reusing the existing clone at $ROOT — updating it (git pull --ff-only)"
-    run git -C "$ROOT" pull --ff-only || info "git pull skipped (local changes or offline) — continuing with the clone as-is"
+    :
+  elif [ -n "$REF" ]; then
+    say "step 1/5 — installing '$REF' (NIF_REF)"
+  elif [ "$DRY_RUN" = 1 ]; then
+    say "step 1/5 — would ask: the latest stable release [S] (recommended), or the latest development from main [m]?"
+  elif hasTty; then
+    printf 'niffler-bootstrap: Install the latest stable release (recommended),\n  or the latest development from main? [S/m] '
+    answer=""
+    read -r answer </dev/tty 2>/dev/null || answer=""
+    case "$answer" in
+      [Mm]*) REF=main ;;
+      *) REF=stable ;;
+    esac
   else
-    info "cloning $REPO_URL"
-    run git clone "$REPO_URL" "$ROOT"
+    REF=stable
+    say "step 1/5 — no tty to ask — installing the stable release (NIF_REF=main for development)"
+  fi
+  if [ "$REF" = "stable" ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+      REF="latest-release-tag"
+    else
+      REF="$(git ls-remote --tags --refs "$REPO_URL" 2>/dev/null | awk '{print $2;}' | sed 's#refs/tags/##' | grep -E '^v[0-9]' | sort -V | tail -1)"
+      [ -n "$REF" ] || die "cannot resolve the latest release tag from GitHub — pass NIF_REF=main or NIF_REF=vX.Y.Z"
+    fi
+    say "step 1/5 — stable release: $REF"
+  fi
+
+  if [ -d "$ROOT/.git" ]; then
+    PINNED=""
+    if [ -z "$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null)" ]; then
+      PINNED="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
+    fi
+    if [ -n "$PINNED" ]; then
+      say "step 1/5 — reusing the existing clone at $ROOT — pinned at $PINNED"
+      info "a release tag never moves; delete $ROOT or pass NIF_REF=main to change versions"
+    else
+      info "reusing the existing clone at $ROOT — updating it (git pull --ff-only)"
+      run git -C "$ROOT" pull --ff-only || info "git pull skipped (local changes or offline) — continuing with the clone as-is"
+    fi
+  else
+    if [ "$REF" = "main" ]; then
+      info "cloning $REPO_URL (latest development)"
+      run git clone "$REPO_URL" "$ROOT"
+    else
+      info "cloning $REPO_URL at $REF (stable)"
+      run git clone --branch "$REF" --depth 1 "$REPO_URL" "$ROOT"
+    fi
   fi
   if [ "$DRY_RUN" = 1 ]; then
     say "(dry run — would continue inside $ROOT)"

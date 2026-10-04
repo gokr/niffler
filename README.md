@@ -1,7 +1,7 @@
 # Niffler
 
 [English](README.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) ·
-[website](https://gokr.github.io/niffler/) · [Discord](https://discord.gg/ThJFEAJUAk)
+[website](https://niffler.flatout.works) · [Discord](https://discord.gg/ThJFEAJUAk)
 
 Niffler is a minimal, self-extending agent harness. Core and every capability
 run as separate processes and communicate with JSON envelopes over NATS. The

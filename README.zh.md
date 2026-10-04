@@ -1,7 +1,7 @@
 # Niffler
 
 [English](README.md) · 简体中文 · [繁體中文](README.zh-TW.md) ·
-[网站](https://gokr.github.io/niffler/) · [Discord](https://discord.gg/ThJFEAJUAk)
+[网站](https://niffler.flatout.works) · [Discord](https://discord.gg/ThJFEAJUAk)
 
 > 🤖 AI 自动翻译，可能与英文版存在偏差；以 [English](README.md) 为准。
 > 章节标题保留英文，以便跨文档锚点保持有效。
