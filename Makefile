@@ -661,9 +661,13 @@ install-native-deps:
 		$(SUDO) apt-get update && \
 		$(SUDO) apt-get install -y build-essential curl ca-certificates git \
 			pkg-config libssl-dev liblz4-dev libclang-dev && \
-		{ $(SUDO) apt-get install -y libpcre3-dev || \
-			echo "note: libpcre3-dev unavailable (dropped from newer Ubuntu archives) —" \
-			     "only the doctor's optional LZ4/PCRE check mentions it; the build does not need it"; }; fi
+		{ if apt-cache show libpcre3-dev >/dev/null 2>&1; then \
+			$(SUDO) apt-get install -y libpcre3-dev || \
+			echo "note: libpcre3-dev install failed — only the doctor's optional LZ4/PCRE check mentions it; the build does not need it"; \
+		  else \
+			echo "note: libpcre3-dev is not in this distro's archive (dropped from newer Ubuntu) —" \
+			     "only the doctor's optional LZ4/PCRE check mentions it; the build does not need it"; \
+		  fi; }; fi
 	@# libclang-dev is a BUILD prerequisite, not an editor nicety: futhark (a
 	@# transitive Nim dependency: bitbarrel -> lz4wrapper -> futhark) builds its
 	@# `opir` generator with a link to libclang, and `make install-nim-deps`
