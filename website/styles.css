@@ -82,6 +82,26 @@ body {
   font-weight: 600;
 }
 .top nav .nav-discord:hover { border-color: var(--mint-deep); }
+.top nav .locales {
+  display: inline-flex;
+  gap: .15rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: .2rem .3rem;
+  background: var(--card);
+}
+.top nav .locales button {
+  font-family: var(--mono);
+  font-size: .72rem;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  border-radius: 999px;
+  padding: .25rem .55rem;
+  cursor: pointer;
+}
+.top nav .locales button:hover { color: var(--ink); }
+.top nav .locales button.active { background: var(--navy); color: #e8f4ee; }
 
 /* ─── hero ─── */
 .hero {
