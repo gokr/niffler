@@ -572,22 +572,9 @@ doctor:
 	@echo "Prerequisites:"
 	@bash scripts/check-nim-toolchain.sh || true
 	$(call check_tool,nimble,install-nim)
-	$(call check_tool,clang,install-native-deps)
-		@if pkg-config --exists liblz4 libpcre 2>/dev/null; then \
-		echo "  LZ4 + PCRE development libraries: OK"; \
-	else echo "  LZ4/PCRE: MISSING — run 'make install-native-deps'"; fi
-	@# Probe the LIBRARY, not just the clang binary: a machine can have clang on
-	@# PATH and still fail to build futhark's opir (the observed CI failure), which
-	@# reports 'clang: OK' above while `make install-nim-deps` dies.
-	@if [ -n "$(IS_MAC)" ]; then \
-		echo "  libclang (futhark's opir): from the Xcode command-line tools"; \
-	else \
-		ldir=$$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | tail -1); \
-		if ldconfig -p 2>/dev/null | grep -q libclang || \
-		   { [ -n "$$ldir" ] && [ -e "$$ldir/libclang.so" ]; }; then \
-			echo "  libclang (futhark, a transitive build dep): OK"; \
-		else echo "  libclang: MISSING — run 'make install-native-deps' (futhark fails to build without it)"; fi; \
-	fi
+	$(call check_tool,cc,install-native-deps)
+	@# (the former LZ4/PCRE and libclang checks belonged to the removed
+	@# bitbarrel store chain — the build needs neither today)
 	@missing=""; for pkg in yaml htmlparser checksums natsnim; do \
 		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
 		[ -d "$$p" ] || missing="$$missing $$pkg"; \
@@ -654,26 +641,17 @@ von-down:
 	./var/bin/cli call remove '{"name":"von"}'
 
 install-native-deps:
+	@# Real native prerequisites today: libssl for -d:ssl builds (config.nims),
+	@# a C compiler for repomap's vendored tree-sitter C (components/repomap/
+	@# csrc). The old liblz4/libpcre/libclang list belonged to the bitbarrel
+	@# store chain (bitbarrel -> lz4wrapper -> futhark's opir), removed in 0.4.0.
 	@if [ -n "$(IS_MAC)" ]; then \
 		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
-		brew install pkg-config lz4 pcre; \
+		brew install pkg-config; \
 	else \
 		$(SUDO) apt-get update && \
 		$(SUDO) apt-get install -y build-essential curl ca-certificates git \
-			pkg-config libssl-dev liblz4-dev libclang-dev && \
-		{ if apt-cache show libpcre3-dev >/dev/null 2>&1; then \
-			$(SUDO) apt-get install -y libpcre3-dev || \
-			echo "note: libpcre3-dev install failed — only the doctor's optional LZ4/PCRE check mentions it; the build does not need it"; \
-		  else \
-			echo "note: libpcre3-dev is not in this distro's archive (dropped from newer Ubuntu) —" \
-			     "only the doctor's optional LZ4/PCRE check mentions it; the build does not need it"; \
-		  fi; }; fi
-	@# libclang-dev is a BUILD prerequisite, not an editor nicety: futhark (a
-	@# transitive Nim dependency: bitbarrel -> lz4wrapper -> futhark) builds its
-	@# `opir` generator with a link to libclang, and `make install-nim-deps`
-	@# builds it. Without the dev package that step dies with
-	@# 'Build failed for the package: futhark' before any test runs; on macOS
-	@# libclang comes with the Xcode command-line tools checked above.
+			pkg-config libssl-dev; fi
 
 install-nim:
 	@if ! command -v nim >/dev/null 2>&1; then \
@@ -684,16 +662,7 @@ install-nim:
 
 install-nim-deps:
 	@bash scripts/check-nim-toolchain.sh
-	@# Debian/Ubuntu ship libclang.so under /usr/lib/llvm-<N>/lib, which is not on
-	@# the linker's default search path, and nimble builds futhark in its own
-	@# directory (~/.nimble/buildtemp) where this repo's config.nims does not
-	@# reach — so hand the directory to the linker for the duration of install.
-	@libclangdir=$$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | tail -1); \
-	 if [ -n "$$libclangdir" ] && [ -e "$$libclangdir/libclang.so" ]; then \
-		echo "nimble: exposing libclang at $$libclangdir (LIBRARY_PATH)"; \
-		export LIBRARY_PATH="$$libclangdir$${LIBRARY_PATH:+:$$LIBRARY_PATH}"; \
-	 fi; \
-	 nimble install -y --depsOnly
+	@nimble install -y --depsOnly
 	@# nimble can exit 0 even when a dependency's own install failed, and
 	@# 'nimble path' also
 	@# exits 0 for missing packages — verify each one actually landed.
