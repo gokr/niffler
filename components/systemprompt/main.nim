@@ -42,14 +42,12 @@ const basePrompt = staticRead("baseprompt.txt")
   ## has no use for harness plumbing notes.
 
 const reviewHintMinChars = 1200
-  ## First messages at least this long are treated as requirement lists and get
-  ## the independent-review instruction appended (NIF_REVIEW_HINT_MIN_CHARS
-  ## overrides; <= 0 disables it). The threshold is a proxy and says only that:
-  ## a request that arrives as many clauses is where a missed clause hides.
-  ## Whether the change CAN be validated is left to the model below -- a marker
-  ## registry per stack (Makefile target, scripts.test, pytest config, ...) would
-  ## be wrong often, and the model reads the workspace better than any list we
-  ## could ship.
+  ## Spec-sized first messages -- a requirement list rather than a one-liner --
+  ## get the independent-review instruction inserted mid-prompt
+  ## (NIF_REVIEW_HINT_MIN_CHARS overrides; <= 0 disables it). Rationale: the
+  ## review earns its cost on big specs, where a missed clause hides and where
+  ## no build, test or linter can exercise the change. The threshold is a proxy
+  ## for "this request is a spec" and says nothing else.
 
 proc reviewHintThreshold(): int =
   result = reviewHintMinChars
@@ -58,40 +56,35 @@ proc reviewHintThreshold(): int =
   except ValueError:
     discard
 
+const reviewAnchor = "Working on Niffler itself:"
+  ## Where the instruction goes when it applies: MID-PROMPT, beside the
+  ## change-scope and verification guidance -- the position the arm that
+  ## converted three of four DeepSWE tasks carried (an appended instruction was
+  ## largely ignored: gpt-6-sol spawned zero review subagents in three of four
+  ## cells). If a later rewrite of baseprompt.txt drops this anchor the
+  ## instruction is appended rather than silently lost; the systemprompt
+  ## contract test pins the mid-prompt position either way.
+
 const reviewInstruction =
-  "\n\nLong request, so verify it independently -- not optionally. Verify it\n" &
-  "however you legitimately can (a build, a type checker or linter where one\n" &
-  "runs, a test suite where running it is allowed) and then have someone who\n" &
-  "did not write it read the diff: `agent_spawn` a subagent (discover it first\n" &
-  "if it is not in your toolset) that sees ONLY the original request and your\n" &
-  "`git diff`, and have it say what the diff misses, contradicts or breaks\n" &
-  "against that request. Where nothing here can validate the change, that\n" &
-  "review is your only check -- which is why it is not optional. Background\n" &
-  "children wake this conversation when they settle: there is nothing to poll.\n" &
-  "Fix what it finds and close with what it caught.\n"
-  ## Appended when the first message is long enough to be a requirement list.
+  "Before you finish a change, get a second pair of eyes on it: `agent_spawn` a\n" &
+  "subagent that sees only the request and your diff (`git diff`), and ask what\n" &
+  "the diff misses, contradicts, or breaks. Where nothing here can validate the\n" &
+  "change -- no build, test or linter that exercises it -- that review is your\n" &
+  "only check, so it is not optional. Fix what it finds, and end your final\n" &
+  "message with what the review caught (or `no review: <reason>`)."
+  ## Inserted at reviewAnchor when the first message is spec-sized.
   ##
-  ## "Where running it is allowed" is deliberate: the request itself may forbid
-  ## test runs (a graded task whose suite is hidden), and instructions that
-  ## simply say "run the tests" would push the model to break the caller's own
-  ## rules -- a harness must never be the reason a task's constraints are
-  ## violated. Validation is named as the primary check when it exists; the
-  ## review is what remains when it does not.
-  ## Appended when the first message is long enough to be a requirement list.
+  ## What it must convey: bring in a second reader for the diff when YOU have no
+  ## other means of validating the change (no build, test or linter that
+  ## exercises it), and report what that reader found. The wording stays an
+  ## unframed imperative -- no "Long request: " prefix and no "this is a spec"
+  ## framing clause, the pattern every conditional/framed arm scored 0/4 on
+  ## (D, E, checklist) -- while the accountable close makes a skipped review
+  ## visible instead of silent.
   ##
-  ## Plain prose, no XML wrapper, and no branch: the two conditional arms were
-  ## better than baseline on none of eight cell comparisons and worse than the
-  ## unconditional arm on all of them, while reviewing MORE (28 vs 24 spawns in
-  ## arm D). A tagged block reads as metadata to satisfy, and an "if nothing can
-  ## validate this" condition hands the model a way to conclude the requirement
-  ## does not apply to it -- compliance theatre, with reviews fired and the
-  ## patch unchanged. So the validation fact stays as MOTIVATION ("where nothing
-  ## here can validate the change, that review is your only check") and never as
-  ## a condition to evaluate.
-  ##
-  ## The gate above (first message >= 1200 chars) is what keeps short requests
-  ## from paying for any of this, which is the only reason this is conditional
-  ## at all.
+  ## Watch adherence, not just score: the bench counts subagent children per
+  ## cell for exactly that (gpt-6-sol spawned zero in three of four cells when
+  ## the instruction was appended rather than mid-prompt).
 
 const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
                     "CLAUDE.md", "CLAUDE.MD"]
@@ -213,7 +206,7 @@ proc main() =
     "cwd": {"type": "string",
             "description": "Working directory the conversation runs in (defaults to the harness root)"},
     "firstMessage": {"type": "string",
-            "description": "The conversation's first user message, if this is a fresh conversation. Used only to size the request: a long one is usually a requirement list, which earns extra validation guidance. Never echoed into the prompt."}
+            "description": "The conversation's first user message, if this is a fresh conversation. Used only to size the request: a long one is usually a requirement list and earns the independent-review instruction mid-prompt. Never echoed into the prompt."}
   }, description = "Return the system prompt for a new conversation. Internal service: core session runners call this once per conversation; not an LLM tool.")
   schema["x-harness"] = %*{"hidden": true, "timeoutMs": 5_000}
   discard comp.tool("systemprompt", schema,
@@ -292,15 +285,16 @@ proc main() =
       # the same root, so cache prefixes still line up.
       var prompt = basePrompt
 
-      # Long first messages get the independent-review instruction, HERE with
-      # the standing instructions -- before the workspace and project-context
-      # blocks -- because position and voice were the difference between the arm
-      # that converted three DeepSWE tasks and the arm that converted none.
-      # Conditional on size only: a short request pays nothing at all.
-      let firstMessage = toolArgs{"firstMessage"}.getStr("")
+      # Long first messages get the independent-review instruction, inserted
+      # MID-PROMPT at reviewAnchor -- not appended after the product prompt.
       let reviewHint = reviewHintThreshold()
-      if reviewHint > 0 and firstMessage.len >= reviewHint:
-        prompt &= reviewInstruction
+      if reviewHint > 0 and
+          toolArgs{"firstMessage"}.getStr("").len >= reviewHint:
+        if prompt.contains(reviewAnchor):
+          prompt = prompt.replace(reviewAnchor,
+                                  reviewInstruction & "\n\n" & reviewAnchor)
+        else:
+          prompt &= "\n\n" & reviewInstruction
 
       for slot in ["tool_usage", "efficient_tools", "after_instructions"]:
         let hints = renderPromptSlot(slot)

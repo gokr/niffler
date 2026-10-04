@@ -143,39 +143,49 @@ proc main() =
         directPrompt.contains("cover every path that produces the behavior"),
         $direct)
 
-  # Validation-review guidance is appended ONLY for long first messages: a
-  # request that arrives as many clauses is where a missed clause hides, and a
-  # short request must not pay for it. Both directions are pinned, and the
-  # block is pinned as a TAIL — the frozen head has to stay byte-identical so
-  # the provider's prompt cache still hits for the prefix.
-  check("short first message gets no validation-review block",
-        not directPrompt.contains("<validation_review>"), $direct)
+  # The independent-review instruction is GATED on a spec-sized first message
+  # and inserted MID-PROMPT at the "Working on Niffler itself:" anchor: a big
+  # spec is where a missed clause hides, and mid-prompt is the position the arm
+  # that converted three of four DeepSWE tasks carried (appended, gpt-6-sol
+  # spawned zero review subagents in three of four cells). Plain prose, no XML
+  # wrapper, before the workspace/project-context blocks.
+  check("a short first message gets no review instruction",
+        not directPrompt.contains("second pair of eyes"), $direct)
+  check("the product prompt keeps its shape without it",
+        directPrompt.contains("Working on Niffler itself:"), $direct)
   let longRequest = repeat("Requirement: do the thing exactly as described. ", 30)
   check("the long probe exceeds the trigger threshold",
         longRequest.len >= 1200, $longRequest.len)
+  let justUnder = repeat("x", 1199)
+  check("a message just under the threshold gets nothing",
+        call(nc, "systemprompt", "systemprompt",
+             %*{"cwd": root, "firstMessage": justUnder},
+             10_000){"systemPrompt"}.getStr("") == directPrompt,
+        "1199-char probe changed the prompt")
   let longPrompt = call(nc, "systemprompt", "systemprompt",
                         %*{"cwd": root, "firstMessage": longRequest},
                         10_000){"systemPrompt"}.getStr("")
-  check("long first message earns the validation-review guidance",
-        longPrompt.contains("verify it independently") and
-        longPrompt.contains("agent_spawn"), $longPrompt.len)
-  # Plain prose with the standing instructions -- no XML wrapper, above the
-  # workspace and project-context blocks. Position and framing were the
-  # difference between the arm that converted three DeepSWE tasks and the
-  # arms that converted none, so both are pinned here.
-  let reviewAt = longPrompt.find("verify it independently")
+  check("a spec-sized first message earns the review instruction",
+        longPrompt.contains("second pair of eyes") and
+        longPrompt.contains("agent_spawn") and
+        longPrompt.contains("no review: <reason>") and
+        longPrompt.contains("no build, test or linter"), $longPrompt.len)
+  let reviewAt = longPrompt.find("second pair of eyes")
+  let anchorAt = longPrompt.find("Working on Niffler itself:")
+  let anchorDirect = directPrompt.find("Working on Niffler itself:")
   let ctxAt = longPrompt.find("<project_context>")
-  check("the review guidance sits with the standing instructions, not the tail",
-        reviewAt > 0 and (ctxAt < 0 or reviewAt < ctxAt) and
-        longPrompt.startsWith(directPrompt[0 ..< min(directPrompt.len, 400)]),
-        "review at " & $reviewAt & ", project_context at " & $ctxAt)
-  check("the guidance is plain prose, not an XML block",
+  check("it sits mid-prompt with the standing instructions, not the tail",
+        reviewAt > 0 and anchorAt > reviewAt and
+        (ctxAt < 0 or reviewAt < ctxAt),
+        "review at " & $reviewAt & ", anchor at " & $anchorAt &
+        ", project_context at " & $ctxAt)
+  check("the gated prompt is the plain prompt plus the insertion",
+        anchorDirect > 0 and anchorAt > anchorDirect and
+        longPrompt.startsWith(directPrompt[0 ..< anchorDirect]) and
+        longPrompt.endsWith(directPrompt[anchorDirect .. ^1]),
+        "anchor direct " & $anchorDirect & ", long " & $anchorAt)
+  check("it is plain prose, not an XML block",
         not longPrompt.contains("<validation_review>"), "xml wrapper returned")
-  check("a short first message cannot trigger it either",
-        call(nc, "systemprompt", "systemprompt",
-             %*{"cwd": root, "firstMessage": "fix the bug in main"},
-             10_000){"systemPrompt"}.getStr("").len == directPrompt.len,
-        "short probe changed the prompt length")
   let hintA = call(nc, "systemprompt", "prompt_hint", %*{
     "slot": "efficient_tools", "source": "z-plugin", "key": "z",
     "content": "Prefer the z-plugin batch helper.", "mode": "aggregate"}, 10_000)
