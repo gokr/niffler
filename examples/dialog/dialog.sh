@@ -33,7 +33,8 @@ bus_url() {
 }
 BUS="$(bus_url)"
 
-# nats CLI resolution: PATH first (make install-natscli), then the
+# nats CLI resolution: PATH first (go install github.com/nats-io/natscli/
+# nats@latest — see README.md in this directory), then the
 # default go install location, then an explicit override.
 nats_cli() {
   if command -v nats >/dev/null 2>&1; then

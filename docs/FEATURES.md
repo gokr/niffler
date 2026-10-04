@@ -340,7 +340,9 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
   and its own timeout budget.
 - `console` — renders every envelope on the bus, with reconnect handling.
 - `dialog` — an SDK-free bash component demonstrating the protocol with two
-  desktop dialog tools.
+  desktop dialog tools. Moved to `examples/dialog/` (out of the shipped build:
+  it dragged natscli/jq/zenity into every install for one non-autostarted
+  demo); it cannot be a plugin package yet — manifests accept only nim/go/ts.
 - `nats-server` — the bus as a first-class built component, preferred over a
   PATH install, with the harness's max-payload flag and parent-death handling.
 

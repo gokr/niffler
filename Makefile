@@ -79,7 +79,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
         install uninstall install-tui \
         setup doctor recover install-go install-nim install-nats \
         install-node install-native-deps install-nim-deps \
-        install-natscli install-jq install-zenity install-lsp install-jev von-up von-down
+        install-jq install-lsp install-jev von-up von-down
 
 help:
 	@echo 'make all       build core + components (default)'
@@ -283,11 +283,9 @@ var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricgues
 var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fabric/fabric.nim
 
-# dialog is a component written entirely in bash (nats CLI + jq — no SDK,
-# no compile step). Copy it, don't compile it.
-var/bin/dialog: components/dialog/dialog.sh | var/bin
-	cp $< $@ && chmod +x $@
-
+# dialog (the SDK-free bash demo) lives in examples/dialog/ now — out of the
+# shipped build; see its README. It was the only reason natscli/jq/zenity
+# were ever installed.
 components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
@@ -298,7 +296,7 @@ components-inner: var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/s
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
 	var/bin/recall var/bin/compaction \
-	var/bin/hooks var/bin/dialog var/bin/nats-server \
+	var/bin/hooks var/bin/nats-server \
 	var/bin/mcp var/bin/mcp-bridge
 
 build:
@@ -590,18 +588,10 @@ doctor:
 		echo "  node (20+): OK"; \
 	else echo "  node: MISSING or too old — run 'make install-node'"; fi
 	$(call check_tool,npm,install-node)
-	@echo "Optional (bash-written dialog component):"
+	@echo "Optional (generally useful on the CLI):"
 	$(call check_tool,jq,install-jq)
-	@if command -v nats >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/nats" ]; then \
-		echo "  nats CLI: OK"; \
-	else \
-		echo "  nats CLI: MISSING — run 'make install-natscli'"; \
-	fi
-	@if command -v zenity >/dev/null 2>&1 || command -v notify-send >/dev/null 2>&1; then \
-		echo "  dialog display (zenity/notify-send): OK"; \
-	else \
-		echo "  dialog display: MISSING — run 'make install-zenity'"; \
-	fi
+	@echo "  (the bash dialog demo lives in examples/dialog — its nats CLI + zenity"
+	@echo "   dependencies are its own; see examples/dialog/README.md)"
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
 	@echo "                  npm registry access needed for TS source/package recipes"
 	@if [ -x var/jev-venv/bin/von ]; then \
@@ -676,25 +666,13 @@ install-nim-deps:
 install-nats:
 	@echo "nats-server: built from source by 'make build' (components/nats) — nothing to install"
 
-# nats CLI + jq + zenity back the bash-written `dialog` component
-# (components/dialog/dialog.sh — optional demo, not autostarted). Deliberately
-# NOT part of 'make setup': they serve only that demo. Install on demand
-# (doctor lists them under "Optional") when you actually want dialog popups.
-install-natscli:
-	@if command -v nats >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/nats" ]; then \
-		echo "nats CLI: already installed"; \
-	else echo "Installing natscli via go install ..."; \
-		go install github.com/nats-io/natscli/nats@latest; fi
-
+# jq is a general CLI tool agents reach for constantly (via bash) — kept as a
+# one-command install. The nats CLI and zenity installers were removed with
+# the dialog demo's toolchain (examples/dialog/README.md documents them).
 install-jq:
 	@if command -v jq >/dev/null 2>&1; then echo "jq: already installed"; \
 	elif [ -n "$(IS_MAC)" ]; then brew install jq; \
 	else $(SUDO) apt-get install -y jq; fi
-
-install-zenity:
-	@if command -v zenity >/dev/null 2>&1; then echo "zenity: already installed"; \
-	elif [ -n "$(IS_MAC)" ]; then echo "zenity: macOS — dialog falls back to notify-send/osascript"; \
-	else $(SUDO) apt-get install -y zenity; fi
 
 install-node:
 	@# Node is OPTIONAL (Niffler core is Nim + Go): it serves TypeScript

@@ -86,7 +86,7 @@ working in every language.
   `core.spawn` (`make von-up`) so the supervisor's PDEATHSIG/restart/drain
   semantics apply unchanged. A stock harness must never pay for an optional
   runtime (`make install-jev` stays out of `make setup`). Built-but-unspawned
-  binaries have precedent (`cli`, `console`, `dialog`).
+  binaries have precedent (`cli`, `console`).
 - NATS is the only bus. The removed barrel store's embedded-KV pubsub was
   deliberately unused; nothing else carries messages either.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
