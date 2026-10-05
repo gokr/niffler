@@ -38,6 +38,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its own PATH, so `ensure_java` sees the JDK the script installed even in
   non-login shells (snap/Ubuntu default PATHs lack `~/.local/bin`); it
   used to re-download the JDK and fail there.
+- **`make install-jev` bootstraps uv when missing** — its old hint said
+  `pip install uv` on boxes that have no pip at all (fresh Ubuntu ships
+  bare python3). It now runs uv's HOME-local standalone installer (no
+  sudo) and only falls back to naming the manual commands when that fails.
 
 ## [0.4.0] — 2026-10-05
 
