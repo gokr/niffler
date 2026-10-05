@@ -96,6 +96,14 @@
         table.bench tbody tr:hover{background:rgba(127,127,127,.07)}
         table.bench .us{font-weight:600}
         .bench-note{font-size:.85em;opacity:.8;line-height:1.5}
+        .bench-frame{position:relative;margin:2em 0;padding:1.3em 1.5em 1.1em;border:1px solid rgba(127,127,127,.25);border-radius:14px;
+          background:linear-gradient(180deg,rgba(127,127,127,.055),rgba(127,127,127,.015));
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 6px 20px rgba(0,0,0,.055)}
+        .bench-frame::before{content:"";position:absolute;left:1.5em;top:-.28em;width:2.4em;height:.42em;border-radius:99px;
+          background:var(--accent,#4a5);box-shadow:0 0 0 3px rgba(127,127,127,.08)}
+        .bench-frame table.bench{margin:.2em 0 .5em}
+        .bench-frame table.bench caption{font-size:.78em;letter-spacing:.08em;text-transform:uppercase;opacity:.75;padding:.2em 0 .7em}
+        .bench-frame table.bench th{border-bottom:1.5px solid rgba(127,127,127,.4)}
       </style>
       <p class="bench-copy"><strong>What this measures.</strong> Numbers gathered with
         <strong>DeepSeek&#8209;V4.1&#8209;Flash</strong> (<code>deepseek-v4-flash</code>) at
@@ -106,6 +114,7 @@
         three things that dominate real daily cost — <strong>tokens per task, wall&#8209;clock per
         task, and price per task</strong> — for normal work.</p>
 
+      <div class="bench-frame">
       <table class="bench">
         <caption>Benchmark full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026)</caption>
         <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Turns</th><th>Tool calls</th><th>Tokens / task (in / cache / out)</th><th>Cost / task</th><th>Cache hit</th></tr></thead>
@@ -118,8 +127,10 @@
         </tbody>
       </table>
       <p class="bench-note">Full record and methodology: <code>bench/reports/</code> in the repository.
-        Cache hit = cached read ÷ (cached read + uncached input) over the whole run.
+        Cache hit = cached read ÷ (cached read + uncached input) over the whole run.</p>
+      </div>
 
+      <div class="bench-frame">
       <table class="bench">
         <caption>Direct tools &amp; fixed prompt — what each harness puts in front of the model</caption>
         <thead><tr><th>Harness</th><th>Direct tools</th><th class="tools">Which</th><th>Base prompt</th><th>Base prompt + tools</th></tr></thead>
@@ -140,6 +151,7 @@
         three&#8209;word prompt (system + all 18 tool schemas; split not exposed). OpenHands generates its
         system prompt at request time (not stored server&#8209;side); the range is the observed first&#8209;request
         budget including its tool schemas.</p>
+      </div>
       </div>
     </section>
 
