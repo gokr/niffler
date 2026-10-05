@@ -639,6 +639,99 @@ proc main() =
   check("session-less edit stays quiet",
         not rDiagAnon{"text"}.getStr("").contains("[lsp:"), $rDiagAnon)
 
+  # --- replace_across: sed-style bulk literal replace (the sed 's/A/B/g
+  # f*.go' move Pi reaches for) — glob selection, per-file counts, per-file
+  # undo, word option, zero-total refusal, 12-file cap.
+  createDir(tmp / "bulk")
+  writeFile(tmp / "bulk" / "a.go", "package a\nfunc OldName() {}\nfunc OldName2() {}\n")
+  writeFile(tmp / "bulk" / "b.go", "package b\nfunc Helper() {}\n")
+  writeFile(tmp / "bulk" / "c.go", "package c\nvar OldName = 1\n")
+  let rBulk = call(nc, "edit", "replace_across",
+             %*{"glob": "bulk/*.go",
+                "replace": [{"old": "OldName", "new": "NewName"}]})
+  check("replace_across rewrites the matching files with per-file counts",
+        not rBulk.hasKey("error") and
+        rBulk{"total_replaced"}.getInt(0) == 3 and
+        rBulk{"files_changed"}.getInt(0) == 2 and
+        readFile(tmp / "bulk" / "a.go").contains("func NewName2() {}") and
+        readFile(tmp / "bulk" / "c.go").contains("var NewName = 1"), $rBulk)
+  check("replace_across leaves zero-match files untouched and names them",
+        rBulk{"text"}.getStr("").contains("no match:") and
+        not readFile(tmp / "bulk" / "b.go").contains("NewName"), $rBulk)
+  let rUndoBulk = call(nc, "edit", "undo_last_edit", %*{"path": "bulk/c.go"})
+  check("undo_last_edit reverts one bulk-changed file",
+        not rUndoBulk.hasKey("error") and
+        readFile(tmp / "bulk" / "c.go").contains("var OldName = 1") and
+        readFile(tmp / "bulk" / "a.go").contains("NewName"), $rUndoBulk)
+  writeFile(tmp / "bulk" / "w.txt", "block\nblockhead\n")
+  let rWord = call(nc, "edit", "replace_across",
+             %*{"paths": ["bulk/w.txt"],
+                "replace": [{"old": "block", "new": "hdr", "word": true}]})
+  check("word option replaces word spans only (\\b semantics)",
+        not rWord.hasKey("error") and
+        rWord{"total_replaced"}.getInt(0) == 1 and
+        readFile(tmp / "bulk" / "w.txt") == "hdr\nblockhead\n", $rWord)
+  writeFile(tmp / "bulk" / "z.txt", "alpha\n")
+  let rNo = call(nc, "edit", "replace_across",
+           %*{"paths": ["bulk/z.txt"],
+              "replace": [{"old": "missing", "new": "x"}]})
+  check("replace_across refuses a zero-total match and mutates nothing",
+        rNo.hasKey("error") and
+        rNo{"error"}.getStr("").contains("[E_NO_MATCH]") and
+        readFile(tmp / "bulk" / "z.txt") == "alpha\n", $rNo)
+  for i in 0 .. 12:
+    writeFile(tmp / "bulk" / ("cap" & $i & ".txt"), "x\n")
+  let rCap = call(nc, "edit", "replace_across",
+            %*{"glob": "bulk/cap*.txt",
+               "replace": [{"old": "x", "new": "y"}]})
+  check("replace_across refuses over the 12-file cap before touching anything",
+        rCap.hasKey("error") and
+        rCap{"error"}.getStr("").contains("[E_BAD_SHAPE]") and
+        readFile(tmp / "bulk" / "cap0.txt") == "x\n", $rCap)
+  let rSeq = call(nc, "edit", "replace_across",
+            %*{"paths": ["bulk/w.txt"],
+               "replace": [{"old": "hdr", "new": "block"},
+                           {"old": "blockhead", "new": "longform"}]})
+  check("replace rules apply in order like a sed pipeline",
+        not rSeq.hasKey("error") and
+        readFile(tmp / "bulk" / "w.txt") == "block\nlongform\n", $rSeq)
+
+  # --- read select mode: locate + fetch in one call (the grep-then-cat
+  # move) — hit regions verbatim, inventory without a pattern, no mixing.
+  let rSel = call(nc, "edit", "read",
+            %*{"reads": [{"glob": "bulk/*.go", "pattern": "NewName",
+                          "context": 0}]})
+  check("select returns verbatim hit regions with counts",
+        not rSel.hasKey("error") and
+        rSel{"count"}.getInt(0) == 2 and
+        rSel{"text"}.getStr("").contains("func NewName2() {}") and
+        rSel{"items"}.len == 3, # per-file rows, zero-hit files included
+      $rSel)
+  let rWordSel = call(nc, "edit", "read",
+               %*{"reads": [{"path": "bulk/w.txt", "pattern": "block",
+                             "word": true, "context": 0}]})
+  check("select word option skips embedded matches",
+        not rWordSel.hasKey("error") and
+        rWordSel{"count"}.getInt(0) == 1, $rWordSel)
+  let rInv = call(nc, "edit", "read",
+            %*{"reads": [{"glob": "bulk/*.go"}]})
+  check("pattern-less select lists matched paths (find/ls move)",
+        not rInv.hasKey("error") and
+        rInv{"text"}.getStr("").contains("a.go") and
+        rInv{"text"}.getStr("").contains("b.go") and
+        not rInv{"text"}.getStr("").contains("func "), $rInv)
+  let rMix = call(nc, "edit", "read",
+            %*{"reads": [{"path": "bulk/a.go"},
+                         {"pattern": "NewName"}]})
+  check("mixed content/select call is refused as a shape error",
+        rMix.hasKey("error") and
+        rMix{"error"}.getStr("").contains("[E_BAD_SHAPE]"), $rMix)
+  let rNone = call(nc, "edit", "read",
+             %*{"reads": [{"glob": "bulk/*.go", "pattern": "nothing-here"}]})
+  check("select with no hits answers zero without error",
+        not rNone.hasKey("error") and
+        rNone{"count"}.getInt(0) == 0, $rNone)
+
   # drain: the outline-configured component exits
   drain(nc)
   sleep(700)

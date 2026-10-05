@@ -913,6 +913,256 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
               "edits_applied": planned.len}
 
 # ---------------------------------------------------------------------------
+# replace_across helpers — sed-style literal replace over a bounded file set.
+#
+# The gap Pi's bash corpus keeps filling: `sed -i 's/A/B/g' f*.go` plus a
+# leftover check. Same sed semantics (literal needle, s///g per file,
+# zero-match files pass), our rails on top: a 12-file cap, per-file counts,
+# per-file undo entries, and a refusal when NOTHING matched — sed silently
+# "succeeds" on a mistyped needle. No dry-run round trip: the counting pass
+# runs before any write inside the same call.
+
+const MAX_REPLACE_FILES = 12   # blast-radius cap, same as read's batch cap
+
+proc isWordRune(r: char): bool =
+  ## Word character for the `word` option (\b-style spans).
+  r.isAlphaNumeric or r == '_'
+
+proc wordEdge(content: string, start, finish: int): bool =
+  ## True when content[start ..< finish] sits on word boundaries.
+  (start == 0 or not isWordRune(content[start - 1])) and
+    (finish >= content.len or not isWordRune(content[finish]))
+
+type ReplaceRule = object
+  oldString: string
+  newString: string
+  word: bool
+
+proc applyRules(content: string, rules: seq[ReplaceRule]):
+    tuple[applied: string, counts: seq[int]] =
+  ## Sequential sed-style s///g per rule (later rules see earlier output),
+  ## literal needles only; `word` restricts each match to word spans.
+  ## Per-rule occurrence counts come back for the response.
+  var applied = content
+  var counts: seq[int] = @[]
+  for rule in rules:
+    counts.add(0)
+    if rule.oldString.len == 0: continue
+    var outp = ""
+    var i = 0
+    while true:
+      let j = applied.find(rule.oldString, i)
+      if j < 0:
+        outp.add applied[i .. ^1]
+        break
+      outp.add applied[i ..< j]
+      let finish = j + rule.oldString.len
+      if rule.word and not wordEdge(applied, j, finish):
+        outp.add rule.oldString
+      else:
+        outp.add rule.newString
+        inc counts[^1]
+      i = finish
+    applied = outp
+  result = (applied, counts)
+
+proc globMatch(name, pat: string): bool =
+  ## Minimal shell matcher for file names (* and ?).
+  var si = 0
+  var pi = 0
+  var star = -1
+  var mark = 0
+  while si < name.len:
+    if pi < pat.len and (pat[pi] == '?' or pat[pi] == name[si]):
+      inc si
+      inc pi
+    elif pi < pat.len and pat[pi] == '*':
+      star = pi
+      mark = si
+      inc pi
+    elif star >= 0:
+      pi = star + 1
+      inc mark
+      si = mark
+    else:
+      return false
+  while pi < pat.len and pat[pi] == '*':
+    inc pi
+  result = pi == pat.len
+
+proc expandGlob(pattern: string): seq[string] =
+  ## File selection relative to the component root: "f*.go" in one
+  ## directory, "**/name*" recursively. Sorted for stable batches.
+  let root = rootDir()
+  let pat = pattern.replace("\\\\", "/")
+  var files: seq[string] = @[]
+  if "**" in pat:
+    let idx = pat.find("**/")
+    let head = if idx > 0: pat[0 ..< idx] else: ""
+    let tail = if idx >= 0 and idx + 3 <= pat.high: pat[idx + 3 .. ^1] else: "*"
+    let base = if head.len > 0: followSymlink(toCwd(head, root)) else: root
+    if dirExists(base):
+      for p in walkDirRec(base):
+        if fileExists(p) and globMatch(p.extractFilename, tail):
+          files.add(p)
+  else:
+    for p in walkFiles(toCwd(pat, root)):
+      if fileExists(p):
+        files.add(p)
+  files.sort()
+  result = files
+
+proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
+  ## Handler for replace_across — see the section doc above. Two phases:
+  ## count and build post-content per file (nothing written), then write
+  ## with per-file undo entries. Refusal has zero blast radius.
+  if args == nil or args.kind != JObject:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across request must be an object.")
+  var raw: seq[string] = @[]
+  let pathsN = args{"paths"}
+  if pathsN != nil:
+    if pathsN.kind != JArray:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace_across \"paths\" must be an array of file paths.")
+    for p in pathsN:
+      if p.kind != JString or p.getStr().len == 0:
+        raise newException(ValueError,
+          "[E_BAD_SHAPE] replace_across \"paths\" entries must be non-empty strings.")
+      raw.add(p.getStr())
+  let globN = args{"glob"}
+  if globN != nil:
+    if globN.kind != JString or globN.getStr().len == 0:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace_across \"glob\" must be a non-empty pattern (f*.go, **/*.go).")
+    raw.add(expandGlob(globN.getStr()))
+  if raw.len == 0:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across needs \"paths\" (explicit files) or " &
+      "\"glob\" (e.g. \"f*.go\", \"**/*.go\").")
+  var files: seq[string] = @[]
+  for f in raw:
+    let abs = followSymlink(toCwd(f, rootDir()))
+    if abs notin files:
+      files.add(abs)
+  if files.len > MAX_REPLACE_FILES:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across covers at most " & $MAX_REPLACE_FILES &
+      " files per call (got " & $files.len &
+      ") — narrow the glob or split into batches.")
+  let rulesNode = args{"replace"}
+  if rulesNode == nil or rulesNode.kind != JArray or rulesNode.len == 0:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across requires \"replace\": " &
+      "[{\"old\": ..., \"new\": ...}] (non-empty).")
+  var rules: seq[ReplaceRule] = @[]
+  for r in rulesNode:
+    if r == nil or r.kind != JObject:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] each \"replace\" entry must be an object with \"old\" and \"new\".")
+    let oldN = r{"old"}
+    let newN = r{"new"}
+    if oldN == nil or oldN.kind != JString or oldN.getStr().len == 0:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace[].old must be a non-empty literal string.")
+    if newN == nil or newN.kind != JString:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace[].new must be a string (\"\" deletes every occurrence).")
+    let w = r{"word"}
+    if w != nil and w.kind != JBool:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace[].word must be a boolean.")
+    rules.add(ReplaceRule(oldString: toLf(oldN.getStr()),
+                          newString: toLf(newN.getStr()),
+                          word: if w != nil: w.getBool() else: false))
+  var minMatches = 1
+  let minN = args{"min_matches"}
+  if minN != nil:
+    if minN.kind != JInt:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace_across \"min_matches\" must be an integer.")
+    minMatches = min(max(minN.getInt(1), 0), 10_000)
+
+  # Phase 1 — count and build post-content per file; nothing is written yet.
+  type Planned = tuple[path, pre, post, bom, ending: string,
+                       counts: seq[int]]
+  var planned: seq[Planned] = @[]
+  var total = 0
+  var missing: seq[string] = @[]
+  for abs in files:
+    if not fileExists(abs):
+      missing.add(abs)
+      continue
+    let file = loadText(abs)
+    let pre = file.normalized
+    let (post, counts) = applyRules(pre, rules)
+    for n in counts: total += n
+    if post != pre:
+      planned.add((abs, pre, post, file.bom, file.ending, counts))
+
+  # Phase 2 — refuse first, write second: a failed run mutates nothing.
+  if total < minMatches:
+    raise newException(ValueError,
+      "[E_NO_MATCH] replace_across matched " & $total & " occurrence(s) " &
+      "across " & $files.len & " file(s) (min_matches " & $minMatches &
+      ") — nothing was modified. Check the literal \"old\" strings: " &
+      "matching is exact (zero-match files pass like sed, but a zero-total " &
+      "is refused so a mistyped needle cannot succeed).")
+  let session = args{"__session"}{"session"}.getStr("")
+  var changed: seq[string] = @[]
+  var perFile = newJArray()
+  var firstDiff = ""
+  var diagNote = ""
+  for p in planned:
+    let entry = UndoEntry(content: p.pre, bom: p.bom, ending: p.ending,
+                          resultContent: p.post)
+    let undo = saveUndo(p.path, entry)
+    if not undo.persisted:
+      raise newException(ValueError,
+        "[E_UNDO_UNAVAILABLE] Could not persist undo history; earlier files " &
+        "in this call WERE changed (undo_last_edit reverts each), but " &
+        p.path & " was NOT modified. Retry after the store recovers.")
+    try:
+      writeAtomic(p.path, p.bom & restoreEnding(p.post, p.ending))
+    except CatchableError:
+      undo.restore()
+      raise
+    if session.len > 0:
+      observe(session, p.path,
+              p.bom & restoreEnding(p.post, p.ending), full = false,
+              persist = true)
+    changed.add(p.path)
+    let d = compactDiff(p.pre, p.post)
+    if firstDiff.len == 0:
+      firstDiff = d.diff
+      diagNote = lspDiagnosticsSection(c, session, p.path,
+                                      d.firstLine, d.lastLine)
+    perFile.add(%*{"path": p.path, "replaced": p.counts})
+  var noMatch: seq[string] = @[]
+  for abs in files:
+    if abs notin changed and abs notin missing:
+      noMatch.add(abs)
+  var summary = "replaced " & $total & " occurrence(s) in " & $changed.len &
+    " of " & $files.len & " file(s)."
+  for p in planned:
+    var n = 0
+    for k in p.counts: n += k
+    summary.add("\n" & p.path & " (" & $n & ")")
+  if noMatch.len > 0:
+    summary.add("\nno match: " & noMatch.join(", "))
+  if missing.len > 0:
+    summary.add("\nmissing: " & missing.join(", "))
+  summary.add("\nundo_last_edit on each changed file reverts just that file.")
+  if firstDiff.len > 0:
+    summary.add("\n\nChange preview (first changed file; - removed, + added):\n" &
+      firstDiff[0 .. min(firstDiff.high, 1200)] & diagNote)
+  result = %*{"text": summary,
+              "files": perFile,
+              "files_changed": changed.len,
+              "files_unchanged": noMatch.len + missing.len,
+              "total_replaced": total}
+
+# ---------------------------------------------------------------------------
 # undo handler
 
 proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
@@ -1214,6 +1464,143 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
                    "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
 
+type SelectItem = object
+  path: string          # empty when glob-based
+  glob: string
+  pattern: string       # empty = inventory mode (list matched paths)
+  word: bool
+  context: int          # lines around each hit (default 2)
+  maxHits: int          # per item (default 8)
+
+proc readSelectItems(args: JsonNode): seq[SelectItem] =
+  ## Collect select-shaped items: reads[] entries (and the sugar keys) that
+  ## carry "glob" or "pattern". The mix rule lives in hReadSelect.
+  proc toItem(n: JsonNode): SelectItem =
+    result = SelectItem(path: "", glob: "", pattern: "", word: false,
+                        context: 2, maxHits: 8)
+    let p = n{"path"}
+    if p != nil and p.kind == JString: result.path = p.getStr()
+    let g = n{"glob"}
+    if g != nil and g.kind == JString: result.glob = g.getStr()
+    let pat = n{"pattern"}
+    if pat != nil and pat.kind == JString: result.pattern = pat.getStr()
+    let w = n{"word"}
+    if w != nil and w.kind == JBool: result.word = w.getBool()
+    let ctx = n{"context"}
+    if ctx != nil and ctx.kind == JInt:
+      result.context = min(max(ctx.getInt(2), 0), 20)
+    let mx = n{"max"}
+    if mx != nil and mx.kind == JInt:
+      result.maxHits = min(max(mx.getInt(8), 1), 64)
+  let reads = args{"reads"}
+  if reads != nil and reads.kind == JArray:
+    for n in reads:
+      if n != nil and n.kind == JObject and
+          (n.hasKey("glob") or n.hasKey("pattern")):
+        result.add(toItem(n))
+  if args.hasKey("glob") or args.hasKey("pattern"):
+    var sugar = newJObject()
+    for k in ["path", "glob", "pattern", "word", "context", "max"]:
+      if args.hasKey(k): sugar[k] = args{k}
+    result.add(toItem(sugar))
+
+proc hasSelectItem(args: JsonNode): bool =
+  readSelectItems(args).len > 0
+
+proc hReadSelect(c: Component, args: JsonNode): JsonNode =
+  ## Select mode: locate + fetch in one call — the grep-then-cat move Pi
+  ## does in bash. Line-based literal matching (grep semantics: a hit is a
+  ## line); regions copy verbatim into edit's old_string, so no line numbers,
+  ## same as the content path. No pattern = inventory (the find/ls move).
+  let items = readSelectItems(args)
+  if items.len == 0:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] read select items need \"glob\" or \"pattern\".")
+  let reads = args{"reads"}
+  if reads != nil and reads.kind == JArray:
+    for n in reads:
+      if n == nil or n.kind != JObject: continue
+      if not n.hasKey("glob") and not n.hasKey("pattern"):
+        raise newException(ValueError,
+          "[E_BAD_SHAPE] a select call cannot mix {path, offset, limit} " &
+          "content reads with select items — split the call (content reads " &
+          "first, then the select).")
+  var blocks: seq[string] = @[]
+  var jsItems = newJArray()
+  var filesBudget = MAX_READ_ITEMS
+  var totalHits = 0
+  var truncated = false
+  for it in items:
+    var targets: seq[string] = @[]
+    if it.glob.len > 0:
+      targets = expandGlob(it.glob)
+    else:
+      targets.add(followSymlink(toCwd(it.path, rootDir())))
+    if targets.len == 0:
+      blocks.add("### " & (if it.glob.len > 0: it.glob else: it.path) &
+                 "\n[no files match]")
+      continue
+    for abs in targets:
+      if filesBudget <= 0:
+        truncated = true
+        break
+      dec filesBudget
+      if not fileExists(abs):
+        jsItems.add(%*{"path": abs, "error": "not a file"})
+        continue
+      let file = loadText(abs)
+      let content = file.normalized
+      if it.pattern.len == 0:
+        # inventory mode: paths only (the find/ls move)
+        jsItems.add(%*{"path": abs, "listed": true})
+        blocks.add(abs)
+        continue
+      let lines = splitLf(content)
+      var hitLines: seq[int] = @[]
+      var i = 0
+      while hitLines.len < it.maxHits:
+        let j = content.find(it.pattern, i)
+        if j < 0: break
+        let finish = j + it.pattern.len
+        if not it.word or wordEdge(content, j, finish):
+          var off = 0
+          for k, ln in lines:
+            if j >= off and j < off + ln.len + 1:
+              hitLines.add(k)
+              break
+            off += ln.len + 1
+        i = j + max(it.pattern.len, 1)
+      if hitLines.len == 0:
+        jsItems.add(%*{"path": abs, "hits": 0})
+        continue
+      hitLines.sort()
+      var regions: seq[tuple[a, b: int]] = @[]
+      for li in hitLines:
+        let a = max(0, li - it.context)
+        let b = min(lines.high, li + it.context)
+        if regions.len > 0 and a <= regions[^1].b + 1:
+          regions[^1].b = max(regions[^1].b, b)
+        else:
+          regions.add((a, b))
+      var parts: seq[string] = @[]
+      for r in regions:
+        parts.add(lines[r.a .. r.b].join("\n"))
+      totalHits += hitLines.len
+      jsItems.add(%*{"path": abs, "hits": hitLines.len,
+                     "regions": regions.len})
+      blocks.add("### " & abs & " (" & $hitLines.len & " hit(s), " &
+                 $regions.len & " region(s); lines are verbatim)\n" &
+                 parts.join("\n\n"))
+  var text = blocks.join("\n")
+  if truncated:
+    text.add("\n[read limit: file cap " & $MAX_READ_ITEMS &
+             " reached; select the rest in another call]")
+  if text.len > 512_000:
+    text = text[0 .. 512_000] &
+      "\n[read limit: output truncated at 512000 bytes]"
+  result = %*{"text": text, "items": jsItems, "count": totalHits,
+              "files": jsItems.len}
+
 proc hReadTool(c: Component, args: JsonNode): JsonNode =
   ## Canonical read entry point: "reads" [{path, offset?, limit?}, ...]
   ## (1..12) with single-file sugar "path" + top-level offset/limit.
@@ -1224,6 +1611,8 @@ proc hReadTool(c: Component, args: JsonNode): JsonNode =
   if args == nil or args.kind != JObject:
     raise newException(ValueError,
       "[E_BAD_SHAPE] Read request must be an object.")
+  if hasSelectItem(args):
+    return hReadSelect(c, args)
   let requests = normalizeReadRequests(args)
   if requests.len == 0:
     raise newException(ValueError,
@@ -1307,11 +1696,21 @@ discard comp.tool("read", toolSchema(%*{
                 "properties": {
                   "path": {"type": "string",
                            "description": "File to read"},
+                  "glob": {"type": "string",
+                           "description": "Select mode: file set (f*.go, **/*.go; <=12 files) instead of path"},
+                  "pattern": {"type": "string",
+                           "description": "Select mode: literal line match (grep semantics); omit to just list matched paths"},
+                  "word": {"type": "boolean",
+                           "description": "Select mode: require word boundaries around the pattern"},
+                  "context": {"type": "integer", "minimum": 0, "maximum": 20,
+                           "description": "Select mode: lines around each hit (default 2)"},
+                  "max": {"type": "integer", "minimum": 1, "maximum": 64,
+                           "description": "Select mode: max hits per item (default 8)"},
                   "offset": {"type": "integer", "minimum": 1,
                              "description": "Start line (default 1)"},
                   "limit": {"type": "integer", "minimum": 1,
                             "description": "Max lines (default 2000)"}},
-                "required": ["path"], "additionalProperties": false},
+                "required": [], "additionalProperties": false},
               "description": "1..12 files/ranges in one call — the canonical form; batch known-relevant reads (grep hits, imports) instead of one per turn"},
   "path": {"type": "string",
            "description": "Sugar for one file: same as \"reads\": [{\"path\": ...}]; given with \"reads\", it is read first"},
@@ -1322,7 +1721,7 @@ discard comp.tool("read", toolSchema(%*{
   "force": {"type": "boolean",
             "description": "Re-dump even if unchanged since your last read/write"}
 }, @[],
-  "Read files for editing. \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges per call, per-item errors, 512KB cap; a single item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) returns its symbol outline when a language server knows the type — read windows with offset/limit, or offset=1 for the whole file. Batch known-relevant reads (grep hits, imports) rather than one per turn; lines are verbatim (copy into edit's old_string), and an unchanged re-read returns [unchanged]."), hReadTool,
+  "Read files for editing. \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges per call, per-item errors, 512KB cap; a single item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) returns its symbol outline when a language server knows the type — read windows with offset/limit, or offset=1 for the whole file. Batch known-relevant reads (grep hits, imports) rather than one per turn; lines are verbatim (copy into edit's old_string), and an unchanged re-read returns [unchanged]. Select items ({glob|path, pattern, word?, context?, max?}) locate-then-fetch in one call: no pattern lists matched paths (find/ls); a literal pattern returns verbatim match regions (±context lines, grep semantics) ready to copy into old_string — grep hits and their neighbors without one read per file."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      # `effect: read` is deliberate: fabric's batch host would otherwise
      # classify `read` as a write and serialize every batch read. The tool is
@@ -1358,6 +1757,37 @@ discard comp.tool("edit", toolSchema(%*{
   "Replace exact text in an existing file. Each old_string must occur exactly once — add context lines to disambiguate, or set replace_all. undo_last_edit reverts."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "workspace": {"pathFields": ["path"]}})
+
+discard comp.tool("replace_across", toolSchema(%*{
+  "paths": {"type": "array", "minItems": 1, "maxItems": 12,
+            "items": {"type": "string"},
+            "description": "Explicit file list (<=12 files total per call)"},
+  "glob": {"type": "string",
+           "description": "File set instead: f*.go in one directory, **/*.go recursively (<=12 files total per call)"},
+  "replace": {"type": "array", "minItems": 1,
+    "description": "Literal replacements applied in order like a sed pipeline (later rules see earlier output)",
+    "items": {"type": "object",
+      "properties": {
+        "old": {"type": "string",
+          "description": "Literal text to replace everywhere in each file (verbatim)"},
+        "new": {"type": "string",
+          "description": "Replacement text; \"\" deletes every occurrence"},
+        "word": {"type": "boolean",
+          "description": "Only replace word-bounded occurrences (\\b-style)"}},
+      "required": ["old", "new"]}},
+  "min_matches": {"type": "integer", "minimum": 0,
+    "description": "Refuse below this total match count (default 1)"}
+}, @["replace"],
+  "Replace literal text across a file set in one call — the sed 's/A/B/g " &
+  "f*.go' move (bulk renames, the same transform in several files) without " &
+  "reading the files first. Sed semantics: every occurrence per file, " &
+  "zero-match files pass; but a zero-TOTAL is refused (E_NO_MATCH) so a " &
+  "mistyped needle cannot silently succeed. Per-file counts come back and " &
+  "undo_last_edit reverts each changed file individually. Prefer edit for " &
+  "one file with known context; reach for replace_across when the same " &
+  "literal changes in 2+ files."), hReplaceAcross,
+  %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
+     "workspace": {"pathArrayFields": ["paths"]}})
 
 discard comp.tool("undo_last_edit", toolSchema(%*{
   "path": {"type": "string",
