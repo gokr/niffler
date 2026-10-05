@@ -77,7 +77,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
-        setup doctor recover install-go install-nim install-nats \
+        setup doctor recover install-go install-nim \
         install-node install-native-deps install-nim-deps check-nim-deps \
         install-jq install-lsp install-jev von-up von-down
 
@@ -672,9 +672,6 @@ install-nim-deps:
 			exit 1; \
 		fi; \
 	done
-
-install-nats:
-	@echo "nats-server: built from source by 'make build' (components/nats) — nothing to install"
 
 # jq is a general CLI tool agents reach for constantly (via bash) — kept as a
 # one-command install. The nats CLI and zenity installers were removed with
