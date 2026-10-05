@@ -583,8 +583,11 @@ doctor:
 	@bash scripts/check-nim-toolchain.sh || true
 	$(call check_tool,nimble,install-nim)
 	$(call check_tool,cc,install-native-deps)
-	@# (the former LZ4/PCRE and libclang checks belonged to the removed
-	@# bitbarrel store chain — the build needs neither today)
+	@if pkg-config --exists liblz4 2>/dev/null && \
+	   { ldconfig -p 2>/dev/null | grep -q libclang || ls /usr/lib/llvm-*/lib/libclang.so >/dev/null 2>&1; }; then \
+		echo "  liblz4 + libclang (natsnim's tree: lz4wrapper links lz4; futhark's opir needs clang): OK"; \
+	else echo "  liblz4/libclang: MISSING — run 'make install-native-deps'"; fi
+	@# PCRE is gone for good: observe/logfile/processes use the pure-Nim regex
 	@missing=""; for pkg in yaml htmlparser checksums regex natsnim; do \
 		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
 		[ -d "$$p" ] || missing="$$missing $$pkg"; \
@@ -643,19 +646,20 @@ von-down:
 	./var/bin/cli call remove '{"name":"von"}'
 
 install-native-deps:
-	@# Real native prerequisites today: libssl for -d:ssl builds (config.nims),
-	@# a C compiler for repomap's vendored tree-sitter C (components/repomap/
-	@# csrc). liblz4/libclang belonged to the removed bitbarrel store chain
-	@# (bitbarrel -> lz4wrapper -> futhark's opir); libpcre was the dynlib
-	@# target of Nim's std/re — observe/logfile/processes now use the pure-Nim
-	@# regex package, so nothing links pcre anymore either.
+	@# Real native prerequisites: libssl for -d:ssl builds (config.nims), a C
+	@# compiler for repomap's vendored tree-sitter C, and — via natsnim's
+	@# dependency tree (bitbarrel -> lz4wrapper -> futhark) — libclang (futhark
+	@# GENERATES lz4wrapper's bindings with its opir tool at build time) and
+	@# liblz4 (lz4wrapper links it into core at runtime). libpcre alone is truly
+	@# gone: observe/logfile/processes moved from std/re to the pure-Nim regex
+	@# package.
 	@if [ -n "$(IS_MAC)" ]; then \
 		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
-		brew install pkg-config; \
+		brew install pkg-config lz4; \
 	else \
 		$(SUDO) apt-get update && \
 		$(SUDO) apt-get install -y build-essential curl ca-certificates git \
-			pkg-config libssl-dev; fi
+			pkg-config libssl-dev liblz4-dev libclang-dev; fi
 
 install-nim:
 	@if ! command -v nim >/dev/null 2>&1; then \
