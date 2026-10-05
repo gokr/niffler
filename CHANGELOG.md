@@ -8,6 +8,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A one-line bootstrap installer (`scripts/bootstrap.sh`).**
+  `curl -fsSL .../scripts/bootstrap.sh | bash` finds or creates the clone —
+  adopting the checkout you run it in, or asking before creating `~/niffler`
+  (a path argument or `NIF_INSTALL_DIR` sets the location) — installs every
+  missing prerequisite (git/make/curl via apt, Go from go.dev's current
+  stable), then runs the Makefile front door: `make setup`, `make build`,
+  `make install-tui`, and seeds `.env` if it is absent. It asks whether to
+  install the latest stable release (the default; the newest `v*` tag is
+  resolved from GitHub at run time) or the latest development from `main`,
+  with `NIF_REF=stable|main|vX.Y.Z` for automation; an existing checkout keeps
+  its ref, and a tag checkout is reported as pinned rather than silently
+  updated. Consent-first and idempotent: it prints the plan and pauses before
+  touching anything, reads its prompts from `/dev/tty` (stdin is the script
+  stream under `curl | bash`), and `--dry-run` changes nothing.
+  `scripts/test-bootstrap.sh` runs a scenario matrix against a pristine Ubuntu
+  image via docker/podman — a full one-line install with asserts, `--dry-run`,
+  `--help`, the consent pauses, and a re-run with prerequisites already
+  present.
+
+- **bench: frontier and OAuth model lanes for the DeepSWE pilot.**
+  `gpt-6-sol` (ChatGPT OAuth — the private bench harness is seeded with the
+  main store's `openai-codex` provider record, and `keys.mjs` now resolves
+  `NIF_OPENAI_API_KEY` so a lane that needs no key of its own can still name a
+  resolvable `apiKeyEnv`), plus `glm-5.3` (`hf:zai-org/GLM-5.3`) and `kimi-k3`
+  (`hf:moonshotai/Kimi-K3`) on Synthetic at high effort — Synthetic lists
+  `low|high|max` for both, so there is no medium. The niffler adapter's cost
+  table prices both lanes from Synthetic's published catalog (and the OAuth
+  lane at zero, subscription).
+
 - **`cli run` — a native headless turn driver (#124).** The cli can now own a
   turn end to end without being a UI: it attaches to the harness serving its
   runtime home (refusing a bus whose core serves a different root) or starts an
@@ -85,6 +114,41 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Architecture and Open work.
 
 ### Changed
+
+- **The website is the new design, published at `niffler.flatout.works`.** The
+  pages workflow publishes `website/` (the former `website-alternative`), the
+  previous site moved to `website-old/` for reference, and the READMEs point
+  their website link at the new custom domain. The promoted page carries the
+  EN / 简体中文 / 繁體中文 translations, a five-harness comparison captured
+  from live first requests (Pi, Niffler, Claude Code, DSH, OpenCode), the
+  component diagram plus a byte-accurate wire envelope, and an install section
+  with the one-line bootstrap and corrected (Node-optional) requirements.
+
+- **Node.js is an optional dependency, not a build requirement.** Niffler core
+  is Nim + Go: `make install-node` no longer hard-fails `make setup` on a
+  snap-less Linux or dies when `node` is missing — it warns and continues
+  ("optional; needed only for TS components, npx skills and npm MCP servers"),
+  and the same for a `<20` node. `bootstrap.sh` asks before installing Node
+  (default no; `NIF_WITH_NODE=1` installs without asking, and a no-tty run
+  skips it with a note). Go stays required — the shipped Go components build
+  from source.
+
+- **The bash `dialog` demo left the shipped build, and its toolchain left
+  `make setup`.** The SDK-free `dialog.sh` prototype moved to `examples/dialog/`
+  with its own README; it had kept a build rule, a `var/bin` slot and the nats
+  CLI / jq / zenity installers alive for one non-autostarted demo (including
+  zenity's ~96 MB GTK stack). The `install-natscli` and `install-zenity`
+  targets are gone, `doctor`'s optional section is jq plus a pointer to the
+  example, and the `make install-jq` target stays — jq is a general CLI tool
+  agents use constantly, not demo plumbing.
+
+- **The native prerequisite list is pruned to what the build actually needs.**
+  The liblz4 / libpcre / libclang chain belonged to the removed bitbarrel store
+  (`bitbarrel → lz4wrapper → futhark`, whose `opir` generator links libclang);
+  `install-native-deps` now installs only libssl-dev and a C compiler (plus the
+  toolchain basics), `install-nim-deps` lost the `LIBRARY_PATH` dance for
+  libclang, and `doctor` checks `cc` instead of `clang` — pristine boxes only
+  ever had gcc — and no longer probes libraries nothing links.
 
 - **The Wails desktop UI is no longer an official part of the harness.** Its
   code has been behind `niffler-tui` for a while and nobody is maintaining it, so
@@ -245,6 +309,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   become an alias for the default).
 
 ### Fixed
+
+- **`bootstrap.sh` re-runs died on a machine that needed `sudo`.** `set -u`
+  tripped on an unset `SUDO` left over from the previous run's scope. `SUDO` is
+  now defined once at the top level, and the clean-Ubuntu suite gains a re-run
+  scenario.
+
+- **Repomap failed to build on a pristine Ubuntu (and on macOS).** tree-sitter's
+  `unicode/utf8.h` includes the vendored ICU header `unicode/umachine.h`
+  against its own `lib/src` directory, but only `csrc/` was on the include
+  path, so the include fell through to system ICU headers — present on dev
+  machines (masking the bug), absent on a pristine install (`No such file or
+  directory: unicode/umachine.h` during `make build`), and macOS ships
+  no system ICU headers at all. The vendored `lib/src` include directory is now
+  added.
 
 - **A conversation that pruned a tool result and later trimmed could refuse
   to resume** (`context-recovery-required: projection prune ref cannot be
