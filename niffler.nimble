@@ -14,6 +14,7 @@ requires "nim >= 2.2.12"
 requires "yaml"
 requires "htmlparser"
 requires "checksums"
+requires "regex"
 requires "https://github.com/gokr/natsnim"
 
 # Tasks

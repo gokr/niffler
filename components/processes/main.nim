@@ -24,8 +24,9 @@
 ## starttime to defeat pid reuse) drives a boot sweep that kills orphans
 ## from a previous life before serving.
 
-import std/[json, monotimes, os, posix, re, strutils, tables, times]
+import std/[json, monotimes, os, posix, strutils, tables, times]
 import std/syncio
+import regex
 import niffler/sdk
 import subjects   # sanitizeSessionId: the notice lane is per conversation
 
@@ -253,15 +254,15 @@ proc readNew(path: string, cursor: var int): tuple[content: string, truncated: b
 proc applyFilter(chunk, pattern: string): tuple[matched: string, total, hits: int] =
   ## Projection over the drained chunk: the caller advances the cursor past
   ## everything; here we only select matching lines.
-  var compiled: Regex
-  try: compiled = re(pattern, {reStudy})
+  var compiled: Regex2
+  try: compiled = re2(pattern)
   except CatchableError as e:
     fail("E_BAD_SHAPE", "invalid filter regex: " & e.msg)
   var matched: seq[string]
   var total = 0
   for line in chunk.splitLines():
     total += 1
-    if find(line, compiled) >= 0: matched.add(line)
+    if contains(line, compiled): matched.add(line)
   let body = if matched.len > 0: matched.join("\n") & "\n" else: ""
   (body, total, matched.len)
 

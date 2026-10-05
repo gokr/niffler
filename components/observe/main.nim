@@ -5,8 +5,9 @@
 ## buffers. Arbitrary publishing is event-only and approval-gated; arbitrary
 ## service requests are separately approval-gated by core.
 
-import std/[algorithm, base64, httpclient, json, monotimes, os, re, sequtils,
+import std/[algorithm, base64, httpclient, json, monotimes, os, sequtils,
             strutils, tables, times, unicode]
+import regex
 import niffler/sdk
 import ../../sdk/dotenv
 
@@ -49,9 +50,9 @@ type
     label: string
     subject: string
     traceComp: string
-    regex: Regex
+    regex: Regex2
     hasRegex: bool
-    toolRegex: Regex
+    toolRegex: Regex2
     hasToolRegex: bool
     cap: int
     bytes: int
@@ -437,7 +438,7 @@ comp.tool(%*{"onDemand": true}):
     let pr = newProbe(pkListen, subject, label, cap)
     if regex.len > 0:
       try:
-        pr.regex = re(regex)
+        pr.regex = re2(regex)
         pr.hasRegex = true
       except RegexError:
         return errResult("invalid regex: " & regex)
@@ -462,7 +463,7 @@ comp.tool(%*{"onDemand": true}):
     pr.traceComp = component
     if toolRegex.len > 0:
       try:
-        pr.toolRegex = re(toolRegex)
+        pr.toolRegex = re2(toolRegex)
         pr.hasToolRegex = true
       except RegexError:
         return errResult("invalid toolRegex: " & toolRegex)
@@ -540,11 +541,11 @@ comp.tool(%*{"onDemand": true}):
       return errResult("regex is too long")
     if since > 0 and until > 0 and since > until:
       return errResult("since must be <= until")
-    var rx: Regex
+    var rx: Regex2
     var hasRegex = false
     if regex.len > 0:
       try:
-        rx = re(regex)
+        rx = re2(regex)
         hasRegex = true
       except RegexError:
         return errResult("invalid regex: " & regex)
@@ -606,11 +607,11 @@ comp.tool(%*{"onDemand": true}):
       return errResult("component filter is too long")
     if regex.len > MaxRegexBytes:
       return errResult("regex is too long")
-    var rx: Regex
+    var rx: Regex2
     var hasRegex = false
     if regex.len > 0:
       try:
-        rx = re(regex)
+        rx = re2(regex)
         hasRegex = true
       except RegexError:
         return errResult("invalid regex: " & regex)

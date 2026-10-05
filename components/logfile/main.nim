@@ -6,8 +6,9 @@
 ## subjects; non-log traffic is written to one bounded bus.jsonl file so
 ## dynamic inbox subjects cannot exhaust file descriptors or inodes.
 
-import std/[algorithm, base64, json, os, re, sequtils, strutils, tables, times,
+import std/[algorithm, base64, json, os, sequtils, strutils, tables, times,
             unicode]
+import regex
 import niffler/sdk
 
 loadDotEnv(".env", rootDir() / ".env")
@@ -312,11 +313,11 @@ comp.tool(%*{"onDemand": true}):
       return %*{"error": "regex is too long"}
     if since > 0 and until > 0 and since > until:
       return %*{"error": "since must be <= until"}
-    var rx: Regex
+    var rx: Regex2
     var hasRegex = false
     if regex.len > 0:
       try:
-        rx = re(regex)
+        rx = re2(regex)
         hasRegex = true
       except RegexError:
         return %*{"error": "invalid regex: " & regex}

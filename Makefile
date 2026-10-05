@@ -572,7 +572,7 @@ doctor:
 	$(call check_tool,cc,install-native-deps)
 	@# (the former LZ4/PCRE and libclang checks belonged to the removed
 	@# bitbarrel store chain — the build needs neither today)
-	@missing=""; for pkg in yaml htmlparser checksums natsnim; do \
+	@missing=""; for pkg in yaml htmlparser checksums regex natsnim; do \
 		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
 		[ -d "$$p" ] || missing="$$missing $$pkg"; \
 	done; \
@@ -632,8 +632,10 @@ von-down:
 install-native-deps:
 	@# Real native prerequisites today: libssl for -d:ssl builds (config.nims),
 	@# a C compiler for repomap's vendored tree-sitter C (components/repomap/
-	@# csrc). The old liblz4/libpcre/libclang list belonged to the bitbarrel
-	@# store chain (bitbarrel -> lz4wrapper -> futhark's opir), removed in 0.4.0.
+	@# csrc). liblz4/libclang belonged to the removed bitbarrel store chain
+	@# (bitbarrel -> lz4wrapper -> futhark's opir); libpcre was the dynlib
+	@# target of Nim's std/re — observe/logfile/processes now use the pure-Nim
+	@# regex package, so nothing links pcre anymore either.
 	@if [ -n "$(IS_MAC)" ]; then \
 		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
 		brew install pkg-config; \
@@ -655,7 +657,7 @@ install-nim-deps:
 	@# nimble can exit 0 even when a dependency's own install failed, and
 	@# 'nimble path' also
 	@# exits 0 for missing packages — verify each one actually landed.
-	@for pkg in yaml htmlparser checksums natsnim; do \
+	@for pkg in yaml htmlparser checksums regex natsnim; do \
 		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
 		if [ ! -d "$$p" ]; then \
 			echo "nimble: package '$$pkg' did not install — rerun after 'make install-native-deps'"; \
