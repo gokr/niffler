@@ -6,6 +6,30 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-05
+
+Niffler 0.4.0 replaces the BitBarrel store with SQLite by default (or TiDB),
+adds a source-building one-line installer and a native headless turn driver,
+and publishes the redesigned, localized website at niffler.flatout.works.
+The harness remains a collection of replaceable processes, with compact
+prompts, progressive tool discovery and durable conversation history.
+
+**Compatibility:** BitBarrel roots are refused rather than silently replaced
+with an empty database. Keep a 0.3.x checkout for existing BitBarrel history;
+there is no automatic migration in this release.
+
+### Fixed
+
+- The headless CLI now uses the same pure-Nim regex engine as observe,
+  logfile and processes. Its readiness probe no longer fails at startup
+  trying to load the removed PCRE library.
+
+- Corrected the installer test to select `main` explicitly before a release;
+  its previous default selected v0.3.0 and fetched that version's BitBarrel
+  dependencies. natsnim has no dependency on BitBarrel. Pin its source to
+  `e8973a3280d635329f52787970e952de7db4972a` (v0.1.0), and remove the
+  mistakenly restored LZ4/libclang requirements.
+
 ### Added
 
 - **A one-line bootstrap installer (`scripts/bootstrap.sh`).**

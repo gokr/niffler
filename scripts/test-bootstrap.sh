@@ -70,7 +70,7 @@ else
 fi
 
 say "scenario A: one line on a pristine image (slow — prereqs, toolchains, full build)"
-$RUNTIME run --rm -i "$IMAGE" bash -c '
+$RUNTIME run --rm -i -e NIF_REF=main "$IMAGE" bash -c '
   bash -s -- /opt/niffler || { echo "A fail: bootstrap exited non-zero"; echo "== core.log tail:"; tail -30 /opt/niffler/var/logs/core.log 2>/dev/null; exit 1; }
   test -x /opt/niffler/var/bin/niffler || { echo "A fail: core binary missing"; exit 1; }
   echo "ok: core binary built"

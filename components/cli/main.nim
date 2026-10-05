@@ -22,8 +22,9 @@
 ## docs/WIRE.md "Turn usage"), cancels on SIGINT/SIGTERM, and can export the
 ## complete canonical transcript through the store's cursor paging.
 
-import std/[json, os, osproc, parseopt, re, sets, strtabs, strutils, tables,
+import std/[json, os, osproc, parseopt, sets, strtabs, strutils, tables,
             times, monotimes]
+import regex
 import natsnim
 import envelope
 import dotenv
@@ -413,7 +414,7 @@ proc exportTranscript(nc: NatsConnection, convId, path: string): int =
       break
     after = nextAfter
 
-let envRefRe = re"""\$\{([A-Za-z_][A-Za-z0-9_]*)\}"""
+let envRefRe = re2("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}")
 
 type
   Bootstrap = object
@@ -437,7 +438,8 @@ proc envRefNames(node: JsonNode): seq[string] =
   var found: seq[string] = @[]
   proc scan(s: string) =
     if s.len == 0: return
-    for m in findAll(s, envRefRe):
+    for bounds in findAllBounds(s, envRefRe):
+      let m = s[bounds]
       let name = m[2 ..< m.len - 1]
       # containsOrIncl answers "already contained" — the FIRST sighting is the
       # one to report, so the name is added when it was NOT already seen.

@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.3.0"
+version       = "0.4.0"
 author        = "Göran Krampe"
 description   = "Niffler — minimal self-extending agent harness (NATS + processes)"
 license       = "MIT"
@@ -15,7 +15,7 @@ requires "yaml"
 requires "htmlparser"
 requires "checksums"
 requires "regex"
-requires "https://github.com/gokr/natsnim"
+requires "https://github.com/gokr/natsnim#e8973a3280d635329f52787970e952de7db4972a"
 
 # Tasks
 
