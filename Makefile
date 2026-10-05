@@ -78,7 +78,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
         setup doctor recover install-go install-nim install-nats \
-        install-node install-native-deps install-nim-deps \
+        install-node install-native-deps install-nim-deps check-nim-deps \
         install-jq install-lsp install-jev von-up von-down
 
 help:
@@ -286,10 +286,23 @@ var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK
 # dialog (the SDK-free bash demo) lives in examples/dialog/ now — out of the
 # shipped build; see its README. It was the only reason natscli/jq/zenity
 # were ever installed.
+# Fail helpfully, not with 'cannot open file: regex' mid-build: the Nim
+# packages live in the nimble store (make setup / install-nim-deps puts them
+# there), and a fresh clone — or a pull that adds a dependency — trips this
+# check first with the exact fix.
+check-nim-deps:
+	@missing=""; for pkg in yaml htmlparser checksums regex natsnim; do \
+		ls -d "$(HOME)/.nimble/pkgs2/$$pkg"-* >/dev/null 2>&1 || missing="$$missing $$pkg"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "nimble packages missing:$$missing — run 'make install-nim-deps' (or 'make setup')"; \
+		exit 1; \
+	fi
+
 components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
-components-inner: var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
+components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
 	var/bin/edit var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
 	var/bin/observe var/bin/logfile var/bin/console \
