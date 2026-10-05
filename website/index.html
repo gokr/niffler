@@ -107,12 +107,12 @@
         task, and price per task</strong> — for normal work.</p>
 
       <table class="bench">
-        <caption>full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026)</caption>
+        <caption>Benchmark full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026)</caption>
         <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Turns</th><th>Tool calls</th><th>Tokens / task (in / cache / out)</th><th>Cost / task</th><th>Cache hit</th></tr></thead>
         <tbody>
           <tr><td>Pi 0.99.2</td><td>31/31</td><td>13.9s</td><td>5.4</td><td>5.3</td><td>4.0k / 22.6k / 2.0k</td><td>$0.0037</td><td>85%</td></tr>
-          <tr><td>Maki 0.6.0</td><td>31/31</td><td>12.1s</td><td>6.3</td><td>8.0</td><td>9.7k / 53.2k / 1.5k</td><td>$0.0050</td><td>85%</td></tr>
           <tr class="us"><td>Niffler 0.3.0</td><td>31/31</td><td>18.7s</td><td>6.2</td><td>7.6</td><td>4.0k / 32.2k / 2.3k</td><td>$0.0041</td><td>89%</td></tr>
+          <tr><td>Maki 0.6.0</td><td>31/31</td><td>12.1s</td><td>6.3</td><td>8.0</td><td>9.7k / 53.2k / 1.5k</td><td>$0.0050</td><td>85%</td></tr>
           <tr><td>DSH 0.2.1 (<code>sdk</code>, out of the box)</td><td>31/31</td><td>17.9s</td><td>6.1</td><td>7.1</td><td>8.3k / 45.6k / 2.7k</td><td>$0.0061</td><td>85%</td></tr>
           <tr><td>OpenHands 1.24</td><td>31/31</td><td>25.7s</td><td>0.9</td><td>6.6</td><td>8.8k / 84.6k / 3.9k</td><td>$0.0078</td><td>91%</td></tr>
         </tbody>
@@ -126,10 +126,10 @@
         <tbody>
           <tr><td>Pi</td><td>4 (+3 optional)</td><td class="tools">read · bash · edit · write <span class="bench-note">(grep · find · ls off by default)</span></td><td>≈0.68k</td><td>≈1.4k</td></tr>
           <tr class="us"><td>Niffler</td><td>7</td><td class="tools">discover · invoke · bash · read · write · edit · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td>≈0.36k</td><td>≈2.25k</td></tr>
-          <tr><td>OpenHands</td><td>3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td>generated per request</td><td>≈12–16k</td></tr>
-          <tr><td>Opencode</td><td>10</td><td class="tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</td><td>≈10.7k</td><td>≈16k</td></tr>
           <tr><td>DSH (out of the box)</td><td>25</td><td class="tools">bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</td><td>≈6.5k</td><td>≈11.7k</td></tr>
+          <tr><td>OpenHands</td><td>3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td>generated per request</td><td>≈12–16k</td></tr>
           <tr><td>Maki</td><td>18</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td>—</td><td>≈15.9k</td></tr>
+          <tr><td>Opencode</td><td>10</td><td class="tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</td><td>≈10.7k</td><td>≈16k</td></tr>
           <tr><td>Claude Code</td><td>23</td><td class="tools">Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</td><td>≈1.5k</td><td>≈18k</td></tr>
         </tbody>
       </table>
