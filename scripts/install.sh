@@ -161,20 +161,22 @@ install_tui_plugin() {
   trap cleanup_dance EXIT
 
   # The boot spawns nats-server, core and every component — a few seconds on a
-  # fast machine, minutes on a small VM under swap. NIF_BOOT_TIMEOUT_S tunes
-  # it (5 polls a second); a heartbeat shows the wait is alive.
+  # fast machine, minutes only on a machine that is really swapping.
+  # NIF_BOOT_TIMEOUT_S tunes it; one probe a second (a 5/s spawn-storm of the
+  # CLI only slows the boot we are waiting for), and the heartbeat names the
+  # phase so a slow wait is diagnosable.
   local boot_s="${NIF_BOOT_TIMEOUT_S:-300}"
-  local ok="" start=$SECONDS nextNote=30 tries=$(( boot_s * 5 ))
+  local ok="" start=$SECONDS nextNote=30 tries=$boot_s
   for _ in $(seq 1 "$tries"); do
     if [ -f "$DANCE_URL_FILE" ] && \
        NIF_NATS_URL="$(cat "$DANCE_URL_FILE")" "$ROOT/var/bin/cli" catalog >/dev/null 2>&1; then
       ok=1; break
     fi
     if [ $(( SECONDS - start )) -ge "$nextNote" ]; then
-      log "still waiting for the harness boot ($(( SECONDS - start ))s of ${boot_s}s) — a slow box starts ~28 processes"
+      log "still waiting ($(( SECONDS - start ))s of ${boot_s}s) — bus file $([ -f "$DANCE_URL_FILE" ] && echo present || echo 'not written yet'), ~28 processes starting"
       nextNote=$(( nextNote + 30 ))
     fi
-    sleep 0.2
+    sleep 1
   done
   if [ -z "$ok" ]; then
     warn "harness did not come up in ${boot_s}s — last lines of $ROOT/var/logs/core.log:"
