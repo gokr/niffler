@@ -148,8 +148,8 @@ node bench/report.mjs --latest         # most recent run in var/bench/results
 
 Useful flags: `--rounds N` (feedback rounds, default 6), `--turn-timeout-min`,
 `--task-timeout-min`, `--test-timeout-sec`, `--max-turn-rounds N` (niffler
-LLM-round budget per turn, default 100), `--harness niffler,pi`,
-`--model a,b`, `--task t01,t03`, `--task-root path` (generated/custom tasks),
+LLM-round budget per turn, default 1000 — core's own ceiling), `--harness
+niffler,pi`, `--model a,b`, `--task t01,t03`, `--task-root path` (generated/custom tasks),
 `--resume` (skip cells of this run id that already have a pass/fail/timeout
 result — continue an interrupted run; delete a cell's result.json to re-run it),
 `--keep-repos` (preserve each completed
