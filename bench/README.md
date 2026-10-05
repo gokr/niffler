@@ -225,6 +225,15 @@ patch instead of burning the remaining feedback rounds.
   comparing token/time/tool-call figures — the profiles have very different
   prompt footprints (`sdk` mounts the full tool schema set, `sdk-minimal`
   is bash-only).
+- **maki** — Maki (tontinton/maki, Rust) over its Claude-Code-compatible
+  `--print --output-format stream-json` mode: one process per round in the
+  task repo, `--resume` continues feedback rounds, `--yolo --trust` keep
+  permission/project prompts out of the timed region. The bench model key is
+  sent as `deepseek/<id>`; `MAKI_BIN`/`../harnesses/maki/target/release/maki`
+  supplies the binary. Usage and tool counts come from the stream's
+  `assistant`/`result` usage blocks and `system/init` inventory. `thinking`
+  profiles are not expressible (only `--max-thinking-tokens`), so the lane
+  runs at Maki's own default thinking configuration.
 - **niffler** — one private harness per (model) combo: own `nats-server` on a
   free port + isolated `NIF_ROOT` (symlink farm over the bench worktree, real
   `var/`), pinned to the model gateway via `NIF_OPENAI_*` env. Each round is a

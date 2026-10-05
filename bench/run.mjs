@@ -20,6 +20,7 @@ import * as cw from "./adapters/codewhale.mjs";
 import * as cc from "./adapters/claudecode.mjs";
 import * as niffler from "./adapters/niffler.mjs";
 import * as dsh from "./adapters/dsh.mjs";
+import * as maki from "./adapters/maki.mjs";
 
 const BENCH_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const BENCH_DIR = path.join(BENCH_ROOT, "bench");
@@ -379,6 +380,10 @@ const ADAPTERS = {
     needsKeys: [],
     isService: true, // one runtime per task workspace
   },
+  maki: {
+    mod: maki,
+    needsKeys: ["DEEPSEEK_API_KEY"],
+  },
   "niffler-expert": {
     mod: niffler,
     needsKeys: [],
@@ -518,6 +523,16 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             turnTimeoutMs,
             cwd: shared.niffler.workspaceFor(repo),
           });
+        } else if (combo.harness === "maki") {
+          res = await maki.round({
+            repo,
+            prompt,
+            keys,
+            model: combo.model,
+            sessionId: adapterState.sessionId || null,
+            turnTimeoutMs,
+          });
+          adapterState.sessionId = res.sessionId;
         } else if (isDshHarness(combo.harness)) {
           res = await shared.dsh.round({
             sessionId,
@@ -642,6 +657,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
     else if (combo.harness === "codewhale") usage = cw.usageFromRounds(roundUsages);
     else if (combo.harness === "claudecode") usage = cc.usageFromRounds(roundUsages);
+    else if (combo.harness === "maki") usage = maki.usageFromRounds(roundUsages);
     else if (combo.harness === "dsh") usage = dsh.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
       transcript = await shared.niffler.transcript(sessionId);
@@ -657,6 +673,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   try {
     if (combo.harness === "pi") shape = pi.sessionShape(adapterState.sessionFile);
     else if (combo.harness === "claudecode") shape = cc.shapeFromRounds(roundUsages);
+    else if (combo.harness === "maki") shape = maki.shapeFromRounds(roundUsages);
     else if (combo.harness === "dsh") shape = dsh.shapeFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness) && transcript)
       shape = niffler.transcriptShape(transcript);
