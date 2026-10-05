@@ -225,6 +225,17 @@ patch instead of burning the remaining feedback rounds.
   comparing token/time/tool-call figures — the profiles have very different
   prompt footprints (`sdk` mounts the full tool schema set, `sdk-minimal`
   is bash-only).
+- **openhands** — OpenHands (Agent Canvas v1.24) driven through its
+  `openhands-agent-server` (PyPI 1.50.1, launched directly via the exact `uvx`
+  package set the product launcher uses — the UI ingress is not involved).
+  One stack per combo; each cell gets one conversation over the documented
+  REST API (`agent_settings` builds the product's default agent and toolset:
+  `terminal`, `file_editor`, `task_tracker`, `think`, `finish`), completion on
+  `execution_status`, final text from `agent_final_response`. Usage comes from
+  `stats.usage_to_metrics` (provider-reported); tool calls from `ActionEvent`s.
+  Auth is `X-Session-API-Key`; the LLM is pinned per conversation
+  (`openai/<model>` over `https://api.deepseek.com/v1` — litellm appends
+  `/chat/completions` to `base_url` verbatim, so the `/v1` must stay).
 - **maki** — Maki (tontinton/maki, Rust) over its Claude-Code-compatible
   `--print --output-format stream-json` mode: one process per round in the
   task repo, `--resume` continues feedback rounds, `--yolo --trust` keep

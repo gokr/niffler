@@ -21,6 +21,7 @@ import * as cc from "./adapters/claudecode.mjs";
 import * as niffler from "./adapters/niffler.mjs";
 import * as dsh from "./adapters/dsh.mjs";
 import * as maki from "./adapters/maki.mjs";
+import * as openhands from "./adapters/openhands.mjs";
 
 const BENCH_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const BENCH_DIR = path.join(BENCH_ROOT, "bench");
@@ -384,6 +385,11 @@ const ADAPTERS = {
     mod: maki,
     needsKeys: ["DEEPSEEK_API_KEY"],
   },
+  openhands: {
+    mod: openhands,
+    needsKeys: ["DEEPSEEK_API_KEY"],
+    isService: true, // one agent-server stack per combo
+  },
   "niffler-expert": {
     mod: niffler,
     needsKeys: [],
@@ -523,6 +529,16 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             turnTimeoutMs,
             cwd: shared.niffler.workspaceFor(repo),
           });
+        } else if (combo.harness === "openhands") {
+          res = await shared.openhands.round({
+            repo,
+            prompt,
+            keys,
+            model: combo.model,
+            sessionId: adapterState.sessionId || null,
+            turnTimeoutMs,
+          });
+          adapterState.sessionId = res.sessionId;
         } else if (combo.harness === "maki") {
           res = await maki.round({
             repo,
@@ -657,6 +673,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
     else if (combo.harness === "codewhale") usage = cw.usageFromRounds(roundUsages);
     else if (combo.harness === "claudecode") usage = cc.usageFromRounds(roundUsages);
+    else if (combo.harness === "openhands") usage = openhands.usageFromRounds(roundUsages);
     else if (combo.harness === "maki") usage = maki.usageFromRounds(roundUsages);
     else if (combo.harness === "dsh") usage = dsh.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
@@ -673,6 +690,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   try {
     if (combo.harness === "pi") shape = pi.sessionShape(adapterState.sessionFile);
     else if (combo.harness === "claudecode") shape = cc.shapeFromRounds(roundUsages);
+    else if (combo.harness === "openhands") shape = openhands.shapeFromRounds(roundUsages);
     else if (combo.harness === "maki") shape = maki.shapeFromRounds(roundUsages);
     else if (combo.harness === "dsh") shape = dsh.shapeFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness) && transcript)
@@ -858,6 +876,16 @@ async function ensureCombo(combo) {
           st.booting = null;
           try { await shared.niffler.stop(); } catch {}
         }
+      } else if (combo.harness === "openhands") {
+        shared.openhands = new openhands.OpenhandsHarness({
+          model: combo.modelCfg.dsh.model,
+          apiKey: keys.DEEPSEEK_API_KEY,
+          // The OpenAI-compatible prefix: the dsh section points at
+          // DeepSeek's Anthropic-wire endpoint (/anthropic), which 404s on
+          // /chat/completions.
+          baseUrl: combo.modelCfg.niffler.baseUrl,
+        });
+        await shared.openhands.start();
       } else if (isDshHarness(combo.harness)) {
         shared.dsh = new dsh.DshHarness({
           benchRoot: BENCH_ROOT,
@@ -1015,6 +1043,10 @@ async function main() {
     if (st.shared?.dsh) {
       console.log(`stopping dsh harness (${st.combo.model})…`);
       await st.shared.dsh.close();
+    }
+    if (st.shared?.openhands) {
+      console.log(`stopping openhands stack (${st.combo.model})…`);
+      await st.shared.openhands.stop();
     }
   }
   console.log(`bench: done — results in ${RESULTS}`);
