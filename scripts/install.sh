@@ -155,7 +155,7 @@ install_tui_plugin() {
   # right after the install; approval enforcement is untouched at runtime.
   log "installing the niffler-tui plugin via an isolated harness boot ..."
   mkdir -p "$ROOT/var/logs"
-  NIF_NATS_URL= NIF_NATS_SPAWN=1 NIF_AUTO_APPROVE=1 \
+  NIF_NATS_URL='' NIF_NATS_SPAWN=1 NIF_AUTO_APPROVE=1 \
     "$ROOT/var/bin/niffler" </dev/null >>"$ROOT/var/logs/core.log" 2>&1 &
   DANCE_PID=$!
   trap cleanup_dance EXIT
