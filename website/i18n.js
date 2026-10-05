@@ -160,7 +160,7 @@
       "ins.h2": "Two minutes in.",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">— optional: npx skills, npm MCP servers, TypeScript components (the core, clients and the TUI are Nim/Go — the installer asks)</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">— optional, richer HTML extraction</span>",
-      "ins.fine": "Niffler is built from source and distributed that way — there are no prebuilt binaries. The one-line installer brings in everything missing (git, make, Go, Node.js, the Nim toolchain and nimble packages); building by hand, <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server. The desktop UI is an experimental spin-off — install it like any package: <code>cli install gokr/niffler-ui</code>. Full story in the <a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">manual ↗</a>.",
+      "ins.fine": "Niffler is built from source and distributed that way — there are no prebuilt binaries. The one-line installer brings in everything missing (git, make, curl, Go, then the Nim toolchain and nimble packages via <code>make setup</code>); Node.js and npm are optional and it asks first. Building by hand, <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server. The desktop UI is an experimental spin-off — install it like any package: <code>cli install gokr/niffler-ui</code>. Full story in the <a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">manual ↗</a>.",
 
       "foot.line": "Small by default. It builds the rest."
     },
@@ -312,7 +312,7 @@
       "ins.h2": "两分钟，装好了。",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">——可选：npx skills、npm MCP 服务器、TypeScript 组件（核心、客户端和 TUI 都是 Nim/Go——安装器会询问）</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">——可选，HTML 正文提取更佳</span>",
-      "ins.fine": "Niffler 从源码构建、也以源码分发——没有预编译二进制。一行安装器补齐所有缺失的依赖（git、make、Go、Node.js、Nim 工具链和 nimble 包）；手动构建则用 <code>make doctor</code> 查看缺什么。总线随包自带——core 会启动自己的 nats-server。桌面 UI 是实验性衍生品——像普通包一样安装：<code>cli install gokr/niffler-ui</code>。完整故事见<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手册 ↗</a>。",
+      "ins.fine": "Niffler 从源码构建、也以源码分发——没有预编译二进制。一行安装器补齐所有缺失的依赖（git、make、curl、Go，随后通过 <code>make setup</code> 装好 Nim 工具链和 nimble 包）；Node.js 和 npm 是可选项，安装前会先询问。手动构建则用 <code>make doctor</code> 查看缺什么。总线随包自带——core 会启动自己的 nats-server。桌面 UI 是实验性衍生品——像普通包一样安装：<code>cli install gokr/niffler-ui</code>。完整故事见<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手册 ↗</a>。",
 
       "foot.line": "默认够小。其余的，它自己造。"
     },
@@ -464,7 +464,7 @@
       "ins.h2": "兩分鐘，裝好了。",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">——選配：npx skills、npm MCP 伺服器、TypeScript 元件（核心、用戶端和 TUI 都是 Nim/Go——安裝器會詢問）</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">——選配，HTML 內文提取更佳</span>",
-      "ins.fine": "Niffler 從原始碼建置、也以原始碼發佈——沒有預先編譯的二進位。一行安裝器補齊所有缺失的依賴（git、make、Go、Node.js、Nim 工具鏈和 nimble 套件）；手動建置則用 <code>make doctor</code> 查看缺什麼。匯流排隨包自帶——core 會啟動自己的 nats-server。桌面 UI 是實驗性衍生品——像一般套件一樣安裝：<code>cli install gokr/niffler-ui</code>。完整故事見<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手冊 ↗</a>。",
+      "ins.fine": "Niffler 從原始碼建置、也以原始碼發佈——沒有預先編譯的二進位。一行安裝器補齊所有缺失的依賴（git、make、curl、Go，隨後透過 <code>make setup</code> 裝好 Nim 工具鏈和 nimble 套件）；Node.js 和 npm 是選配，安裝前會先詢問。手動建置則用 <code>make doctor</code> 查看缺什麼。匯流排隨包自帶——core 會啟動自己的 nats-server。桌面 UI 是實驗性衍生品——像一般套件一樣安裝：<code>cli install gokr/niffler-ui</code>。完整故事見<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手冊 ↗</a>。",
 
       "foot.line": "預設夠小。其餘的，它自己造。"
     }
