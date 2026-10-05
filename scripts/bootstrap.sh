@@ -5,7 +5,9 @@
 #
 # Finds or creates the clone, installs platform prerequisites, builds core +
 # components, seeds .env, and installs the PATH entries including the
-# niffler-tui client wrapper. Idempotent: safe to re-run at any point.
+# niffler-tui client wrapper — then offers the optional extras (`make
+# install-lsp`, `make install-tools`, `make install-jev`) one by one, each
+# defaulting to no. Idempotent: safe to re-run at any point.
 #
 # Nothing happens without an explanation, and nothing in $HOME is created
 # before consent: it asks — accept the default location (~/niffler), type
@@ -14,9 +16,10 @@
 #   curl -fsSL .../bootstrap.sh | bash -s -- /where/you/want/niffler
 #
 # This script only orchestrates the Makefile front door (`make setup`,
-# `make build`, `make install-tui`) — it invents no build or install logic
-# of its own (the PATH-entry logic lives in scripts/install.sh behind
-# `make install`).
+# `make build`, `make install-tui`, and on request the optional `make
+# install-lsp` / `install-tools` / `install-jev`) — it invents no build or
+# install logic of its own (the PATH-entry logic lives in scripts/install.sh
+# behind `make install`).
 #
 # Arguments / environment:
 #   --dry-run          print the plan and what would run, change nothing
@@ -52,7 +55,9 @@ usage: bootstrap.sh [--dry-run] [<dir>]
  ~/niffler: <dir> or NIF_INSTALL_DIR pick the location), installs every
  missing prerequisite (git, make, Go — and asks about optional Node.js, for
  npx skills / npm MCP servers / TypeScript components), then runs make
- setup, make build and make install-tui. Idempotent.
+ setup, make build and make install-tui, and finally offers the optional
+ extras (make install-lsp, install-tools, install-jev) one by one — each an
+ explicit [y/N], Enter skips. Idempotent.
 EOF
 }
 
@@ -95,6 +100,10 @@ info "4. seed .env                  provider/API-key settings — only if missin
 info "5. make install-tui           PATH entries (NIF_BIN_DIR, else auto-detected): niffler,"
 info "                              niffler-cli, niffler-console + the niffler-tui wrapper"
 info "                              (niffler-prefixed names only — component binaries never shadow Unix tools)"
+info "then optional extras, each asked one by one ([y/N] — Enter skips):"
+info "                  make install-lsp    language servers for the lsp component"
+info "                  make install-tools  the agent CLI toolkit (jq, yq, ripgrep, fd, bat, ...)"
+info "                  make install-jev    the Von runtime behind the jev advisor (~5.4 GB)"
 [ "$DRY_RUN" = 1 ] && say "(dry run — nothing will be changed)"
 echo
 
@@ -313,6 +322,50 @@ fi
 # Step 5 — PATH entries + the terminal client wrapper.
 say "step 5/5 — make install-tui: installing PATH entries + the niffler-tui wrapper"
 run make install-tui
+
+# Optional extras — genuinely optional add-ons, offered one by one and
+# defaulting to no (bare Enter skips every one): the harness runs fine
+# without them, and the skip path always names the make target so nothing is
+# lost by pressing Enter. A no-tty run (automation) skips each with that
+# note; --dry-run prints what would be asked. A failed optional install is
+# never fatal here — this is the end of an otherwise successful install.
+offerExtra() {
+  # offerExtra <make target> <one-line what it is> [tty]
+  # "tty" runs make with /dev/tty as stdin — install-lsp asks its
+  # per-language questions on stdin and would otherwise see none.
+  local target="$1" what="$2" answer=""
+  if [ "$DRY_RUN" = 1 ]; then
+    say "would ask about optional 'make $target' ([y/N] — $what)"
+    return 0
+  fi
+  if ! hasTty; then
+    say "no tty to ask — skipping optional 'make $target' ($what); run it whenever you want"
+    return 0
+  fi
+  printf 'niffler-bootstrap: optional — %s\n  make %s? [y/N] ' "$what" "$target"
+  read -r answer </dev/tty 2>/dev/null || answer=""
+  case "$answer" in
+    [Yy]*)
+      say "running make $target"
+      if [ "${3:-}" = "tty" ]; then
+        make "$target" < /dev/tty || info "make $target reported problems — it is optional; re-run it any time"
+      else
+        make "$target" < /dev/null || info "make $target reported problems — it is optional; re-run it any time"
+      fi
+      ;;
+    *) say "skipped — run 'make $target' whenever you want it" ;;
+  esac
+}
+
+echo
+say "optional extras — every one of these is optional; Enter (the default) skips:"
+offerExtra install-lsp "language servers for the lsp component (Go/Nim/TS + per-language y/n)" tty
+offerExtra install-tools "the agent CLI toolkit for bash: jq, yq, ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip, sqlite3"
+if [ -x var/jev-venv/bin/von ]; then
+  say "optional 'make install-jev' — Von is already installed ('make von-up' enables the launcher)"
+else
+  offerExtra install-jev "the Von runtime behind the jev advisor (~5.4 GB; 'make von-up' enables it)"
+fi
 
 echo
 say "all done. what now:"

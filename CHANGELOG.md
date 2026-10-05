@@ -6,6 +6,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
+  ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
+  idempotent, per-tool non-fatal target (apt/brew; Debian's fdfind/batcat
+  get plain-name symlinks in `~/.local/bin`).
+- **The one-line installer offers the optional extras** — after the five
+  steps, `bootstrap.sh` asks one by one about `make install-lsp`, `make
+  install-tools` and `make install-jev`, each `[y/N]` (Enter skips; no-tty
+  runs just name the targets), so a fresh install can get language servers
+  and the CLI toolkit without knowing the make surface.
+
+### Removed
+
+- **`make install-nats`** — nats-server has been built from source by
+  `make build` (`components/nats`) since 0.4.0 and the target only said so.
+- **`make install-jq`** — folded into `make install-tools`.
+
 ## [0.4.0] — 2026-10-05
 
 Niffler 0.4.0 replaces the BitBarrel store with SQLite by default (or TiDB),
