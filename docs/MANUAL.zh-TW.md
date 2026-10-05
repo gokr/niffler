@@ -39,7 +39,7 @@
 | 路徑 | 內容 |
 |---|---|
 | `core/` | 控制平面：系統載具（`niffler.nim`：匯流排啟動、監督器、目錄、派送）＋會話執行器（`session.nim`）及其驅動的回合迴圈（`conversation.nim` — 最大的模組 — 加上 `compaction.nim`、`approval.nim`、`retry.nim`、`uireg.nim`、`tty.nim`） |
-| `components/` | 隨附的元件原始碼 — 每個元件一個目錄（Nim、Go、TypeScript 及一個 bash 示範）；清單即下方的[隨附元件](#shipped-components)表，這是必須保持最新的部分。有兩個目錄不是匯流排公民：`components/nats` 建置 `var/bin/nats-server`，當匯流排必須啟動時由 core 生成；`components/ctxtest` 是巢狀呼叫測試（`t_fabric`、`t_agent`）為自己編譯的測試夾具 |
+| `components/` | 隨附的元件原始碼 — 每個元件一個目錄（Nim、Go 和 TypeScript）；清單即下方的[隨附元件](#shipped-components)表，這是必須保持最新的部分。有兩個目錄不是匯流排公民：`components/nats` 建置 `var/bin/nats-server`，當匯流排必須啟動時由 core 生成；`components/ctxtest` 是巢狀呼叫測試（`t_fabric`、`t_agent`）為自己編譯的測試夾具 |
 | `sdk/` | Nim SDK（`sdk/niffler`）＋`sdk/go`（Go）＋`sdk/ts`（TypeScript/Node.js，npm 套件 `niffler-sdk`）；`sdk/envelope.nim` 中的信封是產物 |
 | `docs/` | 本手冊、線路規格（`WIRE.md`）、設定設計（`research/SETTINGS.md`）、core 邊界理由（`ARCHITECTURE.md`）、fabric 使用者指南（`FABRIC_GUIDE.md`）、待辦工作（`PLAN.md`）及 `research/`（設計歷史） |
 | `manifest.yaml` | 啟動 manifest：core 生成哪些元件、重啟原則，以及選用的無狀態 `replicas` 數量；`--minimal` 將其篩選為 `store`、`bash` 和 `llm` |
@@ -90,7 +90,8 @@
 | `hooks` | Nim | off by default | 當選定的匯流排事件觸發時執行操作者 shell 命令（僅觀察；stdin 上的 JSON，環境配置；見[掛鉤](#hooks)） |
 | `mcp` | Go | optional | 外部 MCP 伺服器（Model Context Protocol）：儲存後端的註冊表（`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`），每個伺服器一個受監督的橋接（子項是單獨的 `mcp-bridge` 二進位檔 — `var/bin/mcp-bridge`，由 `make build` 建置，路徑可用 `NIF_MCP_BRIDGE_BIN` 覆寫；它沒有 manifest 條目，且絕不手動啟動）；工具成為可透過 `discover` ＋ `invoke` 到達的普通目錄工具（見[外部 MCP 伺服器](#external-mcp-servers-mcp)） |
 | `nats-server` | Go | **not in the manifest** | 匯流排本身作為一等元件：官方 `nats-server` main 的忠實重建（固定在 `components/nats/go.mod`），由 `make build` 建置到 `var/bin/nats-server`，core 優先於 PATH 安裝，因此不需要 NATS 先決條件。刻意*不是*匯流排元件 — core 在匯流排存在之前啟動它，它不註冊任何工具，且 `core.spawn` 無法啟動它。Niffler 新增一個旗標 `--max_payload <bytes>`（core 傳遞 8388608），並在 Linux 上設定 `PR_SET_PDEATHSIG` 使沒有孤兒匯流排比其載具活得更久。沒有什麼需要為它安裝：`make install-nats` 只是這麼說，而 `make doctor` 報告 `nats-server: OK` 或解釋它是從原始碼建置的 |
-| `dialog` | bash | — | 完全以 bash 撰寫的示範元件 — nats CLI ＋ jq，無 SDK，無編譯步驟：`dialog_show` 彈出桌面對話框（zenity、notify-send 或日誌後備），`dialog_ask` 向使用者詢問是/否問題並返回答案（`dialog_show` → `{ok, shown: yes|no, via: zenity|notify|log, kind}` — `shown` 是後端的真實結果：失敗的對話框或日誌後備是 `no`，絕不是假的 `yes`；`dialog_ask` → `{ok, answer: yes|no|timeout|no-display}` — `timeout` 意味著有人有對話框並讓它失效，`no-display` 意味著沒有人能回答）。兩個工具都不受核准閘控或隨需，因此兩者都落入 `dialog` 啟動時開始的每個會話的直接工具集中，且沒有顯示器（`DISPLAY` 未設定或 zenity 缺失）時 `dialog_ask` 立即回答 `no-display` 而不詢問任何人。隨附於 `var/bin/dialog`（`make build`）但**不會自動啟動**；用 `spawn {name: "dialog", binary: ".../var/bin/dialog"}`（core 的工具）生成它。先決條件：nats CLI 和 `jq` 是硬性的 — 沒有任一者元件完全無法回答；`zenity`（或 `notify-send`）僅用於可見部分，且僅在 `DISPLAY` 已設定時。`make setup` 安裝全部三個，`make doctor` 檢查它們 |
+
+`components/` 不再包含 bash 示範：無 SDK 的 `dialog` 元件已移至 `examples/dialog/dialog.sh`，附有自己的 README，脫離隨附建置與 `make setup` — nats CLI 與 `zenity` 安裝器隨之退役（`jq` 作為一般 CLI 工具保留）。對照執行中的 harness 手動執行它（`bash examples/dialog/dialog.sh`）；它不在 `manifest.yaml` 中，沒有任何東西將它建置到 `var/bin`，`make doctor` 只是指向它。
 
 `components/ctxtest/` 是每個元件一個目錄 = 一個隨附元件的例外：它是契約測試自己的夾具 — 一個 stub `chat` LLM 加上巢狀呼叫探針 — 測試自己編譯成註冊為 `ctxtest` 和 `ctxsink` 的二進位檔。它不在此表中，不在 `manifest.yaml` 中，且絕不由 `make build` 建置。
 
@@ -231,7 +232,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 
 ## Environment variables
 
-所有元件都會載入 `.env`（從 harness root 與 cwd，既有的 shell 環境永遠優先——見下文）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——被啟動的 bash 元件 `dialog` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
+所有元件都會載入 `.env`（從 harness root 與 cwd，既有的 shell 環境永遠優先——見下文）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——樹內 bash 示範 `examples/dialog/dialog.sh` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -337,7 +338,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | `NIF_LOG_RETENTION_DAYS` | core 掃掠前保留子行程日誌的天數 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在使呼叫失敗前，等待新元件在目錄中註冊的時間（限制 250–120000）；當目錄記錄到拒絕時等待會提早結束，因此此旋鈕只約束沉默的元件 | `5000` |
 
-**建置與腳本旋鈕**——由 harness 周圍的腳本讀取，絕不由元件讀取：`NIF_BIN_DIR`（`scripts/install.sh` 將 PATH 項目連結進去的 bin 目錄）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 以 flock 鎖定的鎖檔——建置時排他，測試執行時共享）、`NIF_NATS_CLI`（`components/dialog/dialog.sh` 驅動的 nats CLI——此處唯一一個元件確實會讀取的項目：僅在 `nats` 既不在 `PATH` 也不在 `$HOME/go/bin` 時才會查詢它）、`NIF_CONF_KEEP`，加上測試輔助 `NIF_STORE_BIN` 與 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 與 `NIF_LSP_BIN_DIRS` 是執行時變數，留在上表。鎖只涵蓋 `make`：`builder.build` 在其外執行，因此執行時元件建置可能與 `make build` 競爭——而 `make clean` 會在其下刪除 `var/bin` 與 `var/build`。當 agent 正在建置元件時，請停止 harness。
+**建置與腳本旋鈕**——由 harness 周圍的腳本讀取，絕不由元件讀取：`NIF_BIN_DIR`（`scripts/install.sh` 將 PATH 項目連結進去的 bin 目錄）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 以 flock 鎖定的鎖檔——建置時排他，測試執行時共享）、`NIF_NATS_CLI`（`examples/dialog/dialog.sh` 驅動的 nats CLI——此處唯一一個元件確實會讀取的項目：僅在 `nats` 既不在 `PATH` 也不在 `$HOME/go/bin` 時才會查詢它）、`NIF_CONF_KEEP`，加上測試輔助 `NIF_STORE_BIN` 與 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 與 `NIF_LSP_BIN_DIRS` 是執行時變數，留在上表。鎖只涵蓋 `make`：`builder.build` 在其外執行，因此執行時元件建置可能與 `make build` 競爭——而 `make clean` 會在其下刪除 `var/bin` 與 `var/build`。當 agent 正在建置元件時，請停止 harness。
 
 每個 Niffler 變數都帶有 `NIF_` 前綴，因此 harness 絕不會與使用裸慣例（`NATS_URL`、`OPENAI_API_KEY`）的工具衝突。
 
@@ -887,7 +888,7 @@ project, build: {steps: [[argv...]], artifact: {path, runner}}}]}`：套件自�
   會自動探索它，並在該元件存在期間套用其 JSON Merge Patch。參見 [Source plugins](#source-plugins)。
 - 樹內有三種參考形態：`gokr/niffler-weather` 套件
   （Nim）、MCP 橋接（一個被 spawn 的 Go 元件），以及
-  `components/dialog/dialog.sh`——一個完全沒有 SDK 的純 bash 元件。
+  `examples/dialog/dialog.sh`——一個完全沒有 SDK 的純 bash 元件。
 
 ## Skills
 

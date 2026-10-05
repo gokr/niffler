@@ -18,7 +18,7 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
 - **开放模型，支持所有提供商。** 任何 OpenAI 兼容端点——本地、开放权重或托管——通过 `.env` 或存储支持的提供商注册表；ChatGPT/Claude 订阅 OAuth 和 models.dev 支持的目录。参见[提供商](docs/MANUAL.md#provider-registry-provider)和[模型目录](docs/MANUAL.md#model-catalog-models)。
 - **渐进式工具披露。** 一个小的、冻结的直接工具集；其他一切只需一次 `discover`/`invoke`，作为历史追加而非提示膨胀。参见 [MANUAL](docs/MANUAL.md#progressive-tool-discovery)。
 - **人类始终在环。** 审批门控工具，带清单摘要和每会话的 `ask`/`auto` 模式；当无法联系到人类时，调用被拒绝，绝不静默允许。参见[审批](docs/MANUAL.md#approvals)。
-- **多语言。** 主要是 Nim 和 Go，但没有组件绑定到某种语言：Nim、Go 和 TypeScript 的 SDK，以及一个完全不用 SDK 的随附 bash 演示。参见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- **多语言。** 主要是 Nim 和 Go，但没有组件绑定到某种语言：Nim、Go 和 TypeScript 的 SDK，以及一个完全不用 SDK 的树内 bash 演示（`examples/dialog`）。参见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 - **总线即 API。** `niffler-tui`、桌面 UI、`cli` 和 `console` 是平等的总线客户端；多个可以同时连接，各自独立构建和安装（TUI 本身就是一个插件）。参见[启动和停止](docs/MANUAL.md#starting-and-stopping)。
 - **为长时间运行而构建。** 冻结的提示/工具前缀保持提示缓存热；持久压缩和有界溢出恢复保持会话存活；软 `/limit` 预算与硬失控防护并存。参见[上下文窗口](docs/MANUAL.md#context-window)。
 - **本地优先，克隆即实例。** 对话和组件状态位于 `var/`（默认 SQLite），harness 运行自己的 NATS 总线，没有中心服务。参见[布局](docs/MANUAL.md#layout-of-a-running-system)。
@@ -27,7 +27,11 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
 
 ## Quick start
 
-要求：Nim 2.2.12+ 和 Go。`make setup` 安装这些以及其他平台先决条件（Ubuntu/macOS）和 Nimble 依赖。Node.js 20+ 和 npm 仅用于 TypeScript 组件。Niffler 使用纯 Nim 的 [natsnim](https://github.com/gokr/natsnim) 客户端；无需安装 `libnats` 或 `cnats`。
+要求：Nim 2.2.12+ 和 Go。`make setup` 安装这些以及其他平台先决条件（Ubuntu/macOS）和 Nimble 依赖。Node.js 20+ 和 npm 是可选的——它们用于 TypeScript 组件、`npx` 技能和基于 npm 的 MCP 服务器。Niffler 使用纯 Nim 的 [natsnim](https://github.com/gokr/natsnim) 客户端；无需安装 `libnats` 或 `cnats`。
+
+一行安装：`scripts/bootstrap.sh` 会找到或创建克隆、安装先决条件，然后运行 `make setup`、`make build` 和 `make install-tui`：
+`curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`。
+以下步骤是手动等价操作。
 
 ```bash
 git clone https://github.com/gokr/niffler.git

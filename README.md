@@ -38,8 +38,8 @@ home.
   and a per-conversation `ask`/`auto` mode; with no human reachable the call
   is denied, never silently allowed. See [approvals](docs/MANUAL.md#approvals).
 - **Polyglot.** Mostly Nim and Go, but no component is bound to a language:
-  SDKs for Nim, Go and TypeScript, and a shipped bash demo with no SDK at
-  all. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+  SDKs for Nim, Go and TypeScript, and an in-tree bash demo (`examples/dialog`)
+  with no SDK at all. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The bus is the API.** `niffler-tui`, `cli` and `console`
   are equal bus clients; several can attach at once and each builds and
   installs independently (the TUI is its own plugin). See
@@ -59,9 +59,16 @@ See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 
 Requirements: Nim 2.2.12+ and Go. `make setup` installs those and the other
 platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies. Node.js 20+
-and npm are needed only for TypeScript components. Niffler uses the pure-Nim
+and npm are optional — they serve TypeScript components, `npx` skills and
+npm-based MCP servers. Niffler uses the pure-Nim
 [natsnim](https://github.com/gokr/natsnim) client; no `libnats` or `cnats`
 installation is needed.
+
+For a one-line install, `scripts/bootstrap.sh` finds or creates the clone,
+installs the prerequisites, then runs `make setup`, `make build` and
+`make install-tui`:
+`curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`.
+The steps below are the manual equivalent.
 
 ```bash
 git clone https://github.com/gokr/niffler.git

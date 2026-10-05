@@ -40,7 +40,7 @@ A one-file index of every shipped capability (not a reference) is
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + the session runner (`session.nim`) and the turn loop it drives (`conversation.nim` — the largest module — plus `compaction.nim`, `approval.nim`, `retry.nim`, `uireg.nim`, `tty.nim`) |
-| `components/` | shipped component sources — one directory per component (Nim, Go, TypeScript and one bash demo); the inventory is the [Shipped components](#shipped-components) table below, which is the part that has to stay current. Two directories are not bus citizens: `components/nats` builds the `var/bin/nats-server` core spawns when a bus has to be started, and `components/ctxtest` is a fixture the nested-call tests (`t_fabric`, `t_agent`) compile for themselves |
+| `components/` | shipped component sources — one directory per component (Nim, Go and TypeScript); the inventory is the [Shipped components](#shipped-components) table below, which is the part that has to stay current. Two directories are not bus citizens: `components/nats` builds the `var/bin/nats-server` core spawns when a bus has to be started, and `components/ctxtest` is a fixture the nested-call tests (`t_fabric`, `t_agent`) compile for themselves |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual, the wire spec (`WIRE.md`), the settings design (`research/SETTINGS.md`), the core-boundary rationale (`ARCHITECTURE.md`), the fabric user guide (`FABRIC_GUIDE.md`), open work (`PLAN.md`) and `research/` (design history) |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, `llm`, and `systemprompt` |
@@ -91,7 +91,13 @@ A one-file index of every shipped capability (not a reference) is
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server (the child is the separate `mcp-bridge` binary — `var/bin/mcp-bridge`, built by `make build`, path overridable with `NIF_MCP_BRIDGE_BIN`; it has no manifest entry and is never started by hand); tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
 | `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and preferred by core over a PATH install, so no NATS prerequisite is needed. Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it: `make install-nats` only says so, and `make doctor` reports `nats-server: OK` or explains that it is built from source |
-| `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer (`dialog_show` → `{ok, shown: yes|no, via: zenity|notify|log, kind}` — `shown` is the backend's real outcome: a failed dialog or the log fallback is `no`, never a fake `yes`; `dialog_ask` → `{ok, answer: yes|no|timeout|no-display}` — `timeout` means a human had the dialog and let it lapse, `no-display` means nobody could answer). Neither tool is approval-gated or on demand, so both land in the direct toolset of every conversation started while `dialog` is up, and without a display (`DISPLAY` unset or zenity missing) `dialog_ask` answers `no-display` immediately without asking anyone. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `spawn {name: "dialog", binary: ".../var/bin/dialog"}` (core's tool). Prereqs: the nats CLI and `jq` are hard — without either the component cannot answer at all; `zenity` (or `notify-send`) only for the visible part, and only with `DISPLAY` set. `make setup` installs all three, `make doctor` checks them |
+
+`components/` no longer holds a bash demo: the SDK-free `dialog` component
+moved to `examples/dialog/dialog.sh`, with a README of its own, out of the
+shipped build and out of `make setup` — the nats CLI and `zenity` installers
+retired with it (`jq` stays as a general CLI tool). Run it by hand against a
+live harness (`bash examples/dialog/dialog.sh`); it is not in `manifest.yaml`,
+nothing builds it into `var/bin`, and `make doctor` only points at it.
 
 `components/ctxtest/` is the exception to one directory per component = one
 shipped component: it is the contract tests' own fixture — a stub `chat` LLM
@@ -470,7 +476,7 @@ in phase 1, which stay env forever) is `research/SETTINGS.md`.
 ## Environment variables
 
 All components load `.env` (from the harness root and cwd, existing shell
-env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the spawned bash component `dialog` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
+env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -580,7 +586,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 components: `NIF_BIN_DIR` (bin directory `scripts/install.sh` links the PATH
 entries into), `NIF_BUILD_LOCK` (lock file `scripts/with-build-lock.sh` flocks —
 exclusive for builds, shared for test runs), `NIF_NATS_CLI` (the nats CLI
-`components/dialog/dialog.sh` drives — the one entry here a component does
+`examples/dialog/dialog.sh` drives — the one entry here a component does
 read: it is consulted only when `nats` is neither on `PATH` nor in
 `$HOME/go/bin`), `NIF_CONF_KEEP`, plus the test helpers `NIF_STORE_BIN` and
 `NIF_REPO_ROOT`. `NIF_LSP_BIN` and `NIF_LSP_BIN_DIRS` are runtime variables and
@@ -1400,7 +1406,7 @@ topic `niffler-component` are discoverable without any registry:
   component is present. See [Source plugins](#source-plugins).
 - Three reference shapes exist in-tree: the `gokr/niffler-weather` package
   (Nim), the MCP bridge (a spawned Go component), and
-  `components/dialog/dialog.sh` — a whole bash component with no SDK at all.
+  `examples/dialog/dialog.sh` — a whole bash component with no SDK at all.
 
 ## Skills
 
