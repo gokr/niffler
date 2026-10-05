@@ -542,10 +542,13 @@ cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transc
   时的 `export`——另有单独一行 `error`，当启动/协议故障结束运行时出现。
   `result` 行携带权威的每回合计量——`turnId`、`outcome`、`usage`
   （docs/WIRE.md "Turn usage"）——因此驱动者绝不需要对事件求和来计费。
-- **门控。** 无头驱动者无法询问人类，因此它确认每一个定向审批请求并
-  **拒绝**它：受门控的工具以 `approval denied` 快速失败（harness 自己的
-  fail-closed 规则），而不是让回合停摆。`NIF_AUTO_APPROVE=1` 或
-  `--approvals auto` 则批准它们。
+- **门控。** 无头驱动者无法询问人类，因此它确认每一个审批请求并回答它：
+  在 MCP 引导窗口内，它只批准自己命令行所声明的那些
+  （`mcp_add`/`mcp_edit` 及其 `mcp-<name>` 桥接的 `spawn`/`kill`——绝不批准
+  `remove`），而在其他任何地方它都**拒绝**，因此受门控的工具以
+  `approval denied` 快速失败（harness 自己的 fail-closed 规则），而不是让
+  回合停摆。每个裁决都是一行可见的 `approval`（`verdict: grant|deny`）。
+  `NIF_AUTO_APPROVE=1` 或 `--approvals auto` 让门控根本不询问。
 - **取消。** SIGINT/SIGTERM 在对话的 steer 通道上发布文档化的 `__cancel`
   控制，并最多等待 `--cancel-grace`（默认 30 秒）让回合落定并持久化；
   结果仍然会产出（`outcome: cancelled`）。在回合开始之前到达的取消是
@@ -554,16 +557,20 @@ cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transc
   （存储分页，而非被裁剪的提供方投影；默认
   `<root>/var/exports/<sessionId>.jsonl`），每条存储消息一条记录。
 - **MCP 引导。** `--mcp <json>`（可重复）或 `--mcp-file <path>`（一个声明
-  的 JSON 数组）在**第一个回合之前**注册 MCP 服务器——每条声明按原样传给
+  的 JSON 数组，或 `{"servers": [...]}`）在**第一个回合之前**注册 MCP
+  服务器——每条声明按原样传给
   `mcp_add`/`mcp_edit`，因此 `--session` 的续接会重新应用它（刷新），桥接
   的工具会进入第一个回合所冻结的快照。`--mcp-timeout <secs>` 限制每个
-  服务器的注册预算（默认 120 秒），就绪状态随 `mcp` 输出行报告，而起不来
-  的服务器是启动失败（退出码 3）——绝不是一个被悄悄降级的回合。秘密使用
+  服务器的注册预算（默认 120 秒），就绪状态随 `mcp` 输出行报告——这些行
+  携带整个注册过程的 `durationMs`，因此首次运行的 `npx` 下载或高负载的
+  主机是可见的，而不是看起来像卡住——而起不来的服务器是启动失败
+  （退出码 3）——绝不是一个被悄悄降级的回合。秘密使用
   `${NAME}` 环境变量引用：存储保留占位符，桥接在连接时解析值，驱动者只
   打印凭据的**名称**——值绝不会出现在 stdout、stderr 或存储中。
 - **退出码。** `0` 成功的回合，`1` 未成功的回合（取消、预算/上限耗尽、
   错误——在 result 行上读 `outcome`），`2` 用法错误，`3` 启动/协议故障
-  （没有 harness、没有应答、无法导出）。`cli run --help` 打印完整的接口面。
+  （没有 harness、没有应答、一个无法就绪的已声明 MCP 服务器、无法导出）。
+  `cli run --help` 打印完整的接口面。
 
 ## Approvals
 
