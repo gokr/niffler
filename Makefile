@@ -79,7 +79,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
         install uninstall install-tui \
         setup doctor recover install-go install-nim \
         install-node install-native-deps install-nim-deps check-nim-deps \
-        install-jq install-lsp install-jev von-up von-down
+        install-tools install-lsp install-jev von-up von-down
 
 help:
 	@echo 'make all       build core + components (default)'
@@ -97,6 +97,7 @@ help:
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'
 	@echo 'make install-lsp  install the lsp component language servers'
+	@echo 'make install-tools  agent CLI toolkit: jq, yq, ripgrep, fd, fzf, bat, tree, ...'
 	@echo 'make install-jev  install the Von runtime for the jev component (opt-in, ~5.4 GB)'
 	@echo 'make von-up      enable the supervised Von launcher (persists across boots)'
 	@echo 'make von-down    disable it again (spawn record removed)'
@@ -601,7 +602,9 @@ doctor:
 	else echo "  node: MISSING or too old — run 'make install-node'"; fi
 	$(call check_tool,npm,install-node)
 	@echo "Optional (generally useful on the CLI):"
-	$(call check_tool,jq,install-jq)
+	$(call check_tool,jq,install-tools)
+	@echo "     agent CLI toolkit (yq, ripgrep, fd, fzf, bat, tree, htop, wget,"
+	@echo "     zip, unzip, sqlite3): 'make install-tools'"
 	@echo "  (the bash dialog demo lives in examples/dialog — its nats CLI + zenity"
 	@echo "   dependencies are its own; see examples/dialog/README.md)"
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
@@ -673,13 +676,12 @@ install-nim-deps:
 		fi; \
 	done
 
-# jq is a general CLI tool agents reach for constantly (via bash) — kept as a
-# one-command install. The nats CLI and zenity installers were removed with
-# the dialog demo's toolchain (examples/dialog/README.md documents them).
-install-jq:
-	@if command -v jq >/dev/null 2>&1; then echo "jq: already installed"; \
-	elif [ -n "$(IS_MAC)" ]; then brew install jq; \
-	else $(SUDO) apt-get install -y jq; fi
+# The agent CLI toolkit: the small, constantly-reached-for tools an LLM uses
+# through the bash component (jq and friends). One command, idempotent per
+# tool, failures non-fatal — a missing tool only costs a fallback to
+# coreutils. See scripts/install-tools.sh for the set and why each is there.
+install-tools:
+	@bash scripts/install-tools.sh
 
 install-node:
 	@# Node is OPTIONAL (Niffler core is Nim + Go): it serves TypeScript

@@ -109,6 +109,7 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 | `make install` | PATH entries for `niffler`, `niffler-cli`, `niffler-console`, plus `niffler-tui` on request |
 | `make install-tui` | `make install WITH_TUI=1`: the above plus the `niffler-tui` chat client |
 | `make install-lsp` | install the default language servers for the `lsp` component |
+| `make install-tools` | the agent CLI toolkit for bash: jq, yq, ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip, sqlite3 |
 | `make test` | the complete gate: the bus-contract suite (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
 | `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
 | `make test-<name>` | one component's contract test, e.g. `make test-fetch` |
