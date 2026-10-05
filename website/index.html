@@ -87,53 +87,59 @@
           <span class="legend-dim" data-i18n="fast.legend3">99.3% — printed in the UI, every turn</span>
         </div>
       </div>
-      <div class="grid grid-3 grid-compare">
-        <article>
-          <h3>Pi <span class="ver">0.99.2</span></h3>
-          <p class="cmp-tools">read · bash · edit · write</p>
-          <p class="cmp-note" data-i18n-html="cmp.pi.note">3 more built in — grep · find · ls — off by default (<code>+grep</code> to enable)</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈0.68k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈1.4k</b></p>
-        </article>
-        <article class="cmp-us">
-          <h3>Niffler <span class="ver">0.3.0</span></h3>
-          <p class="cmp-tools">discover · invoke · bash · read · write · edit · grep</p>
-          <p class="cmp-note" data-i18n-html="cmp.nif.note">the whole catalog (~25 components) sits behind discover / invoke</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈0.36k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b class="b-hero">≈2.25k</b></p>
-        </article>
-        <article>
-          <h3>Claude Code <span class="ver">2.1.286</span></h3>
-          <p class="cmp-tools">23 tools — Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈1.5k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈18k</b></p>
-        </article>
-        <article>
-          <h3>DSH <span class="ver">0.2.0-rc.2</span></h3>
-          <p class="cmp-tools">25 tools — bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</p>
-          <p class="cmp-note" data-i18n-html="cmp.dsh.note">out of the box — every base-backed profile
-            (tui · web · headless)</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈6.5k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈11.7k</b></p>
-        </article>
-        <article>
-          <h3>Opencode <span class="ver">1.18.32 · v2.0.22 out</span></h3>
-          <p class="cmp-tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</p>
-          <p class="cmp-note" data-i18n-html="cmp.oc.note">captured from the v1.18.32 wire — v2's docs list
-            a slightly different set (adds apply_patch · question ·
-            websearch)</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈10.7k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈16k</b></p>
-        </article>
-        <article class="cmp-method">
-          <h3 data-i18n="cmp.method.h">How to read this</h3>
-          <p class="cmp-note" data-i18n-html="cmp.method.p">≈ k tokens (chars/4) from the exact first-request
-          bytes each harness sends into an empty workspace — captured from live
-          wire requests, Oct 2026. User content excluded (Pi lists your
-          installed skills in its prompt by default, Niffler adds the repo's
-          AGENTS.md chain, Claude Code the CLAUDE.md) — all five captured the
-          same way.</p>
-        </article>
+      <style>
+        .bench-copy{border-left:3px solid var(--accent,#4a5);padding:.8em 1em;margin:1.4em 0;background:rgba(127,127,127,.06);font-size:.92em;line-height:1.55}
+        table.bench{width:100%;border-collapse:collapse;margin:1.2em 0 .4em;font-size:.92em}
+        table.bench caption{text-align:left;font-weight:600;padding:.4em 0}
+        table.bench th,table.bench td{border-bottom:1px solid rgba(127,127,127,.28);padding:.45em .6em;text-align:right;vertical-align:top}
+        table.bench th:first-child,table.bench td:first-child,table.bench td.tools{text-align:left}
+        table.bench tbody tr:hover{background:rgba(127,127,127,.07)}
+        table.bench .us{font-weight:600}
+        .bench-note{font-size:.85em;opacity:.8;line-height:1.5}
+      </style>
+      <p class="bench-copy"><strong>What this measures.</strong> Numbers gathered with
+        <strong>DeepSeek&#8209;V4.1&#8209;Flash</strong> (<code>deepseek-v4-flash</code>) at
+        <strong>low thinking effort</strong>, called <strong>directly through DeepSeek's
+        first&#8209;party API</strong> — no gateway, no proxy; the same key and endpoint for every
+        harness. The tasks are <strong>deliberately simple, well&#8209;specified coding
+        exercises</strong>: this is <strong>not a capability benchmark</strong>. It measures the
+        three things that dominate real daily cost — <strong>tokens per task, wall&#8209;clock per
+        task, and price per task</strong> — for normal work.</p>
+
+      <table class="bench">
+        <caption>full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026)</caption>
+        <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Tokens / task (in / cache / out)</th><th>Cost / task</th><th>Cache hit</th></tr></thead>
+        <tbody>
+          <tr><td>Pi 0.99.2</td><td>31/31</td><td>13.9s</td><td>4.0k / 22.6k / 2.0k</td><td>$0.0037</td><td>85%</td></tr>
+          <tr><td>Maki 0.6.0</td><td>31/31</td><td>12.1s</td><td>9.7k / 53.2k / 1.5k</td><td>$0.0050</td><td>85%</td></tr>
+          <tr class="us"><td>Niffler 0.3.0</td><td>31/31</td><td>18.7s</td><td>4.0k / 32.2k / 2.3k</td><td>$0.0041</td><td>89%</td></tr>
+          <tr><td>DSH 0.2.1 (<code>sdk</code>, out of the box)</td><td>31/31</td><td>17.9s</td><td>8.3k / 45.6k / 2.7k</td><td>$0.0061</td><td>85%</td></tr>
+          <tr><td>OpenHands 1.24</td><td>31/31</td><td>25.7s</td><td>8.8k / 84.6k / 3.9k</td><td>$0.0078</td><td>91%</td></tr>
+        </tbody>
+      </table>
+      <p class="bench-note">Full record and methodology: <code>bench/reports/</code> in the repository.
+        Cache hit = cached read ÷ (cached read + uncached input) over the whole run.
+
+      <table class="bench">
+        <caption>Direct tools &amp; fixed prompt — what each harness puts in front of the model</caption>
+        <thead><tr><th>Harness</th><th>Direct tools</th><th class="tools">Which</th><th>Base prompt</th><th>Base prompt + tools</th></tr></thead>
+        <tbody>
+          <tr><td>Pi</td><td>4 (+3 optional)</td><td class="tools">read · bash · edit · write <span class="bench-note">(grep · find · ls off by default)</span></td><td>≈0.68k</td><td>≈1.4k</td></tr>
+          <tr class="us"><td>Niffler</td><td>7</td><td class="tools">discover · invoke · bash · read · write · edit · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td>≈0.36k</td><td>≈2.25k</td></tr>
+          <tr><td>OpenHands</td><td>3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td>generated per request</td><td>≈12–16k</td></tr>
+          <tr><td>Opencode</td><td>10</td><td class="tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</td><td>≈10.7k</td><td>≈16k</td></tr>
+          <tr><td>DSH (out of the box)</td><td>25</td><td class="tools">bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</td><td>≈6.5k</td><td>≈11.7k</td></tr>
+          <tr><td>Maki</td><td>18</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td>—</td><td>≈15.9k</td></tr>
+          <tr><td>Claude Code</td><td>23</td><td class="tools">Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</td><td>≈1.5k</td><td>≈18k</td></tr>
+        </tbody>
+      </table>
+      <p class="bench-note">≈ k tokens (chars/4) from the exact first&#8209;request bytes each harness sends into
+        an empty workspace — captured from live wire requests, Oct 2026. User content excluded (Pi lists
+        your installed skills in its prompt by default, Niffler adds the repo's AGENTS.md chain, Claude Code
+        the CLAUDE.md) — all captured the same way. Maki's figure is the measured first request of a
+        three&#8209;word prompt (system + all 18 tool schemas; split not exposed). OpenHands generates its
+        system prompt at request time (not stored server&#8209;side); the range is the observed first&#8209;request
+        budget including its tool schemas.</p>
       </div>
     </section>
 
