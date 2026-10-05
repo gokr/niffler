@@ -13,6 +13,8 @@
 #   make install FORCE=1             # reinstall the plugin even if present
 #   make install NIF_BIN_DIR=~/bin   # explicit bin dir (auto-detected else)
 #   make uninstall                   # remove the PATH entries again
+# Env: NIF_BOOT_TIMEOUT_S (default 180) — how long the plugin install waits
+#      for the isolated harness boot before giving up.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -53,7 +55,10 @@ if [ -z "$BIN_DIR" ]; then
 fi
 mkdir -p "$BIN_DIR"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *)
-  warn "$BIN_DIR is not on PATH — add it to your shell rc to use these commands." ;;
+  warn "$BIN_DIR is not on PATH in this shell — but on Ubuntu that fixes itself:"
+  warn "  the default ~/.profile adds ~/.local/bin to PATH at login once the dir"
+  warn "  exists (log back in, or: source ~/.profile). Right now: export PATH=\"$BIN_DIR:\$PATH\""
+  warn "  (system-wide instead: sudo make install NIF_BIN_DIR=/usr/local/bin)" ;;
 esac
 
 # --------------------------------------------------------------------------
@@ -155,15 +160,25 @@ install_tui_plugin() {
   DANCE_PID=$!
   trap cleanup_dance EXIT
 
-  local ok=""
-  for _ in $(seq 1 150); do
+  # The boot spawns nats-server, core and every component — quick on a fast
+  # machine, marginal on a 1-2 GB VM under swap. NIF_BOOT_TIMEOUT_S tunes it.
+  local ok="" tries=$(( ${NIF_BOOT_TIMEOUT_S:-180} * 5 / 2 ))
+  for _ in $(seq 1 "$tries"); do
     if [ -f "$DANCE_URL_FILE" ] && \
        NIF_NATS_URL="$(cat "$DANCE_URL_FILE")" "$ROOT/var/bin/cli" catalog >/dev/null 2>&1; then
       ok=1; break
     fi
-    sleep 0.4
+    sleep 0.2
   done
-  [ -n "$ok" ] || die "harness did not come up — see $ROOT/var/logs/core.log"
+  if [ -z "$ok" ]; then
+    warn "harness did not come up in ${NIF_BOOT_TIMEOUT_S:-180}s — last lines of $ROOT/var/logs/core.log:"
+    tail -25 "$ROOT/var/logs/core.log" 2>/dev/null | sed 's/^/  | /' >&2 || true
+    warn "if the log ends abruptly, suspect the OOM killer on a small VM:"
+    warn "  free -h; dmesg -T | grep -i -E 'oom|killed process' | tail"
+    warn "if it mentions a store lock or a live bus, a previous harness is still around:"
+    warn "  make down   (or make down-here), then re-run"
+    die "harness did not come up — see $ROOT/var/logs/core.log"
+  fi
 
   if NIF_NATS_URL="$(cat "$DANCE_URL_FILE")" "$ROOT/var/bin/cli" install \
        --timeout:600 gokr/niffler-tui; then
