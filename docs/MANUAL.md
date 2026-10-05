@@ -547,7 +547,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_AUTO_CONTINUE` | `1` → a turn that reaches one of the conversation's soft limits (`/limit`) keeps going without asking (`NIF_AUTO_APPROVE=1` implies it). For headless automation only | unset |
 | `NIF_MAX_TURN_ROUNDS` | hard LLM-round ceiling per turn; an explicit per-session `maxRounds` may narrow it | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | estimated-token cap on a conversation's direct toolset for `invoke {sticky: true}` promotion; a promotion that would exceed it is deferred and reported in the tool result | `4000` |
-| `NIF_REVIEW_HINT_MIN_CHARS` | character length of a fresh conversation's first user message at or above which the `systemprompt` component appends its independent-review instruction; `0` or a negative value disables the guidance | `1200` |
+| `NIF_REVIEW_HINT_MIN_CHARS` | character length of a fresh conversation's first user message at or above which the `systemprompt` component inserts its independent-review instruction mid-prompt; `0` or a negative value disables the guidance | `1200` |
 | `NIF_PROFILE` | default named tool profile for new conversations, used when the `session` call carries no `profile` argument | unset |
 | `NIF_AGENT_MAX_DEPTH` | caps how deep `agent_spawn` delegation may nest (core enforces at dispatch; the agent component mirrors it). `0` forbids delegation; spawn tools stay visible at the cap | `1` |
 | `NIF_HOOKS_EVENTS` | comma-separated bus subjects the hooks component watches, with NATS wildcards (`*` one token, a trailing `>` the rest). Read at boot — a config change is `core.kill` + `core.spawn` | `ev.session.*.turn` |
@@ -2851,14 +2851,18 @@ itself.
 - **Size-gated review guidance.** A fresh conversation's first user message
   rides along to `svc.systemprompt.call` as the `firstMessage` argument (a
   resume reads the stored prompt verbatim, so it is not passed then). The
-  default component appends an independent-review instruction — verify the
-  change and have a subagent that did not write it read the diff against the
-  original request — when that message is at least 1200 characters
-  (`NIF_REVIEW_HINT_MIN_CHARS` overrides; `<= 0` disables it): a long opening
-  message is usually a requirement list, and a missed clause is how that work
-  fails. It sits with the standing instructions, above the workspace and
-  project-context blocks, as plain prose (no XML wrapper and no branch to
-  evaluate), and a short request pays nothing.
+  default component inserts an independent-review instruction — bring in a
+  second reader for the diff (`agent_spawn` a subagent that sees only the
+  request and the `git diff`) and fix what it finds — when that message is at
+  least 1200 characters (`NIF_REVIEW_HINT_MIN_CHARS` overrides; `<= 0`
+  disables it): a long opening message is usually a requirement list, and a
+  missed clause is how that work fails. It lands mid-prompt, spliced at the
+  "Working on Niffler itself:" anchor of the product prompt beside the
+  change-scope and verification guidance, as plain prose (no XML wrapper) —
+  and it names the review as the check to use when no build, test or linter
+  can exercise the change. The final message must report what the review
+  caught or state `no review: <reason>`, so a skipped review is visible
+  instead of silent. A short request pays nothing.
 - **Prompt slots (extension seam).** Components and plugins contribute
   fragments through the hidden `prompt_hint {slot, content, source?, key?,
   mode?}` tool: the named slots (`tool_usage`, `efficient_tools`,

@@ -302,7 +302,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | `NIF_AUTO_CONTINUE` | `1` → 达到对话软限制之一（`/limit`）的轮次继续而不询问（`NIF_AUTO_APPROVE=1` 隐含它）。仅用于无头自动化 | 未设置 |
 | `NIF_MAX_TURN_ROUNDS` | 每轮次的硬 LLM 轮次上限；显式的每会话 `maxRounds` 可以收窄它 | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | 对话直接工具集的估计 token 上限，用于 `invoke {sticky: true}` 提升；会超过它的提升被推迟并在工具结果中报告 | `4000` |
-| `NIF_REVIEW_HINT_MIN_CHARS` | 全新对话第一条用户消息的字符长度，达到或超过该值时 `systemprompt` 组件会附加其独立审查指示；`0` 或负值禁用该指引 | `1200` |
+| `NIF_REVIEW_HINT_MIN_CHARS` | 全新对话第一条用户消息的字符长度，达到或超过该值时 `systemprompt` 组件会在提示中段插入其独立审查指示；`0` 或负值禁用该指引 | `1200` |
 | `NIF_PROFILE` | 新对话的默认命名工具 profile，当 `session` 调用不携带 `profile` 参数时使用 | 未设置 |
 | `NIF_AGENT_MAX_DEPTH` | 限制 `agent_spawn` 委托可以嵌套的深度（core 在分派时强制执行；agent 组件镜像它）。`0` 禁止委托；生成工具在上限处仍可见 | `1` |
 | `NIF_HOOKS_EVENTS` | hooks 组件监视的逗号分隔总线主题，带 NATS 通配符（`*` 一个 token，尾随 `>` 其余）。启动时读取——配置更改是 `core.kill` + `core.spawn` | `ev.session.*.turn` |
@@ -1581,11 +1581,14 @@ OAuth、环境凭据、headers、请求转换和原生 API
 - **按大小闸控的审查指引。** 全新对话的第一条用户消息会作为 `firstMessage`
   参数一并送往 `svc.systemprompt.call`（恢复会逐字读取已存储的提示，因此
   届时不会传递）。当该消息至少 1200 字符时（`NIF_REVIEW_HINT_MIN_CHARS`
-  可覆盖；`<= 0` 禁用），默认组件会附加一段独立审查指示——验证变更，并让
-  一位未撰写它的子 agent 对照原始请求阅读 diff。冗长的开场消息通常是需求
-  清单，而漏掉一个子句正是这类工作失败的方式。它与常驻指令并列，位于
-  workspace 与 project-context 区块之上，以纯文本呈现，且短请求不付任何
-  代价。
+  可覆盖；`<= 0` 禁用），默认组件会插入一段独立审查指示——为 diff 引入第二位
+  阅读者（`agent_spawn` 一个只看请求与 `git diff` 的子 agent），并修好它发现的
+  问题。冗长的开场消息通常是需求清单，而漏掉一个子句正是这类工作失败的方式。
+  指示落在提示中段，拼接于产品提示的 "Working on Niffler itself:" 锚点处、紧邻
+  变更范围与验证指引，以纯文本呈现（无 XML 包裹）——并点明：当没有任何
+  build、测试或 linter 能覆盖该变更时，这项审查就是你唯一的检查。最终消息必须
+  报告审查的发现，或写明 `no review: <reason>`，让跳过可见而不是无声。短请求
+  不付任何代价。
 - **提示槽（扩展接缝）。** 组件和插件通过隐藏的 `prompt_hint {slot, content, source?, key?,
   mode?}` 工具贡献片段：命名槽（`tool_usage`、`efficient_tools`、
   `after_instructions`）以确定性顺序（按 `source`，然后 `key`）渲染为 `<prompt_slot name="…">` 块；

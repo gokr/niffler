@@ -204,16 +204,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A long first message earns independent-review guidance.** A conversation's
   first user message now travels with the systemprompt request — on the fresh
   path only, since a resume reads the stored prompt verbatim and "first message"
-  would then be the wrong message — and the component appends a review
-  instruction when that message is at least 1200 characters
-  (`NIF_REVIEW_HINT_MIN_CHARS` overrides; ≤ 0 disables, which drives the A/B
-  arms). The instruction rides with the standing instructions as plain prose
-  above the workspace and project-context blocks: no XML wrapper and no branch,
-  because the two conditional arms converted none of the spec-heavy tasks while
-  reviewing as much or more, and "where running it is allowed" keeps a graded
-  task's own no-test-runs constraint intact. Measured on four spec-heavy DeepSWE
-  tasks; `tests/t_systemprompt` pins both the byte-identical short-message
-  prompt and the guidance's position.
+  would then be the wrong message — and the component inserts a review
+  instruction mid-prompt, spliced at the "Working on Niffler itself:" anchor,
+  when that message is at least 1200 characters (`NIF_REVIEW_HINT_MIN_CHARS`
+  overrides; ≤ 0 disables, which drives the A/B arms). The instruction is plain
+  prose (no XML wrapper): it names the review as the check to use when nothing
+  else can validate the change — no build, test or linter that exercises it —
+  and asks the final message to report what the review caught or state
+  `no review: <reason>`, so a skipped review is visible instead of silent. The
+  mid-prompt position is the arm that converted three of four spec-heavy DeepSWE
+  tasks (the appended form was largely ignored by a stronger model);
+  `tests/t_systemprompt` pins both gate directions, the position, and that the
+  gated prompt is the plain one plus the insertion.
 
 - **The `todo-markdown` skill covers long requirement lists.** Two spec-heavy
   cells failed by dropping one clause while implementing everything around it,

@@ -308,7 +308,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | `NIF_AUTO_CONTINUE` | `1` → 到達對話軟性限制（`/limit`）之一的回合會不詢問地繼續（`NIF_AUTO_APPROVE=1` 隱含它）。僅供無介面自動化 | unset |
 | `NIF_MAX_TURN_ROUNDS` | 每回合的 LLM 回合硬上限；明確的每會話 `maxRounds` 可縮小它 | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | 對話直接工具集用於 `invoke {sticky: true}` 提升的估計 token 上限；會超過它的提升會被延後並在工具結果中回報 | `4000` |
-| `NIF_REVIEW_HINT_MIN_CHARS` | 全新對話第一則使用者訊息的字元長度，達到或超過該值時 `systemprompt` 元件會附加其獨立審查指示；`0` 或負值停用該指引 | `1200` |
+| `NIF_REVIEW_HINT_MIN_CHARS` | 全新對話第一則使用者訊息的字元長度，達到或超過該值時 `systemprompt` 元件會在提示中段插入其獨立審查指示；`0` 或負值停用該指引 | `1200` |
 | `NIF_PROFILE` | 新對話的預設具名工具 profile，在 `session` 呼叫未帶 `profile` 引數時使用 | unset |
 | `NIF_AGENT_MAX_DEPTH` | 限制 `agent_spawn` 委派可嵌套的深度（core 在 dispatch 時強制；agent 元件鏡像它）。`0` 禁止委派；到達上限時 spawn 工具仍可見 | `1` |
 | `NIF_HOOKS_EVENTS` | hooks 元件監看的逗號分隔匯流排主體，支援 NATS 萬用字元（`*` 一個 token，結尾的 `>` 代表其餘）。於開機時讀取——配置變更是 `core.kill` + `core.spawn` | `ev.session.*.turn` |
@@ -1749,10 +1749,14 @@ system prompt 不是 LLM 呼叫的工具 —— 它是每個會話開始時所�
 - **依大小閘控的審查指引。** 全新對話的第一則使用者訊息會以 `firstMessage`
   引數一併送往 `svc.systemprompt.call`（恢復會逐字讀取已儲存的提示，因此
   屆時不會傳遞）。當該訊息至少 1200 字元時（`NIF_REVIEW_HINT_MIN_CHARS`
-  可覆寫；`<= 0` 停用），預設元件會附加一段獨立審查指示——驗證變更，並讓
-  一位未撰寫它的子代理對照原始請求閱讀 diff。冗長的開場訊息通常是需求清單，
-  而漏掉一個子句正是這類工作失敗的方式。它與常設指令並列，位於 workspace 與
-  project-context 區塊之上，以純文字呈現，且短請求不付出任何代價。
+  可覆寫；`<= 0` 停用），預設元件會插入一段獨立審查指示——為 diff 引入第二位
+  閱讀者（`agent_spawn` 一個只看請求與 `git diff` 的子代理），並修好它發現的
+  問題。冗長的開場訊息通常是需求清單，而漏掉一個子句正是這類工作失敗的方式。
+  指示落在提示中段，拼接於產品提示的 "Working on Niffler itself:" 錨點處、緊鄰
+  變更範圍與驗證指引，以純文字呈現（無 XML 包裹）——並點明：當沒有任何
+  build、測試或 linter 能涵蓋該變更時，這項審查就是你唯一的檢查。最終訊息必須
+  報告審查的發現，或寫明 `no review: <reason>`，讓跳過可見而不是無聲。短請求
+  不付出任何代價。
 - **Prompt slots（擴充接縫）。** 元件與外掛透過隱藏工具 `prompt_hint {slot, content, source?, key?, mode?}` 貢獻片段：具名 slot（`tool_usage`、`efficient_tools`、`after_instructions`）會以確定性順序（依 `source`，再依 `key`）渲染為 `<prompt_slot name="…">` 區塊；`mode: aggregate`（預設）保留每個貢獻，而 `mode: singleton` 只保留該 slot 最後註冊的一個，而沒有貢獻的 slot 不會渲染任何內容。註冊是元件本機狀態，且只影響在其*之後*組成的 prompt —— 凍結的會話絕不會被重寫。`prompt_hint` 也是 `x-harness.hidden`，因此它與 `systemprompt` 都不會出現在 LLM 工具集中。
 
 ### The default component's prompt assembly
