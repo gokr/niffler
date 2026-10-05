@@ -477,7 +477,7 @@
           <button class="copy" type="button" data-copy-target="setup-code">copy</button>
         </div>
         <pre id="setup-code"><code>curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash
-<span class="dim"># asks before creating ~/niffler — or pick a location: | bash -s -- /your/dir</span>
+<span class="dim"># asks: stable release or main, and where to create ~/niffler (or | bash -s -- /your/dir)</span>
 <span class="dim"># or manually, from a clone:</span>
 git clone https://github.com/gokr/niffler.git &amp;&amp; cd niffler
 make setup &amp;&amp; make build
@@ -493,9 +493,10 @@ niffler-tui            <span class="dim"># boots the harness on demand</span></c
       </ul>
       <p class="fineprint" data-i18n-html="ins.fine">Niffler is built from source and distributed that way —
         there are no prebuilt binaries. The one-line installer brings in
-        everything missing (git, make, Go, Node.js, the Nim toolchain and
-        nimble packages); building by hand, <code>make doctor</code> reports
-        what is missing. The bus is bundled — core spawns its own nats-server.
+        everything missing (git, make, curl, Go, then the Nim toolchain and
+        nimble packages via <code>make setup</code>); Node.js and npm are
+        optional and it asks first. Building by hand,
+        <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server.
         The desktop UI is an experimental spin-off — install it like any
         package: <code>cli install gokr/niffler-ui</code>. Full story in the
         <a href="https://github.com/gokr/niffler/blob/main/docs/MANUAL.md">manual ↗</a>.</p>
