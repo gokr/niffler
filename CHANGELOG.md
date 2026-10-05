@@ -24,6 +24,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `make build` (`components/nats`) since 0.4.0 and the target only said so.
 - **`make install-jq`** — folded into `make install-tools`.
 
+### Fixed
+
+- **`make install-lsp` installs npm servers without `npm install -g`** —
+  apt- and snap-shipped Node put the global prefix under `/usr(/local)`,
+  where that write dies EACCES without sudo, so fresh boxes got `FAIL …
+  npm install failed` for every npm server. They now install into
+  `~/.local/share/niffler-lsp/npm` with symlinks in the bin dir, npm's own
+  last error line is surfaced when an install fails, and
+  `pyright-langserver` — the binary the `lsp` registry actually launches —
+  is linked and checked instead of the `pyright` CLI.
+- **`make install-lsp` probes what it installs** — its bin dir is now on
+  its own PATH, so `ensure_java` sees the JDK the script installed even in
+  non-login shells (snap/Ubuntu default PATHs lack `~/.local/bin`); it
+  used to re-download the JDK and fail there.
+
 ## [0.4.0] — 2026-10-05
 
 Niffler 0.4.0 replaces the BitBarrel store with SQLite by default (or TiDB),
