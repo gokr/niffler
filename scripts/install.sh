@@ -13,7 +13,7 @@
 #   make install FORCE=1             # reinstall the plugin even if present
 #   make install NIF_BIN_DIR=~/bin   # explicit bin dir (auto-detected else)
 #   make uninstall                   # remove the PATH entries again
-# Env: NIF_BOOT_TIMEOUT_S (default 180) — how long the plugin install waits
+# Env: NIF_BOOT_TIMEOUT_S (default 300) — how long the plugin install waits
 #      for the isolated harness boot before giving up.
 set -euo pipefail
 
@@ -160,18 +160,24 @@ install_tui_plugin() {
   DANCE_PID=$!
   trap cleanup_dance EXIT
 
-  # The boot spawns nats-server, core and every component — quick on a fast
-  # machine, marginal on a 1-2 GB VM under swap. NIF_BOOT_TIMEOUT_S tunes it.
-  local ok="" tries=$(( ${NIF_BOOT_TIMEOUT_S:-180} * 5 / 2 ))
+  # The boot spawns nats-server, core and every component — a few seconds on a
+  # fast machine, minutes on a small VM under swap. NIF_BOOT_TIMEOUT_S tunes
+  # it (5 polls a second); a heartbeat shows the wait is alive.
+  local boot_s="${NIF_BOOT_TIMEOUT_S:-300}"
+  local ok="" start=$SECONDS nextNote=30 tries=$(( boot_s * 5 ))
   for _ in $(seq 1 "$tries"); do
     if [ -f "$DANCE_URL_FILE" ] && \
        NIF_NATS_URL="$(cat "$DANCE_URL_FILE")" "$ROOT/var/bin/cli" catalog >/dev/null 2>&1; then
       ok=1; break
     fi
+    if [ $(( SECONDS - start )) -ge "$nextNote" ]; then
+      log "still waiting for the harness boot ($(( SECONDS - start ))s of ${boot_s}s) — a slow box starts ~28 processes"
+      nextNote=$(( nextNote + 30 ))
+    fi
     sleep 0.2
   done
   if [ -z "$ok" ]; then
-    warn "harness did not come up in ${NIF_BOOT_TIMEOUT_S:-180}s — last lines of $ROOT/var/logs/core.log:"
+    warn "harness did not come up in ${boot_s}s — last lines of $ROOT/var/logs/core.log:"
     tail -25 "$ROOT/var/logs/core.log" 2>/dev/null | sed 's/^/  | /' >&2 || true
     warn "if the log ends abruptly, suspect the OOM killer on a small VM:"
     warn "  free -h; dmesg -T | grep -i -E 'oom|killed process' | tail"
