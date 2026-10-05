@@ -38,7 +38,7 @@ export class OpenhandsHarness {
     this.child = null;
     this.stderr = "";
     this.authName = "Authorization"; // probed at start
-    this.conversations = new Map(); // bench session id -> conversation id
+    this.conversations = new Map(); // task repo path -> conversation id (repo is the per-cell unique key; the bench session id is null on round 1 and shared across concurrent cells)
   }
 
   get base() { return `http://127.0.0.1:${this.port}`; }
@@ -175,7 +175,8 @@ export class OpenhandsHarness {
     if (keys?.DEEPSEEK_API_KEY) this.apiKey = keys.DEEPSEEK_API_KEY;
     const usage = zeroUsage();
     const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0, leakUrls: [] };
-    let convId = this.conversations.get(sessionId);
+    const cellKey = repo; // per-cell unique: concurrent cells must never share a conversation
+    let convId = this.conversations.get(cellKey);
     try {
       if (!convId) {
         // Exactly the payload shape validated end-to-end against a live
@@ -196,7 +197,7 @@ export class OpenhandsHarness {
           confirmation_policy: { kind: "NeverConfirm" },
         });
         convId = created.id || created.conversation_id;
-        this.conversations.set(sessionId, convId);
+        this.conversations.set(cellKey, convId);
       } else {
         await this.api("POST", `/api/conversations/${convId}/events`, {
           kind: "MessageEvent", source: "user",
