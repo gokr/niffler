@@ -205,8 +205,13 @@ patch instead of burning the remaining feedback rounds.
   niffler adapter uses. `firstPromptTokens` is the first assistant event's
   `input_tokens` (the first call's full prompt). Only models with a
   `claudecode` section in config.json can select this harness.
-- **dsh** — DeepSeek Harness's `sdk-minimal` JSON-RPC profile, one process
-  per task workspace. `initialize` selects `deepseek-official`, model
+- **dsh** — DeepSeek Harness driven over its SDK JSON-RPC profile, one
+  process per task workspace. `DSH_PROFILE`/`dsh.profile` selects the
+  profile: `sdk` (default) is the out-of-the-box `dsh-base` tool surface
+  (fs read/edit, bash, skills, web, subagents); `sdk-minimal` is the
+  bash-only standalone composition. The interactive `tui`/`web` defaults
+  cannot be driven programmatically, so `sdk` is the faithful
+  out-of-the-box equivalent. `initialize` selects `deepseek-official`, model
   `deepseek-v4-flash` and native effort `low`; `session/prompt` retains the
   session across feedback rounds. The adapter uses an isolated `DSH_HOME` and
   first-party `DEEPSEEK_API_KEY`, never LLM Gateway. Usage and tool-call
@@ -216,10 +221,10 @@ patch instead of burning the remaining feedback rounds.
   `dsh-home/sessions` for audit. An SDK startup/turn error is an error cell,
   not a zero-token score. Requires a *built* DeepSeek Harness CLI at
   `../harnesses/deepseek-harness/apps/cli/lib/bin.js` or an explicit
-  `DSH_BIN`/`DEEPSEEK_HARNESS_BIN`. The shipped standalone profile currently
-  exposes a lean shell toolset (not the full interactive DSH profile), so
-  this lane compares that deployment, not every DSH plugin. Pin its git hash
-  and profile when comparing its token/time/tool-call figures to Niffler.
+  `DSH_BIN`/`DEEPSEEK_HARNESS_BIN`. Pin its git hash and profile when
+  comparing token/time/tool-call figures — the profiles have very different
+  prompt footprints (`sdk` mounts the full tool schema set, `sdk-minimal`
+  is bash-only).
 - **niffler** — one private harness per (model) combo: own `nats-server` on a
   free port + isolated `NIF_ROOT` (symlink farm over the bench worktree, real
   `var/`), pinned to the model gateway via `NIF_OPENAI_*` env. Each round is a

@@ -33,7 +33,7 @@
         "model": "deepseek-flash",
         "apiKeyEnv": "DEEPSEEK_API_KEY",
         "thinking": "low",
-        "profile": "sdk-minimal",
+        "profile": "sdk",
         "provider": "deepseek-official",
         "maxTokens": 256000
       }

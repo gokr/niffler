@@ -400,7 +400,10 @@ export class DshHarness {
     this.model = opts.model;
     this.provider = opts.provider || "deepseek-official";
     this.baseUrl = opts.baseUrl;
-    this.profile = opts.profile || DEFAULT_PROFILE;
+    // DSH_PROFILE overrides the configured profile per run, so the same
+    // config can hold both lanes: `sdk` (the out-of-the-box dsh-base tool
+    // surface) and `sdk-minimal` (bash-only) — both expose SDK JSON-RPC.
+    this.profile = process.env.DSH_PROFILE || opts.profile || DEFAULT_PROFILE;
     this.thinking = opts.thinking || "";
     this.maxTokens = opts.maxTokens || 256_000;
     this.bin = opts.bin || dshExecutable();
