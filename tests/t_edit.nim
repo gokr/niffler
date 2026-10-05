@@ -679,15 +679,27 @@ proc main() =
         rNo.hasKey("error") and
         rNo{"error"}.getStr("").contains("[E_NO_MATCH]") and
         readFile(tmp / "bulk" / "z.txt") == "alpha\n", $rNo)
-  for i in 0 .. 12:
-    writeFile(tmp / "bulk" / ("cap" & $i & ".txt"), "x\n")
+  for i in 0 .. 512:
+    writeFile(tmp / "bulk" / ("cap" & align($i, 3, '0') & ".txt"), "x\n")
   let rCap = call(nc, "edit", "replace_across",
             %*{"glob": "bulk/cap*.txt",
                "replace": [{"old": "x", "new": "y"}]})
-  check("replace_across refuses over the 12-file cap before touching anything",
+  check("replace_across circuit-breaks an accidental 513-file glob untouched",
         rCap.hasKey("error") and
         rCap{"error"}.getStr("").contains("[E_BAD_SHAPE]") and
-        readFile(tmp / "bulk" / "cap0.txt") == "x\n", $rCap)
+        readFile(tmp / "bulk" / "cap000.txt") == "x\n", $rCap)
+  # no ergonomic file cap: a 40-file batch is ordinary sed work and must
+  # pass the circuit breaker (the undo budget is the real bound)
+  createDir(tmp / "many")
+  for i in 0 .. 39:
+    writeFile(tmp / "many" / ("m" & align($i, 2, '0') & ".txt"), "hit\n")
+  let rMany = call(nc, "edit", "replace_across",
+             %*{"glob": "many/m*.txt",
+                "replace": [{"old": "hit", "new": "done"}]})
+  check("a 40-file batch passes (count is not the bound)",
+        not rMany.hasKey("error") and
+        rMany{"files_changed"}.getInt(0) == 40 and
+        readFile(tmp / "many" / "m39.txt") == "done\n", $rMany)
   let rSeq = call(nc, "edit", "replace_across",
             %*{"paths": ["bulk/w.txt"],
                "replace": [{"old": "hdr", "new": "block"},

@@ -917,12 +917,20 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
 #
 # The gap Pi's bash corpus keeps filling: `sed -i 's/A/B/g' f*.go` plus a
 # leftover check. Same sed semantics (literal needle, s///g per file,
-# zero-match files pass), our rails on top: a 12-file cap, per-file counts,
-# per-file undo entries, and a refusal when NOTHING matched — sed silently
+# zero-match files pass), our rails on top: an undo pre-image budget, a
+# glob-accident ceiling, per-file counts, per-file undo entries, and a
+# refusal when NOTHING matched — sed silently
 # "succeeds" on a mistyped needle. No dry-run round trip: the counting pass
 # runs before any write inside the same call.
 
-const MAX_REPLACE_FILES = 12   # blast-radius cap, same as read's batch cap
+const MAX_REPLACE_FILES = 512  # glob-accident circuit breaker, NOT an
+                               # ergonomic limit: sed parity means file
+                               # count is not the risk (responses carry
+                               # counts, not contents). The real bound is
+                               # the undo pre-image budget below.
+const MAX_UNDO_BYTES = 32 * 1024 * 1024  # per-call undo pre-image budget
+const MAX_SELECT_FILES = 64    # read select scan cap (find | head parity;
+                               # the 512KB byte cap bounds the response)
 
 proc isWordRune(r: char): bool =
   ## Word character for the `word` option (\b-style spans).
@@ -1089,6 +1097,7 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
   var planned: seq[Planned] = @[]
   var total = 0
   var missing: seq[string] = @[]
+  var undoBytes = 0
   for abs in files:
     if not fileExists(abs):
       missing.add(abs)
@@ -1099,6 +1108,13 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
     for n in counts: total += n
     if post != pre:
       planned.add((abs, pre, post, file.bom, file.ending, counts))
+      undoBytes += pre.len
+  if undoBytes > MAX_UNDO_BYTES:
+    raise newException(ValueError,
+      "[E_TOO_LARGE] this call would persist " & $undoBytes &
+      " bytes of undo pre-images (budget " & $MAX_UNDO_BYTES &
+      ") across " & $planned.len & " changed file(s) — nothing was " &
+      "modified. Split the batch (the rules apply identically per file).")
 
   # Phase 2 — refuse first, write second: a failed run mutates nothing.
   if total < minMatches:
@@ -1108,24 +1124,32 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
       ") — nothing was modified. Check the literal \"old\" strings: " &
       "matching is exact (zero-match files pass like sed, but a zero-total " &
       "is refused so a mistyped needle cannot succeed).")
+  # Pre-reserve every undo entry BEFORE the first write: a refusal at file
+  # 40 must not leave files 1..39 changed.
+  var savedPaths: seq[string] = @[]
+  for p in planned:
+    let undo = saveUndo(p.path, UndoEntry(content: p.pre, bom: p.bom,
+                                          ending: p.ending,
+                                          resultContent: p.post))
+    if not undo.persisted:
+      for sp in savedPaths:
+        clearUndo(sp)
+      raise newException(ValueError,
+        "[E_UNDO_UNAVAILABLE] Could not persist undo history; nothing was " &
+        "modified. Retry after the store recovers.")
+    savedPaths.add(p.path)
   let session = args{"__session"}{"session"}.getStr("")
   var changed: seq[string] = @[]
   var perFile = newJArray()
   var firstDiff = ""
   var diagNote = ""
   for p in planned:
-    let entry = UndoEntry(content: p.pre, bom: p.bom, ending: p.ending,
-                          resultContent: p.post)
-    let undo = saveUndo(p.path, entry)
-    if not undo.persisted:
-      raise newException(ValueError,
-        "[E_UNDO_UNAVAILABLE] Could not persist undo history; earlier files " &
-        "in this call WERE changed (undo_last_edit reverts each), but " &
-        p.path & " was NOT modified. Retry after the store recovers.")
     try:
       writeAtomic(p.path, p.bom & restoreEnding(p.post, p.ending))
     except CatchableError:
-      undo.restore()
+      # this file is unmodified; clear its reservation and surface. Earlier
+      # files in this call keep their changes and their own undo entries.
+      clearUndo(p.path)
       raise
     if session.len > 0:
       observe(session, p.path,
@@ -1527,7 +1551,7 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
           "first, then the select).")
   var blocks: seq[string] = @[]
   var jsItems = newJArray()
-  var filesBudget = MAX_READ_ITEMS
+  var filesBudget = MAX_SELECT_FILES
   var totalHits = 0
   var truncated = false
   for it in items:
@@ -1593,7 +1617,7 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
                  parts.join("\n\n"))
   var text = blocks.join("\n")
   if truncated:
-    text.add("\n[read limit: file cap " & $MAX_READ_ITEMS &
+    text.add("\n[read limit: file cap " & $MAX_SELECT_FILES &
              " reached; select the rest in another call]")
   if text.len > 512_000:
     text = text[0 .. 512_000] &
@@ -1759,11 +1783,11 @@ discard comp.tool("edit", toolSchema(%*{
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("replace_across", toolSchema(%*{
-  "paths": {"type": "array", "minItems": 1, "maxItems": 12,
+  "paths": {"type": "array", "minItems": 1, "maxItems": 512,
             "items": {"type": "string"},
-            "description": "Explicit file list (<=12 files total per call)"},
+            "description": "Explicit file list (512-file circuit breaker; the undo pre-image budget is the real bound)"},
   "glob": {"type": "string",
-           "description": "File set instead: f*.go in one directory, **/*.go recursively (<=12 files total per call)"},
+           "description": "File set instead: f*.go in one directory, **/*.go recursively (512-file circuit breaker)"},
   "replace": {"type": "array", "minItems": 1,
     "description": "Literal replacements applied in order like a sed pipeline (later rules see earlier output)",
     "items": {"type": "object",
