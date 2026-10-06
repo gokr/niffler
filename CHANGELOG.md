@@ -32,6 +32,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Shape telemetry covers pipelines, selectors, argument verbosity and result
   sizes; `make test-bench` joins the full gate.
 
+### Benchmarks
+
+- Full31 tool-diet run on `fdf2ae0`: 31/31 pass, all eight tools frozen for
+  every task; first prompts −23.6% and total tokens −5.3% on the comparable
+  t03–t31 subset. Model rounds increased, so this establishes prefix/result
+  savings, not improved routing. The t13 bulk result shrank 5,586→741 chars.
+  Recorded in `bench/reports/full31-tool-diet-low-report.csv`. First-party
+  DeepSeek low, one round/task, jobs=2; full-31 tokens 1,351,705→1,308,532,
+  model rounds 173→188. The matched subset excludes the baseline's two
+  startup-raced four-tool sessions. Single-run totals are noisy; no routing
+  or wall-time improvement is claimed.
+
 ### Added
 
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
