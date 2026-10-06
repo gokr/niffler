@@ -120,13 +120,13 @@ let bashSchema = toolSchema(%*{
   "command": {"type": "string",
               "description": "The command line to run"},
   "timeoutMs": {"type": "integer",
-                "description": "Kill after this many ms (optional; default 120000, max 570000)."},
+                "description": "Kill after this many ms; default 120000, max 570000."},
   "run_in_background": {"type": "boolean",
-    "description": "Optional (default false): return a persistent background process id immediately; no timeout."},
+    "description": "Return a process id at once; no timeout (default false)."},
   "cwd": {"type": "string",
-          "description": "Working directory (optional; default workspace)"}
+          "description": "Working directory; default workspace"}
 }, required = @["command"],
-  description = "Run builds, tests, or computation with bash -c. Each call is a fresh shell; cd does not persist. Use cwd to work elsewhere, run_in_background for work that must outlive the call.")
+  description = "Run builds, tests or computation with bash -c. Each call is a fresh shell; cd does not persist; use cwd to work elsewhere.")
 bashSchema["x-harness"] = %*{"approval": "always",
                              "timeoutMs": BASH_CALL_TIMEOUT_MS,
                              "sessionId": true,

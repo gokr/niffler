@@ -161,13 +161,13 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find capabilities: no query lists component routing hints; component lists tool summaries. For exact schemas use discover {tools:[name]}, then invoke. Query keywords all must match.",
+      "description": "Find capabilities: no query lists component routing hints; component lists tool summaries. For exact schemas use discover {tools:[name]}, then invoke.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive keywords (word-AND)"},
         "component": {"type": "string", "description": "Component tool summaries"},
         "limit": {"type": "integer", "minimum": 0, "maximum": 200,
-                  "description": "Max summaries per exposure group (0 = all)"},
-        "after": {"type": "string", "description": "Registry page cursor: copy nextAfter; omit query/component/tools"},
+                  "description": "Max summaries (0 = all)"},
+        "after": {"type": "string", "description": "Page cursor: copy nextAfter"},
         "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 16,
                   "description": "Exact tool names for full schemas; empty = omitted"}
       }
@@ -179,7 +179,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "properties": {
         "tool": {"type": "string", "description": "Exact discovered tool name"},
         "arguments": {"type": "object", "description": "Target arguments, unchanged"},
-        "sticky": {"type": "boolean", "description": "After success, add to direct tools (one durable prefix change)"}
+        "sticky": {"type": "boolean", "description": "Add to direct tools after success (prefix change)"}
       },
       "required": ["tool", "arguments"]
     }))

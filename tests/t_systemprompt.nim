@@ -143,19 +143,20 @@ proc main() =
         directPrompt.contains("cover every path") and
         directPrompt.contains("that produces the behavior you change"),
         $direct)
-  # Batched calls and the optional pipeline seam stay brief. Tutorials belong
-  # in discovered help/results, not the frozen constitution.
-  check("base prompt teaches brief batching and optional pipelines",
+  # Batching is the one workflow rule the constitution owns; the pipeline
+  # contract lives in the tool schemas (read/edit/write/replace_across) where
+  # the model reads it at the point of use, and the tutorial this used to
+  # carry was never adopted in 62 task cells.
+  check("base prompt teaches batching without duplicating tool schemas",
         directPrompt.contains("Batch independent") and
-        directPrompt.contains("save_as") and
-        directPrompt.contains("resolve_vars: true") and
-        directPrompt.contains("$ stays literal") and
-        directPrompt.contains("Omit unused options") and
-        directPrompt.contains("Never bypass an approval gate"),
+        directPrompt.contains("Never bypass an approval gate") and
+        not directPrompt.contains("save_as") and
+        not directPrompt.contains("resolve_vars") and
+        not directPrompt.contains("Omit unused options"),
         $direct)
   const productPromptBytes = staticRead("../components/systemprompt/baseprompt.txt").len
   check("base prompt is bounded and avoids duplicate pipeline tutorials",
-        productPromptBytes < 1500 and
+        productPromptBytes < 1300 and
         not directPrompt.contains("old_string: \"$span\"") and
         not directPrompt.contains("file tools don't"), $direct)
 

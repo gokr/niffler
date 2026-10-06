@@ -56,17 +56,16 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
             context: int = 0, case_insensitive: bool = false,
             hidden: bool = false, max_results: int = 200,
             timeoutMs: int = 30000): JsonNode =
-    ## Search file contents (path:line:match). Narrow with path/glob.
-    ## Rust regex, no lookarounds or shell escaping. Respects .gitignore;
-    ## skips hidden/binary files. Results capped at 32KB.
-    ## - pattern: Rust regex (no shell escaping)
-    ## - path: Optional file/directory (default workspace, else root)
-    ## - glob: Optional glob relative to path; narrows without unhiding
-    ## - context: Optional context lines (default 0)
-    ## - case_insensitive: Optional case folding (default false)
-    ## - hidden: Optional hidden files/dirs (default false; .gitignore applies)
-    ## - max_results: Optional line cap (default 200, max 10000)
-    ## - timeoutMs: Optional timeout in ms (default 30000)
+    ## Search file contents (path:line:match). Rust regex, no lookarounds
+    ## or shell escaping. Respects .gitignore; skips hidden/binary files.
+    ## - pattern: Rust regex
+    ## - path: File/directory; default workspace
+    ## - glob: Relative to path; narrows, never un-hides
+    ## - context: Context lines (default 0)
+    ## - case_insensitive: Case folding (default false)
+    ## - hidden: Include hidden files (default false)
+    ## - max_results: Line cap (default 200, max 10000)
+    ## - timeoutMs: Timeout in ms (default 30000)
     var args = @["--color", "never", "-n", "-I", "--with-filename",
                  "--no-require-git", "--max-columns", "300"]
     if case_insensitive: args.add("-i")
