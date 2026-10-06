@@ -143,7 +143,7 @@
           <tr class="us"><td>Niffler</td><td>8</td><td class="tools">discover · invoke · bash · read · write · edit · replace_across · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td>≈0.28k</td><td>≈2.1k</td></tr>
           <tr><td>DSH (out of the box)</td><td>25</td><td class="tools">bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</td><td>≈6.5k</td><td>≈11.7k</td></tr>
           <tr><td>OpenHands</td><td>3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td>generated per request</td><td>≈12–16k</td></tr>
-          <tr><td>Maki</td><td>18</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td>—</td><td>≈15.9k</td></tr>
+          <tr><td>Maki</td><td>19</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td>—</td><td>≈7.4k</td></tr>
           <tr><td>Opencode</td><td>10</td><td class="tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</td><td>≈10.7k</td><td>≈16k</td></tr>
           <tr><td>Claude Code</td><td>23</td><td class="tools">Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</td><td>≈1.5k</td><td>≈18k</td></tr>
         </tbody>
@@ -152,7 +152,9 @@
         an empty workspace — captured from live wire requests, Oct 2026. User content excluded (Pi lists
         your installed skills in its prompt by default, Niffler adds the repo's AGENTS.md chain, Claude Code
         the CLAUDE.md) — all captured the same way. Maki's figure is the measured first request of a
-        three&#8209;word prompt (system + all 18 tool schemas; split not exposed). OpenHands generates its
+        three&#8209;word prompt in an empty <em>git-rooted</em> workspace (system + all 19 tool schemas; split
+        not exposed) — a probe run outside a git root silently adds the enclosing repo's AGENTS.md chain
+        (~8.4k tokens) to the request, which is where an earlier ≈15.9k figure came from. OpenHands generates its
         system prompt at request time (not stored server&#8209;side); the range is the observed first&#8209;request
         budget including its tool schemas.</p>
       </div>
