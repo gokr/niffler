@@ -209,6 +209,12 @@ export class NifflerHarness {
       // interactive client registers: the run dies mid-cell with the cli
       // calls left waiting on a dead bus. Pin it off explicitly.
       NIF_AUTOSTART: "0",
+      // Component-side state must never land in the developer's real config:
+      // a bench run sharing XDG_CONFIG_HOME with the live harness is how the
+      // edit tool's undo store grew past 50MB and made one bulk replacement
+      // rewrite gigabytes. The cli path already redirected it; the harness
+      // spawn is the env the components actually inherit.
+      ...(this.xdgDir ? { XDG_CONFIG_HOME: this.xdgDir } : {}),
       // Long-horizon tasks (DeepSWE) run far past an interactive turn's round
       // count; this only ever raises the ceiling for the bench harness.
       NIF_MAX_TURN_ROUNDS: String(this.maxTurnRounds),

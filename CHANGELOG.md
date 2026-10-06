@@ -23,6 +23,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Edit undo and seen-state are store documents now** (kinds `edit-undo` /
+  `edit-seen`, ids `<session>:<path>`), not one shared
+  `$XDG_CONFIG_HOME/niffler-edit/undo.json` rewritten in full on every
+  mutation. That file was machine-global (two conversations editing one file
+  shared a single undo entry) and unbounded — measured at 51 MB, it made a
+  27-file bulk replacement rewrite ~2.8 GB and hold the edit component's pump
+  for 53 s, with another session's reads stalled behind it (full31 t13/t14:
+  218 s of a run's wall time in six calls). Undo is now scoped to the
+  conversation that owns it and is swept with it by `conversation_delete`; a
+  caller with no conversation (cli scripting) shares one standalone scope,
+  exactly as before. The bench adapter passes `XDG_CONFIG_HOME` to the
+  harness it spawns, so a run no longer shares the developer's config.
 - **A mutation no longer waits for the language server.** The edit tool's
   diagnostics push is a request/reply, and the lsp component answers it from
   the same single-threaded pump that runs the *previous* asynchronous check —

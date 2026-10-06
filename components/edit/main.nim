@@ -391,17 +391,25 @@ proc compactDiff(oldContent, newContent: string, context = 3):
 # ---------------------------------------------------------------------------
 # undo store (single-level, per file, persisted across restarts)
 
-const STORE_VERSION = 1
-
 type UndoEntry = object
   content: string        # pre-edit content (LF-normalized)
   bom: string
   ending: string
   resultContent: string  # post-edit content, for staleness checks
 
-var
-  gStorePath = ""
-  gUndo = initTable[string, UndoEntry]()
+# Undo and seen-state live in the STORE — one document per (conversation,
+# file): kinds edit-undo / edit-seen, id "<session>:<absolute path>". They used
+# to share one JSON file under XDG_CONFIG_HOME, rewritten in full on every
+# mutation: machine-global (two conversations editing one file shared a single
+# undo entry) and unbounded (measured 51 MB after a few bench runs), so a
+# 27-file bulk replacement rewrote ~2.8 GB and held this component's pump for
+# 53 s — stalling every other session's reads queued behind it. Store documents
+# are O(1) to write, scoped to the conversation that owns them, and swept with
+# it (core's conversation_delete drops both kinds).
+const
+  undoKind = "edit-undo"
+  seenKind = "edit-seen"
+  STORE_TIMEOUT_MS = 5000
 
 # ---------------------------------------------------------------------------
 # seen-state: what each conversation last observed of a file
@@ -424,10 +432,7 @@ type SeenEntry = object
   lines: int
   full: bool     # the conversation holds (or can derive) the full content
 
-var gSeen = initTable[string, SeenEntry]()
 var gLazyInstructions = initTable[string, bool]()
-
-proc seenKey(session, target: string): string = session & "\x1f" & target
 
 const instructionCandidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
                                "CLAUDE.md", "CLAUDE.MD"]
@@ -477,95 +482,101 @@ proc unchangedText(path, raw: string): string =
     "bytes already in context are current; not re-dumping. Pass force=true " &
     "(or an offset/limit window) to see them again."
 
-proc configDir(): string =
-  let xdg = getEnv("XDG_CONFIG_HOME")
-  if xdg.len > 0: xdg / "niffler-edit"
-  else: getHomeDir() / ".config" / "niffler-edit"
+proc stateId(session, target: string): string = session & ":" & target
 
-proc loadStore() =
-  let dir = configDir()
-  gStorePath = dir / "undo.json"
-  createDir(dir)
-  if not fileExists(gStorePath): return
-  var doc: JsonNode
+proc undoScope(session: string): string =
+  ## Undo is conversation-scoped. A caller with no conversation (cli scripting,
+  ## another component) shares one standalone scope — which is what it
+  ## effectively had when undo was keyed by path alone, minus the collision
+  ## with every live conversation editing the same file.
+  if session.len > 0: session else: "__standalone"
+
+proc putDoc(c: Component, kind, id: string, value: JsonNode): bool =
+  ## One document per (conversation, file). Failure is the caller's business:
+  ## a mutation refuses rather than lose undo history, an observation is
+  ## best-effort.
   try:
-    doc = parseJson(readFile(gStorePath))
+    discard c.request("store", "put",
+      %*{"kind": kind, "id": id, "value": value}, STORE_TIMEOUT_MS)
+    result = true
   except CatchableError:
-    return
-  if doc == nil or doc.kind != JObject: return
-  let undo = doc{"undo"}
-  if undo == nil or undo.kind != JObject: return
-  for path, node in undo:
-    if node == nil or node.kind != JObject: continue
-    let ending = node{"ending"}.getStr("\n")
-    if ending != "\n" and ending != "\r\n": continue
-    gUndo[path] = UndoEntry(
-      content: node{"content"}.getStr(""),
-      bom: node{"bom"}.getStr(""),
-      ending: ending,
-      resultContent: node{"resultContent"}.getStr(""))
-  let seen = doc{"seen"}
-  if seen != nil and seen.kind == JObject:
-    for key, node in seen:
-      if node == nil or node.kind != JObject: continue
-      gSeen[key] = SeenEntry(digest: node{"digest"}.getStr(""),
-                             bytes: node{"bytes"}.getInt(0),
-                             lines: node{"lines"}.getInt(0),
-                             full: node{"full"}.getBool(false))
+    result = false
 
-proc saveStore() =
-  var doc = %*{"version": STORE_VERSION, "undo": newJObject(),
-               "seen": newJObject()}
-  for path, e in gUndo:
-    doc["undo"][path] = %*{"content": e.content, "bom": e.bom,
-                           "ending": e.ending,
-                           "resultContent": e.resultContent}
-  for key, s in gSeen:
-    doc["seen"][key] = %*{"digest": s.digest, "bytes": s.bytes,
-                          "lines": s.lines, "full": s.full}
-  writeAtomic(gStorePath, $doc)
+proc getDoc(c: Component, kind, id: string): JsonNode =
+  try:
+    result = c.request("store", "get", %*{"kind": kind, "id": id},
+                       STORE_TIMEOUT_MS){"value"}
+  except CatchableError:
+    result = nil
 
-proc saveUndo(path: string, entry: UndoEntry): tuple[persisted: bool,
-                                                      restore: proc()] =
+proc delDoc(c: Component, kind, id: string) =
+  try:
+    discard c.request("store", "del", %*{"kind": kind, "id": id},
+                      STORE_TIMEOUT_MS)
+  except CatchableError:
+    discard
+
+proc seenOf(c: Component, session, target: string): SeenEntry =
+  ## What this conversation last observed of this file. The zero value means
+  ## "never looked" — also what an unreachable store answers, which is always
+  ## the safe direction: it costs a full dump or an unrefused edit, never a
+  ## wrong refusal.
+  result = SeenEntry()
+  if session.len == 0: return
+  let v = getDoc(c, seenKind, stateId(session, target))
+  if v == nil or v.kind != JObject: return
+  result = SeenEntry(digest: v{"digest"}.getStr(""),
+                     bytes: v{"bytes"}.getInt(0),
+                     lines: v{"lines"}.getInt(0),
+                     full: v{"full"}.getBool(false))
+
+proc observe(c: Component, session, target, raw: string, full: bool,
+             persist = false) =
+  ## Record what a conversation just observed. `persist` is the correction
+  ## gate, not a durability knob: a read that only confirms what the record
+  ## already says writes nothing (saving a bus round trip per read), while a
+  ## read that observes different bytes writes the correction so a stale
+  ## record cannot wedge edits that re-reads would otherwise never clear.
+  ## Mutations always record.
+  if session.len == 0 or not persist: return
+  let (_, body) = stripBom(raw)
+  discard putDoc(c, seenKind, stateId(session, target),
+    %*{"digest": $secureHash(raw), "bytes": raw.len,
+       "lines": splitLf(toLf(body)).len, "full": full})
+
+proc undoEntry(c: Component, session, target: string): tuple[found: bool,
+                                                             entry: UndoEntry] =
+  result = (false, UndoEntry(ending: "\n"))
+  let v = getDoc(c, undoKind, stateId(undoScope(session), target))
+  if v == nil or v.kind != JObject: return
+  let ending = v{"ending"}.getStr("\n")
+  if ending != "\n" and ending != "\r\n": return
+  result = (true, UndoEntry(content: v{"content"}.getStr(""),
+                            bom: v{"bom"}.getStr(""),
+                            ending: ending,
+                            resultContent: v{"resultContent"}.getStr("")))
+
+proc saveUndo(c: Component, session, path: string,
+              entry: UndoEntry): tuple[persisted: bool, restore: proc()] =
   ## Persist the undo record BEFORE the edit is written; a failed persist
   ## refuses the edit (the file is never touched). restore() re-installs the
   ## previous record if the write itself fails.
-  let hadPrevious = gUndo.hasKey(path)
-  let previous = if hadPrevious: gUndo[path] else: UndoEntry(ending: "\n")
-  gUndo[path] = entry
-  try:
-    saveStore()
-    result.persisted = true
-    result.restore = proc() =
-      if hadPrevious: gUndo[path] = previous
-      else: gUndo.del(path)
-      try: saveStore()
-      except CatchableError: discard
-  except CatchableError:
-    if hadPrevious: gUndo[path] = previous
-    else: gUndo.del(path)
+  let id = stateId(undoScope(session), path)
+  let previous = getDoc(c, undoKind, id)
+  if not putDoc(c, undoKind, id,
+      %*{"content": entry.content, "bom": entry.bom, "ending": entry.ending,
+         "resultContent": entry.resultContent}):
     result.persisted = false
+    return
+  result.persisted = true
+  result.restore = proc() =
+    if previous == nil or previous.kind != JObject:
+      delDoc(c, undoKind, id)
+    else:
+      discard putDoc(c, undoKind, id, previous)
 
-proc clearUndo(path: string) =
-  if gUndo.hasKey(path):
-    gUndo.del(path)
-    saveStore()
-
-proc observe(session, target, raw: string, full: bool, persist = false) =
-  ## Record the state a conversation just observed. Read calls persist=false
-  ## when they confirm what we already remembered (in-memory only: a restart
-  ## merely loses stub hints, never correctness); a read that observes
-  ## different bytes persists the correction, so a stale entry written by an
-  ## earlier run/process cannot wedge edits that re-reads would otherwise
-  ## never clear. Mutations persist alongside the undo store.
-  if session.len == 0: return
-  let (_, body) = stripBom(raw)
-  gSeen[seenKey(session, target)] = SeenEntry(
-    digest: $secureHash(raw), bytes: raw.len,
-    lines: splitLf(toLf(body)).len, full: full)
-  if persist:
-    try: saveStore()
-    except CatchableError: discard
+proc clearUndo(c: Component, session, path: string) =
+  delDoc(c, undoKind, stateId(undoScope(session), path))
 
 # ---------------------------------------------------------------------------
 # edit resolution
@@ -857,12 +868,12 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   # never seen.
   let session = args{"__session"}{"session"}.getStr("")
   if session.len > 0:
-    let key = seenKey(session, file.absPath)
-    if gSeen.hasKey(key) and gSeen[key].digest !=
+    let seen = seenOf(c, session, file.absPath)
+    if seen.digest.len > 0 and seen.digest !=
         $secureHash(file.bom & restoreEnding(file.normalized, file.ending)):
       raise newException(ValueError,
         "[E_STALE] " & path & " changed since you last read/wrote it (" &
-        $gSeen[key].bytes & " bytes then, " & $getFileSize(file.absPath) &
+        $seen.bytes & " bytes then, " & $getFileSize(file.absPath) &
         " bytes now) — re-read it and redo the edit against current " &
         "content; your old_string may match text you have never seen.")
 
@@ -898,7 +909,7 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
 
   let entry = UndoEntry(content: content, bom: file.bom, ending: file.ending,
                         resultContent: applied)
-  let undo = saveUndo(file.absPath, entry)
+  let undo = saveUndo(c, session, file.absPath, entry)
   if not undo.persisted:
     raise newException(ValueError,
       "[E_UNDO_UNAVAILABLE] Could not persist undo history; " & path &
@@ -911,11 +922,9 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   if session.len > 0:
     # the model derives the post-edit content from what it saw plus the
     # edit, so carry the full flag rather than resetting it
-    let key = seenKey(session, file.absPath)
-    let prevFull = if gSeen.hasKey(key): gSeen[key].full else: false
-    observe(session, file.absPath,
-            file.bom & restoreEnding(applied, file.ending), prevFull,
-            persist = true)
+    observe(c, session, file.absPath,
+            file.bom & restoreEnding(applied, file.ending),
+            seenOf(c, session, file.absPath).full, persist = true)
   let d = compactDiff(content, applied)
   let diagNote = lspDiagnosticsSection(c, session, file.absPath, d.firstLine, d.lastLine)
   let noun = if planned.len == 1: "edit" else: "edits"
@@ -1151,19 +1160,19 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
       "is refused so a mistyped needle cannot succeed).")
   # Pre-reserve every undo entry BEFORE the first write: a refusal at file
   # 40 must not leave files 1..39 changed.
+  let session = args{"__session"}{"session"}.getStr("")
   var savedPaths: seq[string] = @[]
   for p in planned:
-    let undo = saveUndo(p.path, UndoEntry(content: p.pre, bom: p.bom,
-                                          ending: p.ending,
-                                          resultContent: p.post))
+    let undo = saveUndo(c, session, p.path,
+                        UndoEntry(content: p.pre, bom: p.bom,
+                                  ending: p.ending, resultContent: p.post))
     if not undo.persisted:
       for sp in savedPaths:
-        clearUndo(sp)
+        clearUndo(c, session, sp)
       raise newException(ValueError,
         "[E_UNDO_UNAVAILABLE] Could not persist undo history; nothing was " &
         "modified. Retry after the store recovers.")
     savedPaths.add(p.path)
-  let session = args{"__session"}{"session"}.getStr("")
   var changed: seq[string] = @[]
   var perFile = newJArray()
   var firstDiff = ""
@@ -1174,10 +1183,10 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
     except CatchableError:
       # this file is unmodified; clear its reservation and surface. Earlier
       # files in this call keep their changes and their own undo entries.
-      clearUndo(p.path)
+      clearUndo(c, session, p.path)
       raise
     if session.len > 0:
-      observe(session, p.path,
+      observe(c, session, p.path,
               p.bom & restoreEnding(p.post, p.ending), full = false,
               persist = true)
     changed.add(p.path)
@@ -1232,27 +1241,27 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
       "[E_BAD_SHAPE] Undo request requires a non-empty \"path\" string.")
   let path = pathNode.getStr()
   let target = followSymlink(toCwd(path, rootDir()))
-  if not gUndo.hasKey(target):
+  let session = args{"__session"}{"session"}.getStr("")
+  let (found, entry) = undoEntry(c, session, target)
+  if not found:
     raise newException(ValueError,
       "No undo history for " & path & " — there is no previous edit to revert.")
-  let entry = gUndo[target]
   if not fileExists(target):
-    clearUndo(target)
+    clearUndo(c, session, target)
     raise newException(ValueError,
       "[E_UNDO_STALE] Cannot undo " & path & ": the file no longer exists.")
   let currentRaw = readFile(target)
   let expected = entry.bom & restoreEnding(entry.resultContent, entry.ending)
   if currentRaw != expected:
-    clearUndo(target)
+    clearUndo(c, session, target)
     raise newException(ValueError,
       "[E_UNDO_STALE] Cannot undo " & path &
       ": the file was modified after the edit, so undoing would overwrite those changes.")
   writeAtomic(target, entry.bom & restoreEnding(entry.content, entry.ending))
-  clearUndo(target)
+  clearUndo(c, session, target)
   # the model saw the revert diff, not the restored bytes: mark unseen so
   # the documented "re-read it before further edits" actually dumps
-  observe(args{"__session"}{"session"}.getStr(""), target,
-          readFile(target), false, persist = true)
+  observe(c, session, target, readFile(target), false, persist = true)
   let d = compactDiff(entry.resultContent, entry.content)
   result = %*{"text": "Undid the last edit on " & displayPath(args, path) &
               ". File reverted to its previous state; re-read it before further edits.",
@@ -1334,17 +1343,16 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
         # the model saw no bytes: keep any prior full-view state, and
         # persist only a correction (same rules as the windowed path)
         let dig = $secureHash(raw)
-        let key = seenKey(session, target)
-        let prev = if gSeen.hasKey(key): gSeen[key] else: SeenEntry()
-        observe(session, target, raw, prev.full, persist = prev.digest != dig)
+        let prev = seenOf(c, session, target)
+        observe(c, session, target, raw, prev.full, persist = prev.digest != dig)
       return %ol
   # full view = one-shot whole-file delivery (explicit offset=1 is the
   # caller saying "dump it anyway" — the pre-force escape hatch)
   var fullDelivered = offN == nil and total <= limit and raw.len <= MAX_READ_BYTES
   if session.len > 0 and not force and not capture and fullDelivered and raw.len >= MIN_STUB_BYTES:
     let dig = $secureHash(raw)
-    let key = seenKey(session, target)
-    if gSeen.hasKey(key) and gSeen[key].digest == dig and gSeen[key].full:
+    let seen = seenOf(c, session, target)
+    if seen.digest == dig and seen.full:
       let unchanged = unchangedText(shownPath, raw)
       return %(if lazy.len > 0: lazy & "\n\n" & unchanged else: unchanged)
   if offset > total:
@@ -1387,10 +1395,9 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     # track what this conversation last saw: a full view delivers every
     # byte; a window only carries an already-full view of identical bytes
     let dig = $secureHash(raw)
-    let key = seenKey(session, target)
-    let prev = if gSeen.hasKey(key): gSeen[key] else: SeenEntry()
+    let prev = seenOf(c, session, target)
     let same = prev.digest == dig
-    observe(session, target, raw, fullDelivered or (same and prev.full),
+    observe(c, session, target, raw, fullDelivered or (same and prev.full),
             persist = not same)
   if lazy.len > 0:
     text = lazy & "\n\n" & text
@@ -1779,7 +1786,7 @@ proc hWrite(c: Component, args: JsonNode): JsonNode =
   let digest = $secureHash(content)
   if session.len > 0:
     # the conversation authored every byte: it holds the full content
-    observe(session, target, content, full = true, persist = true)
+    observe(c, session, target, content, full = true, persist = true)
   let shownTarget = displayPath(args, target)
   result = %*{"path": target, "bytes_written": content.len,
               "lines": wlines, "digest": digest,
@@ -1795,8 +1802,6 @@ proc hWrite(c: Component, args: JsonNode): JsonNode =
 # component
 
 let comp = newComponent("edit", "0.3.0")
-
-loadStore()
 
 discard comp.tool("read", toolSchema(%*{
   "reads": {"type": "array", "minItems": 1, "maxItems": 12,

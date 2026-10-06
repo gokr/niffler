@@ -26,6 +26,27 @@ proc main() =
   var nc = waitConnect(url)
   defer: nc.close()
 
+  # The edit tool keeps its undo records and seen digests as STORE documents
+  # (kinds edit-undo / edit-seen, scoped to the calling conversation), so a
+  # mutation refuses rather than lose undo history when the store is down.
+  let storeBin = root / "var" / "bin" / "store-sqlite"
+  if not fileExists(storeBin):
+    fail(storeBin & " missing — run `make build` first")
+    quit(1)
+  let sProc = startComponent(storeBin, url, root = tmp)
+  defer:
+    if sProc.running():
+      sProc.terminate()
+      sleep(200)
+    sProc.close()
+  var storeUp = false
+  for _ in 0 ..< 50:
+    if not call(nc, "store", "list", %*{"kind": "probe"}, 2000).hasKey("error"):
+      storeUp = true
+      break
+    sleep(100)
+  check("store answers before the first edit", storeUp)
+
   let eProc = startComponent(bin, url, root = tmp,
                              extra = [("XDG_CONFIG_HOME", tmp / "config")])
   defer:
@@ -568,13 +589,13 @@ proc main() =
                %*{"path": "wedge.txt", "force": true,
                   "__session": {"session": "s1"}})
   var persisted = false
-  let store = tmp / "config" / "niffler-edit" / "undo.json"
-  if fileExists(store):
-    for key, node in parseJson(readFile(store)){"seen"}:
-      if key.contains("wedge.txt") and
-          node{"bytes"}.getInt(0) == readFile(tmp / "wedge.txt").len:
-        persisted = true
-  check("changed read persists the observed bytes", persisted, store)
+  # The seen record is a store document now (kind edit-seen, id
+  # "<session>:<absolute path>") — assert the correction landed there.
+  let seenDoc = call(nc, "store", "get",
+    %*{"kind": "edit-seen", "id": "s1:" & (tmp / "wedge.txt")}, 5000)
+  if not seenDoc.hasKey("error") and seenDoc{"value"} != nil:
+    persisted = seenDoc{"value"}{"bytes"}.getInt(0) == readFile(tmp / "wedge.txt").len
+  check("changed read persists the observed bytes", persisted, $seenDoc)
   let rw = call(nc, "edit", "edit",
                 %*{"path": "wedge.txt",
                    "edits": [{"old_string": "external tail",

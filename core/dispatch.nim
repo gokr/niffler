@@ -517,6 +517,17 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           inc deleted
         except CatchableError:
           discard
+      # Per-conversation file-tool state (edit undo records + seen digests)
+      # is scoped by session id, so it goes with the conversation that owns
+      # it instead of lingering in the store forever.
+      for kind in ["edit-undo", "edit-seen"]:
+        for item in ct.storeListAll(kind, sessionId & ":"):
+          try:
+            discard ct.dispatchToolCall("del",
+              %*{"kind": kind, "id": item{"id"}.getStr("")})
+            inc deleted
+          except CatchableError:
+            discard
     except CatchableError as e:
       echo "core: warning — conversation messages not deleted: " & e.msg
     # Attachment pixels are their own docs (kinds "attachment" metadata +

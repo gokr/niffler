@@ -40,6 +40,23 @@ proc main() =
     lspProc.close()
   doAssert waitRegistered(nc, "lsp"), "slow lsp fixture did not register"
 
+  # Undo/seen state is store-backed (kinds edit-undo / edit-seen), so the edit
+  # component needs a store even in this latency-only test.
+  let storeBin = root / "var" / "bin" / "store-sqlite"
+  let sProc = startComponent(storeBin, url, root = tmp)
+  defer:
+    if sProc.running():
+      sProc.terminate()
+      sleep(200)
+    sProc.close()
+  var storeUp = false
+  for _ in 0 ..< 50:
+    if not call(nc, "store", "list", %*{"kind": "probe"}, 2000).hasKey("error"):
+      storeUp = true
+      break
+    sleep(100)
+  doAssert storeUp, "store did not answer"
+
   let eProc = startComponent(editBin, url, root = tmp,
                              extra = [("XDG_CONFIG_HOME", tmp / "config")])
   defer:
