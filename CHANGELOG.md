@@ -23,6 +23,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A mutation no longer waits for the language server.** The edit tool's
+  diagnostics push is a request/reply, and the lsp component answers it from
+  the same single-threaded pump that runs the *previous* asynchronous check —
+  so a cold or busy server made the ack, not the check, the bottleneck: 39s
+  on one full31 task, and because the edit component's pump is serialized too,
+  one waiting edit stalled every other session's mutation behind it. The ack
+  budget is now 250ms (the request is already published, so the verdict still
+  arrives on the conversation's `.diag` lane) and the slow path no longer
+  makes a second `lsp_servers` lookup that would re-block on the same queue.
+  `E_LSP_UNCONFIGURED` (no registry entry for the file type) is now distinct
+  from `E_LSP_UNAVAILABLE` (a configured server that is missing or broken), so
+  "nobody's business" stays silent while a real failure still gets a line.
+  Covered by `tests/t_edit_lsp_slow.nim` against a deliberately busy lsp.
 - Bare-string tool results reach the model unescaped. Opt-in read captures
   separate raw source from paging/instruction notices, bypass outline and
   unchanged shortcuts, and refuse unavailable/oversized regions; capture

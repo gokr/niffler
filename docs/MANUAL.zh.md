@@ -923,7 +923,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 | `lsp_servers {}` | 列出已配置的服务器（只读，免审批）及其来源：`builtin` 默认或 `user` 注册表条目 |
 | `lsp_registry {action: add\|remove, name, command, extensions?, initializationOptions?, requires?, cheap?}` | 变更用户注册表（审批门控写入）。`add` 接受 `{name (lowercase letters/digits/hyphens), command, extensions: {".ext": "languageId"}}`，覆盖同名的内置项，并以 `E_LSP_CONFLICT` 拒绝已映射到另一个服务器的扩展名（先移除该映射）；`remove` 仅删除用户条目 |
 
-模型发送从 1 开始的 line/character（UTF-16，匹配 LSP 的代码单元约定）；`findReferences` 始终包含声明；结果有上限（100 个位置 / 约 16 000 个字符），并带有截断元数据；结构化的 `[E_LSP_*]` 错误（`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）让调用方根据代码而非文字进行路由 —— 超时和协议错误会附加服务器的最后一行 stderr，它命名了实际故障（缺少二进制文件、崩溃、索引）。
+模型发送从 1 开始的 line/character（UTF-16，匹配 LSP 的代码单元约定）；`findReferences` 始终包含声明；结果有上限（100 个位置 / 约 16 000 个字符），并带有截断元数据；结构化的 `[E_LSP_*]` 错误（`E_LSP_UNCONFIGURED`、`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）让调用方根据代码而非文字进行路由 —— 超时和协议错误会附加服务器的最后一行 stderr，它命名了实际故障（缺少二进制文件、崩溃、索引）。
 
 **作用域是边界，不是相等。** 对话工作区内的文件在工作区根下索引（其预热的服务器被重用）；*外部*的文件 —— 同级检出、git worktree、agent 正在工作的任何其他目录 —— 在其自己的标记派生根下索引，回复携带命名它的 `workspaceRoot`，因为答案中的相对路径否则会有歧义。`E_LSP_SCOPE` 仅保留给两种会将无界树交给服务器的情况：路径中的 `..` 组件，以及标记遍历到达文件系统根或 `$HOME` 的文件（消息要求显式 `workspaceRoot`）。直接拒绝工作区外的文件曾被尝试过，并且实际上是有害的：编辑工具的诊断推送将拒绝吞没为“未配置服务器”，因此另一个检出中工作的 agent 既得不到诊断，也得不到它没有诊断的信号。
 
@@ -943,7 +943,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 当会话工作区被宣告时（`ev.workspace.opened`），Core 会自动触发一次 **warmup**：组件运行有界的扩展名普查（在 5 000 个文件或 2 秒预算时停止；隐藏文件和诸如 `node_modules`、`vendor`、`dist`、`build` 和 `target` 之类的垃圾目录会被跳过），并为最普遍的语言预启动服务器，这样第一次真正的查询就不必支付服务器启动开销。随后它发布 `ev.lsp.warm {workspace, warmed, skipped}`，以便 UI 可以显示哪些服务器已启动、哪些被跳过。`warmup` 操作会显式重新运行同一路径。
 
-未配置的语言会降级，而不会中断：没有服务器（或缺少二进制文件）的扩展名会返回 `E_LSP_UNAVAILABLE`，并在消息中给出修复方法 —— “add one with the lsp_registry tool (or edit <registry path>)”。模型会自行回退到 grep/read。
+未配置的语言会降级，而不会中断：没有服务器的扩展名返回 `E_LSP_UNCONFIGURED`（已配置但缺失或损坏的服务器返回 `E_LSP_UNAVAILABLE`），两者都在消息中给出修复方法 —— “add one with the lsp_registry tool (or edit <registry path>)”。模型会自行回退到 grep/read。edit 工具按错误码区分两者：未被声明的文件类型保持静默，注册表知道的类型总会得到一行说明。
 
 ### Registry: adding a language
 

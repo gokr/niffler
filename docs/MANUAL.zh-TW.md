@@ -1157,7 +1157,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 | `lsp_registry {action: add\|remove, name, command, extensions?, initializationOptions?, requires?, cheap?}` | 變更使用者登錄（受核准閘門的寫入）。`add` 接受 `{name (lowercase letters/digits/hyphens), command, extensions: {".ext": "languageId"}}`，會覆寫同名的內建項目，並以 `E_LSP_CONFLICT` 拒絕已對應至另一個伺服器的副檔名（請先移除該對應）；`remove` 只刪除使用者項目 |
 
 模型傳送從 1 開始的 line/character（UTF-16，符合 LSP 的 code-unit 慣例）；`findReferences` 一律包含宣告；結果有上限（100 個位置 / 約 16 000 個字元），並附帶截斷中介資料；結構化
-`[E_LSP_*]` 錯誤（`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）讓呼叫者依代碼而非文字來路由 ——
+`[E_LSP_*]` 錯誤（`E_LSP_UNCONFIGURED`、`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）讓呼叫者依代碼而非文字來路由 ——
 逾時與協定錯誤會附加伺服器的最後一行 stderr，該行會指出實際的失敗（缺少二進位檔、崩潰、索引中）。
 
 **範圍是界限，不是相等。** 對話工作區內的檔案會在工作區根目錄下被索引（其已暖機的伺服器會被重用）；在其*之外*的檔案 —— 同層 checkout、git worktree、代理正在工作的任何其他目錄 —— 會在其自身由標記衍生的根目錄下被索引，且回覆會帶有命名它的 `workspaceRoot`，因為否則答案中的相對路徑會有歧義。`E_LSP_SCOPE` 僅保留給兩種會把無界樹交給伺服器的情況：路徑中含有 `..` 元件，以及檔案的標記走訪到達檔案系統根目錄或 `$HOME`（訊息會要求明確的 `workspaceRoot`）。直接拒絕工作區外的檔案曾被嘗試過，且實際上是有害的：edit 工具的診斷推送會將該拒絕吞掉為「未設定伺服器」，因此代理在另一個 checkout 中工作時既得不到診斷，也得不到它沒有的訊號。
@@ -1180,7 +1180,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 當會話工作區被宣告時（`ev.workspace.opened`），Core 會自動觸發一次**預熱**：元件執行一次有界的副檔名普查（在 5 000 個檔案或 2 秒預算時停止；隱藏檔案與垃圾目錄如 `node_modules`、`vendor`、`dist`、`build` 和 `target` 會被跳過），並為最普遍的語言預先啟動伺服器，讓第一次真正的查詢不必付出伺服器啟動成本。接著它發佈 `ev.lsp.warm {workspace, warmed, skipped}`，讓 UI 能顯示哪些伺服器已啟動、哪些被跳過。`warmup` 操作會明確重跑同一條路徑。
 
-未配置的語言會降級，絕不會中斷：沒有伺服器（或缺少二進位檔）的副檔名會回傳 `E_LSP_UNAVAILABLE`，訊息中附帶修正方式——「add one with the lsp_registry tool (or edit <registry path>)」。模型會自行退回使用 grep/read。
+未配置的語言會降級，絕不會中斷：沒有伺服器的副檔名回傳 `E_LSP_UNCONFIGURED`（已配置但缺失或損壞的伺服器回傳 `E_LSP_UNAVAILABLE`），兩者都在訊息中附帶修正方式——「add one with the lsp_registry tool (or edit <registry path>)」。模型會自行退回使用 grep/read。edit 工具依錯誤碼區分兩者：未被聲明的檔案類型保持靜默，註冊表知道的類型一定會得到一行說明。
 
 ### Registry: adding a language
 

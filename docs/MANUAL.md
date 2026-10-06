@@ -1860,7 +1860,7 @@ The model sends one-based line/character (UTF-16, matching LSP's code-unit
 convention); `findReferences` always includes the declaration; results are
 capped (100 locations / ~16 000 characters) with truncation metadata;
 structured
-`[E_LSP_*]` errors (`E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,
+`[E_LSP_*]` errors (`E_LSP_UNCONFIGURED`, `E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,
 `E_LSP_SCOPE`, `E_LSP_PROTOCOL`, `E_LSP_REGISTRY`, `E_LSP_CONFLICT`,
 `E_NOT_FOUND`, `E_NOT_TEXT`, `E_BAD_SHAPE`) let callers route on codes, not
 prose —
@@ -1938,10 +1938,12 @@ first real query does not pay server startup. It then publishes
 `ev.lsp.warm {workspace, warmed, skipped}` so a UI can show which servers came
 up and which were skipped. The `warmup` operation re-runs the same path explicitly.
 
-Unconfigured languages degrade, never break: an extension with no server (or
-a missing binary) returns `E_LSP_UNAVAILABLE` with the fix in the message —
-"add one with the lsp_registry tool (or edit <registry path>)". The model
-falls back to grep/read on its own.
+Unconfigured languages degrade, never break: an extension with no server
+returns `E_LSP_UNCONFIGURED` (a configured server that is missing or broken
+returns `E_LSP_UNAVAILABLE`), both with the fix in the message — "add one with
+the lsp_registry tool (or edit <registry path>)". The model falls back to
+grep/read on its own. The edit tool tells the two apart by code: an
+unclaimed file type stays silent, anything the registry knows gets a line.
 
 ### Registry: adding a language
 

@@ -42,10 +42,15 @@ const
   MAX_READ_BYTES = 256 * 1024
   MAX_READ_LINE_BYTES = 2 * 1024  # minified lines must not flood context
   MIN_STUB_BYTES = 512      # unchanged re-reads below this just re-dump
-  DIAG_PUSH_TIMEOUT_MS = 10_000  # async diagnostics request: an enqueue round trip,
-                                 # not the check itself (that runs in the lsp
-                                 # component's idle seam and comes back on the
-                                 # conversation's .diag subject)
+  DIAG_ACK_TIMEOUT_MS = 250  # the lsp enqueue ACK budget only. The request is
+                             # already published, so a busy lsp pump (single
+                             # threaded — its idle seam runs the previous check
+                             # there) delays only our receipt, never the check
+                             # and never the write that already happened.
+                             # Waiting longer here is what made a cold server
+                             # cost an edit 25s+, and because this component is
+                             # single-threaded too, one waiting edit stalled
+                             # every other session's mutation behind it.
   OUTLINE_MIN_LINES = 1000  # whole-reads above this get an lsp outline (NIF_READ_OUTLINE_LINES)
   OUTLINE_TIMEOUT_MS = 8_000  # the outline is opportunistic — never stall a read
   OUTLINE_MAX_PER_CALL = 2  # per batch call: 2 × timeout stays inside the read budget
@@ -696,28 +701,6 @@ proc outlineSection(c: Component, target, path: string, total: int): string =
     "\n\n[Outline instead of the full text. Read windows with offset/limit " &
     "(up to 12 ranges per call), or offset=1 to read the whole file anyway.]"
 
-proc lspKnownLanguage(c: Component, target: string): bool =
-  ## True when the lsp registry maps this file's extension to a language
-  ## server — the languages this harness expects diagnostics for. Silence is
-  ## only right for files no entry claims (a .md file is nobody's
-  ## language-server business); anything the registry knows must be told what
-  ## happened. Every lookup failure answers false: an unsolicited note is
-  ## noise, and a missing lsp component is not the edit's problem.
-  let ext = splitFile(target).ext.toLowerAscii()
-  if ext.len == 0: return false
-  var resp: JsonNode
-  try:
-    resp = c.request("lsp", "lsp_servers", %*{}, DIAG_PUSH_TIMEOUT_MS)
-  except CatchableError:
-    return false
-  let servers = resp{"servers"}
-  if servers == nil or servers.kind != JArray: return false
-  for s in servers:
-    let exts = s{"extensions"}
-    if exts != nil and exts.kind == JObject and exts.hasKey(ext):
-      return true
-  return false
-
 proc diagWhy(resp: JsonNode): string =
   ## One readable reason out of a failed lsp reply (its error code/message, or
   ## failing that its text), for the "not checked" note.
@@ -738,37 +721,45 @@ proc lspDiagnosticsSection(c: Component, session, target: string,
   ##
   ## This used to block the edit: every cold server cost 25s and answered
   ## "server busy or still indexing" (39 times in one ten-cell bench run, ~16
-  ## minutes, no information). An edit that already succeeded must not wait for
-  ## a language server, so the VERDICT cannot be synchronous here — but the
-  ## ambiguity can go: for a language the registry knows, this never returns
-  ## empty. It says the check is on its way (with the verdict arriving as a
-  ## message), or that it did not run and why. "checked and clean" must never
-  ## look like "nothing happened". Only files no registry entry claims stay
-  ## silent, and a missing or crashed server still never affects the edit.
+  ## minutes, no information). The check runs in the lsp component's idle
+  ## seam; the edit only has to hand it over.
+  ##
+  ## The ack budget is short on purpose, and there is deliberately no second
+  ## lookup when it runs out. The lsp component is single-threaded and runs
+  ## the previous check in that same pump, so its answer to the NEXT request
+  ## can be seconds away; asking it a second question (the old lsp_servers
+  ## fallback) would re-block the edit on exactly the same queue. The request
+  ## is already published when the ack misses its budget, so the verdict is
+  ## on its way regardless — say so and return. This component's own pump is
+  ## serialized too, so a mutation that waits here delays every other
+  ## session's mutation as well.
+  ##
+  ## One case stays silent: a file type no registry entry claims (a .md edit
+  ## is nobody's language-server business). Everything else gets a line, so
+  ## "checked and clean" never looks like "nothing happened".
   if session.len == 0: return ""     # no conversation to report back to
   var resp: JsonNode
   try:
     resp = c.request("lsp", "lsp",
       %*{"operation": "diagnostics", "path": target, "async": true,
          "session": session, "first": first, "last": last},
-      DIAG_PUSH_TIMEOUT_MS)
+      DIAG_ACK_TIMEOUT_MS)
   except CatchableError as e:
-    # One refusal is worth saying out loud: a file outside the conversation's
-    # workspace is a fact about where the agent is working, and the lsp
-    # component answers [E_LSP_SCOPE] for it — silently, that looks identical
-    # to "no server for this file type" and a whole session can go by with no
-    # diagnostics and no signal.
+    if "E_LSP_UNCONFIGURED" in e.msg: return ""
+    # A file outside the conversation's workspace is a fact about where the
+    # agent is working: silently, it looks identical to "no server for this
+    # file type" and a whole session can go by with no diagnostics and no
+    # signal.
     if "E_LSP_SCOPE" in e.msg:
       return "\n\n[lsp: not checked — " & target & " is outside this " &
              "conversation's workspace; language-server diagnostics only " &
              "cover files inside it.]"
-    if lspKnownLanguage(c, target):
-      return "\n\n[lsp: not checked — " & e.msg & "]"
-    return ""
+    if "timed out" in e.msg:
+      return "\n\n[lsp: diagnostics queued — they arrive as a message " &
+             "when the language server answers.]"
+    return "\n\n[lsp: not checked — " & e.msg & "]"
   if not resp{"ok"}.getBool(false):
-    if lspKnownLanguage(c, target):
-      return "\n\n[lsp: not checked — " & diagWhy(resp) & "]"
-    return ""
+    return "\n\n[lsp: not checked — " & diagWhy(resp) & "]"
   let textN = resp{"text"}
   if textN == nil or textN.kind != JString or textN.getStr().len == 0:
     return ""
