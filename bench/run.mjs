@@ -710,6 +710,13 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   if (combo.harness === "dsh") {
     firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
   }
+  if (combo.harness === "maki") {
+    // First API call's total prompt (system + tools + task): the adapter
+    // sums DeepSeek's three usage fields of the first assistant frame —
+    // input_tokens alone is the uncached part only (a warm implicit-cache
+    // prefix is reported as cache_read even on a first request).
+    firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
+  }
   if (transcript) {
     const first = transcript.find(
       (it) => it.value?.role === "assistant" && it.value?.usage,

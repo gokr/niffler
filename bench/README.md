@@ -242,7 +242,17 @@ patch instead of burning the remaining feedback rounds.
   permission/project prompts out of the timed region. The bench model key is
   sent as `deepseek/<id>`; `MAKI_BIN`/`../harnesses/maki/target/release/maki`
   supplies the binary. Usage and tool counts come from the stream's
-  `assistant`/`result` usage blocks and `system/init` inventory. `thinking`
+  `assistant`/`result` usage blocks and `system/init` inventory.
+  `firstPromptTokens` is the first assistant frame's TOTAL prompt — DeepSeek
+  splits it across `input_tokens` + `cache_read_input_tokens` +
+  `cache_creation_input_tokens`, and all three are summed (a warm 512-token
+  implicit-cache prefix shows up even on a first request, so `input_tokens`
+  alone under-reports). Caution when probing by hand: run in an empty
+  git-rooted workspace — Maki's folder-trust walks up to the enclosing git
+  root and adds its AGENTS.md chain to the request (~8.4k tokens from inside
+  this repo, which is how a first measurement of Maki's footprint landed at
+  ≈15.9k instead of the true ≈7.4k).
+  `thinking`
   profiles are not expressible (only `--max-thinking-tokens`), so the lane
   runs at Maki's own default thinking configuration.
 - **niffler** — one private harness per (model) combo: own `nats-server` on a
