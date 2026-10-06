@@ -1,0 +1,90 @@
+{"kind": "reserve", "charge": 3.145968}
+{"kind": "usage", "usage": {"prompt_tokens": 92, "total_tokens": 108, "completion_tokens": 16, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.1454519999999997, "reserved": 3.145968, "conservative_cost": 0.000516}
+{"kind": "reserve", "charge": 3.2071680000000002}
+{"kind": "usage", "usage": {"prompt_tokens": 2230, "total_tokens": 6326, "completion_tokens": 4096, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 4096}, "output_tokens_details": {"reasoning_tokens": 4096}}, "charge": -3.139038, "reserved": 3.2071680000000002, "conservative_cost": 0.06813}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2230, "total_tokens": 5859, "completion_tokens": 3629, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 3353}, "output_tokens_details": {"reasoning_tokens": 3353}}, "charge": -3.330363, "reserved": 3.3914880000000003, "conservative_cost": 0.061125000000000006}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 5929, "total_tokens": 6266, "completion_tokens": 337, "prompt_tokens_details": {"cached_tokens": 2229}, "completion_tokens_details": {"reasoning_tokens": 21}, "output_tokens_details": {"reasoning_tokens": 21}}, "charge": -3.3686460000000005, "reserved": 3.3914880000000003, "conservative_cost": 0.022842}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 6313, "total_tokens": 6641, "completion_tokens": 328, "prompt_tokens_details": {"cached_tokens": 5928}, "completion_tokens_details": {"reasoning_tokens": 13}, "output_tokens_details": {"reasoning_tokens": 13}}, "charge": -3.3676290000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.023859}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 6687, "total_tokens": 6826, "completion_tokens": 139, "prompt_tokens_details": {"cached_tokens": 6312}, "completion_tokens_details": {"reasoning_tokens": 54}, "output_tokens_details": {"reasoning_tokens": 54}}, "charge": -3.3693420000000005, "reserved": 3.3914880000000003, "conservative_cost": 0.022146}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 6880, "total_tokens": 7391, "completion_tokens": 511, "prompt_tokens_details": {"cached_tokens": 6686}, "completion_tokens_details": {"reasoning_tokens": 74}, "output_tokens_details": {"reasoning_tokens": 74}}, "charge": -3.3631830000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.028305000000000004}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 7446, "total_tokens": 10352, "completion_tokens": 2906, "prompt_tokens_details": {"cached_tokens": 6879}, "completion_tokens_details": {"reasoning_tokens": 2844}, "output_tokens_details": {"reasoning_tokens": 2844}}, "charge": -3.3255600000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.065928}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2221, "total_tokens": 9564, "completion_tokens": 7343, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 7181}, "output_tokens_details": {"reasoning_tokens": 7181}}, "charge": -3.2746800000000005, "reserved": 3.3914880000000003, "conservative_cost": 0.11680800000000001}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 9651, "total_tokens": 11378, "completion_tokens": 1727, "prompt_tokens_details": {"cached_tokens": 2220}, "completion_tokens_details": {"reasoning_tokens": 10}, "output_tokens_details": {"reasoning_tokens": 10}}, "charge": -3.3366300000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.054858000000000004}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 11506, "total_tokens": 11558, "completion_tokens": 52, "prompt_tokens_details": {"cached_tokens": 9650}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.3561900000000002, "reserved": 3.3914880000000003, "conservative_cost": 0.035298}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 11605, "total_tokens": 11693, "completion_tokens": 88, "prompt_tokens_details": {"cached_tokens": 11505}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.3553530000000005, "reserved": 3.3914880000000003, "conservative_cost": 0.036135}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 11727, "total_tokens": 11820, "completion_tokens": 93, "prompt_tokens_details": {"cached_tokens": 11604}, "completion_tokens_details": {"reasoning_tokens": 14}, "output_tokens_details": {"reasoning_tokens": 14}}, "charge": -3.354912, "reserved": 3.3914880000000003, "conservative_cost": 0.036576000000000004}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 12122, "total_tokens": 13843, "completion_tokens": 1721, "prompt_tokens_details": {"cached_tokens": 11726}, "completion_tokens_details": {"reasoning_tokens": 186}, "output_tokens_details": {"reasoning_tokens": 186}}, "charge": -3.3293070000000005, "reserved": 3.3914880000000003, "conservative_cost": 0.062181}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 13914, "total_tokens": 13965, "completion_tokens": 51, "prompt_tokens_details": {"cached_tokens": 12121}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.348981, "reserved": 3.3914880000000003, "conservative_cost": 0.042507}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 15448, "total_tokens": 15560, "completion_tokens": 112, "prompt_tokens_details": {"cached_tokens": 13913}, "completion_tokens_details": {"reasoning_tokens": 38}, "output_tokens_details": {"reasoning_tokens": 38}}, "charge": -3.3434640000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.048024000000000004}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 15810, "total_tokens": 16279, "completion_tokens": 469, "prompt_tokens_details": {"cached_tokens": 15447}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.3370230000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.054465}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 1577, "total_tokens": 4377, "completion_tokens": 2800, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 2528}, "output_tokens_details": {"reasoning_tokens": 2528}}, "charge": -3.3447570000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.046731}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4414, "total_tokens": 4909, "completion_tokens": 495, "prompt_tokens_details": {"cached_tokens": 1576}, "completion_tokens_details": {"reasoning_tokens": 7}, "output_tokens_details": {"reasoning_tokens": 7}}, "charge": -3.3708210000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.020667}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4957, "total_tokens": 5451, "completion_tokens": 494, "prompt_tokens_details": {"cached_tokens": 4413}, "completion_tokens_details": {"reasoning_tokens": 5}, "output_tokens_details": {"reasoning_tokens": 5}}, "charge": -3.3692070000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.022281000000000002}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 5500, "total_tokens": 6889, "completion_tokens": 1389, "prompt_tokens_details": {"cached_tokens": 4956}, "completion_tokens_details": {"reasoning_tokens": 1338}, "output_tokens_details": {"reasoning_tokens": 1338}}, "charge": -3.354153, "reserved": 3.3914880000000003, "conservative_cost": 0.037335}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 7125, "total_tokens": 7214, "completion_tokens": 89, "prompt_tokens_details": {"cached_tokens": 5499}, "completion_tokens_details": {"reasoning_tokens": 34}, "output_tokens_details": {"reasoning_tokens": 34}}, "charge": -3.3687780000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.02271}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2400, "total_tokens": 2722, "completion_tokens": 322, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 161}, "output_tokens_details": {"reasoning_tokens": 161}}, "charge": -3.379458, "reserved": 3.3914880000000003, "conservative_cost": 0.012029999999999999}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2867, "total_tokens": 3975, "completion_tokens": 1108, "prompt_tokens_details": {"cached_tokens": 2399}, "completion_tokens_details": {"reasoning_tokens": 976}, "output_tokens_details": {"reasoning_tokens": 976}}, "charge": -3.366267, "reserved": 3.3914880000000003, "conservative_cost": 0.025221}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4104, "total_tokens": 4373, "completion_tokens": 269, "prompt_tokens_details": {"cached_tokens": 2866}, "completion_tokens_details": {"reasoning_tokens": 40}, "output_tokens_details": {"reasoning_tokens": 40}}, "charge": -3.375141, "reserved": 3.3914880000000003, "conservative_cost": 0.016347}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4576, "total_tokens": 5265, "completion_tokens": 689, "prompt_tokens_details": {"cached_tokens": 4103}, "completion_tokens_details": {"reasoning_tokens": 102}, "output_tokens_details": {"reasoning_tokens": 102}}, "charge": -3.3674250000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.024063}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 5336, "total_tokens": 5595, "completion_tokens": 259, "prompt_tokens_details": {"cached_tokens": 4575}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.371595, "reserved": 3.3914880000000003, "conservative_cost": 0.019893}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 5974, "total_tokens": 6313, "completion_tokens": 339, "prompt_tokens_details": {"cached_tokens": 5335}, "completion_tokens_details": {"reasoning_tokens": 253}, "output_tokens_details": {"reasoning_tokens": 253}}, "charge": -3.368481, "reserved": 3.3914880000000003, "conservative_cost": 0.023007}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 7143, "total_tokens": 7827, "completion_tokens": 684, "prompt_tokens_details": {"cached_tokens": 5973}, "completion_tokens_details": {"reasoning_tokens": 68}, "output_tokens_details": {"reasoning_tokens": 68}}, "charge": -3.359799, "reserved": 3.3914880000000003, "conservative_cost": 0.031689}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 7916, "total_tokens": 8014, "completion_tokens": 98, "prompt_tokens_details": {"cached_tokens": 7142}, "completion_tokens_details": {"reasoning_tokens": 46}, "output_tokens_details": {"reasoning_tokens": 46}}, "charge": -3.36627, "reserved": 3.3914880000000003, "conservative_cost": 0.025218}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2634, "total_tokens": 2751, "completion_tokens": 117, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 29}, "output_tokens_details": {"reasoning_tokens": 29}}, "charge": -3.3818310000000005, "reserved": 3.3914880000000003, "conservative_cost": 0.009657}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 8182, "total_tokens": 8269, "completion_tokens": 87, "prompt_tokens_details": {"cached_tokens": 7915}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.3656370000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.025851000000000002}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 3552, "total_tokens": 3724, "completion_tokens": 172, "prompt_tokens_details": {"cached_tokens": 2633}, "completion_tokens_details": {"reasoning_tokens": 23}, "output_tokens_details": {"reasoning_tokens": 23}}, "charge": -3.3782520000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.013236000000000001}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4505, "total_tokens": 4833, "completion_tokens": 328, "prompt_tokens_details": {"cached_tokens": 3551}, "completion_tokens_details": {"reasoning_tokens": 91}, "output_tokens_details": {"reasoning_tokens": 91}}, "charge": -3.373053, "reserved": 3.3914880000000003, "conservative_cost": 0.018435}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4985, "total_tokens": 5704, "completion_tokens": 719, "prompt_tokens_details": {"cached_tokens": 4504}, "completion_tokens_details": {"reasoning_tokens": 310}, "output_tokens_details": {"reasoning_tokens": 310}}, "charge": -3.3657480000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.02574}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 8983, "total_tokens": 9530, "completion_tokens": 547, "prompt_tokens_details": {"cached_tokens": 8181}, "completion_tokens_details": {"reasoning_tokens": 155}, "output_tokens_details": {"reasoning_tokens": 155}}, "charge": -3.3563340000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.035154000000000005}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 1648, "total_tokens": 1889, "completion_tokens": 241, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 148}, "output_tokens_details": {"reasoning_tokens": 148}}, "charge": -3.3829290000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.008559}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 1939, "total_tokens": 2069, "completion_tokens": 130, "prompt_tokens_details": {"cached_tokens": 1647}, "completion_tokens_details": {"reasoning_tokens": 18}, "output_tokens_details": {"reasoning_tokens": 18}}, "charge": -3.3837210000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.0077670000000000005}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2122, "total_tokens": 2233, "completion_tokens": 111, "prompt_tokens_details": {"cached_tokens": 1938}, "completion_tokens_details": {"reasoning_tokens": 29}, "output_tokens_details": {"reasoning_tokens": 29}}, "charge": -3.3834570000000004, "reserved": 3.3914880000000003, "conservative_cost": 0.008031}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2283, "total_tokens": 2698, "completion_tokens": 415, "prompt_tokens_details": {"cached_tokens": 2121}, "completion_tokens_details": {"reasoning_tokens": 49}, "output_tokens_details": {"reasoning_tokens": 49}}, "charge": -3.3784140000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.013074}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 2910, "total_tokens": 3164, "completion_tokens": 254, "prompt_tokens_details": {"cached_tokens": 2282}, "completion_tokens_details": {"reasoning_tokens": 148}, "output_tokens_details": {"reasoning_tokens": 148}}, "charge": -3.3789480000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.012539999999999999}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 3213, "total_tokens": 3900, "completion_tokens": 687, "prompt_tokens_details": {"cached_tokens": 2909}, "completion_tokens_details": {"reasoning_tokens": 50}, "output_tokens_details": {"reasoning_tokens": 50}}, "charge": -3.371544, "reserved": 3.3914880000000003, "conservative_cost": 0.019944}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 3937, "total_tokens": 3991, "completion_tokens": 54, "prompt_tokens_details": {"cached_tokens": 3212}, "completion_tokens_details": {"reasoning_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}, "charge": -3.378867, "reserved": 3.3914880000000003, "conservative_cost": 0.012621}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4060, "total_tokens": 4400, "completion_tokens": 340, "prompt_tokens_details": {"cached_tokens": 3936}, "completion_tokens_details": {"reasoning_tokens": 117}, "output_tokens_details": {"reasoning_tokens": 117}}, "charge": -3.3742080000000003, "reserved": 3.3914880000000003, "conservative_cost": 0.01728}
+{"kind": "reserve", "charge": 3.3914880000000003}
+{"kind": "usage", "usage": {"prompt_tokens": 4601, "total_tokens": 4863, "completion_tokens": 262, "prompt_tokens_details": {"cached_tokens": 4059}, "completion_tokens_details": {"reasoning_tokens": 10}, "output_tokens_details": {"reasoning_tokens": 10}}, "charge": -3.373755, "reserved": 3.3914880000000003, "conservative_cost": 0.017733000000000002}

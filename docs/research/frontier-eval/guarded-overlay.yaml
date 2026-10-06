@@ -1,0 +1,18 @@
+services:
+  main:
+    # Default networking (the reference setup's posture): test.sh installs
+    # curl/uv at verify time, so full isolation starves the verifier into a
+    # false reward 0 (observed, pilot 2). Model spend is enforced at the host
+    # instead: DOCKER-USER drops task-container traffic to api.fireworks.ai,
+    # leaving the budget proxy as the only billed path. CA env below keeps
+    # downloads working behind Runta's TLS-intercepting egress.
+    cap_drop:
+      - NET_ADMIN
+      - NET_RAW
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/runta-ca-bundle.crt:ro
+    environment:
+      CURL_CA_BUNDLE: /etc/ssl/certs/runta-ca-bundle.crt
+      SSL_CERT_FILE: /etc/ssl/certs/runta-ca-bundle.crt

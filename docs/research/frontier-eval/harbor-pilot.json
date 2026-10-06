@@ -1,0 +1,11 @@
+{
+  "job_name": "niffler040-regex-log-pilot1",
+  "jobs_dir": "/work/jobs",
+  "n_attempts": 1,
+  "n_concurrent_trials": 1,
+  "retry": {"max_retries": 0},
+  "datasets": [{"name": "terminal-bench", "version": "2.0", "task_names": ["regex-log"]}],
+  "agents": [{"import_path": "niffler_adapter:HarborNiffler", "model_name": "fireworks/accounts/fireworks/models/kimi-k3", "override_setup_timeout_sec": 180, "override_timeout_sec": 900}],
+  "environment": {"type": "docker", "delete": true, "override_cpus": 2, "override_memory_mb": 8192, "extra_docker_compose": ["/work/guarded-overlay.yaml"]},
+  "verifier": {"override_timeout_sec": 180}
+}

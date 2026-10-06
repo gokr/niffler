@@ -1,0 +1,44 @@
+{
+  "status": "unranked-matched-control",
+  "generated_at": "2026-10-06",
+  "benchmark": {"name": "FrontierHarness Eval", "version": "v1.0", "repo_commit": "e837a70bd6beb4e72eeeda62dd06e3bd34f6cb63"},
+  "model": {
+    "id": "accounts/fireworks/models/kimi-k3",
+    "provider": "fireworks",
+    "tier": "standard",
+    "pricing_per_1m": {"input": 3.0, "cached_input": 0.3, "output": 15.0},
+    "provider_slug_note": "Pi records provider 'openai' due to its custom-endpoint plumbing; same model id and endpoint as Niffler."
+  },
+  "cells": [
+    {"harness": "niffler-0.4.0", "task": "terminal-bench/regex-log", "reward": 1.0, "job_wall": "6m09s", "input": 104004, "cached": 88186, "output": 11656, "cost_usd": 0.25, "job": "niffler040-regex-log-pilot4"},
+    {"harness": "pi-0.99.2", "task": "terminal-bench/regex-log", "reward": 1.0, "job_wall": "3m10s", "input": 23573, "cached": 16444, "output": 5267, "cost_usd": 0.11, "job": "pi099-regex-log-control3"},
+    {"harness": "niffler-0.4.0", "task": "terminal-bench/openssl-selfsigned-cert", "reward": 1.0, "job_wall": "3m23s", "input": 57481, "cached": 48489, "output": 4402, "cost_usd": 0.11, "job": "niffler040-openssl1"},
+    {"harness": "pi-0.99.2", "task": "terminal-bench/openssl-selfsigned-cert", "reward": 1.0, "job_wall": "1m55s", "input": 26713, "cached": 22104, "output": 2494, "cost_usd": 0.06, "job": "pi099-openssl1"}
+  ],
+  "harness_configs": {
+    "niffler-0.4.0": {"commit": "efa98366b2344bb6b0209f706bcdbe569eccc018", "entry": "cli run", "thinking": "high (explicit)", "adapter": "niffler_adapter.py"},
+    "pi-0.99.2": {"package": "@earendil-works/pi-coding-agent@0.99.2", "thinking": "pi default (thinking on; level unrecorded)", "endpoint": "custom models.json, api openai-completions"}
+  },
+  "egress_policy": {
+    "per_task": "default docker networking + runta CA bundle; host DOCKER-USER drop to api.fireworks.ai (v4/v6)",
+    "billed_path": "budget proxy (host, request-level reservation + ledger) only",
+    "identical_for": ["niffler-0.4.0", "pi-0.99.2"],
+    "unranked_reason": "published baselines' applied egress allowlist is unrecorded; FrontierHarness policy requires unranked without it"
+  },
+  "measurement_notes": {
+    "cost": "measured provider usage; cached input at cached rate. Independent conservative ledger charges cached at full input rate (ceiling $1.353 campaign, real $0.775 incl. invalid attempts).",
+    "output_cap": "16384 tokens enforced by budget proxy — pilot constraint, identical both harnesses; observed failure mode at 4096 was reasoning-only truncation.",
+    "times": "harbor job wall time incl. environment setup and verifier.",
+    "cache": "n_input_tokens in results includes cache reads (harbor pi convention); report splits cached from prompt_tokens_details."
+  },
+  "excluded_attempts": [
+    {"reason": "output cap 4096 truncated reasoning before content", "validity": "infra_invalid", "spend_usd": 0.068},
+    {"reason": "verifier tooling install starved by over-tight egress lockdown (reward written before grading)", "validity": "infra_invalid", "spend_usd": 0.094},
+    {"reason": "empty model endpoint (gateway introspection produced http://:19040)", "validity": "infra_invalid", "spend_usd": 0.0},
+    {"reason": "docker conflicting options: extra_hosts with shared netns (deep-swe)", "validity": "infra_invalid", "spend_usd": 0.0},
+    {"reason": "nftables inet family unsupported on runta kernel; harbor egress sidecar cannot enforce allow_internet=false", "validity": "infra_invalid", "spend_usd": 0.0}
+  ],
+  "coverage_blocked": {"deep-swe": "0/9 — kernel limitation, see excluded_attempts"},
+  "resources": {"runta_runtime": "4 vCPU / 8192 MiB / 50 GiB", "task_env_override": "2 vCPU / 8192 MiB", "harbor": "0.22.0"},
+  "evidence": ["evidence/ledger.jsonl", "evidence/*-result.json", "evidence/*-verifier.txt", "checkpoint fh-niffler040-plumbing-v1"]
+}
