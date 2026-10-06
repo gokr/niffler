@@ -17,6 +17,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   install-tools` and `make install-jev`, each `[y/N]` (Enter skips; no-tty
   runs just name the targets), so a fresh install can get language servers
   and the CLI toolkit without knowing the make surface.
+- **bench: the OpenHands and Maki lanes, each with a `full31` record.**
+  OpenHands (Agent Canvas v1.24) is driven through its
+  `openhands-agent-server` over the documented REST API on the product's
+  default toolset (usage from `stats.usage_to_metrics`); Maki
+  (tontinton/maki, Rust) over its Claude-Code-compatible `--print
+  --output-format stream-json` mode with `--resume` for feedback rounds
+  (`bench/reports/full31-openhands-low*`, `full31-maki-low*`).
+
+### Changed
+
+- **The website's benchmark section is two tables, not five cards.** A
+  `full31` table (pass rate, wall time, tokens and cost per task, cache hit)
+  sorted by cost, and a direct-tools / fixed-prompt-size table, over an
+  explicit scope statement that this measures normal work rather than
+  capability; the Niffler row is accented. The install copy is corrected too:
+  Node.js/npm are optional and the installer asks, and the one-line command
+  offers the stable release or `main`.
 
 ### Removed
 
@@ -26,6 +43,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`niffler-tui` no longer prints a spurious read error on first start.** With
+  no `var/nats-url` yet, the wrapper's discovery read leaked bash's own `No
+  such file or directory` diagnostic — redirections run left to right, so the
+  failing `<` reported before the `2>/dev/null` took effect. The suppression is
+  now ordered first; behavior (an empty url falls through to probe/boot) is
+  unchanged.
+- **bench: OpenHands cells no longer share a conversation.** The adapter keyed
+  conversations on the bench session id, which is `null` on round 1 and shared
+  across concurrent cells, so with `jobs=2` one cell continued another's
+  conversation; the committed `full31-openhands-low` record was regenerated
+  with conversations keyed per task repo.
 - **`make install-lsp` installs npm servers without `npm install -g`** —
   apt- and snap-shipped Node put the global prefix under `/usr(/local)`,
   where that write dies EACCES without sudo, so fresh boxes got `FAIL …
@@ -203,13 +231,16 @@ there is no automatic migration in this release.
   example, and the `make install-jq` target stays — jq is a general CLI tool
   agents use constantly, not demo plumbing.
 
-- **The native prerequisite list is pruned to what the build actually needs.**
-  The liblz4 / libpcre / libclang chain belonged to the removed bitbarrel store
-  (`bitbarrel → lz4wrapper → futhark`, whose `opir` generator links libclang);
-  `install-native-deps` now installs only libssl-dev and a C compiler (plus the
-  toolchain basics), `install-nim-deps` lost the `LIBRARY_PATH` dance for
-  libclang, and `doctor` checks `cc` instead of `clang` — pristine boxes only
-  ever had gcc — and no longer probes libraries nothing links.
+- **The native dependency list tracks what the build actually needs.** libpcre
+  is gone for good: `observe`, `logfile` and `processes` moved off Nim's
+  `std/re` (a dynlib binding to PCRE, uninstallable on some distributions) to
+  the pure-Nim `regex` package, so nothing links PCRE and those components no
+  longer crash-loop at boot when it is absent. liblz4 and libclang stay — they
+  come back through natsnim's dependency tree (`bitbarrel → lz4wrapper →
+  futhark`, whose `opir` generator links libclang and whose `lz4wrapper` links
+  liblz4 into core at runtime) — so `install-native-deps` installs
+  `liblz4-dev` and `libclang-dev` (macOS: `brew install lz4`; clang comes with
+  the CLT) and `doctor` probes both alongside `cc`.
 
 - **The Wails desktop UI is no longer an official part of the harness.** Its
   code has been behind `niffler-tui` for a while and nobody is maintaining it, so
@@ -351,6 +382,29 @@ there is no automatic migration in this release.
   handed-off diff — and its frontmatter description names the case so
   `skill_list` surfaces it. The base-prompt sentence that pointed at the skill
   by name in the same window was measured to have no effect and removed again.
+
+- **The build checks its Nim dependencies before it compiles, and the installer
+  gives the isolated harness boot a real window.** `make check-nim-deps` (wired
+  into `components`) verifies `yaml`, `htmlparser`, `checksums`, `regex` and
+  `natsnim` are in the nimble store first, so a fresh clone — or a pull that
+  adds a dependency — fails with `nimble packages missing: … — run 'make
+  install-nim-deps'` instead of Nim's bare `cannot open file: <pkg>` mid-build.
+  `make install`'s plugin install boots nats + core + every component and waited
+  only 60s; it now waits `NIF_BOOT_TIMEOUT_S` (default 300s) with a heartbeat
+  naming the phase, and on timeout prints the tail of `core.log` plus the prime
+  suspects (the OOM killer on a small VM; a stale harness holding the store
+  lock). The "not on PATH" warning now says the login shell adds `~/.local/bin`
+  once it exists instead of reading as a hard failure.
+
+- **bench: the DSH lane now drives DSH's out-of-the-box surface.** It defaulted
+  to `sdk-minimal`, a bash-only composition that is not what DSH ships, which
+  made DSH look slower and costlier than the product on the heavy tasks;
+  `dsh.profile`/`DSH_PROFILE` now selects `sdk` — the out-of-the-box `dsh-base`
+  tool surface (fs read/edit/write, bash, fs-search, skills, web, subagent)
+  over SDK JSON-RPC, the faithful programmatic equivalent of the interactive
+  defaults. `full31-direct-dsh-ootb-low` replaces the earlier record (DSH 35s →
+  17.9s average at the same 31/31 pass rate); the lean profile stays one env
+  var away.
 
 ### Removed
 
