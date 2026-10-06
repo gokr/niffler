@@ -31,6 +31,8 @@ import niffler/sdk
 # - NIF_MOCK_ROUNDS: scripted tool-call rounds before the final answer
 #   (drives many tool rounds through one user turn).
 # - NIF_MOCK_TOOLCMD: the bash command the scripted rounds call.
+# - NIF_MOCK_TOOLJSON: JSON array of {name, arguments} tool-call specs, one
+#   per scripted round (overrides TOOLCMD; drives multi-stage pipelines).
 # - NIF_MOCK_LOG: JSONL request log (one line per chat request) so tests
 #   assert sizes/rejections against the mock's own view.
 # - NIF_MOCK_PT_BIAS: tokens the provider adds to its own chars/4 count
@@ -64,6 +66,7 @@ let mockRounds = block:
   let v = getEnv("NIF_MOCK_ROUNDS", "0")
   try: parseInt(v)
   except CatchableError: 0
+let mockToolJson = getEnv("NIF_MOCK_TOOLJSON", "")
 let mockToolCmd = getEnv("NIF_MOCK_TOOLCMD",
   "head -c 30000 /dev/zero | tr '\\0' 'x'")
 let mockLog = getEnv("NIF_MOCK_LOG", "")
@@ -264,6 +267,24 @@ proc(c: Component, args: JsonNode): JsonNode =
                           "completion_tokens": 0,
                           "total_tokens": providerCount}
       addUsageDetails(roundUsage)
+      if mockToolJson.len > 0:
+        let script = parseJson(mockToolJson)
+        let spec = script[min(served, script.len - 1)]
+        var calls = newJArray()
+        let batch = spec{"calls"}
+        if batch != nil and batch.kind == JArray:
+          var ci = 0
+          for one in batch:
+            calls.add(%*{"id": "c" & $served & "_" & $ci, "type": "function",
+                         "function": {"name": one{"name"}.getStr("bash"),
+                                      "arguments": $(one{"arguments"})}})
+            inc ci
+        else:
+          calls.add(%*{"id": "c" & $served, "type": "function",
+                       "function": {"name": spec{"name"}.getStr("bash"),
+                                    "arguments": $(spec{"arguments"})}})
+        return %*{"content": "", "tool_calls": calls,
+                  "model": "mock-model", "usage": roundUsage}
       return %*{"content": "",
                 "tool_calls": [%*{"id": "c" & $served, "type": "function",
                                   "function": {"name": "bash",
