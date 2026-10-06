@@ -168,6 +168,17 @@ proc main() =
   check("files outside workspace keeps original paths",
     outsideFiles{"text"}.getStr("").contains(tmp / "src/alpha.nim"), $outsideFiles)
 
+  createSymlink(tmp / "src", tmp / "mirror")
+  let mirrored = call(nc, "grep", "grep", %*{
+    "pattern": "^path-marker", "path": tmp / "mirror",
+    "__workspace": {"root": tmp}})
+  check("grep shortens symlinked dispatch filenames without rewriting source",
+        mirrored{"text"}.getStr().contains("\nsrc/paths.txt:2:" & source), $mirrored)
+  let mirroredFiles = call(nc, "grep", "files", %*{
+    "path": tmp / "mirror", "__workspace": {"root": tmp}})
+  check("files shortens symlinked dispatch filenames",
+        mirroredFiles{"text"}.getStr().contains("\nsrc/alpha.nim"), $mirroredFiles)
+
   # drain: component exits
   drain(nc)
   sleep(700)

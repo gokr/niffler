@@ -818,6 +818,26 @@ proc main() =
   check("filesystem-root workspace shortens contained paths",
         rRootDisplay{"text"}.getStr().endsWith("to " & relativePath(tmp / "root-display.txt", "/")),
         $rRootDisplay)
+  let mirror = tmp / "mirror"
+  createSymlink(tmp / "bulk", mirror)
+  let rMirror = call(nc, "edit", "replace_across", %*{
+    "glob": mirror / "w.txt", "replace": [{"old": "final", "new": "mirrored"}],
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked workspace dispatch paths shorten in bulk text",
+        rMirror{"text"}.getStr().contains("\nw.txt (1)") and
+        not rMirror{"text"}.getStr().contains(mirror), $rMirror)
+  let rMirrorWrite = call(nc, "edit", "write", %*{
+    "path": mirror / "new.txt", "content": "new\n",
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked parents shorten new-file text without changing machine path",
+        rMirrorWrite{"text"}.getStr().endsWith("to new.txt") and
+        rMirrorWrite{"path"}.getStr() == mirror / "new.txt", $rMirrorWrite)
+  let rMirrorBatch = call(nc, "edit", "read", %*{
+    "reads": [{"path": mirror / "new.txt"}, {"path": mirror / "w.txt"}],
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked batch headings are relative; raw bytes stay unchanged",
+        rMirrorBatch{"text"}.getStr().contains("### new.txt\nnew\n") and
+        rMirrorBatch{"items"}[0]{"content"}.getStr() == "new\n", $rMirrorBatch)
   let rUnion = call(nc, "edit", "replace_across", %*{
     "paths": [tmp / "many" / "m00.txt", tmp / "many" / "m00.txt"],
     "glob": "many/m0*.txt", "replace": [{"old": "done", "new": "union"}],

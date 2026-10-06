@@ -64,6 +64,8 @@ proc main() =
   # The task workspace: f.txt is the pipeline's raw material.
   let work = root / "work"
   createDir(work)
+  let workAlias = root / "workspace-alias"
+  createSymlink(work, workAlias)
   writeFile(work / "f.txt", "alpha span beta\n")
   createDir(work / "nested")
   writeFile(work / "nested" / "bulk.txt", "OldName\n")
@@ -166,7 +168,7 @@ proc main() =
   doAssert waitComponent(nc, "edit"), "edit did not register"
 
   let r = call(nc, "core", "session",
-    %*{"sessionId": convId, "content": "run the pipeline", "cwd": work},
+    %*{"sessionId": convId, "content": "run the pipeline", "cwd": workAlias},
     240_000)
   check("turn with pipelined messages completes",
         r{"error"}.getStr("").len == 0 and
@@ -193,6 +195,7 @@ proc main() =
   var captureRefusals = 0
   var rawRead = false
   var captureReceipt = false
+  var relativeBulk = false
   for item in msgs:
     let m = item{"value"}
     if m == nil: continue
@@ -206,6 +209,8 @@ proc main() =
     if body.contains("E_NO_VAR"): missingRefused = true
     if m{"name"}.getStr("") == "read" and body.contains("OldName"):
       inc selectReplies
+    if m{"name"}.getStr("") == "replace_across" and body.contains("\nbulk.txt ("):
+      relativeBulk = not body.contains(workAlias & "/")
     if body.contains("E_CAPTURE_UNAVAILABLE"): inc captureRefusals
     if m{"name"}.getStr("") == "read" and body == "raw\n\"quoted\"\\text\n":
       rawRead = true
@@ -220,6 +225,7 @@ proc main() =
   check("unset $ghost with resolve_vars fails loud with E_NO_VAR",
         missingRefused, "no E_NO_VAR in transcript")
   check("bare strings reach the transcript without JSON escaping", rawRead)
+  check("core workspace context handles symlinked roots in result text", relativeBulk)
   check("window capture excludes paging notices and preserves literal dollars",
         readFile(work / "window.txt") == "before\nlanded\nafter\n")
   check("capture receipt reports actual captured size", captureReceipt)

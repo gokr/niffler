@@ -779,8 +779,12 @@ proc displayPath(args: JsonNode, path: string): string =
   ## machine paths remain untouched; external paths remain absolute.
   let workspace = args{"__workspace"}{"root"}.getStr("")
   if workspace.len == 0 or not path.isAbsolute(): return path
-  let root = normalizedPath(workspace)
-  let target = normalizedPath(path)
+  var root = normalizedPath(workspace)
+  var target = normalizedPath(path)
+  try: root = expandFilename(root)
+  except CatchableError: discard
+  try: target = expandFilename(target)
+  except CatchableError: discard
   if target == root: return "."
   let prefix = if root.endsWith($DirSep): root else: root & DirSep
   if target.startsWith(prefix): return relativePath(target, root)

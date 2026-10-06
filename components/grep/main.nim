@@ -125,23 +125,33 @@ comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
     return finish(code, output, min(max(1, max_results), 10_000))
 
 proc displayPaths(text, root: string, listing: bool): string =
-  ## Rewrite only the leading filename, never matched source or diagnostics.
-  ## rg's match/context records delimit filenames with :N: / -N-.
-  let prefix = normalizedPath(absolutePath(root)).strip(leading = false,
-    trailing = true, chars = {DirSep}) & DirSep
+  ## Rewrite only a real leading filename, never matched source/diagnostics.
+  ## Resolve symlinked parents: dispatch paths and workspace roots may use
+  ## different spellings of the same tree (the benchmark's root mirror).
+  var base = normalizedPath(absolutePath(root))
+  try: base = expandFilename(base)
+  except CatchableError: discard
+  let prefix = base.strip(leading = false, trailing = true,
+                          chars = {DirSep}) & DirSep
+  proc filename(path: string): string =
+    var target = normalizedPath(path)
+    try: target = expandFilename(target)
+    except CatchableError: discard
+    if target.startsWith(prefix): return relativePath(target, base)
+    path
   var lines = text.split('\n')
   for line in lines.mitems:
-    if not line.startsWith(prefix): continue
+    if not line.isAbsolute(): continue
     if listing:
-      line = line[prefix.len .. ^1]
+      line = filename(line)
     else:
-      for i in prefix.len ..< line.len:
+      for i in 0 ..< line.len:
         if line[i] notin {':', '-'}: continue
         var j = i + 1
         while j < line.len and line[j] in {'0'..'9'}: inc j
         if j > i + 1 and j < line.len and line[j] == line[i] and
             fileExists(line[0 ..< i]):
-          line = line[prefix.len .. ^1]
+          line = filename(line[0 ..< i]) & line[i .. ^1]
           break
   lines.join("\n")
 
