@@ -605,7 +605,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
   if exact.count > 1 and not replaceAll:
     raise newException(ValueError,
       "[E_AMBIGUOUS] old_string occurs " & $exact.count & " times in " & path &
-      " — include more surrounding lines so it matches exactly once.")
+      " — include surrounding lines to match once; set replace_all only if " &
+      "every occurrence should change.")
   if exact.count >= 1:
     return allSpans(content, oldNorm, newNorm)
 
@@ -624,7 +625,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
     raise newException(ValueError,
       "[E_AMBIGUOUS] old_string (after " & tierName &
       " normalization) occurs " & $wins.len & " times in " & path &
-      " — include more surrounding lines so it matches exactly once.")
+      " — include surrounding lines to match once; set replace_all only if " &
+      "every occurrence should change.")
   if wins.len == 1:
     return @[windowSpan(content, lines, starts, wins[0], oldNorm, newNorm)]
 
@@ -635,7 +637,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
     if cnt > 1:
       raise newException(ValueError,
         "[E_AMBIGUOUS] old_string (unescaped) occurs " & $cnt & " times in " &
-        path & " — include more surrounding lines so it matches exactly once.")
+         path & " — include surrounding lines to match once; set replace_all only if " &
+         "every occurrence should change.")
     if cnt == 1:
       return @[(first, oldUn.len, newNorm,
                 splitLf(newNorm).len, splitLf(oldUn).len)]
@@ -644,7 +647,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
       raise newException(ValueError,
         "[E_AMBIGUOUS] old_string (after escaped-text normalization) occurs " &
         $wins.len & " times in " & path &
-        " — include more surrounding lines so it matches exactly once.")
+        " — include surrounding lines to match once; set replace_all only if " &
+        "every occurrence should change.")
     if wins.len == 1:
       return @[windowSpan(content, lines, starts, wins[0], oldNorm, newNorm)]
 
@@ -769,6 +773,27 @@ proc lspDiagnosticsSection(c: Component, session, target: string,
   if textN == nil or textN.kind != JString or textN.getStr().len == 0:
     return ""
   return "\n\n[lsp: " & textN.getStr() & "]"
+
+proc displayPath(args: JsonNode, path: string): string =
+  ## Shorten only filenames inside the caller's workspace. Source text and
+  ## machine paths remain untouched; external paths remain absolute.
+  let workspace = args{"__workspace"}{"root"}.getStr("")
+  if workspace.len == 0 or not path.isAbsolute(): return path
+  let root = normalizedPath(workspace)
+  let target = normalizedPath(path)
+  if target == root: return "."
+  let prefix = if root.endsWith($DirSep): root else: root & DirSep
+  if target.startsWith(prefix): return relativePath(target, root)
+  path
+
+var gUndoHinted = initTable[string, bool]()
+
+proc undoHint(args: JsonNode): string =
+  ## One result-local routing hint per conversation, never a prompt splice.
+  let session = args{"__session"}{"session"}.getStr("")
+  if session.len == 0 or gUndoHinted.hasKey(session): return ""
+  gUndoHinted[session] = true
+  "\n[To revert: discover {tools: [\"undo_last_edit\"]}.]"
 
 proc hEdit(c: Component, args: JsonNode): JsonNode =
   if args == nil or args.kind != JObject:
@@ -903,9 +928,9 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
     " Added " & $addedTotal & " line(s), removed " & $removedTotal & " line(s)."
     else: ""
   result = %*{"text": "Successfully applied " & $planned.len & " " & noun &
-                       " to " & path & "." & lineSummary &
+                       " to " & displayPath(args, path) & "." & lineSummary &
                        "\n\nChange preview (- removed, + added; context included):\n" &
-                       d.diff & diagNote,
+                       d.diff & diagNote & undoHint(args),
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine,
               "added_lines": addedTotal,
@@ -1173,15 +1198,23 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
       noMatch.add(abs)
   var summary = "replaced " & $total & " occurrence(s) in " & $changed.len &
     " of " & $files.len & " file(s)."
-  for p in planned:
+  const maxListedFiles = 24
+  for i, p in planned:
+    if i >= maxListedFiles:
+      summary.add("\n... " & $(planned.len - i) & " more changed files (counts in files).")
+      break
     var n = 0
     for k in p.counts: n += k
-    summary.add("\n" & p.path & " (" & $n & ")")
-  if noMatch.len > 0:
-    summary.add("\nno match: " & noMatch.join(", "))
-  if missing.len > 0:
-    summary.add("\nmissing: " & missing.join(", "))
-  summary.add("\nundo_last_edit on each changed file reverts just that file.")
+    summary.add("\n" & displayPath(args, p.path) & " (" & $n & ")")
+  for (label, paths) in [("no match", noMatch), ("missing", missing)]:
+    if paths.len == 0: continue
+    var shown: seq[string]
+    for i in 0 ..< min(paths.len, maxListedFiles):
+      shown.add(displayPath(args, paths[i]))
+    summary.add("\n" & label & ": " & shown.join(", "))
+    if paths.len > maxListedFiles:
+      summary.add(" ... " & $(paths.len - maxListedFiles) & " more")
+  summary.add(undoHint(args))
   if firstDiff.len > 0:
     summary.add("\n\nChange preview (first changed file; - removed, + added):\n" &
       firstDiff[0 .. min(firstDiff.high, 1200)] & diagNote)
@@ -1189,6 +1222,7 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
               "files": perFile,
               "files_changed": changed.len,
               "files_unchanged": noMatch.len + missing.len,
+              "unmatched": noMatch, "missing": missing,
               "total_replaced": total}
 
 # ---------------------------------------------------------------------------
@@ -1225,7 +1259,7 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
   observe(args{"__session"}{"session"}.getStr(""), target,
           readFile(target), false, persist = true)
   let d = compactDiff(entry.resultContent, entry.content)
-  result = %*{"text": "Undid the last edit on " & path &
+  result = %*{"text": "Undid the last edit on " & displayPath(args, path) &
               ". File reverted to its previous state; re-read it before further edits.",
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine}
@@ -1261,9 +1295,12 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   let force = args{"force"}.getBool(false)
 
   let target = followSymlink(toCwd(path, rootDir()))
+  let shownPath = displayPath(args, path)
+  let capture = args{"__capture"}.getBool(false)
   if dirExists(target):
     raise newException(ValueError,
-      "[E_NOT_TEXT] " & path & " is a directory — list it with bash or grep files")
+      "[E_NOT_TEXT] " & shownPath & " is a directory — use read {reads: " &
+      "[{glob: \"*\"}]} to list files, or discover {tools: [\"files\"]}.")
   if not fileExists(target):
     raise newException(ValueError,
       "[E_NOT_FOUND] File not found: " & path)
@@ -1273,7 +1310,9 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   let raw = readFile(target)
   let lazy = lazyInstructionText(session, target)
   if raw.len == 0:
-    return %("[] " & path & " is empty (0 lines). Use write to create content.")
+    let notice = "[] " & shownPath & " is empty (0 lines). Use write to create content."
+    if capture: return %*{"text": notice, "__captureText": ""}
+    return %notice
   let sampleLen = min(SNIFF_BYTES, raw.len)
   let sample = raw[0 ..< sampleLen]
   if '\0' in sample:
@@ -1293,8 +1332,8 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   # "dump it anyway" offset=1 and force re-dumps all bypass it.
   let outlineMin = outlineMinLines()
   if outlineMin > 0 and offN == nil and limN == nil and not force and
-      total > outlineMin:
-    let ol = outlineSection(c, target, path, total)
+      not capture and total > outlineMin:
+    let ol = outlineSection(c, target, shownPath, total)
     if ol.len > 0:
       if session.len > 0:
         # the model saw no bytes: keep any prior full-view state, and
@@ -1307,23 +1346,28 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   # full view = one-shot whole-file delivery (explicit offset=1 is the
   # caller saying "dump it anyway" — the pre-force escape hatch)
   var fullDelivered = offN == nil and total <= limit and raw.len <= MAX_READ_BYTES
-  if session.len > 0 and not force and fullDelivered and raw.len >= MIN_STUB_BYTES:
+  if session.len > 0 and not force and not capture and fullDelivered and raw.len >= MIN_STUB_BYTES:
     let dig = $secureHash(raw)
     let key = seenKey(session, target)
     if gSeen.hasKey(key) and gSeen[key].digest == dig and gSeen[key].full:
-      let unchanged = unchangedText(path, raw)
+      let unchanged = unchangedText(shownPath, raw)
       return %(if lazy.len > 0: lazy & "\n\n" & unchanged else: unchanged)
   if offset > total:
-    return %("Offset " & $offset & " is beyond end of file (" & $total &
-      " lines). Use offset=1 to read from the start.")
+    let notice = "Offset " & $offset & " is beyond end of file (" & $total &
+      " lines). Use offset=1 to read from the start."
+    if capture: return %*{"text": notice, "__captureText": nil,
+                          "__captureError": "Offset is beyond end of file."}
+    return %notice
   let endIdx = min(offset - 1 + limit, total)
   var selected = lines[offset - 1 ..< endIdx]
+  var omitted = false
   for i, line in selected:
     if line.len > MAX_READ_LINE_BYTES:
       selected[i] = "[line " & $(offset + i) & " exceeds " &
         $MAX_READ_LINE_BYTES & " bytes; content not shown. Use bash: sed -n '" &
         $(offset + i) & "p' <path> | head -c " & $MAX_READ_LINE_BYTES & "]"
       fullDelivered = false
+      omitted = true
   var text = selected.join("\n")
   if toLf(body).endsWith("\n") and selected.len > 0: text.add("\n")
   var shownCount = selected.len
@@ -1335,6 +1379,7 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     text.add("\n... [truncated at " & $MAX_READ_BYTES &
       " bytes — page with offset/limit]")
     fullDelivered = false
+    omitted = true
   let lastLine = offset + shownCount - 1
   if not text.endsWith("\n"): text.add("\n")
   if lastLine < total:
@@ -1354,7 +1399,16 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
             persist = not same)
   if lazy.len > 0:
     text = lazy & "\n\n" & text
-  result = %text
+  if capture:
+    var source = ""
+    if not omitted:
+      source = lines[offset - 1 ..< endIdx].join("\n")
+      if endIdx < total or toLf(body).endsWith("\n"): source.add("\n")
+    result = %*{"text": text, "__captureText": (if omitted: newJNull() else: %source)}
+    if omitted:
+      result["__captureError"] = %"Read omitted bytes; use a narrower offset/limit window."
+  else:
+    result = %text
 
 type ReadRequest = tuple[path: string, offset: int, limit: int,
                          hasRange: bool, err: string]
@@ -1466,17 +1520,23 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
       blocks.add("### " & name & "\n[E_BAD_SHAPE] " & req.err)
       items.add(%*{"path": req.path, "error": req.err})
       continue
+    let shown = displayPath(args, req.path)
     let heading = if req.hasRange:
-                    req.path & ":" & $req.offset & "+" & $req.limit
-                  else: req.path
+                    shown & ":" & $req.offset & "+" & $req.limit
+                  else: shown
     try:
       var itemArgs = %*{"path": req.path, "force": force,
-                        "__session": args{"__session"}}
+                        "__session": args{"__session"},
+                        "__workspace": args{"__workspace"},
+                        "__capture": args{"__capture"}.getBool(false)}
       if req.hasRange:
         itemArgs["offset"] = %req.offset
         itemArgs["limit"] = %req.limit
       let content = hRead(c, itemArgs)
-      let text = content.getStr()
+      let text = if content.kind == JString: content.getStr()
+                 else: content{"text"}.getStr()
+      let source = if content.kind == JString: content
+                   else: content{"__captureText"}
       if used + text.len > 512_000:
         blocks.add("### " & heading &
           "\n[read limit: aggregate output exceeds 512000 bytes; read remaining items separately]")
@@ -1486,12 +1546,15 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
       used += text.len
       blocks.add("### " & heading & "\n" & text)
       items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
-                   "content": content})
+                   "content": source})
     except CatchableError as e:
       blocks.add("### " & heading & "\n" & e.msg)
       items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
                    "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
+  if args{"__capture"}.getBool(false):
+    result["__captureText"] = newJNull()
+    result["__captureError"] = %"A batch contains separate files/ranges; capture items.0.content (or another item) explicitly."
 
 type SelectItem = object
   path: string          # empty when glob-based
@@ -1559,6 +1622,7 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
   var filesBudget = MAX_SELECT_FILES
   var totalHits = 0
   var truncated = false
+  var captureBytes = 0
   for it in items:
     var targets: seq[string] = @[]
     if it.glob.len > 0:
@@ -1582,7 +1646,7 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       if it.pattern.len == 0:
         # inventory mode: paths only (the find/ls move)
         jsItems.add(%*{"path": abs, "listed": true})
-        blocks.add(abs)
+        blocks.add(displayPath(args, abs))
         continue
       let lines = splitLf(content)
       var hitLines: seq[int] = @[]
@@ -1615,9 +1679,23 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       for r in regions:
         parts.add(lines[r.a .. r.b].join("\n"))
       totalHits += hitLines.len
-      jsItems.add(%*{"path": abs, "hits": hitLines.len,
-                     "regions": regions.len})
-      blocks.add("### " & abs & " (" & $hitLines.len & " hit(s), " &
+      var selectedItem = %*{"path": abs, "hits": hitLines.len,
+                             "regions": regions.len}
+      if args{"__capture"}.getBool(false):
+        var sourceParts = newJArray()
+        for r in regions:
+          var size = 0
+          for li in r.a .. r.b: size += lines[li].len + 1
+          if size > 65536 or captureBytes + size > 512000:
+            sourceParts.add(newJNull())
+          else:
+            var source = lines[r.a .. r.b].join("\n")
+            if r.b < lines.high or content.endsWith("\n"): source.add("\n")
+            captureBytes += source.len
+            sourceParts.add(%source)
+        selectedItem["contents"] = sourceParts
+      jsItems.add(selectedItem)
+      blocks.add("### " & displayPath(args, abs) & " (" & $hitLines.len & " hit(s), " &
                  $regions.len & " region(s); lines are verbatim)\n" &
                  parts.join("\n\n"))
   var text = blocks.join("\n")
@@ -1629,6 +1707,9 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       "\n[read limit: output truncated at 512000 bytes]"
   result = %*{"text": text, "items": jsItems, "count": totalHits,
               "files": jsItems.len}
+  if args{"__capture"}.getBool(false):
+    result["__captureText"] = newJNull()
+    result["__captureError"] = %"Select output includes filenames and separate regions; capture items.0.contents.0 explicitly."
 
 proc hReadTool(c: Component, args: JsonNode): JsonNode =
   ## Canonical read entry point: "reads" [{path, offset?, limit?}, ...]
@@ -1659,7 +1740,9 @@ proc hReadTool(c: Component, args: JsonNode): JsonNode =
     # forwarded when the caller supplied a range, so the unchanged-stub
     # shortcut still keys off absent offset/limit.
     var itemArgs = %*{"path": requests[0].path, "force": force,
-                      "__session": args{"__session"}}
+                      "__session": args{"__session"},
+                      "__workspace": args{"__workspace"},
+                      "__capture": args{"__capture"}.getBool(false)}
     if requests[0].hasRange:
       itemArgs["offset"] = %requests[0].offset
       itemArgs["limit"] = %requests[0].limit
@@ -1702,15 +1785,16 @@ proc hWrite(c: Component, args: JsonNode): JsonNode =
   if session.len > 0:
     # the conversation authored every byte: it holds the full content
     observe(session, target, content, full = true, persist = true)
+  let shownTarget = displayPath(args, target)
   result = %*{"path": target, "bytes_written": content.len,
               "lines": wlines, "digest": digest,
               "overwrote": overwrote,
               "text": (if overwrote:
-                         "Overwrote " & target & " (" & $content.len &
+                         "Overwrote " & shownTarget & " (" & $content.len &
                          " bytes, " & $wlines & " lines, digest " & digest & ")"
                        else:
                          "Wrote " & $content.len & " bytes (" & $wlines &
-                         " lines, digest " & digest & ") to " & target)}
+                         " lines, digest " & digest & ") to " & shownTarget)}
 
 # ---------------------------------------------------------------------------
 # component
@@ -1726,37 +1810,37 @@ discard comp.tool("read", toolSchema(%*{
                   "path": {"type": "string",
                            "description": "File to read"},
                   "glob": {"type": "string",
-                           "description": "Select mode: file set (f*.go, **/*.go; <=12 files) instead of path"},
+                           "description": "Select file pattern; **/ recurses (64-file scan cap)"},
                   "pattern": {"type": "string",
-                           "description": "Select mode: literal line match (grep semantics); omit to just list matched paths"},
+                           "description": "Literal match; omit to list glob paths"},
                   "word": {"type": "boolean",
-                           "description": "Select mode: require word boundaries around the pattern"},
+                           "description": "Require word boundaries (default false)"},
                   "context": {"type": "integer", "minimum": 0, "maximum": 20,
-                           "description": "Select mode: lines around each hit (default 2)"},
+                           "description": "Neighbor lines (default 2)"},
                   "max": {"type": "integer", "minimum": 1, "maximum": 64,
-                           "description": "Select mode: max hits per item (default 8)"},
+                           "description": "Hits per item (default 8)"},
                   "offset": {"type": "integer", "minimum": 1,
                              "description": "Start line (default 1)"},
                   "limit": {"type": "integer", "minimum": 1,
                             "description": "Max lines (default 2000)"}},
                 "required": [], "additionalProperties": false},
-              "description": "1..12 files/ranges in one call — the canonical form; batch known-relevant reads (grep hits, imports) instead of one per turn"},
+              "description": "Up to 12 file/range or select items; use instead of path"},
   "path": {"type": "string",
-           "description": "Sugar for one file: same as \"reads\": [{\"path\": ...}]; given with \"reads\", it is read first"},
+           "description": "One file; use instead of reads"},
   "offset": {"type": "integer", "minimum": 1,
-             "description": "Start line for the sugar \"path\" (default 1)"},
+             "description": "1-based start line (default 1)"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Max lines for the sugar \"path\" (default 2000)"},
+            "description": "Max lines (default 2000)"},
   "force": {"type": "boolean",
-            "description": "Re-dump even if unchanged since your last read/write"},
+            "description": "Re-dump unchanged text (default false)"},
   "resolve_vars": {"type": "boolean",
-            "description": "Substitute session variables ($name) in this call's arguments. Default false: shell, sed and source text stay literal."},
-  "save_as": {"description": "Capture a response field into a session variable for a later call: \"name\" or {\"name\": ..., \"from\": \"text\"}",
+            "description": "Resolve $name variables; default false keeps $ literal."},
+  "save_as": {"description": "Save text as \"name\", or {name,from} for a dotted result field.",
             "oneOf": [{"type": "string"}, {"type": "object",
               "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
               "required": ["name"], "additionalProperties": false}]}
 }, @[],
-  "Read files for editing. \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges per call, per-item errors, 512KB cap; a single item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) returns its symbol outline when a language server knows the type — read windows with offset/limit, or offset=1 for the whole file. Batch known-relevant reads (grep hits, imports) rather than one per turn; lines are verbatim (copy into edit's old_string), and an unchanged re-read returns [unchanged]. Select items ({glob|path, pattern, word?, context?, max?}) locate-then-fetch in one call: no pattern lists matched paths (find/ls); a literal pattern returns verbatim match regions (±context lines, grep semantics) ready to copy into old_string — grep hits and their neighbors without one read per file. Pipeline source-derived values inside one batched message with `save_as`; a later call consumes them as `$name` when it opts in with `resolve_vars: true`."), hReadTool,
+  "Read verbatim text: path for one file, reads for up to 12 files/ranges. Use offset/limit for windows. Select items use glob to list paths, or path/glob plus a literal pattern for snippets. Do not mix content and select items. Large whole reads may return an outline; unchanged reads a confirmation. Omit unused options."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      "variables": true,
      # `effect: read` is deliberate: fabric's batch host would otherwise
@@ -1779,30 +1863,28 @@ discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",
            "description": "File to edit"},
   "edits": {"type": "array",
-    "description": "Replacements to apply, all matched against the original file",
+    "description": "Changes matched against the original file",
     "items": {"type": "object",
       "properties": {
         "old_string": {"type": "string",
-          "description": "Exact text to replace (verbatim, whitespace included)"},
+          "description": "Exact original text (whitespace included)"},
         "new_string": {"type": "string",
           "description": "Replacement text; \"\" deletes old_string"},
-        "old": {"type": "string", "description": "Alias for old_string"},
-        "new": {"type": "string", "description": "Alias for new_string"},
         "replace_all": {"type": "boolean",
-          "description": "Replace every occurrence (default false)"}
+          "description": "Replace all occurrences (default false)"}
       },
       "allOf": [
         {"anyOf": [{"required": ["old_string"]}, {"required": ["old"]}]},
         {"anyOf": [{"required": ["new_string"]}, {"required": ["new"]}]}]}
   },
   "resolve_vars": {"type": "boolean",
-    "description": "Substitute session variables ($name) in this call's arguments. Default false: shell, sed and source text stay literal."},
-  "save_as": {"description": "Capture a response field into a session variable for a later call: \"name\" or {\"name\": ..., \"from\": \"text\"}",
+    "description": "Resolve $name variables; default false keeps $ literal."},
+  "save_as": {"description": "Save text as \"name\", or {name,from} for a dotted result field.",
     "oneOf": [{"type": "string"}, {"type": "object",
       "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
       "required": ["name"], "additionalProperties": false}]}
 }, @["path", "edits"],
-  "Replace exact text in an existing file. Each old_string must occur exactly once — add context lines to disambiguate, or set replace_all. Source-derived edits can share one batched message: a read call saves an exact span with `save_as`, and this call consumes it as `$span` by setting `resolve_vars: true`. undo_last_edit reverts."), hEdit,
+  "Apply contextual replacements in one existing file. Copy old_string from a read; each must match once unless replace_all. All edits match the original file."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "variables": true,
      "workspace": {"pathFields": ["path"]}})
@@ -1810,37 +1892,30 @@ discard comp.tool("edit", toolSchema(%*{
 discard comp.tool("replace_across", toolSchema(%*{
   "paths": {"type": "array", "minItems": 1, "maxItems": 512,
             "items": {"type": "string"},
-            "description": "Explicit file list (512-file circuit breaker; the undo pre-image budget is the real bound)"},
+            "description": "Explicit files, combined with glob (max 512)"},
   "glob": {"type": "string",
-           "description": "File set instead: f*.go in one directory, **/*.go recursively (512-file circuit breaker)"},
+           "description": "Additional file pattern; **/ recurses; combined with paths"},
   "replace": {"type": "array", "minItems": 1,
-    "description": "Literal replacements applied in order like a sed pipeline (later rules see earlier output)",
+    "description": "Ordered literal replacement rules",
     "items": {"type": "object",
       "properties": {
         "old": {"type": "string",
-          "description": "Literal text to replace everywhere in each file (verbatim)"},
+          "description": "Literal text to replace everywhere"},
         "new": {"type": "string",
-          "description": "Replacement text; \"\" deletes every occurrence"},
+          "description": "Replacement; \"\" deletes"},
         "word": {"type": "boolean",
-          "description": "Only replace word-bounded occurrences (\\b-style)"}},
+          "description": "Require word boundaries (default false)"}},
       "required": ["old", "new"]}},
   "min_matches": {"type": "integer", "minimum": 0,
     "description": "Refuse below this total match count (default 1)"},
   "resolve_vars": {"type": "boolean",
-    "description": "Substitute session variables ($name) in this call's arguments. Default false: shell, sed and source text stay literal."},
-  "save_as": {"description": "Capture a response field into a session variable for a later call: \"name\" or {\"name\": ..., \"from\": \"text\"}",
+    "description": "Resolve $name variables; default false keeps $ literal."},
+  "save_as": {"description": "Save text as \"name\", or {name,from} for a dotted result field.",
     "oneOf": [{"type": "string"}, {"type": "object",
       "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
       "required": ["name"], "additionalProperties": false}]}
 }, @["replace"],
-  "Replace literal text across a file set in one call — the sed 's/A/B/g " &
-  "f*.go' move (bulk renames, the same transform in several files) without " &
-  "reading the files first. Sed semantics: every occurrence per file, " &
-  "zero-match files pass; but a zero-TOTAL is refused (E_NO_MATCH) so a " &
-  "mistyped needle cannot silently succeed. Per-file counts come back and " &
-  "undo_last_edit reverts each changed file individually. Prefer edit for " &
-  "one file with known context; reach for replace_across when the same " &
-  "literal changes in 2+ files."), hReplaceAcross,
+  "Apply identical literal replacements to files selected by paths and/or glob; no pre-read required. Replaces every occurrence. Rules run in order; later rules see earlier output. Unmatched files are OK; zero total matches refuses. Use edit for contextual changes."), hReplaceAcross,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "variables": true,
      "workspace": {"pathFields": ["glob"], "pathArrayFields": ["paths"]}})
@@ -1865,14 +1940,14 @@ discard comp.tool("write", toolSchema(%*{
   "content": {"type": "string",
               "description": "Full new content (\"\" truncates)"},
   "resolve_vars": {"type": "boolean",
-              "description": "Substitute session variables ($name) in this call's arguments. Default false: shell, sed and source text stay literal."},
-  "save_as": {"description": "Capture a response field into a session variable for a later call: \"name\" or {\"name\": ..., \"from\": \"text\"}",
+              "description": "Resolve $name variables; default false keeps $ literal."},
+  "save_as": {"description": "Save text as \"name\", or {name,from} for a dotted result field.",
               "oneOf": [{"type": "string"}, {"type": "object",
                 "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
                 "required": ["name"], "additionalProperties": false}]}
 }, @["path", "content"],
-  "Create or replace a whole file atomically (parent dirs created). Cap " &
-  $maxWriteBytes() & " bytes (NIF_WRITE_MAX_BYTES)."), hWrite,
+  "Create or overwrite a complete file atomically; creates parent directories. Use edit for partial changes. Cap " &
+  $maxWriteBytes() & " bytes."), hWrite,
   %*{"approval": "always", "timeoutMs": 60000, "sessionId": true,
      "variables": true,
      "workspace": {"pathFields": ["path"]}})

@@ -1,7 +1,8 @@
 ## progressive discovery tests — prompt projection, schemas, invoke policy,
 ## fixed per-session toolsets, and durable exposure metadata.
 
-import std/[json, os, strutils, times]
+import std/[json, os, strutils, tables, times]
+import ../core/catalog
 import natsnim
 import helpers
 
@@ -45,7 +46,97 @@ proc waitForComponent(nc: NatsConnection, name: string,
       return found
     sleep(100)
 
+proc discoveryUnitChecks() =
+  ## Pure catalog checks: no bus, binaries, or shared build generation.
+  let cat = Catalog(components: initTable[string, ComponentReg](),
+                    toolIndex: initTable[string, string]())
+  check("empty capability registry", cat.discover(%*{}) ==
+        %*{"components": [], "count": 0})
+  for i in 0 ..< 300:
+    let name = "session-" & $i
+    cat.components[name] = ComponentReg(name: name)
+  cat.components["hidden-only"] = ComponentReg(name: "hidden-only", tools: @[
+    ToolReg(name: "secret", schema: %*{"description": "SECRET_SENTINEL",
+      "x-harness": {"hidden": true}})])
+  cat.toolIndex["secret"] = "hidden-only"
+  check("zero-visible components omitted, admin inventory retained",
+        cat.discover(%*{}) == %*{"components": [], "count": 0} and
+        cat.sortedComponentNames().len == 301)
+  check("global hidden and unknown lookups equivalent",
+        cat.discover(%*{"tools": ["secret"]}) ==
+        cat.discover(%*{"tools": ["unknown"]}))
+  for i in 0 ..< 120:
+    let owner = "capability-" & align($i, 3, '0')
+    var reg = ComponentReg(name: owner, version: "0.1.0")
+    for j in 0 ..< 3:
+      let name = owner & "_" & $j
+      reg.tools.add(ToolReg(name: name, component: owner, schema: %*{
+        "type": "object", "description": "Mechanical jobs and fan-out",
+        "x-harness": {"onDemand": true,
+          "hint": if j == 2: "ROUTE_SENTINEL " & repeat("parallel routing ", 10)
+                  else: ""}}))
+      cat.toolIndex[name] = owner
+    cat.components[owner] = reg
+    if i == 23:
+      let reduced = cat.discover(%*{})
+      check("budget pressure reduces hints without losing routing",
+            ($reduced).len <= 6000 and reduced["components"].len == 24)
+      for entry in reduced["components"]:
+        check("routing hint survives reduced density",
+              entry{"hints"}.len >= 1 and
+              entry["hints"][0]["hint"].getStr().contains("ROUTE_SENTINEL"))
+  check("empty tools behaves like omitted tools",
+        cat.discover(%*{"tools": []}) == cat.discover(%*{}) and
+        cat.discover(%*{"component": "capability-000", "tools": []}) ==
+        cat.discover(%*{"component": "capability-000"}))
+  check("component limit honored", cat.discover(%*{
+    "component": "capability-000", "limit": 1})["component"]["onDemand"].len == 1)
+  let missed = cat.discover(%*{"query": "mechanical nonexistent"})
+  check("empty word-AND search offers corrective hint",
+        missed["count"].getInt() == 0 and
+        missed["next"].getStr().contains("Every keyword must match") and
+        missed["next"].getStr().contains("tools:[name]"))
+  check("word-AND search ignores word order and case",
+        cat.discover(%*{"query": "FAN-OUT mechanical"})["count"].getInt() == 120)
+  var after = ""
+  var seen: seq[string]
+  var pages = 0
+  while true:
+    let args = %*{"after": after}
+    let page = cat.discover(args)
+    check("registry page deterministic and bounded",
+          page == cat.discover(args) and ($page).len <= 6000)
+    check("registry hides invisible names", not ($page).contains("secret") and
+          not ($page).contains("session-") and not ($page).contains("SECRET_SENTINEL"))
+    if page{"components"} == nil or page["components"].len == 0:
+      fail("registry page made no progress")
+      break
+    inc pages
+    for entry in page["components"]:
+      let name = entry["name"].getStr()
+      check("paged routing hint and metadata survive",
+            entry{"hints"}.len >= 1 and
+            entry["hints"][0]["hint"].getStr().contains("ROUTE_SENTINEL") and
+            entry["tools"].getInt() == 3 and entry["version"].getStr() == "0.1.0")
+      check("page ordering exclusive with no duplicates",
+            name > after and name notin seen and
+            (seen.len == 0 or name > seen[^1]))
+      seen.add(name)
+    if not page{"hasMore"}.getBool(false): break
+    after = page["nextAfter"].getStr()
+    check("cursor is last visible component", after == seen[^1])
+    if pages > 120:
+      fail("paging did not terminate")
+      break
+  check("paging visits every meaningful component", pages > 1 and seen.len == 120)
+  check("exhausted cursor returns empty page",
+        cat.discover(%*{"after": seen[^1]}) == %*{"components": [], "count": 0})
+
 proc main() =
+  discoveryUnitChecks()
+  if getEnv("NIF_DISCOVER_UNIT_ONLY") == "1":
+    report("DISCOVER UNIT TEST")
+    return
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
   for binary in ["niffler", "session", "store-sqlite", "builder"]:
@@ -156,6 +247,10 @@ proc main() =
         "fixture_hidden_needle" notin projectedNames and
         "chat" notin projectedNames, $projectedNames)
 
+  check("discover advertises limit and registry cursor",
+        tool(projected{"tools"}, "discover")["schema"]["properties"]{"limit"} != nil and
+        tool(projected{"tools"}, "discover")["schema"]["properties"]{"after"} != nil)
+
   let fullNames = names(fixture{"tools"})
   check("full snapshot keeps every fixture tool", fullNames.len == 6 and
         "fixture_demand_alpha" in fullNames and
@@ -205,6 +300,11 @@ proc main() =
         not ($summary1).contains("fixture_hidden_needle") and
         not ($summary1).contains("HIDDEN_SENTINEL"), $summary1)
 
+  let missedComponent = call(nc, "core", "discover", %*{
+    "component": "discover-fixture", "query": "unmatched nonexistent"})
+  check("component search recovery survives the bus error envelope",
+        missedComponent{"error"}.getStr().contains("Every keyword must match") and
+        missedComponent{"error"}.getStr().contains("tools:[name]"), $missedComponent)
   let selected1 = call(nc, "core", "discover", %*{
     "component": "discover-fixture",
     "tools": ["fixture_times_out", "fixture_demand_alpha"]})

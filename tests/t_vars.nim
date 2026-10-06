@@ -68,10 +68,14 @@ proc main() =
   createDir(work / "nested")
   writeFile(work / "nested" / "bulk.txt", "OldName\n")
   writeFile(work / "bulk.txt", "OldName\n")
+  writeFile(work / "window.txt", "before\nexact $HOME span\nafter\n")
+  writeFile(work / "plain.txt", "raw\n\"quoted\"\\text\n")
+  writeFile(work / "other.txt", "other\n")
+  writeFile(work / "long.txt", "needle" & repeat("x", 70000) & "\n")
   # A same-named installation-root file must never be selected.
   writeFile(root / "bulk.txt", "root-decoy\n")
 
-  # Three scripted assistant messages drive one real turn:
+  # Four scripted assistant messages drive one real turn:
   #  m1 — the pipeline plus literal-source safety in one ordered batch:
   #       read captures `span`; edit opts into resolution; a plain write
   #       carries `$HOME`/`$span` and must keep them verbatim;
@@ -79,6 +83,7 @@ proc main() =
   #       then an unset `$ghost` fails loud (E_NO_VAR).
   #  m3 — workspace globs through parallel reads and serial bulk mutations,
   #       including recursive and absolute patterns, then an alias edit.
+  #  m4 — exact captures exclude rendering; bare strings stay unescaped.
   let script = %*[
     {"calls": [
       {"name": "read",
@@ -118,12 +123,35 @@ proc main() =
       {"name": "replace_across", "arguments": {"glob": work / "nested/*.txt",
          "replace": [{"old": "NewName", "new": "FinalName"}]}},
       {"name": "edit", "arguments": {"path": "bulk.txt",
-         "edits": [{"old": "FinalName", "new": "AliasDone"}]}}]}]
+         "edits": [{"old": "FinalName", "new": "AliasDone"}]}}]},
+    {"calls": [
+      {"name": "read", "arguments": {"path": "plain.txt", "__capture": true}},
+      {"name": "read", "arguments": {"path": "window.txt", "offset": 2,
+         "limit": 1, "save_as": "window"}},
+      {"name": "edit", "arguments": {"path": "window.txt",
+         "edits": [{"old_string": "$window", "new_string": "landed\n"}],
+         "resolve_vars": true}},
+      {"name": "read", "arguments": {"reads": [{"path": "plain.txt"},
+         {"path": "other.txt"}], "save_as": "unsafeBatch"}},
+      {"name": "read", "arguments": {"reads": [{"path": "plain.txt"},
+         {"path": "other.txt"}], "save_as": {"name": "oneItem", "from": "items.0.content"}}},
+      {"name": "read", "arguments": {"reads": [{"path": "plain.txt",
+         "pattern": "raw", "context": 0}], "save_as": "unsafeSelect"}},
+      {"name": "read", "arguments": {"reads": [{"path": "plain.txt",
+         "pattern": "raw", "context": 0}],
+         "save_as": {"name": "oneRegion", "from": "items.0.contents.0"}}},
+      {"name": "read", "arguments": {"reads": [{"path": "plain.txt", "offset": 50},
+         {"path": "other.txt"}], "save_as": {"name": "past", "from": "items.0.content"}}},
+      {"name": "read", "arguments": {"reads": [{"path": "long.txt"},
+         {"path": "other.txt"}], "save_as": {"name": "omitted", "from": "items.0.content"}}},
+      {"name": "read", "arguments": {"reads": [{"path": "long.txt",
+         "pattern": "needle", "context": 0}],
+         "save_as": {"name": "largeRegion", "from": "items.0.contents.0"}}}]}]
 
   let convId = "vars-" & $epochTime().int
   let extra = @[
     ("NIF_AUTO_APPROVE", "1"),
-    ("NIF_MOCK_ROUNDS", "3"),
+    ("NIF_MOCK_ROUNDS", "4"),
     ("NIF_MOCK_TOOLJSON", $script)]
   let (server, url) = startNats()
   defer: stopServer(server)
@@ -162,6 +190,9 @@ proc main() =
   var raceRefused = false
   var missingRefused = false
   var selectReplies = 0
+  var captureRefusals = 0
+  var rawRead = false
+  var captureReceipt = false
   for item in msgs:
     let m = item{"value"}
     if m == nil: continue
@@ -175,6 +206,11 @@ proc main() =
     if body.contains("E_NO_VAR"): missingRefused = true
     if m{"name"}.getStr("") == "read" and body.contains("OldName"):
       inc selectReplies
+    if body.contains("E_CAPTURE_UNAVAILABLE"): inc captureRefusals
+    if m{"name"}.getStr("") == "read" and body == "raw\n\"quoted\"\\text\n":
+      rawRead = true
+    if body == "saved window = text (" & $(($(%"exact $HOME span\n")).len) & " bytes)":
+      captureReceipt = true
   check("read globs resolve in reads and top-level sugar",
         selectReplies == 3, "select replies: " & $selectReplies)
   check("raw $span arguments stay in history for strict backends",
@@ -183,6 +219,12 @@ proc main() =
         raceRefused, "no E_VAR_RACE in transcript")
   check("unset $ghost with resolve_vars fails loud with E_NO_VAR",
         missingRefused, "no E_NO_VAR in transcript")
+  check("bare strings reach the transcript without JSON escaping", rawRead)
+  check("window capture excludes paging notices and preserves literal dollars",
+        readFile(work / "window.txt") == "before\nlanded\nafter\n")
+  check("capture receipt reports actual captured size", captureReceipt)
+  check("rendered batch and select cannot masquerade as exact source",
+        captureRefusals == 5, $captureRefusals)
 
   # The same variables-capable call made outside a turn must also keep `$`
   # literal: compatibility is per call, not an accident of the pipeline.
@@ -201,6 +243,14 @@ proc main() =
   check("captures persist to the conversation header",
         header{"vars"}{"span"} != nil and header{"vars"}{"dup"} != nil,
         (if header == nil: "header missing: " & $r2 else: $header))
+  check("explicit item/region captures contain only source bytes",
+        header{"vars"}{"oneItem"}.getStr() == "raw\n\"quoted\"\\text\n" and
+        header{"vars"}{"oneRegion"}.getStr() == "raw\n" and
+        header{"vars"}{"unsafeBatch"} == nil and
+        header{"vars"}{"unsafeSelect"} == nil and
+        header{"vars"}{"past"} == nil and
+        header{"vars"}{"omitted"} == nil and
+        header{"vars"}{"largeRegion"} == nil, $header{"vars"})
 
   report("VARS TEST")
 

@@ -6,6 +6,16 @@ in the [manual](MANUAL.md); design history and proposals belong in
 items that used to live only inside the research/steal docs — one line per
 candidate, pointing at the doc that owns the design and effort detail.
 
+## Recent reliability slices
+
+- **Tool diet + result routing** — implemented on `feat/tool-diet-results`:
+  retain eight direct tools; concise prompt/schema routing, raw-string result
+  projection, workspace-relative/bounded file text, conditional recovery hints,
+  hint-preserving discovery pages, exact source captures, and benchmark readiness
+  plus telemetry. Full31 comparison follows the build/contract gate; no nested
+  grammar or globally demoted grep. Selection-policy unification and advanced
+  schemas on demand remain separate experiments.
+
 ## Current priorities
 
 - **Level 1 UI dynamism** — add `x-ui` schema hints and a generic renderer

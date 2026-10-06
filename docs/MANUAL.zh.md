@@ -94,13 +94,21 @@
 
 `components/ctxtest/` 是“每个组件一个目录 = 一个随附组件”的例外：它是契约测试自己的夹具 —— 一个存根 `chat` LLM 加上嵌套调用探针 —— 测试自己将其编译为注册为 `ctxtest` 和 `ctxsink` 的二进制文件。它不在此表中，不在 `manifest.yaml` 中，且从不被 `make build` 构建。
 
-文件工具选择器中的相对 `glob` 模式以会话工作区为基准解析，包括 `read` 选择项和 `replace_across`；绝对模式保持不变。没有会话的独立总线调用以 `NIF_ROOT` 为基准解析相对模式。批量 glob 未匹配到文件时返回 `E_NO_MATCH`，并明确说明没有修改任何内容。成功的批量替换会报告总匹配次数、已修改/已选择文件数、每个文件的次数和变更预览。`edit` 接受 `old`/`new` 作为 `old_string`/`new_string` 的别名（标准字符串字段优先）；精确匹配、歧义拒绝和撤销语义不变。
+文件工具选择器中的相对 `glob` 模式以会话工作区为基准解析，包括 `read` 选择项和 `replace_across`；绝对模式保持不变。没有会话的独立总线调用以 `NIF_ROOT` 为基准解析相对模式。`replace_across` 选择 `paths` 与 `glob` 的去重并集，而不是交集；512 个已选择文件的上限不变。仅 glob 未匹配到文件时返回 `E_NO_MATCH`，明确说明没有修改。成功结果报告总次数、已修改/已选择数量和预览；文本最多列出 24 个已修改文件，并限制未匹配/缺失列表长度，结构化 `files`、`unmatched`、`missing` 保持完整。文件工具结果文本中的工作区文件名使用相对路径，外部文件名保持绝对路径，机器字段路径不变。`edit` 服务端仍接受旧别名（标准字段优先），但只公布 `old_string`/`new_string`；匹配、歧义与撤销语义不变。
+
+建议使用 `read {path}` 或 `read {reads: [{path, offset?, limit?}, ...]}`（最多 12 项），而不是同时使用。两者同时提供仍被接受，并集/去重行为不变。选择项的限制不变，不能与内容项混用。每个会话在 edit 组件生命周期中的首次成功 `edit` 或 `replace_across` 修改会追加 `undo_last_edit` 发现提示，不会每次修改都重复。
+
+### File pipelines
+
+文件工具通过 `save_as: "name"`（默认 `text`）或 `save_as: {name, from: "items.0.content"}` 显式捕获。只有 `resolve_vars: true` 才替换变量；否则 `$` 保持字面值，即使捕获时也是如此。值保存在会话头部，runner 重启后仍可用。工具历史只收到报告实际 JSON 编码大小的小收据，不重复复制内容。裸字符串结果显示原文而不是 JSON 引号/转义；对象有 `text` 时投影该字段。
+
+仅在 `read` 捕获时，core 提供私有 `__capture: true` 并覆盖客户端意图；这绕过 unchanged/outline 快捷方式，但不绕过大小限制。`__captureText` 与显示 `text` 分离，保存原始源窗口，不含分页或延迟指令提示。省略字节、超出 EOF，或非连续的 batch/select 顶层视图使它为 null；捕获这些视图报 `E_CAPTURE_UNAVAILABLE`。请缩小窗口，或显式捕获 batch 的 `items.N.content`、select 的 `items.N.contents.M` 单个原始区域。普通读取的显示与 unchanged 行为不变。不可用的项目/区域字段也会拒绝捕获，而不是保存 null；原始 select 区域每个最多 64KB，总计最多 512KB。这是可选文件管道，不是嵌套调用 DSL；简单循环和 codemod 留在 bash。
 
 ### `bash` in detail
 
 上面的 bash 行是摘要；这是模型所依据的契约。`bash {command, timeoutMs?, cwd?, run_in_background?}` 将 `bash -c <command>`（`$PATH` 解析，无覆盖）作为新进程组的领导者运行，stderr 按到达顺序合并到 stdout，子进程继承组件的环境（`NIF_ROOT`、`.env`、core 导出的一切）和 stdin，且高于 stderr 的描述符在生成前关闭。每次调用一个新 shell 意味着 `cd` 不持久；`cwd`（会话工作区）实现为 `cd -- <cwd> || exit $?`，因此缺失的工作区目录会使调用失败，而不是在别处运行。
 
-两个超时容易混淆。参数（`timeoutMs`，默认 30 秒）约束*命令* —— 超时会杀死整个进程组并报告退出码 124 —— 而 schema 的 `x-harness.timeoutMs`（60 秒）约束*core* 等待回复的时间。因此命令可以合法地比分发预算活得更久：使用 `timeoutMs: 120000` 时调用者看到的是分发超时，而不是整齐的 124。
+两种超时不同：`timeoutMs` 限制命令（默认 120 秒，最多 570 秒），而 `x-harness.timeoutMs` 让 core 等待回复最多 600 秒。内部时钟始终小于外部时钟，因此命令超时会杀死进程组并返回退出码 124 和已捕获的输出。
 
 输出由两个编译时常量约束，**没有环境旋钮** —— 组件中唯一的 `getEnv` 是 `NIF_ROOT`，因此更大的转录预算意味着重建它：最多捕获 2,000,000 字节，最多 12,000 字节的转录到达模型，保留头部和尾部，中间替换为
 `[... truncated <omitted> of <total> bytes (capped at <max>) — <hint> ...]`，
@@ -124,7 +132,7 @@ heredoc termination]` 而不是裸退出码。Heredoc 本身受支持：包含 `
 
 ### `grep` in detail
 
-上面的 `grep` 行是摘要。两个工具都以固定 argv 运行 ripgrep —— 模式作为 `--` 之后的参数传递，绝不通过 shell —— 因此引号、反斜杠和空格无需转义，这是相对于 `bash grep` 的可靠性优势。`rg` 通过 `PATH` 解析；当它缺失时两个工具都回答退出码 127 并给出指向 `bash grep -rn` 的安装提示。`.gitignore` 和隐藏/二进制文件默认跳过，`hidden: true` 添加隐藏文件而 `.gitignore` 仍然适用，`glob` 缩小范围而不取消隐藏。`path` 在分发时是工作区相对的，结果以绝对路径返回。
+上面的 `grep` 行是摘要。两个工具都以固定 argv 运行 ripgrep —— 模式作为 `--` 之后的参数传递，绝不通过 shell —— 因此引号、反斜杠和空格无需转义，这是相对于 `bash grep` 的可靠性优势。`rg` 通过 `PATH` 解析；当它缺失时两个工具都回答退出码 127 并给出指向 `bash grep -rn` 的安装提示。`.gitignore` 和隐藏/二进制文件默认跳过，`hidden: true` 添加隐藏文件而 `.gitignore` 仍然适用，`glob` 缩小范围而不取消隐藏。`path` 在分发时相对于工作区。会话结果文本中的文件名相对于工作区，匹配源文本不重写；外部文件名和独立调用输出仍使用绝对路径。
 
 `grep {pattern, path?, glob?, context? (≤50), case_insensitive?, hidden?,
 max_results? (default 200), timeoutMs? (default 30000)}` 返回 `path:line:match`
@@ -986,6 +994,8 @@ git 工作流的只读部分，作为一等工具；写入部分（add/commit/pu
 
 ## Background processes (`processes`)
 
+启动结果给出精确控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<返回 id>", waitMs: 25000}` 等待输出或退出，用 `process_kill {id: "<返回 id>"}` 停止。`filter` 仍排空所有新输出但只显示匹配行；`tail: "1"` 重读最近原始输出且不推进游标。仍运行进程的空非等待轮询，每个进程只提示一次使用等待。排空语义不变。
+
 状态：**已实现**（Nim 组件；`tests/t_processes.nim`）。
 
 bash 按设计是同步的 —— 服务器、监视器和测试循环需要不同的契约：启动一次，轮询增量输出，显式终止。
@@ -1147,6 +1157,8 @@ SDK 的冻结注册门控（`Announce` 在延迟注册时 panic；
 
 ## Progressive tool discovery
 
+默认直接工具仍为八个：`bash`、`read`、`edit`、`write`、`replace_across`、`grep`、`discover`、`invoke`。精简描述保留路由与可选/默认参数。精简 schema 和系统提示词只影响未来会话，不改写现有冻结快照。结果路由提示追加到工具历史，绝不注入易变前缀。
+
 状态：**已实现**。
 
 Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小而不可变的工具集。额外的 schema 通过 `discover` 进入仅追加的消息历史；对这些工具的调用则通过固定的 `invoke` 网关进行。这减少了提示词膨胀，同时不削弱核心的审批或超时策略。
@@ -1208,7 +1220,7 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
 
 `query` 是可选的，并以不区分大小写的方式匹配组件名、工具名和描述。多词查询是合取：每个以空白分隔的词都必须出现在组件名或工具名/描述中——像 "mechanical fan-out" 这样的关键词短语即使没有任何描述逐字包含它也会匹配。结果是确定性的：组件和工具按名称排序，描述是空白归一化的一行提示，上限为 200 个字符，并且排除 pid 和注册时间等易变字段。
 
-**空查询**返回组件登记表：每个组件一行，带有其名称、版本和工具计数（`tools`，拆分为 `direct` 和 `onDemand`），以及最多三句使用时机句子——`hints`，每项为 `{tool, hint}`，取自该组件的按需工具，并以 `more` 计数未列出的按需工具数。工具的声明式 `x-harness.hint` 句子优先于其描述的第一句。当登记表超过 6000 字节时，提示会被丢弃，答案会以名称加计数重建，并附带 `budget` 注记，因此病态的组件集合无法让一次发现调用变成数十 KB。
+**空查询**返回能力登记表，只包含至少一个可见工具的组件；按名称排序，保留版本、`tools`（拆为 `direct`/`onDemand`）和最多三个路由 `hints`，优先使用声明的 `x-harness.hint`。为满足包含游标元数据的 6000 编码字节上限，先从三个提示减至一个，再缩短提示，最后确定性分页，不会丢弃路由提示。部分页带 `hasMore`、`nextAfter`；仅用 `discover {after: "<nextAfter>"}` 继续。`limit` 已公布，限制每个暴露组的摘要（0 为全部，最大 200）。`tools: []` 等同省略。查询无匹配时会提示关键词采用 word-AND，可减少关键词或查看登记表。
 
 ```json
 {
@@ -1226,7 +1238,7 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
 }
 ```
 
-**非空查询**返回匹配的组件，并附上其匹配非隐藏工具的完整描述（`direct`/`onDemand` 数组，每项为 `{name, description}`）。`discover {component: "fetch"}` 以相同形状返回该单个组件，置于顶层 `component` 键下；`query` 在其中筛选，`limit` 为每个数组设限。`component` 和 `tools` 调用返回完整的描述和 schema。没有非隐藏工具的组件会被省略。
+**非空查询**返回匹配的组件，并附上其匹配非隐藏工具的完整描述（`direct`/`onDemand` 数组，每项为 `{name, description}`）。`discover {component: "fetch"}` 以相同形状返回该单个组件，置于顶层 `component` 键下；`query` 在其中筛选，`limit` 为每个数组设限。`component` 单独调用返回摘要；`tools` 请求返回完整 schema。没有非隐藏工具的组件会被省略。
 
 #### Schemas
 
@@ -2078,9 +2090,12 @@ make build
 
 ## Testing
 
+基准适配器在私有总线上等待全部八个直接工具、`systemprompt.systemprompt` 和 manifest 中每个 required autostart 组件，并在创建会话前检查目录 root 与对象 schema。上下文排除项不变，包括 `AGENTS.md` 与 `AGENTS.local.md`；就绪检查不允许将 harness 贡献者上下文注入基准任务。
+
 ```bash
 make test           # the full gate: the bus-contract suite
-make test-server    # ... server side only: one test-owned NATS per test, no node
+make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test-bench     # ... Node adapter readiness and telemetry tests only
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

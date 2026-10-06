@@ -56,22 +56,17 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
             context: int = 0, case_insensitive: bool = false,
             hidden: bool = false, max_results: int = 200,
             timeoutMs: int = 30000): JsonNode =
-    ## Search file contents with ripgrep (path:line:match). Prefer it over
-    ## bash grep or rg: the pattern is an argument (no shell escaping),
-    ## gitignored/hidden/binary files are skipped, globs narrow without
-    ## un-hiding, and results are capped (max_results lines, 32KB) so a broad
-    ## search cannot flood the conversation. Rust regex, no lookarounds. Narrow
-    ## with path/glob.
-    ## - pattern: Regex to search for (no shell escaping)
-    ## - path: File or directory to search (default: workspace, else root)
-    ## - glob: Only files matching this glob (e.g. "*.nim"), like rg -g —
-    ##   matched relative to ``path`` ("dir/file.nim" finds dir/file.nim
-    ##   inside path, not relative to the process cwd)
-    ## - context: Lines of context around each match (rg -C)
-    ## - case_insensitive: Case-insensitive matching (rg -i)
-    ## - hidden: Include hidden files/dirs (.gitignore still applies)
-    ## - max_results: Max result lines (default 200, max 10000)
-    ## - timeoutMs: Kill after this many ms (default 30000)
+    ## Search file contents (path:line:match). Narrow with path/glob.
+    ## Rust regex, no lookarounds or shell escaping. Respects .gitignore;
+    ## skips hidden/binary files. Results capped at 32KB.
+    ## - pattern: Rust regex (no shell escaping)
+    ## - path: Optional file/directory (default workspace, else root)
+    ## - glob: Optional glob relative to path; narrows without unhiding
+    ## - context: Optional context lines (default 0)
+    ## - case_insensitive: Optional case folding (default false)
+    ## - hidden: Optional hidden files/dirs (default false; .gitignore applies)
+    ## - max_results: Optional line cap (default 200, max 10000)
+    ## - timeoutMs: Optional timeout in ms (default 30000)
     var args = @["--color", "never", "-n", "-I", "--with-filename",
                  "--no-require-git", "--max-columns", "300"]
     if case_insensitive: args.add("-i")
@@ -128,6 +123,40 @@ comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
     if code == 0 and output.strip().len == 0:
       return %*{"exit_code": 0, "text": "[no files]"}
     return finish(code, output, min(max(1, max_results), 10_000))
+
+proc displayPaths(text, root: string, listing: bool): string =
+  ## Rewrite only the leading filename, never matched source or diagnostics.
+  ## rg's match/context records delimit filenames with :N: / -N-.
+  let prefix = normalizedPath(absolutePath(root)).strip(leading = false,
+    trailing = true, chars = {DirSep}) & DirSep
+  var lines = text.split('\n')
+  for line in lines.mitems:
+    if not line.startsWith(prefix): continue
+    if listing:
+      line = line[prefix.len .. ^1]
+    else:
+      for i in prefix.len ..< line.len:
+        if line[i] notin {':', '-'}: continue
+        var j = i + 1
+        while j < line.len and line[j] in {'0'..'9'}: inc j
+        if j > i + 1 and j < line.len and line[j] == line[i] and
+            fileExists(line[0 ..< i]):
+          line = line[prefix.len .. ^1]
+          break
+  lines.join("\n")
+
+# Keep macro-generated public schemas intact; the wrapper alone sees private
+# workspace context. Rendering is append-only result text, not prompt prefix.
+proc workspaceRenderer(handler: ToolHandler, listing: bool): ToolHandler =
+  result = proc(c: Component, args: JsonNode): JsonNode =
+    result = handler(c, args)
+    let root = args{"__workspace"}{"root"}.getStr("")
+    if root.len > 0 and result{"exit_code"}.getInt(-1) == 0:
+      result["text"] = %displayPaths(result{"text"}.getStr(""), root, listing)
+
+for tool in comp.tools.mitems:
+  if tool.name in ["grep", "files"]:
+    tool.handler = workspaceRenderer(tool.handler, tool.name == "files")
 
 # Self test (docs/WIRE.md): quick checks its own wiring (rg resolution, the
 # shared result caps); deep runs one real bounded rg probe against a

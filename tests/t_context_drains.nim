@@ -1,9 +1,17 @@
 ## Queue-drain regression: repo-map and LSP diagnostics are independent
 ## append-only history lanes. No store, model, or language server required.
 import helpers
+import std/json
 import ../core/conversation
 
 proc main() =
+  check("bare string tool results stay unescaped",
+        toolResultText(%"raw\n\"quoted\"\\text\n") == "raw\n\"quoted\"\\text\n")
+  check("text projection excludes machine fields",
+        toolResultText(%*{"text": "visible", "machine": "hidden"}) == "visible")
+  check("non-text JSON retains its serialized result",
+        toolResultText(%*[1, true]) == "[1,true]" and
+        toolResultText(%42) == "42")
   var maps: seq[tuple[workspace, map: string]] = @[]
   var diags: seq[tuple[path, text: string]] = @[]
   var appended = false

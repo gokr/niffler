@@ -23,6 +23,46 @@ function freePort() {
   });
 }
 
+export const readinessDirectTools = Object.freeze([
+  "bash", "read", "edit", "write", "replace_across", "grep", "discover", "invoke",
+]);
+
+// The shipped manifest uses block component entries, not inline YAML objects.
+// Parse just name/autostart/required; reject an unrecognized required shape
+// rather than silently reducing the readiness gate. No new YAML dependency.
+export function requiredManifestComponents(text) {
+  const entries = text.split(/^\s*- name:\s*/m).slice(1);
+  if (!entries.length) throw new Error("bench niffler: no component entries in manifest");
+  const required = [];
+  for (const entry of entries) {
+    const name = entry.split(/\r?\n/, 1)[0].replace(/\s+#.*$/, "").trim();
+    if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error("bench niffler: unsupported manifest component name");
+    if (/^\s+required:\s*true\s*(?:#.*)?$/m.test(entry)) {
+      if (!/^\s+autostart:\s*true\s*(?:#.*)?$/m.test(entry)) {
+        throw new Error(`bench niffler: required manifest component ${name} is not autostarted`);
+      }
+      required.push(name);
+    }
+  }
+  if (!required.length) throw new Error("bench niffler: manifest has no required components");
+  return required;
+}
+
+export function readinessProblems(components, direct, required, root) {
+  const problems = [];
+  if (components?.root !== root || direct?.root !== root) problems.push("catalog root mismatch");
+  const registered = components?.components;
+  const absent = required.filter((name) => !Array.isArray(registered?.[name]));
+  if (absent.length) problems.push(`missing components: ${absent.join(", ")}`);
+  const tools = Array.isArray(direct?.tools) ? direct.tools : [];
+  const missing = readinessDirectTools.filter((name) => !tools.some((tool) =>
+    tool.name === name && tool.schema?.type === "object" &&
+    !tool.schema?.["x-harness"]?.hidden && !tool.schema?.["x-harness"]?.onDemand));
+  if (missing.length) problems.push(`missing direct tools: ${missing.join(", ")}`);
+  if (!registered?.systemprompt?.includes("systemprompt")) problems.push("missing systemprompt.systemprompt");
+  return problems;
+}
+
 export class NifflerHarness {
   constructor(opts) {
     // benchRoot: the bench git worktree (has manifest.yaml, core/, ...).
@@ -196,26 +236,73 @@ export class NifflerHarness {
     this.harnessProc.stdout.on("data", (d) => fs.writeSync(this.harnessLog, d));
     this.harnessProc.stderr.on("data", (d) => fs.writeSync(this.harnessLog, d));
 
-    // 3. Wait for the bus contract: store first, then llm. Expert-assisted
-    // runs also wait for the advisory peer so follow happens before turn start.
-    const cli = path.join(this.binDir, "cli");
-    const required = ["store", "llm", ...(this.expertEnabled ? ["expert"] : [])];
-    for (const comp of required) {
-      const res = await run(cli, ["wait", comp, "120"], {
-        cwd: this.root,
-        env: this.cliEnv(),
-        timeoutMs: 140_000,
-      });
-      if (res.code !== 0) {
-        await this.stop();
-        throw new Error(`bench niffler: component '${comp}' never registered`);
-      }
+    // 3. Confirm the shipped shape before any conversation can freeze its
+    // prompt/tools. Store + llm alone can register well before edit/grep.
+    try {
+      await this.waitUntilReady();
+    } catch (error) {
+      await this.stop();
+      throw error;
     }
     // Session runner binary must exist (make build).
     if (!fs.existsSync(path.join(this.binDir, "session"))) {
       await this.stop();
       throw new Error("bench niffler: var/bin/session missing — run `make build`");
     }
+  }
+
+  // Ordinary catalog calls only: no session_prepare/export or model request.
+  // Bound the CLI process too (its own catalog bootstrap has a separate wait).
+  async readinessCatalog(op, timeoutMs) {
+    const res = await run(path.join(this.binDir, "cli"),
+      [`--timeout:${Math.max(1, Math.ceil(timeoutMs / 1000))}`,
+        "call", "catalog", JSON.stringify({ op })],
+      { cwd: this.root, env: this.cliEnv(), timeoutMs });
+    if (res.code !== 0 || res.timedOut) {
+      // Do not echo CLI/log output: it may contain provider credentials.
+      throw new Error(`catalog ${op} unavailable (exit ${res.code}${res.timedOut ? ", timeout" : ""})`);
+    }
+    let value;
+    try { value = JSON.parse(res.stdout.trim().split("\n").at(-1)); }
+    catch { throw new Error(`catalog ${op} returned invalid JSON`); }
+    if (!value || value.error) throw new Error(`catalog ${op} returned an error`);
+    return value;
+  }
+
+  async waitUntilReady(timeoutMs = 120_000) {
+    const required = requiredManifestComponents(
+      fs.readFileSync(path.join(this.root, "manifest.yaml"), "utf8"));
+    for (const name of ["store", "llm", "bash", "edit", "grep", "systemprompt",
+      ...(this.expertEnabled ? ["expert"] : [])]) {
+      if (!required.includes(name)) required.push(name);
+    }
+    const deadline = performance.now() + timeoutMs;
+    let missing = "catalog not yet available";
+    while (performance.now() < deadline) {
+      for (const [name, child] of [["nats", this.natsProc], ["harness", this.harnessProc]]) {
+        if (child && (child.exitCode != null || child.signalCode != null)) {
+          throw new Error(`bench niffler: readiness failed: ${name} exited`);
+        }
+      }
+      try {
+        const budget = () => Math.max(1, Math.min(5000, deadline - performance.now()));
+        const components = await this.readinessCatalog("components", budget());
+        if (performance.now() >= deadline) break;
+        const direct = await this.readinessCatalog("list", budget());
+        const problems = readinessProblems(components, direct, required, this.root);
+        missing = problems.join("; ");
+        if (!problems.length && performance.now() < deadline) {
+          this.readiness = { components: required.slice().sort(),
+            directTools: direct.tools.map((t) => t.name).sort() };
+          return this.readiness;
+        }
+      } catch (error) {
+        missing = error.message;
+      }
+      const left = deadline - performance.now();
+      if (left > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(200, left)));
+    }
+    throw new Error(`bench niffler: readiness deadline ${timeoutMs}ms exceeded: ${missing}`);
   }
 
   // Map a path under <benchRoot>/var/bench to the same location inside the
@@ -234,6 +321,7 @@ export class NifflerHarness {
   // a parsed turnError or timeout is a genuine round result and never
   // retried.
   async round(opts) {
+    await this.waitUntilReady();
     const { sessionId, prompt, turnTimeoutMs, cwd } = opts;
     const cli = path.join(this.binDir, "cli");
     const sessArgs = { sessionId, content: prompt, cwd };
@@ -322,6 +410,7 @@ export class NifflerHarness {
   }
 
   async beginTask(sessionId) {
+    await this.waitUntilReady();
     if (!this.expertEnabled) return;
     const followArgs = { session_id: sessionId };
     // A cheaper/faster judgment model than the worker's (expert_follow's
@@ -462,24 +551,85 @@ export class NifflerHarness {
 // turn-shape metrics next to usageFromTranscript (readSingle/readBatch
 // split the read tool's single-file sugar from multi-file batches;
 // a 1-item "reads" array returns plain content, so it counts as single).
+// Compact argument telemetry for the shipped direct tools. Counts are fields
+// explicitly emitted (including nested read selectors), not inferred defaults.
+const argumentContracts = {
+  bash: { required: ["command"], defaults: { cwd: "", run_in_background: false, timeoutMs: 120000 } },
+  read: { required: [], defaults: { force: false, offset: 1, limit: 2000, word: false, context: 2, max: 8 } },
+  edit: { required: ["path", "edits"], defaults: { replace_all: false } },
+  write: { required: ["path", "content"], defaults: {} },
+  replace_across: { required: ["replace"], defaults: { word: false, min_matches: 1 } },
+  grep: { required: ["pattern"], defaults: { path: "", glob: "", case_insensitive: false, hidden: false, context: 0, max_results: 200, timeoutMs: 30000 } },
+  discover: { required: [], defaults: { component: "", query: "" } },
+  invoke: { required: ["tool", "arguments"], defaults: { sticky: false } },
+};
+
 export function transcriptShape(items) {
   const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0,
                   leakUrls: [], discoverCalls: 0, discoverRegistry: 0,
                   discoverComponent: 0, discoverToolSchemas: 0, discoverQuery: 0,
-                  discoverAnswers: 0, discoverBytes: 0, invokeCalls: 0 };
+                  discoverAnswers: 0, discoverBytes: 0, invokeCalls: 0,
+                  multiCallMessages: 0, multiCallCalls: 0, maxCallsPerMessage: 0,
+                  pipelineCalls: 0, pipelineMessages: 0, saveAsCalls: 0, resolveVarsCalls: 0,
+                  readSelectors: { calls: 0, items: 0, glob: 0, pattern: 0, inventory: 0 },
+                  arguments: {}, resultChars: {}, resultAnswers: {} };
   for (const it of items || []) {
     const v = it.value || {};
     if (v.role !== "assistant") continue;
     shape.turns += 1;
-    for (const tc of v.tool_calls || []) {
+    const calls = Array.isArray(v.tool_calls) ? v.tool_calls : [];
+    shape.maxCallsPerMessage = Math.max(shape.maxCallsPerMessage, calls.length);
+    if (calls.length > 1) {
+      shape.multiCallMessages += 1;
+      shape.multiCallCalls += calls.length;
+    }
+    let pipelineMessage = false;
+    for (const tc of calls) {
       const n = tc?.function?.name || "?";
+      let a = {};
+      let valid = true;
+      const raw = tc?.function?.arguments || "{}";
+      try {
+        a = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (!a || typeof a !== "object" || Array.isArray(a)) { a = {}; valid = false; }
+      } catch { valid = false; }
+      const metrics = shape.arguments[n] ||= { chars: 0, keys: 0, optional: 0, defaults: 0, invalid: 0 };
+      metrics.chars += typeof raw === "string" ? raw.length : JSON.stringify(raw).length;
+      metrics.keys += Object.keys(a).length;
+      if (!valid) metrics.invalid += 1;
+      const contract = argumentContracts[n];
+      if (contract) {
+        metrics.optional += Object.keys(a).filter((key) => !contract.required.includes(key)).length;
+        const countDefaults = (obj) => {
+          if (!obj || typeof obj !== "object") return;
+          for (const [key, value] of Object.entries(obj)) {
+            if (Object.hasOwn(contract.defaults, key) && value === contract.defaults[key]) metrics.defaults += 1;
+          }
+        };
+        countDefaults(a);
+        for (const key of ["reads", "windows", "edits", "replace"]) {
+          if (Array.isArray(a[key])) for (const item of a[key]) countDefaults(item);
+        }
+      }
+      const saved = Object.hasOwn(a, "save_as");
+      const resolved = a.resolve_vars === true;
+      if (saved) shape.saveAsCalls += 1;
+      if (resolved) shape.resolveVarsCalls += 1;
+      if (saved || resolved) { shape.pipelineCalls += 1; pipelineMessage = true; }
+
       shape.tools[n] = (shape.tools[n] || 0) + 1;
       shape.toolCalls += 1;
       if (n === "read") {
-        let a = {};
-        try {
-          a = JSON.parse(tc.function.arguments || "{}");
-        } catch {}
+        const selectors = [a, ...(Array.isArray(a.reads) ? a.reads : [])]
+          .filter((item) => item && typeof item === "object" &&
+            (Object.hasOwn(item, "glob") || Object.hasOwn(item, "pattern")));
+        if (selectors.length) shape.readSelectors.calls += 1;
+        shape.readSelectors.items += selectors.length;
+        for (const item of selectors) {
+          if (item.glob) shape.readSelectors.glob += 1;
+          if (item.pattern) shape.readSelectors.pattern += 1;
+          else shape.readSelectors.inventory += 1;
+        }
         // canonical "reads" array and the legacy "windows" alias both batch
         const batched =
           (Array.isArray(a.reads) && a.reads.length > 1) ||
@@ -491,10 +641,6 @@ export function transcriptShape(items) {
         // so the shape of discovery is now a result, not just an anecdote:
         // registry (no arguments), a component view, named tool schemas, or a
         // keyword query. "shopping" is a discover with no invoke after it.
-        let a = {};
-        try {
-          a = JSON.parse(tc.function.arguments || "{}");
-        } catch {}
         shape.discoverCalls += 1;
         if (Array.isArray(a.tools) && a.tools.length > 0) shape.discoverToolSchemas += 1;
         else if (typeof a.component === "string" && a.component.length > 0) shape.discoverComponent += 1;
@@ -509,10 +655,6 @@ export function transcriptShape(items) {
         // a leak can never be read as a capability win. Conservative on
         // purpose: bash is only inspected when the command looks like network
         // access, and loopback URLs are ignored.
-        let a = {};
-        try {
-          a = JSON.parse(tc.function.arguments || "{}");
-        } catch {}
         const probes =
           n === "invoke"
             ? a.tool === "fetch"
@@ -530,15 +672,22 @@ export function transcriptShape(items) {
         }
       }
     }
+    if (pipelineMessage) shape.pipelineMessages += 1;
   }
   // Answer size, not just call count: the registry exists to make discovery
   // cheap, so a component dump that answers with kilobytes is a regression we
   // want to see per cell rather than argue about.
   for (const it of items || []) {
     const v = it.value || {};
-    if (v.role === "tool" && v.name === "discover") {
+    if (v.role !== "tool") continue;
+    const n = v.name || "?";
+    const chars = typeof v.content === "string" ? v.content.length
+      : v.content == null ? 0 : JSON.stringify(v.content).length;
+    shape.resultChars[n] = (shape.resultChars[n] || 0) + chars;
+    shape.resultAnswers[n] = (shape.resultAnswers[n] || 0) + 1;
+    if (n === "discover") {
       shape.discoverAnswers += 1;
-      shape.discoverBytes += String(v.content || "").length;
+      shape.discoverBytes += chars;
     }
   }
   shape.shopping = shape.discoverCalls > 0 && shape.invokeCalls === 0;

@@ -71,7 +71,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components components-inner run down down-here \
-        test test-server test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
+        test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
@@ -458,13 +458,18 @@ var/bin/test_t_attachments: core/conversation.nim core/attachments.nim \
     var/bin/session var/bin/niffler
 
 var/bin/test_t_context_drains: core/conversation.nim
+var/bin/test_t_discover: core/catalog.nim
 
 # The full gate, self-contained: core + components + the bus-contract suite
 # (each test owns a private NATS server and a temporary root).
 test: test-server
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
-test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest
+test-bench:
+	@mkdir -p var
+	node --test bench/tests/*.test.mjs
+
+test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
 

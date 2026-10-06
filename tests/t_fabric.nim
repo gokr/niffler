@@ -126,10 +126,14 @@ proc main() =
   check("fabric_help returns the reference",
         help{"content"}.getStr("").contains("import fabricguest") and
         help{"content"}.getStr("").contains("## Guest API"), $help)
+  check("fabric_help raw text equals reference content",
+        help{"text"}.getStr("") == help{"content"}.getStr(""), $help)
   let helpTopic = call(nc, "fabric", "fabric_help", %*{"topic": "fanout"}, 10_000)
   check("fabric_help returns one example source",
         helpTopic{"content"}.getStr("").contains("Example 2 — fan-out") and
         not helpTopic{"content"}.getStr("").contains("## Guest API"), $helpTopic)
+  check("fabric_help raw text equals example content",
+        helpTopic{"text"}.getStr("") == helpTopic{"content"}.getStr(""), $helpTopic)
 
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
                                  logFile = root / "var" / "test-logs" / "agent-fab.log")

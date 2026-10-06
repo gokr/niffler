@@ -253,6 +253,11 @@ patch instead of burning the remaining feedback rounds.
   `usage`). `NIF_AUTO_APPROVE=1` is set on this private harness because gated
   tools (edit/write) otherwise deny with no human reachable — it affects only
   the bench's throwaway harness, never a developer's.
+  - **Readiness**: before a task can freeze its session, ordinary private-bus
+    catalog probes must show all eight direct tools, the prompt component and
+    every required autostart manifest component. Object schemas and the private
+    root are checked; a 120s deadline reports missing capabilities rather than
+    measuring an incomplete startup toolset.
   - **Workspace isolation**: the task repo is handed to the session as its
     immutable `cwd` workspace (mirrored under the harness root via
     `var/bench`), so relative paths stay inside the workspace by
@@ -284,7 +289,10 @@ patch instead of burning the remaining feedback rounds.
     exported `transcript.json` doubles as the timing event stream. Each
     `result.json` records `sessionId`, the workspace path and
     `firstPromptTokens` (prompt tokens of the first assistant answer — the
-    cheapest cross-run proxy for system-prompt + toolset footprint).
+    cheapest cross-run proxy for system-prompt + toolset footprint). Shape
+    telemetry also counts multi-call/pipeline messages, selector use, explicitly
+    emitted/default arguments, and result characters per tool. Tool results
+    never count as additional calls. `make test-bench` tests these contracts.
 - **niffler-expert** — the same private Niffler setup, but the runner waits for
   the expert component and calls `expert_follow` with the exact task session id
   before the first turn. The result records judgment/steer/acceptance counters,

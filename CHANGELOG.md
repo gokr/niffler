@@ -6,6 +6,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Slimmed the base prompt and all eight direct tool descriptions without
+  removing capabilities. Optional pipelines keep literal `$` by default;
+  file selection and exact-edit routing are explicit, and models are asked
+  to omit default arguments rather than duplicate `path` and `reads`.
+- Capability discovery omits tool-less components and retains routing hints
+  under pressure, reducing hint density before paging within 6000 bytes.
+  `after` continues `nextAfter`; `limit` is now advertised and failed keyword
+  searches explain their word-AND matching.
+- File/search result text uses workspace-relative filenames; bulk replacement
+  lists are bounded without dropping structured counts. Undo discovery and
+  background-process controls are taught at the result, not repeated in the
+  frozen schema. Empty non-waiting polls get one waiting hint per process.
+
+### Fixed
+
+- Bare-string tool results reach the model unescaped. Opt-in read captures
+  separate raw source from paging/instruction notices, bypass outline and
+  unchanged shortcuts, and refuse unavailable/oversized regions; capture
+  receipts report the actual encoded value size.
+- The Niffler benchmark waits for all eight direct tools and the prompt
+  component before freezing a session, eliminating startup-dependent toolsets.
+  Shape telemetry covers pipelines, selectors, argument verbosity and result
+  sizes; `make test-bench` joins the full gate.
+
 ### Added
 
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
