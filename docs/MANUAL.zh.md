@@ -94,6 +94,8 @@
 
 `components/ctxtest/` 是“每个组件一个目录 = 一个随附组件”的例外：它是契约测试自己的夹具 —— 一个存根 `chat` LLM 加上嵌套调用探针 —— 测试自己将其编译为注册为 `ctxtest` 和 `ctxsink` 的二进制文件。它不在此表中，不在 `manifest.yaml` 中，且从不被 `make build` 构建。
 
+文件工具选择器中的相对 `glob` 模式以会话工作区为基准解析，包括 `read` 选择项和 `replace_across`；绝对模式保持不变。没有会话的独立总线调用以 `NIF_ROOT` 为基准解析相对模式。批量 glob 未匹配到文件时返回 `E_NO_MATCH`，并明确说明没有修改任何内容。成功的批量替换会报告总匹配次数、已修改/已选择文件数、每个文件的次数和变更预览。`edit` 接受 `old`/`new` 作为 `old_string`/`new_string` 的别名（标准字符串字段优先）；精确匹配、歧义拒绝和撤销语义不变。
+
 ### `bash` in detail
 
 上面的 bash 行是摘要；这是模型所依据的契约。`bash {command, timeoutMs?, cwd?, run_in_background?}` 将 `bash -c <command>`（`$PATH` 解析，无覆盖）作为新进程组的领导者运行，stderr 按到达顺序合并到 stdout，子进程继承组件的环境（`NIF_ROOT`、`.env`、core 导出的一切）和 stdin，且高于 stderr 的描述符在生成前关闭。每次调用一个新 shell 意味着 `cd` 不持久；`cwd`（会话工作区）实现为 `cd -- <cwd> || exit $?`，因此缺失的工作区目录会使调用失败，而不是在别处运行。

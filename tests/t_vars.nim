@@ -65,13 +65,20 @@ proc main() =
   let work = root / "work"
   createDir(work)
   writeFile(work / "f.txt", "alpha span beta\n")
+  createDir(work / "nested")
+  writeFile(work / "nested" / "bulk.txt", "OldName\n")
+  writeFile(work / "bulk.txt", "OldName\n")
+  # A same-named installation-root file must never be selected.
+  writeFile(root / "bulk.txt", "root-decoy\n")
 
-  # Two scripted assistant messages drive one real turn:
+  # Three scripted assistant messages drive one real turn:
   #  m1 — the pipeline plus literal-source safety in one ordered batch:
   #       read captures `span`; edit opts into resolution; a plain write
   #       carries `$HOME`/`$span` and must keep them verbatim;
   #  m2 — double capture is refused (E_VAR_RACE, second stage never runs),
   #       then an unset `$ghost` fails loud (E_NO_VAR).
+  #  m3 — workspace globs through parallel reads and serial bulk mutations,
+  #       including recursive and absolute patterns, then an alias edit.
   let script = %*[
     {"calls": [
       {"name": "read",
@@ -97,12 +104,26 @@ proc main() =
       {"name": "edit",
        "arguments": {"path": "f.txt",
                      "edits": [{"old_string": "$ghost", "new_string": "x"}],
-                     "resolve_vars": true}}]}]
+                     "resolve_vars": true}}]},
+    {"calls": [
+      {"name": "read", "arguments": {"reads": [{"glob": "**/bulk.txt",
+         "pattern": "OldName", "context": 0}]}},
+      {"name": "read", "arguments": {"glob": "bulk.txt", "pattern": "OldName"}},
+      {"name": "read", "arguments": {"reads": [{"glob": "nested/*.txt",
+         "pattern": "OldName"}]}},
+      {"name": "replace_across", "arguments": {"glob": "**/bulk.txt",
+         "replace": [{"old": "OldName", "new": "NewName"}]}},
+      {"name": "replace_across", "arguments": {"glob": "bulk.txt",
+         "replace": [{"old": "NewName", "new": "FinalName"}]}},
+      {"name": "replace_across", "arguments": {"glob": work / "nested/*.txt",
+         "replace": [{"old": "NewName", "new": "FinalName"}]}},
+      {"name": "edit", "arguments": {"path": "bulk.txt",
+         "edits": [{"old": "FinalName", "new": "AliasDone"}]}}]}]
 
   let convId = "vars-" & $epochTime().int
   let extra = @[
     ("NIF_AUTO_APPROVE", "1"),
-    ("NIF_MOCK_ROUNDS", "2"),
+    ("NIF_MOCK_ROUNDS", "3"),
     ("NIF_MOCK_TOOLJSON", $script)]
   let (server, url) = startNats()
   defer: stopServer(server)
@@ -130,11 +151,17 @@ proc main() =
         (if fileExists(work / "f.txt"): readFile(work / "f.txt")
          else: "f.txt missing"))
 
+  check("relative bulk globs and edit aliases reach the conversation workspace",
+        readFile(work / "bulk.txt") == "AliasDone\n" and
+        readFile(work / "nested" / "bulk.txt") == "FinalName\n" and
+        readFile(root / "bulk.txt") == "root-decoy\n")
+
   # Transcript: raw args preserved, loud failures visible.
   let msgs = listDocs(nc, "message", convId & ":")
   var rawArgsKept = false
   var raceRefused = false
   var missingRefused = false
+  var selectReplies = 0
   for item in msgs:
     let m = item{"value"}
     if m == nil: continue
@@ -146,6 +173,10 @@ proc main() =
         if a.contains("$span"): rawArgsKept = true
     if body.contains("E_VAR_RACE"): raceRefused = true
     if body.contains("E_NO_VAR"): missingRefused = true
+    if m{"name"}.getStr("") == "read" and body.contains("OldName"):
+      inc selectReplies
+  check("read globs resolve in reads and top-level sugar",
+        selectReplies == 3, "select replies: " & $selectReplies)
   check("raw $span arguments stay in history for strict backends",
         rawArgsKept, "no tool_calls entry still contains $span")
   check("double capture in one message is refused with E_VAR_RACE",

@@ -49,6 +49,50 @@ proc main() =
   check("edit response previews removed/added lines and context",
         r1{"text"}.getStr("").contains("- hello\n+ hi\n    world"), $r1)
 
+  # Short aliases match replace_across without changing exact-edit semantics.
+  writeFile(tmp / "alias.txt", "alpha\nbeta\n")
+  let aliasEdit = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "alpha", "new": "ALPHA"}]})
+  check("edit accepts old/new aliases", not aliasEdit.hasKey("error") and
+        readFile(tmp / "alias.txt") == "ALPHA\nbeta\n", $aliasEdit)
+  let mixedEdit = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old_string": "beta", "new": "BETA"}]})
+  check("edit accepts mixed canonical and alias fields",
+        not mixedEdit.hasKey("error") and
+        readFile(tmp / "alias.txt") == "ALPHA\nBETA\n", $mixedEdit)
+  let canonicalEdit = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old_string": "ALPHA", "old": "missing",
+                                    "new_string": "A", "new": "wrong"}]})
+  check("canonical edit fields take precedence over aliases",
+        not canonicalEdit.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\nBETA\n", $canonicalEdit)
+  let aliasDelete = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "BETA\n", "new_string": ""}]})
+  check("alias needle supports canonical empty replacement",
+        not aliasDelete.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\n", $aliasDelete)
+  let aliasUndo = call(nc, "edit", "undo_last_edit", %*{"path": "alias.txt"})
+  check("alias edits retain undo", not aliasUndo.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\nBETA\n", $aliasUndo)
+  let badAlias = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "A", "new": false}]})
+  check("invalid alias replacement is refused without mutation",
+        badAlias.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\nBETA\n", $badAlias)
+  let emptyAlias = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "", "new": "x"}]})
+  check("empty alias needle is refused", emptyAlias.hasKey("error"), $emptyAlias)
+  writeFile(tmp / "alias-amb.txt", "same\nsame\n")
+  let aliasAmb = call(nc, "edit", "edit", %*{
+    "path": "alias-amb.txt", "edits": [{"old": "same", "new": "x"}]})
+  check("aliases preserve ambiguity refusal", aliasAmb.hasKey("error") and
+        readFile(tmp / "alias-amb.txt") == "same\nsame\n", $aliasAmb)
+  let aliasAll = call(nc, "edit", "edit", %*{
+    "path": "alias-amb.txt",
+    "edits": [{"old": "same", "new": "x", "replace_all": true}]})
+  check("aliases support replace_all", not aliasAll.hasKey("error") and
+        readFile(tmp / "alias-amb.txt") == "x\nx\n", $aliasAll)
+
   # ambiguity refused, file untouched
   writeFile(tmp / "amb.txt", "same\nsame\n")
   let r2 = call(nc, "edit", "edit",
@@ -679,6 +723,16 @@ proc main() =
         rNo.hasKey("error") and
         rNo{"error"}.getStr("").contains("[E_NO_MATCH]") and
         readFile(tmp / "bulk" / "z.txt") == "alpha\n", $rNo)
+  let rEmptyGlob = call(nc, "edit", "replace_across", %*{
+    "glob": "bulk/absent*.go", "replace": [{"old": "x", "new": "y"}]})
+  check("unmatched glob names the pattern, not a missing argument",
+        rEmptyGlob.hasKey("error") and
+        rEmptyGlob{"error"}.getStr("").contains("[E_NO_MATCH]") and
+        rEmptyGlob{"error"}.getStr("").contains("bulk/absent*.go"), $rEmptyGlob)
+  let rNoSelector = call(nc, "edit", "replace_across", %*{
+    "replace": [{"old": "x", "new": "y"}]})
+  check("missing selector remains a shape error", rNoSelector.hasKey("error") and
+        rNoSelector{"error"}.getStr("").contains("[E_BAD_SHAPE]"), $rNoSelector)
   for i in 0 .. 512:
     writeFile(tmp / "bulk" / ("cap" & align($i, 3, '0') & ".txt"), "x\n")
   let rCap = call(nc, "edit", "replace_across",

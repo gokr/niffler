@@ -99,6 +99,16 @@ plus the nested-call probes — which the tests compile themselves into binaries
 registering as `ctxtest` and `ctxsink`. It is not in this table, not in
 `manifest.yaml`, and never built by `make build`.
 
+File-tool selectors resolve relative `glob` patterns against the conversation
+workspace, including `read` select items and `replace_across`; absolute patterns
+stay absolute. Standalone bus calls without a conversation resolve relative
+patterns against `NIF_ROOT`. A bulk glob matching no files returns `E_NO_MATCH`
+and explicitly says nothing was modified. Successful bulk replacements report
+total occurrences, changed/selected file counts, per-file counts and a change
+preview. `edit` accepts `old`/`new` aliases for `old_string`/`new_string` (the
+canonical string fields take precedence); exact-match, ambiguity and undo
+semantics are unchanged.
+
 ### `bash` in detail
 
 The bash row above is the summary; this is the contract the model works

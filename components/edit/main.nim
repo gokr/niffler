@@ -803,12 +803,12 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
       raise newException(ValueError,
         "[E_BAD_SHAPE] each element of \"edits\" must be an object with old_string and new_string.")
     var oldS = ""
-    for key in ["old_string", "old_str", "oldText"]:
+    for key in ["old_string", "old_str", "oldText", "old"]:
       let n = ed{key}
       if n != nil and n.kind == JString: oldS = n.getStr(); break
     var newS = ""
     var newFound = false
-    for key in ["new_string", "new_str", "newText"]:
+    for key in ["new_string", "new_str", "newText", "new"]:
       let n = ed{key}
       if n != nil and n.kind == JString:
         newS = n.getStr()
@@ -999,8 +999,9 @@ proc globMatch(name, pat: string): bool =
   result = pi == pat.len
 
 proc expandGlob(pattern: string): seq[string] =
-  ## File selection relative to the component root: "f*.go" in one
-  ## directory, "**/name*" recursively. Sorted for stable batches.
+  ## File selection relative to the component root for standalone calls;
+  ## core resolves conversation glob arguments to absolute workspace paths.
+  ## "f*.go" selects one directory, "**/name*" recursively. Sorted batches.
   let root = rootDir()
   let pat = pattern.replace("\\\\", "/")
   var files: seq[string] = @[]
@@ -1045,6 +1046,10 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
         "[E_BAD_SHAPE] replace_across \"glob\" must be a non-empty pattern (f*.go, **/*.go).")
     raw.add(expandGlob(globN.getStr()))
   if raw.len == 0:
+    if globN != nil:
+      raise newException(ValueError,
+        "[E_NO_MATCH] replace_across glob " & globN.getStr() &
+        " matched no files — nothing was modified. Check the pattern and directory.")
     raise newException(ValueError,
       "[E_BAD_SHAPE] replace_across needs \"paths\" (explicit files) or " &
       "\"glob\" (e.g. \"f*.go\", \"**/*.go\").")
@@ -1761,10 +1766,12 @@ discard comp.tool("read", toolSchema(%*{
      # spells out why losing one is a hint loss, never a correctness loss) and
      # (b) the undo store that `edit`/`write` own anyway.
      "effect": "read",
-     "workspace": {"pathFields": ["path"],
+     "workspace": {"pathFields": ["path", "glob"],
                    "pathArrayFields": ["paths"],
                    "pathObjectArrayFields": [{"field": "reads",
                                               "pathField": "path"},
+                                             {"field": "reads",
+                                              "pathField": "glob"},
                                              {"field": "windows",
                                               "pathField": "path"}]}})
 
@@ -1779,10 +1786,14 @@ discard comp.tool("edit", toolSchema(%*{
           "description": "Exact text to replace (verbatim, whitespace included)"},
         "new_string": {"type": "string",
           "description": "Replacement text; \"\" deletes old_string"},
+        "old": {"type": "string", "description": "Alias for old_string"},
+        "new": {"type": "string", "description": "Alias for new_string"},
         "replace_all": {"type": "boolean",
           "description": "Replace every occurrence (default false)"}
       },
-      "required": ["old_string", "new_string"]}
+      "allOf": [
+        {"anyOf": [{"required": ["old_string"]}, {"required": ["old"]}]},
+        {"anyOf": [{"required": ["new_string"]}, {"required": ["new"]}]}]}
   },
   "resolve_vars": {"type": "boolean",
     "description": "Substitute session variables ($name) in this call's arguments. Default false: shell, sed and source text stay literal."},
@@ -1832,7 +1843,7 @@ discard comp.tool("replace_across", toolSchema(%*{
   "literal changes in 2+ files."), hReplaceAcross,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "variables": true,
-     "workspace": {"pathArrayFields": ["paths"]}})
+     "workspace": {"pathFields": ["glob"], "pathArrayFields": ["paths"]}})
 
 discard comp.tool("undo_last_edit", toolSchema(%*{
   "path": {"type": "string",
