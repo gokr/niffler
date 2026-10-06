@@ -142,6 +142,15 @@ proc main() =
         directPrompt.contains("changes scoped") and
         directPrompt.contains("cover every path that produces the behavior"),
         $direct)
+  # Batching/pipeline coaching must survive prompt rewrites: independent
+  # calls share one reply, dependent calls may still share it through the
+  # explicit variables seam, and ordinary `$` text remains literal.
+  check("base prompt teaches batched dependent pipelines",
+        directPrompt.contains("parallel-safe tools fan out") and
+        directPrompt.contains("save_as") and
+        directPrompt.contains("resolve_vars: true") and
+        directPrompt.contains("every `$` is literal"),
+        $direct)
 
   # The independent-review instruction is GATED on a spec-sized first message
   # and inserted MID-PROMPT at the "Working on Niffler itself:" anchor: a big

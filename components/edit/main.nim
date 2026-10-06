@@ -1751,7 +1751,7 @@ discard comp.tool("read", toolSchema(%*{
               "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
               "required": ["name"], "additionalProperties": false}]}
 }, @[],
-  "Read files for editing. \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges per call, per-item errors, 512KB cap; a single item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) returns its symbol outline when a language server knows the type — read windows with offset/limit, or offset=1 for the whole file. Batch known-relevant reads (grep hits, imports) rather than one per turn; lines are verbatim (copy into edit's old_string), and an unchanged re-read returns [unchanged]. Select items ({glob|path, pattern, word?, context?, max?}) locate-then-fetch in one call: no pattern lists matched paths (find/ls); a literal pattern returns verbatim match regions (±context lines, grep semantics) ready to copy into old_string — grep hits and their neighbors without one read per file."), hReadTool,
+  "Read files for editing. \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges per call, per-item errors, 512KB cap; a single item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) returns its symbol outline when a language server knows the type — read windows with offset/limit, or offset=1 for the whole file. Batch known-relevant reads (grep hits, imports) rather than one per turn; lines are verbatim (copy into edit's old_string), and an unchanged re-read returns [unchanged]. Select items ({glob|path, pattern, word?, context?, max?}) locate-then-fetch in one call: no pattern lists matched paths (find/ls); a literal pattern returns verbatim match regions (±context lines, grep semantics) ready to copy into old_string — grep hits and their neighbors without one read per file. Pipeline source-derived values inside one batched message with `save_as`; a later call consumes them as `$name` when it opts in with `resolve_vars: true`."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      "variables": true,
      # `effect: read` is deliberate: fabric's batch host would otherwise
@@ -1791,7 +1791,7 @@ discard comp.tool("edit", toolSchema(%*{
       "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
       "required": ["name"], "additionalProperties": false}]}
 }, @["path", "edits"],
-  "Replace exact text in an existing file. Each old_string must occur exactly once — add context lines to disambiguate, or set replace_all. undo_last_edit reverts."), hEdit,
+  "Replace exact text in an existing file. Each old_string must occur exactly once — add context lines to disambiguate, or set replace_all. Source-derived edits can share one batched message: a read call saves an exact span with `save_as`, and this call consumes it as `$span` by setting `resolve_vars: true`. undo_last_edit reverts."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "variables": true,
      "workspace": {"pathFields": ["path"]}})
