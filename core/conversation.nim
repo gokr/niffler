@@ -1181,7 +1181,7 @@ proc drainDiagnostics(ct: CoreTools, p: var Persister,
                  "delivered after your edit, when the server answered]\n" & text})
     if onEvent != nil:
       onEvent("diagnostics", %*{"sessionId": p.convId, "path": path,
-                                "bytes": text.len})
+                                "bytes": text.len, "text": text})
 
 proc drainAdvisories(ct: CoreTools, p: var Persister,
                      messages: var seq[JsonNode],

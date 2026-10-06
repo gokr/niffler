@@ -246,9 +246,10 @@ ev.session.<id>.map         # {sessionId, workspace, bytes} the workspace map wa
                        #   appended to history (once per conversation; the append
                        #   itself arrives on svc.session.<id>.map). Appended, not
                        #   injected into the frozen prefix
-ev.session.<id>.diagnostics # {sessionId, path, bytes} asynchronously delivered
+ev.session.<id>.diagnostics # {sessionId, path, bytes, text} asynchronously delivered
                             #   diagnostics for an edited file were appended to
-                            #   history (the append arrives on svc.session.<id>.diag)
+                            #   history (the append arrives on svc.session.<id>.diag).
+                            #   text is the rendered diagnostic body, for live display.
 ev.session.<id>.done        # {sessionId, turnId, reply} or {sessionId, turnId, error}
                        #   the legacy end-of-turn frame; it deliberately carries
                        #   NO accounting, so a client that reads both this and
