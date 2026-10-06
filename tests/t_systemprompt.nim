@@ -170,6 +170,11 @@ proc main() =
         longPrompt.contains("agent_spawn") and
         longPrompt.contains("no review: <reason>") and
         longPrompt.contains("no build, test or linter"), $longPrompt.len)
+  check("review is conditional on having no executable validation",
+        longPrompt.contains("Only when nothing here can validate the change") and
+        longPrompt.contains("Otherwise, skip the review and report the validation") and
+        not longPrompt.contains("Before you finish a change, get a second pair"),
+        longPrompt)
   let reviewAt = longPrompt.find("second pair of eyes")
   let anchorAt = longPrompt.find("Working on Niffler itself:")
   let anchorDirect = directPrompt.find("Working on Niffler itself:")

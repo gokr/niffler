@@ -66,21 +66,22 @@ const reviewAnchor = "Working on Niffler itself:"
   ## contract test pins the mid-prompt position either way.
 
 const reviewInstruction =
-  "Before you finish a change, get a second pair of eyes on it: `agent_spawn` a\n" &
-  "subagent that sees only the request and your diff (`git diff`), and ask what\n" &
-  "the diff misses, contradicts, or breaks. Where nothing here can validate the\n" &
-  "change -- no build, test or linter that exercises it -- that review is your\n" &
-  "only check, so it is not optional. Fix what it finds, and end your final\n" &
-  "message with what the review caught (or `no review: <reason>`)."
+  "Before you finish a change, validate it with a build, test or linter that\n" &
+  "exercises it. Only when nothing here can validate the change -- no build, test or linter\n" &
+  "that exercises it -- get a second pair of eyes: `agent_spawn` a subagent\n" &
+  "that sees only the request and your diff (`git diff`), and ask what the diff\n" &
+  "misses, contradicts, or breaks. In that case review is your only check and\n" &
+  "is not optional. Fix what it finds, and end your final message with what\n" &
+  "the review caught. Otherwise, skip the review and report the validation\n" &
+  "you ran (`no review: <reason>`)."
   ## Inserted at reviewAnchor when the first message is spec-sized.
   ##
   ## What it must convey: bring in a second reader for the diff when YOU have no
   ## other means of validating the change (no build, test or linter that
-  ## exercises it), and report what that reader found. The wording stays an
-  ## unframed imperative -- no "Long request: " prefix and no "this is a spec"
-  ## framing clause, the pattern every conditional/framed arm scored 0/4 on
-  ## (D, E, checklist) -- while the accountable close makes a skipped review
-  ## visible instead of silent.
+  ## exercises it), and report what that reader found. State the validation
+  ## condition explicitly: an unconditional opening overrode the intended
+  ## gate even when tests exercised the change. The first-message size gate
+  ## still controls insertion; the agent decides whether validation exists.
   ##
   ## Watch adherence, not just score: the bench counts subagent children per
   ## cell for exactly that (gpt-6-sol spawned zero in three of four cells when
