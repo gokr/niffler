@@ -895,6 +895,14 @@ keys:
 - `approval`: `"always"` gates the call on a human (see Approvals).
 - `timeoutMs`: per-tool request timeout (default 120s).
 - `hidden`: tool invisible to the LLM catalog (e.g. `chat`, `session`).
+- `variables`: the tool may opt a call into pipeline plumbing: `resolve_vars: true`
+  substitutes explicit `$name` references in its args and `save_as: {name, from?}`
+  captures a response field. Calls without those directives are untouched even
+  when their strings contain `$` (`$HOME`, shell syntax and code stay literal).
+  Pipelined calls execute in message order on the serial spine; the resolved
+  copy is dispatched (so approvals show real values) while raw args remain in
+  history. Values live in the conversation header, never the prompt. bash never
+  sets this — its `$` is shell syntax.
 - `onDemand`: kept out of a conversation's frozen direct toolset; reachable
   via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
 - `hint`: the when-to-use sentence `discover` shows for this tool instead of
