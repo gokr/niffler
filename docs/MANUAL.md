@@ -102,12 +102,47 @@ registering as `ctxtest` and `ctxsink`. It is not in this table, not in
 File-tool selectors resolve relative `glob` patterns against the conversation
 workspace, including `read` select items and `replace_across`; absolute patterns
 stay absolute. Standalone bus calls without a conversation resolve relative
-patterns against `NIF_ROOT`. A bulk glob matching no files returns `E_NO_MATCH`
-and explicitly says nothing was modified. Successful bulk replacements report
-total occurrences, changed/selected file counts, per-file counts and a change
-preview. `edit` accepts `old`/`new` aliases for `old_string`/`new_string` (the
-canonical string fields take precedence); exact-match, ambiguity and undo
-semantics are unchanged.
+patterns against `NIF_ROOT`. `replace_across` selects the deduplicated union of
+`paths` and `glob`, not their intersection; the 512-selected-file limit is
+unchanged. A glob alone matching no files returns `E_NO_MATCH` and explicitly
+says nothing was modified. Successful bulk replacements report total
+occurrences, changed/selected counts and a preview. Result text lists at most
+24 changed files (and bounded unmatched/missing lists); structured `files`,
+`unmatched` and `missing` remain complete. In file-tool result text, workspace
+filenames are relative, external filenames stay absolute; machine-readable
+paths are unchanged. `edit` still accepts legacy aliases server-side (canonical
+string fields take precedence), but advertises only `old_string`/`new_string`;
+exact-match, ambiguity and undo semantics are unchanged.
+
+Prefer `read {path}` OR `read {reads: [{path, offset?, limit?}, ...]}` (up to
+12 items). Supplying both remains accepted: the existing union/deduplication
+behavior is unchanged. Select items retain their existing limits and must not
+be mixed with content items. The first successful `edit` or `replace_across`
+mutation per conversation during the edit component's lifetime appends an
+`undo_last_edit` discovery hint; it is not repeated after every mutation.
+
+### File pipelines
+
+File tools opt in to capture with `save_as: "name"` (default field `text`) or
+`save_as: {name, from: "items.0.content"}`. Substitution requires
+`resolve_vars: true`; otherwise `$` stays literal, including during capture.
+Values persist in the conversation header across runner restarts. The tool
+history receives a small receipt reporting the captured value's actual JSON
+encoded size, not a second copy. Bare string results project as raw strings,
+not JSON-quoted text; object results project their `text` when present.
+
+For `read` capture only, core supplies private `__capture: true`, overriding
+client-supplied intent. This bypasses unchanged/outline shortcuts, not size
+limits. `__captureText` carries the raw source window separately from rendered
+`text`, excluding paging and lazy-instruction notices. Omitted bytes or an
+out-of-range offset make it null; batch/select top-level views are also null
+because they are non-contiguous. Capturing these views fails with
+`E_CAPTURE_UNAVAILABLE`; narrow the window or explicitly capture batch
+`items.N.content` or select `items.N.contents.M` for one raw region. Unavailable
+item/region fields also refuse rather than saving null. Raw select regions are
+bounded at 64KB each and 512KB aggregate; oversized regions are unavailable.
+Ordinary reads retain their presentation and unchanged behavior. This is opt-in file
+plumbing, not a nested-call DSL; simple loops and codemods stay in bash.
 
 ### `bash` in detail
 
@@ -121,12 +156,10 @@ fresh shell per call means `cd` does not persist; `cwd` (the conversation
 workspace) is realized as `cd -- <cwd> || exit $?`, so a missing workspace
 directory fails the call instead of running somewhere else.
 
-Two timeouts are easy to conflate. The argument (`timeoutMs`, default 30 s)
-bounds the *command* — a timeout kills the whole process group and reports
-exit 124 — while the schema's `x-harness.timeoutMs` (60 s) bounds how long
-*core* waits for the reply. A command may therefore legally outlive the
-dispatch budget: with `timeoutMs: 120000` the caller sees a dispatch timeout,
-not a tidy 124.
+Two timeouts are distinct: `timeoutMs` bounds the command (default 120 s,
+maximum 570 s), while `x-harness.timeoutMs` lets core wait 600 s for the reply.
+The inner clock stays below the outer one, so a command timeout kills the
+process group and returns exit 124 with captured output.
 
 Output is bounded by two compile-time constants with **no env knob** — the
 only `getEnv` in the component is `NIF_ROOT`, so a bigger transcript budget
@@ -203,8 +236,9 @@ over `bash grep`. `rg` resolves through `PATH`; when it is missing both tools
 answer exit 127 with an install hint that points at `bash grep -rn`.
 `.gitignore` and hidden/binary files are skipped by default, `hidden: true`
 adds hidden files while `.gitignore` still applies, and a `glob` narrows
-without un-hiding. `path` is workspace-relative at dispatch, and results come
-back as absolute paths.
+without un-hiding. `path` is workspace-relative at dispatch. Session result
+text uses workspace-relative filenames without rewriting matched source text;
+external filenames and standalone-call output remain absolute.
 
 `grep {pattern, path?, glob?, context? (≤50), case_insensitive?, hidden?,
 max_results? (default 200), timeoutMs? (default 30000)}` returns `path:line:match`
@@ -1826,7 +1860,7 @@ The model sends one-based line/character (UTF-16, matching LSP's code-unit
 convention); `findReferences` always includes the declaration; results are
 capped (100 locations / ~16 000 characters) with truncation metadata;
 structured
-`[E_LSP_*]` errors (`E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,
+`[E_LSP_*]` errors (`E_LSP_UNCONFIGURED`, `E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,
 `E_LSP_SCOPE`, `E_LSP_PROTOCOL`, `E_LSP_REGISTRY`, `E_LSP_CONFLICT`,
 `E_NOT_FOUND`, `E_NOT_TEXT`, `E_BAD_SHAPE`) let callers route on codes, not
 prose —
@@ -1904,10 +1938,12 @@ first real query does not pay server startup. It then publishes
 `ev.lsp.warm {workspace, warmed, skipped}` so a UI can show which servers came
 up and which were skipped. The `warmup` operation re-runs the same path explicitly.
 
-Unconfigured languages degrade, never break: an extension with no server (or
-a missing binary) returns `E_LSP_UNAVAILABLE` with the fix in the message —
-"add one with the lsp_registry tool (or edit <registry path>)". The model
-falls back to grep/read on its own.
+Unconfigured languages degrade, never break: an extension with no server
+returns `E_LSP_UNCONFIGURED` (a configured server that is missing or broken
+returns `E_LSP_UNAVAILABLE`), both with the fix in the message — "add one with
+the lsp_registry tool (or edit <registry path>)". The model falls back to
+grep/read on its own. The edit tool tells the two apart by code: an
+unclaimed file type stays silent, anything the registry knows gets a line.
 
 ### Registry: adding a language
 
@@ -2050,6 +2086,13 @@ different contract: start once, poll incremental output, kill explicitly.
 
 Details:
 
+- A start result provides exact controls: first
+  `discover {tools: ["process_poll", "process_kill"]}`, then
+  `process_poll {id: "<returned id>", waitMs: 25000}` to wait for output or
+  exit, and `process_kill {id: "<returned id>"}` to stop. `filter` drains all
+  new output while showing matches; `tail: "1"` re-reads recent raw output
+  without advancing cursors. An empty nonwaiting poll of a still-running
+  process gives one waiting hint per process. Drain semantics are unchanged.
 - The child writes append-mode to spool files (never a pipe it could
   deadlock on); the component reads from per-stream cursors, so the OS
   absorbs output bursts. A spool beyond the cap (32 MiB,
@@ -2336,7 +2379,13 @@ shape parsing, transport credential/redirect rules, and cancellation plumbing.
 Status: **implemented**.
 
 Niffler keeps one complete global catalog while exposing a small, immutable
-toolset to each conversation. Additional schemas enter the append-only message
+toolset to each conversation. The stock direct set remains eight tools:
+`bash`, `read`, `edit`, `write`, `replace_across`, `grep`, `discover`, `invoke`.
+Their compact descriptions retain routing guidance and optional/default
+arguments. Shortened schemas and system prompts apply only to future
+conversations; existing frozen snapshots are not rewritten. Result-local
+routing hints enter appended tool history, never a volatile prefix.
+Additional schemas enter the append-only message
 history through `discover`; calls to those tools go through the fixed `invoke`
 gateway. This reduces prompt bloat without weakening core approval or timeout
 policy.
@@ -2415,15 +2464,14 @@ The web Components panel provides the same all/direct/discovered/undiscovered fi
 {"query": "web"}
 ```
 
-`query` is optional. An empty query returns the **component registry**: one
-line per component — `name`, `version`, a total `tools` count split into
-`direct` and `onDemand`, and up to three `hints` (`{"tool", "hint"}`) with a
-`more` count of the remaining on-demand tools. A hint is the component's
-declared `x-harness.hint` (docs/WIRE.md) when it has one, otherwise the first
-sentence of the tool's description — the routing signal the system prompt no
-longer re-sends on every request. When the whole answer would exceed 6 000
-bytes it is rebuilt without hints (name and counts only) and carries a
-`budget` field; every registry answer ends with a `next` line.
+`query` is optional. An empty query returns the **capability registry**:
+name-sorted components with at least one visible tool, their version, visible
+`tools` count split into `direct` and `onDemand`, and up to three routing
+`hints` (`{"tool", "hint"}`), preferring declared `x-harness.hint` over a
+description's first sentence. To fit 6000 encoded bytes, discovery reduces
+three hints to one, then shortens that hint, then uses deterministic pages;
+it does not discard routing hints. A partial page carries `hasMore` and
+`nextAfter`: continue with `discover {after: "<nextAfter>"}` alone.
 
 A non-empty `query` filters instead, matching component names, tool names, and
 descriptions case-insensitively. A multi-word query is a conjunction: every
@@ -2434,15 +2482,10 @@ components and tools are name-sorted, descriptions are whitespace-normalized
 one-line hints capped at 200 characters, and volatile fields such as pid and
 registration time are excluded.
 
-An **empty query** returns the component registry: one line per component with
-its name, version and tool counts (`tools`, split into `direct` and
-`onDemand`), plus up to three when-to-use sentences — `hints`, each
-`{tool, hint}`, drawn from the component's on-demand tools, with `more`
-counting the on-demand tools left unlisted. A tool's declared `x-harness.hint`
-sentence is preferred over the first sentence of its description. When the
-registry would exceed 6000 bytes the hints are dropped and the answer is
-rebuilt as name-plus-counts with a `budget` note, so a pathological component
-set cannot turn one discovery call into tens of kilobytes.
+`limit` is advertised for summaries (0 = all, otherwise up to 200 per
+exposure group). `tools: []` behaves as omitted, not as a schema lookup.
+A no-match query includes a hint that query keywords use word-AND; try fewer
+keywords or the component registry.
 
 
 ```json
@@ -2465,8 +2508,8 @@ A **non-empty query** returns the matching components with full descriptions
 for their matching non-hidden tools (`direct`/`onDemand` arrays of
 `{name, description}`). `discover {component: "fetch"}` returns that one
 component in the same shape, under a top-level `component` key; `query`
-filters inside it and `limit` bounds each array. The `component` and `tools`
-calls return full descriptions and schemas. Components with no non-hidden
+filters inside it and `limit` bounds each array. `component` alone returns
+summaries; `tools` requests return full schemas. Components with no non-hidden
 tools are omitted.
 
 
@@ -3656,9 +3699,17 @@ download-then-filter: `cli call search '{"kind":"conversation","query":"…"}'`
 
 ## Testing
 
+The benchmark adapter waits on its private bus for all eight direct tools,
+`systemprompt.systemprompt`, and every required autostart manifest component,
+checking catalog roots and object schemas before starting a conversation.
+Its context exclusions remain unchanged, including `AGENTS.md` and
+`AGENTS.local.md`; readiness is not permission to inject harness contributor
+context into benchmark tasks.
+
 ```bash
 make test           # the full gate: the bus-contract suite
-make test-server    # ... server side only: one test-owned NATS per test, no node
+make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test-bench     # ... Node adapter readiness and telemetry tests only
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

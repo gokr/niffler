@@ -6,6 +6,57 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Slimmed the base prompt and all eight direct tool descriptions without
+  removing capabilities. Optional pipelines keep literal `$` by default;
+  file selection and exact-edit routing are explicit, and models are asked
+  to omit default arguments rather than duplicate `path` and `reads`.
+- Capability discovery omits tool-less components and retains routing hints
+  under pressure, reducing hint density before paging within 6000 bytes.
+  `after` continues `nextAfter`; `limit` is now advertised and failed keyword
+  searches explain their word-AND matching.
+- File/search result text uses workspace-relative filenames; bulk replacement
+  lists are bounded without dropping structured counts. Undo discovery and
+  background-process controls are taught at the result, not repeated in the
+  frozen schema. Empty non-waiting polls get one waiting hint per process.
+
+### Fixed
+
+- **A mutation no longer waits for the language server.** The edit tool's
+  diagnostics push is a request/reply, and the lsp component answers it from
+  the same single-threaded pump that runs the *previous* asynchronous check —
+  so a cold or busy server made the ack, not the check, the bottleneck: 39s
+  on one full31 task, and because the edit component's pump is serialized too,
+  one waiting edit stalled every other session's mutation behind it. The ack
+  budget is now 250ms (the request is already published, so the verdict still
+  arrives on the conversation's `.diag` lane) and the slow path no longer
+  makes a second `lsp_servers` lookup that would re-block on the same queue.
+  `E_LSP_UNCONFIGURED` (no registry entry for the file type) is now distinct
+  from `E_LSP_UNAVAILABLE` (a configured server that is missing or broken), so
+  "nobody's business" stays silent while a real failure still gets a line.
+  Covered by `tests/t_edit_lsp_slow.nim` against a deliberately busy lsp.
+- Bare-string tool results reach the model unescaped. Opt-in read captures
+  separate raw source from paging/instruction notices, bypass outline and
+  unchanged shortcuts, and refuse unavailable/oversized regions; capture
+  receipts report the actual encoded value size.
+- The Niffler benchmark waits for all eight direct tools and the prompt
+  component before freezing a session, eliminating startup-dependent toolsets.
+  Shape telemetry covers pipelines, selectors, argument verbosity and result
+  sizes; `make test-bench` joins the full gate.
+
+### Benchmarks
+
+- Full31 tool-diet run on `fdf2ae0`: 31/31 pass, all eight tools frozen for
+  every task; first prompts −23.6% and total tokens −5.3% on the comparable
+  t03–t31 subset. Model rounds increased, so this establishes prefix/result
+  savings, not improved routing. The t13 bulk result shrank 5,586→741 chars.
+  Recorded in `bench/reports/full31-tool-diet-low-report.csv`. First-party
+  DeepSeek low, one round/task, jobs=2; full-31 tokens 1,351,705→1,308,532,
+  model rounds 173→188. The matched subset excludes the baseline's two
+  startup-raced four-tool sessions. Single-run totals are noisy; no routing
+  or wall-time improvement is claimed.
+
 ### Added
 
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,

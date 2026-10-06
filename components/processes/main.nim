@@ -73,6 +73,7 @@ type Entry = ref object
                                    # ("" = a direct call: nobody to tell)
   notified: bool                   # the exit notice is sent exactly once
   swept: bool                      # terminal statuses left the sweep file
+  emptyPollHinted: bool            # one local hint per process; no cursor effect
 
 var gProcs = initOrderedTable[string, Entry]()
 var gNextId = 1
@@ -327,9 +328,12 @@ proc hStart(c: Component, args: JsonNode): JsonNode =
   gProcs[id] = e
   saveRegistry()
   return okResult(%*{"id": id, "label": label, "pid": int(pid),
-    "text": "Started background process " & id & " (" & label & ") — " &
-            "poll incremental output with process_poll {id}, stop with " &
-            "process_kill {id}."})
+    "text": "Started background process " & id & " (" & label & "). " &
+            "Discover controls with discover {tools:[\"process_poll\",\"process_kill\"]}. " &
+            "Poll with process_poll {id:\"" & id & "\",waitMs:25000} to wait for output or exit; " &
+            "each poll drains only new complete lines. Use filter for matching lines " &
+            "(all new output is still drained), or tail:\"1\" to re-read raw recent output " &
+            "without advancing the cursor. Stop with process_kill {id:\"" & id & "\"}."})
 
 proc hPoll(c: Component, args: JsonNode): JsonNode =
   let id = args{"id"}.getStr("")
@@ -404,6 +408,11 @@ proc hPoll(c: Component, args: JsonNode): JsonNode =
       body.add("stderr:\n" & newErr)
     if body.len == 0: body = "(no new output)"
   var text = "[" & e.id & " (" & e.label & ") — " & statusText(e) & "]\n" & body
+  if newBytes == 0 and e.status == stRunning and waitMs == 0 and
+      not e.emptyPollHinted:
+    e.emptyPollHinted = true
+    text.add("\n[Still running: use process_poll {id:\"" & e.id &
+             "\",waitMs:25000} to wait rather than polling tightly.]")
   if truncated:
     text.add("\n[spool truncated to its tail — the cap was reached]")
   okResult(%*{"id": e.id, "label": e.label, "status": statusText(e),
@@ -524,8 +533,8 @@ discard comp.tool("process_start", toolSchema(%*{
 
 discard comp.tool("process_poll", toolSchema(%*{
   "id": {"type": "string", "description": "Process id from process_start"},
-  "waitMs": {"type": "integer", "minimum": 0,
-             "description": "Block until new output or process exit, up to this many ms (0 = return immediately)"},
+  "waitMs": {"type": "integer", "minimum": 0, "maximum": 25000,
+             "description": "Optional wait for output or exit (default 0, max 25000 ms)"},
   "filter": {"type": "string",
              "description": "Regex: return only matching lines from the new output (the drain cursor still advances past all of it; use tail to re-read raw recent output)"},
   "tail": {"type": "string",

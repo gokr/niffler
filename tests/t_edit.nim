@@ -102,6 +102,8 @@ proc main() =
         r2{"error"}.getStr("").contains("occurs 2 times"), $r2)
   check("ambiguous edit wrote nothing",
         readFile(tmp / "amb.txt") == "same\nsame\n")
+  check("ambiguity hint distinguishes contextual and all-occurrence edits",
+        r2{"error"}.getStr().contains("only if every occurrence should change"))
 
   # not found refused
   let r3 = call(nc, "edit", "edit",
@@ -455,6 +457,25 @@ proc main() =
                 %*{"path": "w.txt", "force": true,
                    "__session": {"session": "s1"}})
   check("force re-dumps the bytes", rf.getStr("") == bigContent, $rf)
+  let captureSeen = call(nc, "edit", "read", %*{
+    "path": "w.txt", "__capture": true, "__session": {"session": "s1"}})
+  check("capture bypasses unchanged confirmation", captureSeen{"__captureText"}.getStr() == bigContent,
+        $captureSeen)
+  let captureWindow = call(nc, "edit", "read", %*{
+    "path": "w.txt", "offset": 2, "limit": 1, "__capture": true})
+  check("capture separates window bytes from paging footer",
+        captureWindow{"__captureText"}.getStr() == "line of text that keeps going\n" and
+        captureWindow{"text"}.getStr().contains("Use offset=3"), $captureWindow)
+  let capturePast = call(nc, "edit", "read", %*{
+    "path": "w.txt", "offset": 100, "__capture": true})
+  check("beyond-EOF capture is explicitly unavailable",
+        capturePast{"__captureText"}.kind == JNull, $capturePast)
+  writeFile(tmp / "long-capture.txt", repeat("x", 2500))
+  let captureLong = call(nc, "edit", "read", %*{
+    "path": "long-capture.txt", "__capture": true})
+  check("omitted line cannot be captured as exact bytes",
+        captureLong{"__captureText"}.kind == JNull and
+        captureLong{"__captureError"}.getStr().contains("omitted bytes"), $captureLong)
   let rs2 = call(nc, "edit", "read",
                  %*{"path": "w.txt", "__session": {"session": "s2"}})
   check("other session gets full bytes (no cross-talk)",
@@ -638,6 +659,11 @@ proc main() =
         ro.getStr("").contains("offset/limit"), $ro)
   check("outline read does not leak the bytes",
         not ro.getStr("").contains("line\nline"), $ro)
+  let rawOutlineCapture = call(nc, "edit", "read", %*{
+    "path": "big.nx", "__capture": true})
+  check("capture bypasses outlines and returns exact source separately",
+        rawOutlineCapture{"__captureText"}.getStr() == repeat("line\n", 8) and
+        not rawOutlineCapture{"text"}.getStr().contains("Outline"), $rawOutlineCapture)
 
   # the documented escape hatch: explicit offset=1 reads whole anyway
   let rd = call(nc, "edit", "read", %*{"path": "big.nx", "offset": 1})
@@ -754,6 +780,9 @@ proc main() =
         not rMany.hasKey("error") and
         rMany{"files_changed"}.getInt(0) == 40 and
         readFile(tmp / "many" / "m39.txt") == "done\n", $rMany)
+  check("bulk file listing is bounded without dropping machine counts",
+        rMany{"text"}.getStr().contains("16 more changed files") and
+        rMany{"files"}.len == 40, $rMany)
   let rSeq = call(nc, "edit", "replace_across",
             %*{"paths": ["bulk/w.txt"],
                "replace": [{"old": "hdr", "new": "block"},
@@ -761,6 +790,61 @@ proc main() =
   check("replace rules apply in order like a sed pipeline",
         not rSeq.hasKey("error") and
         readFile(tmp / "bulk" / "w.txt") == "block\nlongform\n", $rSeq)
+
+  let rDisplay = call(nc, "edit", "replace_across", %*{
+    "paths": [tmp / "bulk" / "w.txt"],
+    "replace": [{"old": "longform", "new": "shortform"}],
+    "__workspace": {"root": tmp}, "__session": {"session": "display"}})
+  check("bulk text uses workspace-relative paths; machine paths stay absolute",
+        rDisplay{"text"}.getStr().contains("bulk/w.txt (1)") and
+        not rDisplay{"text"}.getStr().contains(tmp & "/bulk/") and
+        rDisplay{"files"}[0]{"path"}.getStr() == tmp / "bulk" / "w.txt", $rDisplay)
+  check("first mutation routes to exact undo schema discovery",
+        rDisplay{"text"}.getStr().contains("discover {tools: [\"undo_last_edit\"]}"))
+  let rDisplayNext = call(nc, "edit", "edit", %*{
+    "path": tmp / "bulk" / "w.txt", "edits": [{"old": "shortform", "new": "final"}],
+    "__workspace": {"root": tmp}, "__session": {"session": "display"}})
+  check("undo discovery hint is not repeated in the same session",
+        not rDisplayNext{"text"}.getStr().contains("To revert") and
+        not rDisplayNext{"text"}.getStr().contains(tmp & "/bulk/"), $rDisplayNext)
+  let rOutside = call(nc, "edit", "write", %*{
+    "path": tmp / "external.txt", "content": "outside\n",
+    "__workspace": {"root": tmp / "bulk"}})
+  check("paths outside the workspace stay absolute",
+        rOutside{"text"}.getStr().contains(tmp / "external.txt"), $rOutside)
+  let rRootDisplay = call(nc, "edit", "write", %*{
+    "path": tmp / "root-display.txt", "content": "root\n",
+    "__workspace": {"root": "/"}})
+  check("filesystem-root workspace shortens contained paths",
+        rRootDisplay{"text"}.getStr().endsWith("to " & relativePath(tmp / "root-display.txt", "/")),
+        $rRootDisplay)
+  let mirror = tmp / "mirror"
+  createSymlink(tmp / "bulk", mirror)
+  let rMirror = call(nc, "edit", "replace_across", %*{
+    "glob": mirror / "w.txt", "replace": [{"old": "final", "new": "mirrored"}],
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked workspace dispatch paths shorten in bulk text",
+        rMirror{"text"}.getStr().contains("\nw.txt (1)") and
+        not rMirror{"text"}.getStr().contains(mirror), $rMirror)
+  let rMirrorWrite = call(nc, "edit", "write", %*{
+    "path": mirror / "new.txt", "content": "new\n",
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked parents shorten new-file text without changing machine path",
+        rMirrorWrite{"text"}.getStr().endsWith("to new.txt") and
+        rMirrorWrite{"path"}.getStr() == mirror / "new.txt", $rMirrorWrite)
+  let rMirrorBatch = call(nc, "edit", "read", %*{
+    "reads": [{"path": mirror / "new.txt"}, {"path": mirror / "w.txt"}],
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked batch headings are relative; raw bytes stay unchanged",
+        rMirrorBatch{"text"}.getStr().contains("### new.txt\nnew\n") and
+        rMirrorBatch{"items"}[0]{"content"}.getStr() == "new\n", $rMirrorBatch)
+  let rUnion = call(nc, "edit", "replace_across", %*{
+    "paths": [tmp / "many" / "m00.txt", tmp / "many" / "m00.txt"],
+    "glob": "many/m0*.txt", "replace": [{"old": "done", "new": "union"}],
+    "__workspace": {"root": tmp}})
+  check("paths plus glob form a deduplicated union",
+        rUnion{"files_changed"}.getInt() == 10 and
+        rUnion{"total_replaced"}.getInt() == 10, $rUnion)
 
   # --- read select mode: locate + fetch in one call (the grep-then-cat
   # move) — hit regions verbatim, inventory without a pattern, no mixing.
@@ -792,6 +876,19 @@ proc main() =
   check("mixed content/select call is refused as a shape error",
         rMix.hasKey("error") and
         rMix{"error"}.getStr("").contains("[E_BAD_SHAPE]"), $rMix)
+  let captureHugeRegion = call(nc, "edit", "read", %*{
+    "reads": [{"path": "long-capture.txt", "pattern": "x", "context": 0}],
+    "__capture": true})
+  check("select capture separates raw bytes from filename headings",
+        captureHugeRegion{"items"}[0]{"contents"}[0].getStr() == repeat("x", 2500),
+        $captureHugeRegion)
+  writeFile(tmp / "region-overflow.txt", "needle" & repeat("x", 2_000_000) & "\n")
+  let captureRegionOverflow = call(nc, "edit", "read", %*{
+    "reads": [{"path": "region-overflow.txt", "pattern": "needle", "context": 0}],
+    "__capture": true})
+  check("oversized raw region is unavailable and bus response bounded",
+        captureRegionOverflow{"items"}[0]{"contents"}[0].kind == JNull and
+        ($captureRegionOverflow).len < 600000, $($captureRegionOverflow).len)
   let rNone = call(nc, "edit", "read",
              %*{"reads": [{"glob": "bulk/*.go", "pattern": "nothing-here"}]})
   check("select with no hits answers zero without error",

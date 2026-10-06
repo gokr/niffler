@@ -2,7 +2,7 @@
 ## every operation against a deterministic fixture language server (Python,
 ## tests/fixtures/lsp_server.py) speaking real LSP framing over stdio.
 ##
-## Covers: default+user registry merge; E_LSP_UNAVAILABLE (unconfigured
+## Covers: default+user registry merge; E_LSP_UNCONFIGURED (unconfigured
 ## extension, binary missing, server dies); E_LSP_UNSUPPORTED (capability
 ## absent); the one-based(model) → zero-based(wire) position conversion
 ## (the fixture echoes the received position); findReferences always
@@ -131,7 +131,7 @@ proc main() =
                            "line": 1, "character": 1})
   check("a path outside the workspace is no longer refused for being outside",
         outside.hasKey("error") and
-        outside{"error"}.getStr("").contains("E_LSP_UNAVAILABLE") and
+        outside{"error"}.getStr("").contains("E_LSP_UNCONFIGURED") and
         outside{"error"}.getStr("").contains("no file extension"), $outside)
 
   # --- a file outside the conversation workspace is still checked ----------
@@ -175,7 +175,7 @@ proc main() =
   let unconf = lspCall(%*{"operation": "hover", "path": "mystery.zzz",
                           "line": 1, "character": 1})
   check("unconfigured extension names the fix", unconf.hasKey("error") and
-        unconf{"error"}.getStr("").contains("E_LSP_UNAVAILABLE") and
+        unconf{"error"}.getStr("").contains("E_LSP_UNCONFIGURED") and
         unconf{"error"}.getStr("").contains(".zzz") and
         unconf{"error"}.getStr("").contains("lsp_registry"), $unconf)
   writeFile(tmp / "gone.gone", "ghost\n")

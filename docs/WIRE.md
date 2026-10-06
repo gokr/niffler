@@ -24,6 +24,9 @@ Rules:
 
 - `call` → `result` (or `error`), matched by `id`. One reply per call.
 - `args`/`payload` are JSON values (objects, or anything JSON — array, string).
+  Tool-history projection uses bare strings raw (no JSON quotes/escapes),
+  an object's string `text` when present, otherwise serialized JSON;
+  machine-readable bus results are unchanged.
 - Missing fields are omitted, never null. Unknown fields ignored (forward compat).
 - Errors: `code` is a stable machine string (`timeout`, `no-tool`, `boom`),
   `message` is human text.
@@ -372,7 +375,21 @@ appends a successful target's schema to the persisted direct toolset —
 one durable prefix change, capped by `NIF_MAX_DIRECT_TOKENS`). `profile`
 (onDemand) manages the named tool profiles a new conversation resolves
 its direct toolset from — see docs/MANUAL.md, section
-"Progressive tool discovery".
+"Progressive tool discovery". The stock direct set is eight tools: `bash`,
+`read`, `edit`, `write`, `replace_across`, `grep`, `discover`, `invoke`.
+Shortened schemas and prompts affect only future conversations; existing
+snapshots remain frozen. Routing hints in results append to tool history,
+never the prefix.
+
+`discover`'s capability registry excludes components with zero visible tools.
+It tries three hints, then one, then a shorter hint before deterministic
+name-sorted pages, each bounded to 6000 encoded bytes including cursor
+metadata. It preserves on-demand routing hints. Continue a `hasMore` page
+with `discover {after: "<nextAfter>"}` (no query/component/tools).
+`limit` bounds summaries per exposure group (0 = all, maximum 200);
+`tools: []` behaves as omitted. Query words use case-insensitive word-AND;
+a no-match answer includes that routing hint. The administrative catalog
+remains complete.
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
@@ -902,7 +919,22 @@ keys:
   Pipelined calls execute in message order on the serial spine; the resolved
   copy is dispatched (so approvals show real values) while raw args remain in
   history. Values live in the conversation header, never the prompt. bash never
-  sets this — its `$` is shell syntax.
+  sets this — its `$` is shell syntax. Capture alone does not enable
+  substitution. A capture receipt reports the actual JSON encoded size of
+  the saved value; captured payloads stay in the persistent header instead
+  of being copied into history.
+
+  For `read` only, core overwrites private `__capture` with capture intent.
+  When true, read bypasses unchanged/outline shortcuts and returns separate
+  `__captureText` source-window content without paging or lazy-instruction
+  notices; rendered `text` remains for display. Source omission, beyond-EOF
+  windows and non-contiguous batch/select top-level views yield null and
+  default text capture refuses with `E_CAPTURE_UNAVAILABLE`. Explicit batch
+  `items.N.content` and select `items.N.contents.M` capture one raw region;
+  unavailable item/region fields also refuse instead of silently saving null.
+  Raw select regions are bounded at 64KB each and 512KB aggregate.
+  These private fields are not advertised arguments; ordinary reads keep
+  their existing behavior and limits.
 - `onDemand`: kept out of a conversation's frozen direct toolset; reachable
   via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
 - `hint`: the when-to-use sentence `discover` shows for this tool instead of

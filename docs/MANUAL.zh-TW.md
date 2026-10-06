@@ -94,13 +94,21 @@
 
 `components/ctxtest/` 是每個元件一個目錄 = 一個隨附元件的例外：它是契約測試自己的夾具 — 一個 stub `chat` LLM 加上巢狀呼叫探針 — 測試自己編譯成註冊為 `ctxtest` 和 `ctxsink` 的二進位檔。它不在此表中，不在 `manifest.yaml` 中，且絕不由 `make build` 建置。
 
-檔案工具選擇器中的相對 `glob` 模式以會話工作區為基準解析，包括 `read` 選擇項和 `replace_across`；絕對模式保持不變。沒有會話的獨立匯流排呼叫以 `NIF_ROOT` 為基準解析相對模式。批次 glob 未匹配到檔案時回傳 `E_NO_MATCH`，並明確說明沒有修改任何內容。成功的批次替換會報告總匹配次數、已修改/已選擇檔案數、每個檔案的次數和變更預覽。`edit` 接受 `old`/`new` 作為 `old_string`/`new_string` 的別名（標準字串欄位優先）；精確匹配、歧義拒絕和復原語義不變。
+檔案工具選擇器中的相對 `glob` 模式以會話工作區為基準解析，包括 `read` 選擇項和 `replace_across`；絕對模式保持不變。沒有會話的獨立匯流排呼叫以 `NIF_ROOT` 為基準解析相對模式。`replace_across` 選取 `paths` 與 `glob` 的去重聯集，而非交集；512 個已選取檔案的上限不變。僅 glob 未匹配檔案時回傳 `E_NO_MATCH`，明確說明沒有修改。成功結果報告總次數、已修改/已選取數量和預覽；文字最多列出 24 個已修改檔案，並限制未匹配/缺失清單長度，結構化 `files`、`unmatched`、`missing` 保持完整。檔案工具結果文字中的工作區檔名使用相對路徑，外部檔名保持絕對路徑，機器欄位路徑不變。`edit` 伺服器端仍接受舊別名（標準欄位優先），但只公布 `old_string`/`new_string`；匹配、歧義與復原語義不變。
+
+建議使用 `read {path}` 或 `read {reads: [{path, offset?, limit?}, ...]}`（最多 12 項），而非同時使用。兩者同時提供仍被接受，聯集/去重行為不變。選擇項限制不變，不能與內容項混用。每個會話在 edit 元件生命週期中的首次成功 `edit` 或 `replace_across` 修改會附加 `undo_last_edit` 探索提示，不會每次修改都重複。
+
+### File pipelines
+
+檔案工具透過 `save_as: "name"`（預設 `text`）或 `save_as: {name, from: "items.0.content"}` 明確擷取。只有 `resolve_vars: true` 才替換變數；否則 `$` 保持字面值，即使擷取時也是如此。值保存在會話標頭，runner 重啟後仍可用。工具歷史只收到報告實際 JSON 編碼大小的小收據，不重複複製內容。裸字串結果顯示原文而非 JSON 引號/跳脫；物件有 `text` 時投影該欄位。
+
+僅在 `read` 擷取時，core 提供私有 `__capture: true` 並覆寫用戶端意圖；這繞過 unchanged/outline 捷徑，但不繞過大小限制。`__captureText` 與顯示 `text` 分離，保存原始來源視窗，不含分頁或延遲指令提示。省略位元組、超出 EOF，或非連續的 batch/select 頂層視圖使它為 null；擷取這些視圖報 `E_CAPTURE_UNAVAILABLE`。請縮小視窗，或明確擷取 batch 的 `items.N.content`、select 的 `items.N.contents.M` 單個原始區域。普通讀取的顯示與 unchanged 行為不變。不可用的項目/區域欄位也會拒絕擷取，而非保存 null；原始 select 區域每個最多 64KB，總計最多 512KB。這是選用檔案管線，不是巢狀呼叫 DSL；簡單迴圈和 codemod 留在 bash。
 
 ### `bash` in detail
 
 上方的 bash 列是摘要；這是模型據以工作的契約。`bash {command, timeoutMs?, cwd?, run_in_background?}` 以全新程序群組的領導者身分執行 `bash -c <command>`（`$PATH` 解析，無覆寫），stderr 按到達順序合併到 stdout，子項繼承元件的環境（`NIF_ROOT`、`.env`、core 匯出的一切）和 stdin，且高於 stderr 的描述符在生成前關閉。每次呼叫全新 shell 意味著 `cd` 不持久；`cwd`（會話工作區）實現為 `cd -- <cwd> || exit $?`，因此缺失的工作區目錄會使呼叫失敗而非在別處執行。
 
-兩個逾時容易混淆。參數（`timeoutMs`，預設 30 秒）界定*命令* — 逾時殺死整個程序群組並報告退出碼 124 — 而 schema 的 `x-harness.timeoutMs`（60 秒）界定*core* 等待回覆多久。因此命令可以合法地比派送預算活得更久：使用 `timeoutMs: 120000` 時呼叫者看到派送逾時，而非整齊的 124。
+兩種逾時不同：`timeoutMs` 限制命令（預設 120 秒，最多 570 秒），而 `x-harness.timeoutMs` 讓 core 等待回覆最多 600 秒。內部時鐘始終小於外部時鐘，因此命令逾時會殺死程序群組並返回退出碼 124 與已擷取的輸出。
 
 輸出由兩個編譯期常數界定且**沒有環境旋鈕** — 元件中唯一的 `getEnv` 是 `NIF_ROOT`，因此更大的對話記錄預算意味著重建它：最多擷取 2,000,000 位元組，且最多 12,000 位元組的對話記錄到達模型，保留頭部和尾部並將中間替換為
 `[... truncated <omitted> of <total> bytes (capped at <max>) — <hint> ...]`，
@@ -125,7 +133,7 @@ heredoc termination]` 而非裸退出碼。Heredoc 本身受支援：包含 `<<`
 
 ### `grep` in detail
 
-上方的 `grep` 列是摘要。兩個工具都以固定 argv 執行 ripgrep — 模式作為 `--` 之後的參數傳遞，絕不通過 shell — 因此引號、反斜線和空格無需轉義，這是相對 `bash grep` 的可靠性優勢。`rg` 透過 `PATH` 解析；當它缺失時兩個工具都以退出碼 127 回答並附帶指向 `bash grep -rn` 的安裝提示。`.gitignore` 和隱藏/二進位檔案預設跳過，`hidden: true` 新增隱藏檔案而 `.gitignore` 仍適用，且 `glob` 縮小而不取消隱藏。`path` 在派送時相對於工作區，結果以絕對路徑返回。
+上方的 `grep` 列是摘要。兩個工具都以固定 argv 執行 ripgrep — 模式作為 `--` 之後的參數傳遞，絕不通過 shell — 因此引號、反斜線和空格無需轉義，這是相對 `bash grep` 的可靠性優勢。`rg` 透過 `PATH` 解析；當它缺失時兩個工具都以退出碼 127 回答並附帶指向 `bash grep -rn` 的安裝提示。`.gitignore` 和隱藏/二進位檔案預設跳過，`hidden: true` 新增隱藏檔案而 `.gitignore` 仍適用，且 `glob` 縮小而不取消隱藏。`path` 在派送時相對於工作區。會話結果文字中的檔名相對於工作區，匹配來源文字不改寫；外部檔名與獨立呼叫輸出仍使用絕對路徑。
 
 `grep {pattern, path?, glob?, context? (≤50), case_insensitive?, hidden?,
 max_results? (default 200), timeoutMs? (default 30000)}` 返回 `path:line:match`
@@ -1149,7 +1157,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 | `lsp_registry {action: add\|remove, name, command, extensions?, initializationOptions?, requires?, cheap?}` | 變更使用者登錄（受核准閘門的寫入）。`add` 接受 `{name (lowercase letters/digits/hyphens), command, extensions: {".ext": "languageId"}}`，會覆寫同名的內建項目，並以 `E_LSP_CONFLICT` 拒絕已對應至另一個伺服器的副檔名（請先移除該對應）；`remove` 只刪除使用者項目 |
 
 模型傳送從 1 開始的 line/character（UTF-16，符合 LSP 的 code-unit 慣例）；`findReferences` 一律包含宣告；結果有上限（100 個位置 / 約 16 000 個字元），並附帶截斷中介資料；結構化
-`[E_LSP_*]` 錯誤（`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）讓呼叫者依代碼而非文字來路由 ——
+`[E_LSP_*]` 錯誤（`E_LSP_UNCONFIGURED`、`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）讓呼叫者依代碼而非文字來路由 ——
 逾時與協定錯誤會附加伺服器的最後一行 stderr，該行會指出實際的失敗（缺少二進位檔、崩潰、索引中）。
 
 **範圍是界限，不是相等。** 對話工作區內的檔案會在工作區根目錄下被索引（其已暖機的伺服器會被重用）；在其*之外*的檔案 —— 同層 checkout、git worktree、代理正在工作的任何其他目錄 —— 會在其自身由標記衍生的根目錄下被索引，且回覆會帶有命名它的 `workspaceRoot`，因為否則答案中的相對路徑會有歧義。`E_LSP_SCOPE` 僅保留給兩種會把無界樹交給伺服器的情況：路徑中含有 `..` 元件，以及檔案的標記走訪到達檔案系統根目錄或 `$HOME`（訊息會要求明確的 `workspaceRoot`）。直接拒絕工作區外的檔案曾被嘗試過，且實際上是有害的：edit 工具的診斷推送會將該拒絕吞掉為「未設定伺服器」，因此代理在另一個 checkout 中工作時既得不到診斷，也得不到它沒有的訊號。
@@ -1172,7 +1180,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 當會話工作區被宣告時（`ev.workspace.opened`），Core 會自動觸發一次**預熱**：元件執行一次有界的副檔名普查（在 5 000 個檔案或 2 秒預算時停止；隱藏檔案與垃圾目錄如 `node_modules`、`vendor`、`dist`、`build` 和 `target` 會被跳過），並為最普遍的語言預先啟動伺服器，讓第一次真正的查詢不必付出伺服器啟動成本。接著它發佈 `ev.lsp.warm {workspace, warmed, skipped}`，讓 UI 能顯示哪些伺服器已啟動、哪些被跳過。`warmup` 操作會明確重跑同一條路徑。
 
-未配置的語言會降級，絕不會中斷：沒有伺服器（或缺少二進位檔）的副檔名會回傳 `E_LSP_UNAVAILABLE`，訊息中附帶修正方式——「add one with the lsp_registry tool (or edit <registry path>)」。模型會自行退回使用 grep/read。
+未配置的語言會降級，絕不會中斷：沒有伺服器的副檔名回傳 `E_LSP_UNCONFIGURED`（已配置但缺失或損壞的伺服器回傳 `E_LSP_UNAVAILABLE`），兩者都在訊息中附帶修正方式——「add one with the lsp_registry tool (or edit <registry path>)」。模型會自行退回使用 grep/read。edit 工具依錯誤碼區分兩者：未被聲明的檔案類型保持靜默，註冊表知道的類型一定會得到一行說明。
 
 ### Registry: adding a language
 
@@ -1223,6 +1231,8 @@ git 工作流程的唯讀一半，作為一等工具；寫入的一半（add/com
 **git 二進位檔。** `git` 必須能在 `PATH` 上解析，而命中元件自己的 `var/bin/git` 的 `PATH` 會被跳過（那會遞迴）；無法解析的 git 回傳退出碼 127 並附帶安裝提示。
 
 ## Background processes (`processes`)
+
+啟動結果給出精確控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<回傳 id>", waitMs: 25000}` 等待輸出或退出，用 `process_kill {id: "<回傳 id>"}` 停止。`filter` 仍排空所有新輸出但只顯示匹配行；`tail: "1"` 重讀最近原始輸出且不推進游標。仍執行行程的空非等待輪詢，每個行程只提示一次使用等待。排空語義不變。
 
 狀態：**已實作**（Nim 元件；`tests/t_processes.nim`）。
 
@@ -1385,6 +1395,8 @@ SDK 的凍結註冊閘門（`Announce` 在延遲註冊時 panic；
 
 ## Progressive tool discovery
 
+預設直接工具仍為八個：`bash`、`read`、`edit`、`write`、`replace_across`、`grep`、`discover`、`invoke`。精簡描述保留路由與選用/預設參數。精簡 schema 和系統提示詞只影響未來會話，不改寫既有凍結快照。結果路由提示附加至工具歷史，絕不注入易變前綴。
+
 狀態：**已實作**。
 
 Niffler 維護一份完整的全域目錄，同時對每個會話只暴露一組小型、不可變的元件集。額外的結構描述會透過 `discover` 進入僅可附加的訊息歷史；對這些元件的呼叫則經由固定的 `invoke` 閘道。這能在不削弱核心核准或逾時政策的前提下減少提示詞膨脹。
@@ -1461,12 +1473,7 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
 依名稱排序，描述是經空白正規化、上限為
 200 字元的單行提示，且會排除諸如 pid 與註冊時間等易變欄位。
 
-**空查詢**會傳回元件登錄表：每個元件一行，帶有其名稱、版本與工具計數
-（`tools`，拆分為 `direct` 與 `onDemand`），以及最多三句使用時機句子——
-`hints`，每項為 `{tool, hint}`，取自該元件的 on-demand 工具，並以 `more`
-計數未列出的 on-demand 工具數。工具的宣告式 `x-harness.hint` 句子優先於其描述的第一句。
-當登錄表超過 6000 位元組時，提示會被捨棄，答案會以名稱加計數重建，並附帶 `budget` 註記，
-因此病態的元件集合無法讓一次發現呼叫變成數十 KB。
+**空查詢**回傳能力登錄表，只包含至少一個可見工具的元件；按名稱排序，保留版本、`tools`（拆為 `direct`/`onDemand`）和最多三個路由 `hints`，優先使用宣告的 `x-harness.hint`。為滿足含游標中繼資料的 6000 編碼位元組上限，先從三個提示減至一個，再縮短提示，最後確定性分頁，不會捨棄路由提示。部分頁帶 `hasMore`、`nextAfter`；僅用 `discover {after: "<nextAfter>"}` 繼續。`limit` 已公布，限制每個暴露組的摘要（0 為全部，最大 200）。`tools: []` 等同省略。查詢無匹配時會提示關鍵詞採用 word-AND，可減少關鍵詞或查看登錄表。
 
 ```json
 {
@@ -1487,8 +1494,8 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
 **非空查詢**會傳回相符的元件，並附上其相符非 hidden 工具的完整描述
 （`direct`/`onDemand` 陣列，每項為 `{name, description}`）。
 `discover {component: "fetch"}` 會以相同形狀傳回該單一元件，置於頂層 `component` 鍵下；
-`query` 在其中篩選，`limit` 為每個陣列設限。`component` 與 `tools` 呼叫會傳回完整的
-描述與結構描述。沒有非 hidden 工具的元件會被省略。
+`query` 在其中篩選，`limit` 為每個陣列設限。`component` 單獨呼叫回傳摘要；
+`tools` 請求回傳完整結構描述。沒有非 hidden 工具的元件會被省略。
 
 #### Schemas
 
@@ -2253,9 +2260,12 @@ core 中所有必須看見整個種類的東西都走 `storeListAll`——
 
 ## Testing
 
+基準適配器在私有匯流排上等待全部八個直接工具、`systemprompt.systemprompt` 和 manifest 中每個 required autostart 元件，並在建立會話前檢查目錄 root 與物件 schema。上下文排除項不變，包括 `AGENTS.md` 與 `AGENTS.local.md`；就緒檢查不允許將 harness 貢獻者上下文注入基準任務。
+
 ```bash
 make test           # the full gate: the bus-contract suite
-make test-server    # ... server side only: one test-owned NATS per test, no node
+make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test-bench     # ... Node adapter readiness and telemetry tests only
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

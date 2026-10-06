@@ -120,13 +120,13 @@ let bashSchema = toolSchema(%*{
   "command": {"type": "string",
               "description": "The command line to run"},
   "timeoutMs": {"type": "integer",
-                "description": "Kill after this many ms (default 120000, max 570000). Raise it for a slow build instead of splitting the command; exit 124 with the output so far means it hit this."},
+                "description": "Kill after this many ms (optional; default 120000, max 570000)."},
   "run_in_background": {"type": "boolean",
-    "description": "Start as a background process instead of blocking: returns an id immediately (no timeout applies). Long-running commands — servers, watchers, databases. Poll incremental output with process_poll (drain semantics: each poll returns only what was appended since the last one; filter regex supported, tail re-reads raw), stop with process_kill."},
+    "description": "Optional (default false): return a persistent background process id immediately; no timeout."},
   "cwd": {"type": "string",
-          "description": "Working directory (default: workspace)"}
+          "description": "Working directory (optional; default workspace)"}
 }, required = @["command"],
-  description = "Run a shell command (bash -c) in the conversation's workspace (the repository root): paths can be relative, and each call is a fresh shell, so a `cd` never persists — use cwd or an absolute path to work elsewhere. Default budget 120s (max 570s); a slower command is killed with exit 124. Anything that should outlive the call (servers, watchers, long builds) belongs in run_in_background — it returns an id at once and keeps running across turns, polled with process_poll, stopped with process_kill.")
+  description = "Run builds, tests, or computation with bash -c. Each call is a fresh shell; cd does not persist. Use cwd to work elsewhere, run_in_background for work that must outlive the call.")
 bashSchema["x-harness"] = %*{"approval": "always",
                              "timeoutMs": BASH_CALL_TIMEOUT_MS,
                              "sessionId": true,
@@ -156,12 +156,7 @@ discard comp.tool("bash", bashSchema,
         # so it is the only one that can notice).
         if sessionId.len > 0: startArgs["session"] = %sessionId
         let resp = c.request("processes", "process_start", startArgs, 15000)
-        var payload = resp
-        payload["text"] = %("Started in background as " &
-          resp{"id"}.getStr("") & " (" & resp{"label"}.getStr("") & ") — " &
-          "poll incremental output with process_poll {id: \"" &
-          resp{"id"}.getStr("") & "\"}, stop with process_kill.")
-        return payload
+        return resp
       except CatchableError as e:
         return %*{"error": "[E_BACKGROUND] could not start the background " &
           "process (is the processes component running?): " & e.msg &

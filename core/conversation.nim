@@ -1648,13 +1648,23 @@ proc captureVariable(vars: JsonNode, name, fromField: string,
   ## Dotted-path capture ("text", "items", "items.0.path") of a response
   ## field into the conversation's variables, size-capped. A bare string
   ## response (read's single-item form) IS its own "text"/"content".
-  if value.kind == JString and
+  # A source tool may separate its rendered notices from copyable bytes when
+  # capture was requested. Null explicitly refuses a lossy/non-contiguous view.
+  var source = value
+  if fromField in ["text", "content", ""] and
+      value != nil and value.kind == JObject and value.hasKey("__captureText"):
+    source = value{"__captureText"}
+    if source == nil or source.kind == JNull:
+      raise newException(ValueError,
+        "[E_CAPTURE_UNAVAILABLE] " & value{"__captureError"}.getStr(
+          "This view has no exact source text; capture a raw item field instead."))
+  if source.kind == JString and
       (fromField == "text" or fromField == "content" or fromField == ""):
-    if ($value).len > 65536:
+    if ($source).len > 65536:
       raise newException(ValueError,
         "[E_VAR_FULL] save_as '" & name & "' would exceed the 64KB " &
         "per-variable cap — capture a narrower field with \"from\"")
-    vars[name] = value
+    vars[name] = source
     return
   var cur = value
   for part in fromField.split('.'):
@@ -1677,6 +1687,11 @@ proc captureVariable(vars: JsonNode, name, fromField: string,
       cur = cur[idx]
     else:
       cur = nil
+  if value != nil and value.kind == JObject and value.hasKey("__captureText") and
+      (cur == nil or cur.kind == JNull):
+    raise newException(ValueError,
+      "[E_CAPTURE_UNAVAILABLE] Source field '" & fromField &
+      "' is unavailable or omitted; choose a smaller raw file/window/region.")
   if cur == nil:
     raise newException(ValueError,
       "[E_BAD_SHAPE] save_as.from '" & fromField &
@@ -1686,6 +1701,14 @@ proc captureVariable(vars: JsonNode, name, fromField: string,
       "[E_VAR_FULL] save_as '" & name & "' would exceed the 64KB " &
       "per-variable cap — capture a narrower field with \"from\"")
   vars[name] = cur
+
+proc toolResultText*(value: JsonNode): string =
+  ## The model sees raw strings or an object's text projection. Machine fields
+  ## stay on the bus; other JSON values keep their serialized representation.
+  if value != nil and value.kind == JString: return value.getStr()
+  let text = value{"text"}
+  if text.isStr: return text.getStr()
+  jdump(value)
 
 proc commitToolItem(ct: CoreTools, p: var Persister,
                     messages: var seq[JsonNode],
@@ -1717,12 +1740,8 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
   let partialFailure = not oc.ok and oc.value != nil and
                        oc.value{"__partial"}.getBool(false)
   let content =
-    if oc.ok or partialFailure:
-      let t = oc.value{"text"}
-      if t.isStr: t.getStr()
-      else: jdump(oc.value)
-    else:
-      ""
+    if oc.ok or partialFailure: toolResultText(oc.value)
+    else: ""
   let toolMsg =
     if oc.ok or partialFailure:
       var body = content
@@ -2993,7 +3012,13 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         let waveStartedAt = epochTime()
         let waveStarted = getMonoTime()
         var calls: seq[tuple[tool: string, args: JsonNode]] = @[]
-        for w in wave: calls.add((w.name, w.args))
+        for w in wave:
+          var args = w.args
+          let schema = ct.cat.toolSchema(w.name)
+          if schema != nil and schema{"x-harness"}{"variables"}.getBool(false):
+            args = copy(args)
+            args["__capture"] = %false
+          calls.add((w.name, args))
         var outcomes: seq[ToolCallOutcome] = @[]
         try:
           outcomes = ct.dispatchToolCalls(calls)
@@ -3050,6 +3075,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                          resolveVariables(work, varsFor(ct, sessionId))
                        else:
                          work
+          let schema = ct.cat.toolSchema(it.name)
+          if schema != nil and schema{"x-harness"}{"variables"}.getBool(false):
+            callArgs = copy(callArgs)
+            # Private capture intent lets source tools separate exact bytes
+            # from rendered notices. Never trust a model-supplied flag.
+            callArgs["__capture"] = %(saveName.len > 0)
           let value = ct.dispatchToolCall(it.name, callArgs)
           if value != nil and value{"__toolError"}.getBool(false):
             oc = ToolCallOutcome(ok: false, value: value,
@@ -3066,10 +3097,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               # value back into the model's context.
               let receipt = %*{
                 "text": "saved " & saveName & " = " & saveFrom &
-                        " (" & $("$value").len & " bytes)",
+                        " (" & $(($vars{saveName}).len) & " bytes)",
                 "saved_as": saveName,
                 "from": saveFrom,
-                "bytes": ("$value").len}
+                "bytes": ($vars{saveName}).len}
               oc = ToolCallOutcome(ok: true, value: receipt)
         except CatchableError as e:
           oc = ToolCallOutcome(error: e.msg)

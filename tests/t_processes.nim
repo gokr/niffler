@@ -142,11 +142,20 @@ proc main() =
         s1{"label"}.getStr("").len > 0, $s1)
   let id1 = s1{"id"}.getStr("")
 
+  check("start guidance discovers controls and explains wait/filter/tail",
+    s1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
+    s1{"text"}.getStr("").contains("waitMs:25000") and
+    s1{"text"}.getStr("").contains("filter") and
+    s1{"text"}.getStr("").contains("tail:\"1\""), $s1)
+
   check("first lines are emitted before the drain starts",
         waitForLine(id1, "tick line 0"), "no early output within the deadline")
   let d1 = pcall("process_poll", %*{"id": id1})
   check("first poll sees early lines", d1{"ok"}.getBool(false) and
         d1{"text"}.getStr("").contains("tick line 0"), $d1)
+  check("nonempty poll omits start tutorial and empty-poll hint",
+        not d1{"text"}.getStr("").contains("discover") and
+        not d1{"text"}.getStr("").contains("waitMs:25000"), $d1)
   let early = d1{"lines"}.getInt(-1)
   check("first poll counted lines", early > 0, $d1)
 
@@ -171,6 +180,28 @@ proc main() =
         d3{"text"}.getStr("").contains("(no new output)"), $d3)
   check("exit status reported with code",
         d3{"status"}.getStr("") == "exited(code 0)", $d3)
+
+  # An empty immediate poll gets one hint per entry, never the full tutorial.
+  let quiet = pcall("process_start", %*{"command": "sleep 30"})
+  let quietId = quiet{"id"}.getStr("")
+  let waited = pcall("process_poll", %*{"id": quietId, "waitMs": 100})
+  check("empty waiting poll has no tight-poll hint",
+    waited{"new_bytes"}.getInt(-1) == 0 and
+    not waited{"text"}.getStr("").contains("waitMs:25000"), $waited)
+  let empty = pcall("process_poll", %*{"id": quietId})
+  check("empty immediate running poll hints without changing fields",
+    empty{"new_bytes"}.getInt(-1) == 0 and
+    empty{"status"}.getStr("") == "running" and
+    empty{"text"}.getStr("").contains("waitMs:25000") and
+    not empty{"text"}.getStr("").contains("discover"), $empty)
+  let emptyAgain = pcall("process_poll", %*{"id": quietId})
+  check("empty-poll hint is deduplicated per process",
+    emptyAgain{"new_bytes"}.getInt(-1) == 0 and
+    not emptyAgain{"text"}.getStr("").contains("waitMs:25000"), $emptyAgain)
+  discard pcall("process_kill", %*{"id": quietId})
+  let quietDone = pcall("process_poll", %*{"id": quietId})
+  check("terminal empty poll has no hint",
+    not quietDone{"text"}.getStr("").contains("waitMs:25000"), $quietDone)
 
   # --- filter: projection; cursor advances past everything ---------------
   let s2 = emitter("8 100 w")
@@ -273,6 +304,9 @@ proc main() =
   check("bash flag teaches the follow-up verbs",
         b1{"text"}.getStr("").contains("process_poll") and
         b1{"text"}.getStr("").contains("process_kill"), $b1)
+  check("bash flag teaches discovery and bounded waiting",
+        b1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
+        b1{"text"}.getStr("").contains("waitMs:25000"), $b1)
   let idB = b1{"id"}.getStr("")
   check("the forwarded process emitted before the poll",
         waitForLine(idB, "via-bash line"), "no output within the deadline")

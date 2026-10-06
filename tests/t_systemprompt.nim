@@ -140,17 +140,24 @@ proc main() =
   # pinned here rather than left to drift. Fragments avoid the line wraps.
   check("base prompt carries the change-scope discipline",
         directPrompt.contains("changes scoped") and
-        directPrompt.contains("cover every path that produces the behavior"),
+        directPrompt.contains("cover every path") and
+        directPrompt.contains("that produces the behavior you change"),
         $direct)
-  # Batching/pipeline coaching must survive prompt rewrites: independent
-  # calls share one reply, dependent calls may still share it through the
-  # explicit variables seam, and ordinary `$` text remains literal.
-  check("base prompt teaches batched dependent pipelines",
-        directPrompt.contains("parallel-safe tools fan out") and
+  # Batched calls and the optional pipeline seam stay brief. Tutorials belong
+  # in discovered help/results, not the frozen constitution.
+  check("base prompt teaches brief batching and optional pipelines",
+        directPrompt.contains("Batch independent") and
         directPrompt.contains("save_as") and
         directPrompt.contains("resolve_vars: true") and
-        directPrompt.contains("every `$` is literal"),
+        directPrompt.contains("$ stays literal") and
+        directPrompt.contains("Omit unused options") and
+        directPrompt.contains("Never bypass an approval gate"),
         $direct)
+  const productPromptBytes = staticRead("../components/systemprompt/baseprompt.txt").len
+  check("base prompt is bounded and avoids duplicate pipeline tutorials",
+        productPromptBytes < 1500 and
+        not directPrompt.contains("old_string: \"$span\"") and
+        not directPrompt.contains("file tools don't"), $direct)
 
   # The independent-review instruction is GATED on a spec-sized first message
   # and inserted MID-PROMPT at the "Working on Niffler itself:" anchor: a big

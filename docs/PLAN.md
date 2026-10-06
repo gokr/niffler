@@ -6,6 +6,22 @@ in the [manual](MANUAL.md); design history and proposals belong in
 items that used to live only inside the research/steal docs — one line per
 candidate, pointing at the doc that owns the design and effort detail.
 
+## Recent reliability slices
+
+- **Tool diet + result routing** — implemented on `feat/tool-diet-results`:
+  retain eight direct tools; concise prompt/schema routing, raw-string result
+  projection, workspace-relative/bounded file text, conditional recovery hints,
+  hint-preserving discovery pages, exact source captures, and benchmark readiness
+  plus telemetry. Verified: 69/69 bus tests, Go/vet, 11/11 Node tests; full31
+  31/31 with −23.6% first-prompt tokens and −5.3% total tokens on the matched
+  29 eight-tool tasks (model rounds rose 165→177). See the
+  [retained CSV](../bench/reports/full31-tool-diet-low-report.csv). Code run:
+  `full31-tool-diet-low-fdf2ae0` on `fdf2ae0`, first-party DeepSeek low, one
+  round/task, jobs=2. The earlier `daa861a` run also passed 31/31 but exposed
+  the symlink-display gap; its lower token total is not the headline. No nested
+  grammar or globally demoted grep. Selection-policy unification and advanced
+  schemas on demand remain separate experiments.
+
 ## Current priorities
 
 - **Level 1 UI dynamism** — add `x-ui` schema hints and a generic renderer

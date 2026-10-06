@@ -1065,7 +1065,11 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     workspaceRoot = deriveRoot(path, workspaceRoot, rootMarkersForExt(ext))
   let conf = serverFor(loadRegistry(), ext)
   if conf.name.len == 0:
-    fail("E_LSP_UNAVAILABLE",
+    # Its own code, not E_LSP_UNAVAILABLE: callers (the edit tool's async
+    # push) treat "this file type is nobody's business" differently from "a
+    # configured server is missing or broken", and the two must not be told
+    # apart by matching prose.
+    fail("E_LSP_UNCONFIGURED",
          "no language server configured for " &
          (if ext.len == 0: pathN.getStr() & " (no file extension)"
           else: "'" & ext & "'") &
