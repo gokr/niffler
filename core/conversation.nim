@@ -1496,6 +1496,197 @@ proc storeAttachments*(ct: CoreTools, messageKey: string,
       echo "core: WARNING attachment store failed (keeping the text " &
            "marker): " & e.msg
 
+# ---------------------------------------------------------------------------
+# Runtime variables — in-turn pipeline state ($name / save_as)
+#
+# x-harness.variables opts a tool's args into $name resolution and its
+# response into `save_as` capture, so batched tool calls pipeline like a
+# shell: read saves `span`, edit interpolates it, one turn. Values live in
+# the conversation header (`vars`) — invisible to the prompt (the frozen
+# prefix is system prompt + tool schemas only), persisted at capture time.
+# A runner process serves exactly one conversation, so this module state
+# is per-conversation by construction; it re-keys defensively if a process
+# ever serves another. The model's raw arguments stay in history untouched
+# (strict backends re-validate tool_calls); only the dispatch copy is
+# resolved, and approval therefore shows resolved values.
+
+var gVars = newJObject()
+var gVarsSession = ""
+
+proc varsFor(ct: CoreTools, sessionId: string): JsonNode =
+  ## Lazily load this conversation's variables from the header.
+  if gVarsSession != sessionId:
+    gVars = newJObject()
+    gVarsSession = sessionId
+    try:
+      let header = ct.loadConversationHeader(sessionId)
+      let v = header{"vars"}
+      if v != nil and v.kind == JObject:
+        gVars = v
+    except CatchableError:
+      discard
+  result = gVars
+
+proc persistVars(ct: CoreTools, sessionId: string) =
+  ## Capture-time persistence: variables survive a runner restart from the
+  ## header, like providerOverride/modelOverride. updateConversationHeader
+  ## already swallows store failures with a warning.
+  var vfields = newJObject()
+  vfields["vars"] = gVars
+  ct.updateConversationHeader(sessionId, vfields)
+
+proc isVarNameRune(r: char, first: bool): bool =
+  if first: return r.isAlphaAscii or r == '_'
+  r.isAlphaNumeric or r == '_'
+
+proc usesVariables*(args: JsonNode): bool =
+  ## True when a call opts into pipeline plumbing: `save_as` captures a
+  ## response field and/or `resolve_vars: true` substitutes `$name` in its
+  ## arguments. Ordinary calls are never scanned: `$HOME`, sed expressions
+  ## and source code stay byte-for-byte literal. Such calls run on the
+  ## serial spine in message order, never wave-concurrent, so pipeline
+  ## stages cannot race.
+  if args == nil or args.kind != JObject: return false
+  if args.hasKey("save_as"): return true
+  let rv = args{"resolve_vars"}
+  result = rv != nil and rv.kind == JBool and rv.getBool(false)
+
+proc popSaveAs(args: JsonNode): tuple[name, fromField: string] =
+  ## Read and strip the save_as directive: "name" or {name, from?}.
+  ## from is a dotted response path (default "text"). Capture is explicit
+  ## even without resolve_vars: the response field is saved, while every
+  ## other argument remains literal.
+  result = ("", "")
+  let sa = args{"save_as"}
+  if sa == nil: return
+  args.delete("save_as")
+  if sa.kind == JString:
+    result = (sa.getStr(), "text")
+    return
+  if sa.kind != JObject:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] save_as must be a name or {\"name\": ..., \"from\": ...}")
+  let n = sa{"name"}
+  if n == nil or n.kind != JString or n.getStr().len == 0:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] save_as.name must be a non-empty string")
+  let f = sa{"from"}
+  result = (n.getStr(),
+    (if f != nil and f.kind == JString and f.getStr().len > 0:
+       f.getStr() else: "text"))
+
+proc popResolveVars(args: JsonNode): bool =
+  ## Read and strip the explicit interpolation flag. Omission means literal
+  ## arguments, preserving shell `$`, code and sed expressions exactly.
+  result = false
+  let rv = args{"resolve_vars"}
+  if rv == nil: return
+  args.delete("resolve_vars")
+  if rv.kind != JBool:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] resolve_vars must be true or false")
+  result = rv.getBool(false)
+
+proc resolveValue(v: JsonNode, vars: JsonNode): JsonNode =
+  ## $name resolution inside request values. A whole-value "$name" adopts
+  ## the variable's JSON type (so paths: \"$files\" can carry an array);
+  ## embedded refs interpolate strings only.
+  case v.kind
+  of JString:
+    let s = v.getStr()
+    if s.len > 1 and s[0] == '$' and isVarNameRune(s[1], true):
+      var j = 2
+      while j < s.len and isVarNameRune(s[j], false): inc j
+      if j == s.len:
+        let name = s[1 .. ^1]
+        let val = vars{name}
+        if val == nil:
+          raise newException(ValueError,
+            "[E_NO_VAR] $" & name &
+            " is not set — capture it with save_as first")
+        return val
+    var outp = ""
+    var i = 0
+    while i < s.len:
+      if s[i] == '$' and i + 1 < s.len and isVarNameRune(s[i + 1], true):
+        var j = i + 1
+        while j < s.len and isVarNameRune(s[j], false): inc j
+        let name = s[i + 1 ..< j]
+        let val = vars{name}
+        if val == nil:
+          raise newException(ValueError,
+            "[E_NO_VAR] $" & name &
+            " is not set — capture it with save_as first")
+        if val.kind != JString:
+          raise newException(ValueError,
+            "[E_VAR_TYPE] $" & name & " holds " & $val.kind &
+            "; embedded interpolation needs a string (use a whole-value \"$" &
+            name & "\" to pass JSON through)")
+        outp.add val.getStr()
+        i = j
+      else:
+        outp.add s[i]
+        inc i
+    result = %outp
+  of JObject:
+    result = newJObject()
+    for k, val in v:
+      result[k] = resolveValue(val, vars)
+  of JArray:
+    result = newJArray()
+    for val in v:
+      result.add(resolveValue(val, vars))
+  else:
+    result = v
+
+proc resolveVariables*(args: JsonNode, vars: JsonNode): JsonNode =
+  ## Deep copy of a request with $name resolved; raises E_NO_VAR / E_VAR_TYPE.
+  result = resolveValue(args, vars)
+
+proc captureVariable(vars: JsonNode, name, fromField: string,
+                     value: JsonNode) =
+  ## Dotted-path capture ("text", "items", "items.0.path") of a response
+  ## field into the conversation's variables, size-capped. A bare string
+  ## response (read's single-item form) IS its own "text"/"content".
+  if value.kind == JString and
+      (fromField == "text" or fromField == "content" or fromField == ""):
+    if ($value).len > 65536:
+      raise newException(ValueError,
+        "[E_VAR_FULL] save_as '" & name & "' would exceed the 64KB " &
+        "per-variable cap — capture a narrower field with \"from\"")
+    vars[name] = value
+    return
+  var cur = value
+  for part in fromField.split('.'):
+    if cur == nil:
+      break
+    if cur.kind == JObject:
+      cur = cur{part}
+    elif cur.kind == JArray:
+      var idx = 0
+      try:
+        idx = parseInt(part)
+      except ValueError:
+        raise newException(ValueError,
+          "[E_BAD_SHAPE] save_as.from '" & fromField &
+          "': array index '" & part & "' is not a number")
+      if idx < 0 or idx > cur.len - 1:
+        raise newException(ValueError,
+          "[E_BAD_SHAPE] save_as.from '" & fromField &
+          "': index out of range")
+      cur = cur[idx]
+    else:
+      cur = nil
+  if cur == nil:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] save_as.from '" & fromField &
+      "' does not resolve in the response")
+  if ($cur).len > 65536:
+    raise newException(ValueError,
+      "[E_VAR_FULL] save_as '" & name & "' would exceed the 64KB " &
+      "per-variable cap — capture a narrower field with \"from\"")
+  vars[name] = cur
+
 proc commitToolItem(ct: CoreTools, p: var Persister,
                     messages: var seq[JsonNode],
                     exposure: var ToolExposure,
@@ -2756,6 +2947,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                                "at": epochTime()})
 
     var idx = 0
+    var savedThisMessage: seq[string] = @[]
     while idx < items.len:
       # The human's time limit is checked before every dispatch, not only at
       # round boundaries: one bash call can outlast a whole round, and the
@@ -2786,9 +2978,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         return ""
       # A wave is a maximal run of consecutive parallel-safe calls, bounded
       # by the remaining budget. Serial calls and parse failures run alone.
+      # Variable-coupled calls ($name refs or save_as) are always serial:
+      # pipeline stages must run in message order, never wave-concurrent.
       var wave: seq[tuple[id, name: string, args: JsonNode]] = @[]
       while idx < items.len and isParallelSafeTool(ct, items[idx].name) and
           not items[idx].parseFailed and
+          not usesVariables(items[idx].args) and
           (maxCalls <= 0 or toolCallsMade < maxCalls):
         wave.add((items[idx].id, items[idx].name, items[idx].args))
         inc idx
@@ -2828,12 +3023,54 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           it.rawArgs[0 ..< min(it.rawArgs.len, 200)])
       else:
         try:
-          let value = ct.dispatchToolCall(it.name, it.args)
+          var callArgs = it.args
+          var saveName = ""
+          var saveFrom = ""
+          if usesVariables(callArgs):
+            let schema = ct.cat.toolSchema(it.name)
+            if schema == nil or
+                not schema{"x-harness"}{"variables"}.getBool(false):
+              raise newException(ValueError,
+                "[E_NO_VAR_SUPPORT] tool '" & it.name &
+                "' does not accept resolve_vars/save_as (x-harness.variables) " &
+                "— bash keeps plain $ for shell syntax")
+            var work = copy(it.args)
+            let resolveOn = popResolveVars(work)
+            let sa = popSaveAs(work)
+            saveName = sa.name
+            saveFrom = sa.fromField
+            if saveName.len > 0:
+              if saveName in savedThisMessage:
+                raise newException(ValueError,
+                  "[E_VAR_RACE] save_as '" & saveName &
+                  "' is captured twice in one message — name each stage's " &
+                  "output distinctly")
+              savedThisMessage.add(saveName)
+            callArgs = if resolveOn:
+                         resolveVariables(work, varsFor(ct, sessionId))
+                       else:
+                         work
+          let value = ct.dispatchToolCall(it.name, callArgs)
           if value != nil and value{"__toolError"}.getBool(false):
             oc = ToolCallOutcome(ok: false, value: value,
                                  error: value{"error"}.getStr("tool failed"))
           else:
             oc = ToolCallOutcome(ok: true, value: value)
+            if saveName.len > 0 and value != nil:
+              let vars = varsFor(ct, sessionId)
+              captureVariable(vars, saveName, saveFrom, value)
+              persistVars(ct, sessionId)
+              # Captured payload stays server-side. The transcript gets a
+              # receipt, not a second copy of the bytes: this is what keeps
+              # pipeline stages cheaper than reading every intermediate
+              # value back into the model's context.
+              let receipt = %*{
+                "text": "saved " & saveName & " = " & saveFrom &
+                        " (" & $("$value").len & " bytes)",
+                "saved_as": saveName,
+                "from": saveFrom,
+                "bytes": ("$value").len}
+              oc = ToolCallOutcome(ok: true, value: receipt)
         except CatchableError as e:
           oc = ToolCallOutcome(error: e.msg)
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
