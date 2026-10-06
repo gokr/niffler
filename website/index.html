@@ -95,6 +95,10 @@
         table.bench th:first-child,table.bench td:first-child,table.bench td.tools{text-align:left}
         table.bench tbody tr:hover{background:rgba(127,127,127,.07)}
         table.bench .us{font-weight:600}
+        table.bench.sorted th:last-child,table.bench.sorted td:last-child{background:color-mix(in srgb,var(--accent,#4a5) 8%,transparent)}
+        table.bench.sorted th:last-child{color:var(--accent,#4a5)}
+        table.bench.sorted th:last-child::after{content:" ↑";font-weight:400;opacity:.85}
+        table.bench.sorted td:last-child{font-variant-numeric:tabular-nums}
         .bench-note{font-size:.85em;opacity:.8;line-height:1.5}
         .bench-frame{position:relative;margin:2em 0;padding:1.3em 1.5em 1.1em;border:1px solid rgba(127,127,127,.25);border-radius:14px;
           background:linear-gradient(180deg,rgba(127,127,127,.055),rgba(127,127,127,.015));
@@ -135,7 +139,7 @@
       </div>
 
       <div class="bench-frame">
-      <table class="bench">
+      <table class="bench sorted">
         <caption>Direct tools &amp; fixed prompt — what each harness puts in front of the model</caption>
         <thead><tr><th>Harness</th><th>Direct tools</th><th class="tools">Which</th><th>Base prompt</th><th>Base prompt + tools</th></tr></thead>
         <tbody>
