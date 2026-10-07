@@ -266,7 +266,7 @@
       <div class="feat-group">
         <p class="feat-label" data-i18n-html="ed.lab1">Code, files &amp; the web</p>
         <ul class="features">
-          <li><strong data-i18n="ed.filetools.h">File tools</strong><span data-i18n="ed.filetools.p">batched windowed reads, exact-match edit with a guarded fallback, atomic write, persistent undo</span></li>
+          <li><strong data-i18n="ed.filetools.h">File tools</strong><span data-i18n="ed.filetools.p">batched windowed reads, locate-and-fetch select reads, exact-match edit with a guarded fallback, literal bulk replace across a file set, atomic write, persistent undo</span></li>
           <li><strong data-i18n="ed.search.h">Search</strong><span data-i18n="ed.search.p">gitignore-aware grep and file finding — stateless replicas so parallel calls really run in parallel</span></li>
           <li><strong data-i18n="ed.git.h">Git</strong><span data-i18n="ed.git.p">status, diff, log, show, blame — read-only and approval-free</span></li>
           <li><strong data-i18n="ed.web.h">Web fetch</strong><span data-i18n="ed.web.p">real HTML extraction, SSRF-validated, oversized bodies spill to disk</span></li>
@@ -505,7 +505,7 @@
           <button class="copy" type="button" data-copy-target="setup-code">copy</button>
         </div>
         <pre id="setup-code"><code>curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash
-<span class="dim"># asks: stable release or main, and where to create ~/niffler (or | bash -s -- /your/dir)</span>
+<span class="dim"># asks: stable release or main, where to create ~/niffler (or | bash -s -- /your/dir), then offers the optional extras one by one</span>
 <span class="dim"># or manually, from a clone:</span>
 git clone https://github.com/gokr/niffler.git &amp;&amp; cd niffler
 make setup &amp;&amp; make build
@@ -523,8 +523,11 @@ niffler-tui            <span class="dim"># boots the harness on demand</span></c
         there are no prebuilt binaries. The one-line installer brings in
         everything missing (git, make, curl, Go, then the Nim toolchain and
         nimble packages via <code>make setup</code>); Node.js and npm are
-        optional and it asks first. Building by hand,
-        <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server.
+        optional and it asks first; at the end it offers the optional extras
+        one by one — language servers (<code>make install-lsp</code>), the
+        agent CLI toolkit for bash (<code>make install-tools</code>) and jev
+        (<code>make install-jev</code>) — each defaulting to no. Building by
+        hand, <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server.
         The desktop UI is an experimental spin-off — install it like any
         package: <code>cli install gokr/niffler-ui</code>. Full story in the
         <a href="https://github.com/gokr/niffler/blob/main/docs/MANUAL.md">manual ↗</a>.</p>
