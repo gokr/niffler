@@ -68,6 +68,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model rounds 173→188. The matched subset excludes the baseline's two
   startup-raced four-tool sessions. Single-run totals are noisy; no routing
   or wall-time improvement is claimed.
+- The Maki bench lane now records `firstPromptTokens` — the first request's
+  total prompt, summed across DeepSeek's `input_tokens`, `cache_read` and
+  `cache_creation` usage fields (a warm implicit-cache prefix is reported even
+  on a first request, so `input_tokens` alone under-reports). The bench README
+  documents the hand-probe trap this exposed: Maki's folder-trust walks up to
+  the enclosing git root and adds its AGENTS.md chain (~8.4k tokens from
+  inside this repo), which is how its footprint was once over-measured at
+  ≈15.9k instead of the true ≈7.4k.
+- The website's benchmark tables now carry the 0.4.0 run's numbers — Niffler
+  13.5s and $0.0040 per task, eight direct tools at ≈2.1k — re-sort the
+  footprint table by base prompt + tools, and correct Maki's footprint to
+  ≈7.4k with its tool count fixed at 19. Each table highlights its compared
+  column.
 
 ### Added
 
