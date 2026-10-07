@@ -1473,6 +1473,13 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   let env = callEnvelope(tool, args, caller)
   let data = env.encode()
   let inbox = "_INBOX." & newId()
+  # NIF_CORE_TIMING=1: how long core itself waits for the callee's reply,
+  # measured across the publish and the reply — the difference against the
+  # callee's own handler time is this hop's bus cost. Used to attribute the
+  # ~450ms per model call that is neither the provider stream nor the
+  # callee's work (bench/README.md, "Model-call overhead").
+  let coreTiming = getEnv("NIF_CORE_TIMING", "") == "1"
+  let dispAt = getMonoTime()
   var sub: ptr natsSubscription
   var st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
   if not checkStatus(st):
@@ -1492,6 +1499,9 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ns == NATS_OK:
       let resp = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
+      if coreTiming:
+        stderr.writeLine("core: dispatch " & tool & " wait=" &
+          $int((getMonoTime() - dispAt).inMilliseconds) & "ms")
       if resp.kind == ekError:
         raise newException(ValueError,
           resp.error{"message"}.getStr("component error"))
