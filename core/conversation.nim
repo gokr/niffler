@@ -672,6 +672,7 @@ const
   pruneThreshold = 8192   ## chars — tool results over this get pruned (§5.2)
   pruneHead = 4096        ## chars kept from the head
   pruneTail = 1024        ## chars kept from the tail
+  thinkingTombstonePrefix = "[thinking omitted — "  ## reasoning stub marker
   ctxOutputReserve = 16_384  ## tokens held back for the model's next reply
                              ## (pi compacts at window − reserve); env
                              ## NIF_CTX_RESERVE overrides, 0 disables
@@ -818,10 +819,45 @@ proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
                           bytesAfter: body.len))
   content.len - body.len
 
+proc tombstoneReasoning(p: var Persister, messages: var seq[JsonNode]): int =
+  ## §5.2 reasoning tombstone: past assistant turns' thinking leaves the
+  ## projection. The providers discard prior-turn reasoning on replay
+  ## anyway — measured on the DeepSeek lane: identical prompt_tokens with a
+  ## 62-token reasoning block replayed; Anthropic strips prior turns'
+  ## thinking server-side and requires only the LIVE turn's blocks for tool
+  ## loops — but the meter counted it, so the 90% trim fired ahead of the
+  ## provider's real window. Every assistant message but the LAST is
+  ## tombstoned (the last one's reasoning is what a tool-loop continuation
+  ## needs). Canonical docs are untouched: this re-derives from position on
+  ## every projection rebuild, so no records are kept. Returns measured
+  ## bytes saved; idempotent.
+  var lastAssistant = -1
+  for i in 0 ..< min(p.nodes.len, messages.len):
+    if p.nodes[i].source == nsCanonical and
+        messages[i]{"role"}.getStr("") == "assistant":
+      lastAssistant = i
+  for i in 0 ..< min(p.nodes.len, messages.len):
+    if i == lastAssistant: continue
+    let n = p.nodes[i]
+    if n.source != nsCanonical: continue
+    let m = messages[i]
+    if m{"role"}.getStr("") != "assistant": continue
+    let reasoning = m{"reasoning"}.getStr("")
+    if reasoning.len == 0 or reasoning.startsWith(thinkingTombstonePrefix):
+      continue
+    let stub = thinkingTombstonePrefix & $reasoning.len &
+      " chars; recall via context_recall {\"ref\": {\"source\": \"canonical\", \"id\": \"" &
+      n.id & "\"}}]"
+    if stub.len >= reasoning.len: continue
+    messages[i]["reasoning"] = %stub
+    result += reasoning.len - stub.len
+
 proc pruneContext*(p: var Persister, messages: var seq[JsonNode]): int =
-  ## §5.2 model-free prune: tool results only, whole-result boundaries.
-  ## Role, pairing and machine fields stay intact; canonical history is never
-  ## rewritten. Returns measured bytes saved and is idempotent.
+  ## §5.2 model-free prune: tool results and past-turn reasoning, at
+  ## whole-artifact boundaries. Role, pairing and machine fields stay
+  ## intact; canonical history is never rewritten. Returns measured bytes
+  ## saved and is idempotent.
+  result += p.tombstoneReasoning(messages)
   for i in 0 ..< p.nodes.len:
     result += p.pruneNode(messages, i)
 
@@ -3652,6 +3688,10 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
           return %*{"error": "context-recovery-required: projection prune ref cannot be reproduced: " & pr.id}
     elif storedNodes.len > 0:
       p.canonicalHigh = storedNodes[^1].canonicalSeq
+    # The reasoning tombstone re-derives from position (all assistant
+    # messages but the last), so a checkpoint resume starts honest too —
+    # the meter must not re-inflate with replayed thinking.
+    discard p.tombstoneReasoning(entry.messages)
     entry.persister = p
     # Tool profile (optional, first call only): resolved into the direct
     # toolset once, here, and frozen with the exposure doc. Resumes ignore
