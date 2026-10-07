@@ -384,9 +384,15 @@ per call:
 
 | seam | logs | where |
 |---|---|---|
-| `NIF_LLM_TIMING=1` | `chat timing pre=` / `setup=` / `post=` / `total=` | `components/llm/main.go`, `var/logs/llm.log` |
-| `NIF_CORE_TIMING=1` | `dispatch <tool> wait=` | `core/dispatch.nim`, in the dispatching process's log |
-| `NIF_TURN_TIMING=1` | `session: llm call dur=` | `core/conversation.nim`, `var/logs/session-*.log` |
+| `NIF_LOG_LEVEL=debug` (what `niffler --log=debug` distributes at boot) | all three below | — |
+| ↳ llm | `chat timing pre=` / `setup=` / `post=` / `total=` | `components/llm/main.go`, `var/logs/llm.log` |
+| ↳ core dispatch | `dispatch <tool> wait=` | `core/dispatch.nim`, in the dispatching process's log |
+| ↳ runner | `session: llm call dur=` | `core/conversation.nim`, `var/logs/session-*.log` |
+
+The bench harness starts its core with the caller's env: `NIF_LOG_LEVEL=debug`
+in front of any `node bench/run.mjs` invocation collects all three lines per
+call (the env reaches the spawned components through the same inheritance
+`NIF_ROOT` uses).
 
 The per-call budget (full31 subset, one model, `--jobs 1`, 24 calls):
 
