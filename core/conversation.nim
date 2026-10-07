@@ -2581,6 +2581,15 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       var failMsg = ""
       try:
         resp = ct.dispatchToolCall("chat", llmArgs, 300000)
+        # NIF_TURN_TIMING=1: the runner's own view of each model call. The llm
+        # component logs its provider-side dur/ttft; the difference between
+        # those and this number is the runner→core→llm transport plus this
+        # component's pre/post work around the stream — measured at ~450ms per
+        # call on full31, flat in completion length and load (bench/README.md,
+        # "Model-call overhead").
+        if getEnv("NIF_TURN_TIMING", "") == "1":
+          echo "session: llm call dur=" &
+               $int((getMonoTime() - llmStarted).inMilliseconds) & "ms"
         break
       except CatchableError as e:
         # B3: auto-retry transient LLM failures (rate limits, provider

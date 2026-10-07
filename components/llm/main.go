@@ -531,6 +531,14 @@ func (a chatArgs) emitTokens() bool {
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
+	// NIF_LLM_TIMING=1: this timestamp is the handler's first instruction, so
+	// the logged `pre=` (handler entry → startedAt, i.e. before the provider
+	// request exists) covers everything this component does around the call:
+	// unmarshal, sanitizeMessages, the per-call cancel subscription and
+	// provider/model resolution. `dur=` covers the stream. Anything the runner
+	// sees beyond pre+dur is bus and core dispatch.
+	entryAt := time.Now()
+	llmTiming := os.Getenv("NIF_LLM_TIMING") == "1"
 	var args chatArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("bad chat args: %w", err)
@@ -567,6 +575,12 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	}
 
 	resolved, err := resolveRuntimeConfig(streamCtx, c, args.Provider, args.Model)
+	if llmTiming {
+		// NIF_LLM_TIMING=1: handler entry → provider/model resolved. Covers
+		// unmarshal, sanitizeMessages, the per-call cancel subscription and
+		// resolveRuntimeConfig (which may cross the bus for credentials).
+		log.Printf("INFO chat timing pre=%s", time.Since(entryAt).Truncate(time.Millisecond))
+	}
 	if err != nil {
 		return nil, err
 	}
