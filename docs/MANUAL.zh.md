@@ -2082,6 +2082,8 @@ make build
 | `spill` | `<convId>:<n>` | 从上下文窗口中提升出来的超大工具结果，可用 `context_recall {"ref": {"source": "spill", "id": "…"}}` 寻址。提升在追加时尽力而为（失败则保留临时文件指针且不添加引用）；缺失、为空或格式错误的 spill 文档会被大声拒绝，而不是作为空成功来回答，并且修剪门在修剪前会重新校验该文档，因此损坏的 spill 绝不会导致最后一份副本丢失 |
 | `mcp` | 服务器名 | `mcp` 组件的 MCP 服务器配置记录（见 [External MCP servers](#external-mcp-servers-mcp)） |
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建议式发现实验（`jev`）的每回合影子观测：候选快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。绝不向模型暴露，也绝不写入转录；后端缺席时**不**写任何记录（见[建议式发现](#advisory-discovery-jev-and-the-von-launcher)）。记录包含任务文本——按敏感数据处理 |
+| `edit-undo` | `<session>:<绝对路径>` | 文件的最后编辑前字节，供 `undo_last_edit` 使用（单级，按会话 + 文件）。在编辑*之前*写入；写入失败会拒绝编辑，而不是丢失撤销历史。作用域限于拥有它的会话——没有会话的调用方（cli 脚本）共享一个 `__standalone` 作用域。由 `conversation_delete` 清理 |
+| `edit-seen` | `<session>:<绝对路径>` | 会话最后观察到的文件状态（`digest`/`bytes`/`lines`/`full`），支撑未更改读取存根和 `E_STALE` 门控。仅确认记录已有内容的读取不写入；更正（或任何修改）才写入。store 不可达时读取结果为"从未查看"——这是安全的方向（见上文[存储](#the-store)）。由 `conversation_delete` 清理 |
 | `selftest` | store 自检探针 | 一次性——由 store 自身的自检往返写入并删除 |
 
 后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，或 DSN 共享的 TiDB 引擎（`NIF_STORE_BACKEND=tidb`，`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。
