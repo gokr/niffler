@@ -3716,7 +3716,9 @@ make test-bash      # ... or just one — `make help` lists every target
 ```
 
 `make test-server` runs the ~60 test binaries through
-`scripts/run-tests.sh` in a bounded pool (one test per core by default):
+`scripts/run-tests.sh` in a bounded pool (half the cores by default — a pool
+job boots its own component children and may compile a fixture, so one job per
+core oversubscribes the box):
 tests own private NATS servers and temporary roots, so they overlap safely.
 Each test's output is captured to `var/test-logs/<name>.log`, its wall time
 is printed on completion, and the summary lists the slowest — override with

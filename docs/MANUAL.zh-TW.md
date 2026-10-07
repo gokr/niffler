@@ -2272,7 +2272,7 @@ make test-bash      # ... or just one — `make help` lists every target
 ```
 
 `make test-server` 透過 `scripts/run-tests.sh` 在有界池中執行約 60 個
-測試二進位檔（預設每個 core 一個測試）：測試各自擁有私有的 NATS
+測試二進位檔（預設一半的 core——池中的每個作業不是單一行程：它會啟動自己的 core/store/llm 子行程，且若干測試會用 `nim c` 編譯 fixture，因此每個 core 一個作業會讓機器過載）：測試各自擁有私有的 NATS
 伺服器與暫存 root，因此它們能安全地重疊。每個測試的輸出會擷取到
 `var/test-logs/<name>.log`，其牆鐘時間在完成時印出，摘要則列出最慢
 者——可用 `TEST_JOBS=N`（或直接對腳本用 `NIF_TEST_JOBS=N`）覆寫；

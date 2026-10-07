@@ -388,17 +388,24 @@ TEST_ENV := env -u NIF_OPENAI_API_KEY -u NIF_OPENAI_BASE_URL \
 
 # Bus-contract suite parallelism: a bounded pool over the isolated test
 # binaries (each owns its NATS server + temp root). Override per run:
-#   make test-server TEST_JOBS=1      # sequential (old behavior)
-#   make test-server TEST_JOBS=6      # deeper pool
-TEST_JOBS ?= $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) | head -1)
+#   make test-server TEST_JOBS=1                 # sequential (old behavior)
+#   make test-server TEST_JOBS=$(nproc)          # one job per core (old default)
+# Half the cores by default: a pool job is not one process — it boots its own
+# core/store/llm children, and several tests compile a fixture with `nim c` —
+# so one job per core oversubscribes the box. That showed up as
+# load-dependent failures (drain races in t_processes, fixture compiles
+# timing out) rather than as useful speed.
+CORES ?= $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) | head -1)
+TEST_JOBS ?= $(shell c=$(CORES); n=$$((c / 2)); [ $$n -lt 2 ] && n=2; echo $$n)
 
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/smoke.nim
 
 # ---------------------------------------------------------------------------
 # tests: one binary per tests/*.nim; `make test-server` runs the whole suite
-# through scripts/run-tests.sh in a bounded pool (TEST_JOBS, default one per
-# core). Runtime state and NATS are isolated per test, so individual test
+# through scripts/run-tests.sh in a bounded pool (TEST_JOBS, default half the
+# cores — CORES overrides the machine reading, TEST_JOBS the pool depth).
+# Runtime state and NATS are isolated per test, so individual test
 # targets may run concurrently with each other and a live harness.
 # Individual: make test-bash, test-store, test-store-sqlite, test-store-tidb,
 # test-builder, test-console, test-plugins, test-skills, test-fetch,

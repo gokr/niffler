@@ -2101,7 +2101,7 @@ make test-bash      # ... or just one — `make help` lists every target
                  # bus suite is `make test-server`
 ```
 
-`make test-server` 通过 `scripts/run-tests.sh` 在有界池中运行约 60 个测试二进制（默认每个核心一个测试）：测试拥有私有的 NATS 服务器和临时 root，因此可以安全地重叠运行。每个测试的输出被捕获到 `var/test-logs/<name>.log`，完成时打印其墙钟时间，摘要会列出最慢的——可用 `TEST_JOBS=N`（或直接对脚本用 `NIF_TEST_JOBS=N`）覆盖；`TEST_JOBS=1` 是旧的顺序运行，无论哪种方式日志都按测试分开。`NIF_TEST_VERBOSE=1` 会在每个测试的行之后交错输出其捕获的输出。
+`make test-server` 通过 `scripts/run-tests.sh` 在有界池中运行约 60 个测试二进制（默认半数的核心——池中的每个作业不是单个进程：它启动自己的 core/store/llm 子进程，且若干测试会用 `nim c` 编译 fixture，因此每个核心一个作业会让机器过载）：测试拥有私有的 NATS 服务器和临时 root，因此可以安全地重叠运行。每个测试的输出被捕获到 `var/test-logs/<name>.log`，完成时打印其墙钟时间，摘要会列出最慢的——可用 `TEST_JOBS=N`（或直接对脚本用 `NIF_TEST_JOBS=N`）覆盖；`TEST_JOBS=1` 是旧的顺序运行，无论哪种方式日志都按测试分开。`NIF_TEST_VERBOSE=1` 会在每个测试的行之后交错输出其捕获的输出。
 
 每个测试都会启动真实的组件二进制（Nim、Go *和* TypeScript——信封就是产物，因此一个 harness 测试所有 SDK），并在每个测试自己启动的私有 nats-server 上驱动它们（`NIF_NATS_SPAWN` 式隔离）。
 此门是自包含的：不需要浏览器、Wails 或前端工具链。（实验性的桌面 UI 位于 [gokr/niffler-ui](https://github.com/gokr/niffler-ui)，在那里运行它自己的检查。）
