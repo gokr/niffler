@@ -928,12 +928,35 @@ func repairToolArgs(raw string) string {
 }
 
 // sanitizeMessages repairs tool-call arguments in assistant messages so a
-// strict backend never rejects replayed history. Only assistant tool_calls
-// are touched; everything else round-trips unchanged.
+// strict backend never rejects replayed history, and strips prior turns'
+// reasoning from the request. The strip is API semantics, not projection:
+// providers discard replayed reasoning anyway (measured on the DeepSeek
+// lane — identical prompt_tokens with a 62-token reasoning block replayed;
+// Anthropic keeps only the live turn's blocks for tool loops and strips
+// prior turns' server-side), so carrying it is dead wire bytes — core's
+// §5.2 tombstone keeps the METER honest, this keeps the REQUEST honest.
+// Only assistant messages are touched; everything else round-trips
+// unchanged.
 func sanitizeMessages(msgs []chatMessage) {
+	last, lastUser := -1, -1
+	for i := range msgs {
+		switch msgs[i].Role {
+		case openai.ChatMessageRoleAssistant:
+			last = i
+		case openai.ChatMessageRoleUser:
+			lastUser = i
+		}
+	}
 	for i := range msgs {
 		if msgs[i].Role != openai.ChatMessageRoleAssistant {
 			continue
+		}
+		// The live turn keeps its reasoning — the trailing assistant turn
+		// (one a tool loop is continuing: nothing user-shaped after it).
+		// Once a user message follows, that turn is complete and its
+		// reasoning is dead weight.
+		if i != last || i < lastUser {
+			msgs[i].ReasoningContent = ""
 		}
 		for j := range msgs[i].ToolCalls {
 			msgs[i].ToolCalls[j].Function.Arguments =
