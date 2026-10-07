@@ -151,6 +151,27 @@ proc saveRecord(pkg: string, value: JsonNode) =
 proc dropRecord(pkg: string) =
   comp.storeDel("plugin", pkg)
 
+proc recordCheckoutGone(rec: JsonNode): bool =
+  ## True when the recorded checkout no longer exists: no update can repair
+  ## such a record in place (nothing to pull or rebuild), only a fresh
+  ## install can. Binaries are deliberately not consulted — a live checkout
+  ## with missing/dirty artifacts is plugin_update's repair-build path.
+  let dir = rec{"dir"}.getStr("")
+  dir.len == 0 or not dirExists(dir)
+
+proc pluginRecordsForRepo(repo: string): seq[JsonNode] =
+  ## Install records are keyed by manifest name, which need not equal the
+  ## repo basename ("testpkg" installed from "tplugrepo"), so match on the
+  ## recorded repo instead of guessing the key. An unreachable store yields
+  ## no records (fail closed, like pluginRecord); the install then fails
+  ## later at its first store write.
+  try:
+    for item in comp.storeList("plugin", "", 1000, 10_000):
+      let v = item.value
+      if v != nil and v{"repo"}.getStr("") == repo: result.add(v)
+  except CatchableError:
+    discard
+
 proc repoHead(dir: string): string =
   ## Return the checkout commit used to build an installed package.
   let r = runCmd("git -C " & quoteShell(dir) & " rev-parse HEAD", 15_000)
@@ -871,12 +892,27 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
     ## code on this machine (source builds, so exactly the published code).
     ## - repo: "owner/name" or a github.com URL, e.g. "gokr/niffler-weather"
     ## - version: Git tag or branch to install (empty = latest release, else default branch)
+    ## A record whose checkout is gone can never be repaired in place, so
+    ## the install drops it — stopping its supervised components first —
+    ## and proceeds fresh; no plugin_remove round-trip needed.
     if findExe("git").len == 0:
       return errResult("git not found on PATH")
     let cleanRepo = normalizeRepo(repo)
-    if pluginRecord(repoSlug(cleanRepo)) != nil:
-      return errResult("already installed: " & repoSlug(cleanRepo) &
-                       " — use plugin_update for a newer version, or plugin_remove first")
+    for rec in pluginRecordsForRepo(cleanRepo):
+      if not recordCheckoutGone(rec):
+        return errResult("already installed: " & rec{"name"}.getStr("") &
+                         " — use plugin_update for a newer version, or plugin_remove first")
+      # stale record: stop its components, remove the dead artifacts and
+      # record, then fall through to a fresh install
+      let name = rec{"name"}.getStr("")
+      echo "plugin_install: stale record for " & name &
+           " (checkout gone) — reinstalling from scratch"
+      discard removeComps(rec)
+      cleanupArtifacts(rec)
+      try:
+        dropRecord(name)
+      except CatchableError:
+        discard
     let r = doInstall(cleanRepo, version)
     if not r{"ok"}.getBool(false): return r
     r["note"] = %"service components restart on harness boot; interactive components must be started manually"
@@ -899,12 +935,39 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
     ## Interactive components are rebuilt but not started.
     ## Reports updated:false when there was nothing new (latest release
     ## already pinned, or the branch pull was a no-op).
+    ## A record whose checkout is gone cannot be updated in place: its
+    ## supervised components are stopped, the dead artifacts and record
+    ## dropped, and the package reinstalled from scratch.
     ## - package: Installed package name (see plugin_installed)
     let rec = pluginRecord(package)
     if rec == nil:
       return errResult("package not installed: " & package &
                        " — see plugin_installed")
     let repo = rec{"repo"}.getStr("")
+    if repo.len == 0:
+      return errResult("record for " & package &
+                       " carries no repo — plugin_remove it and reinstall")
+    if recordCheckoutGone(rec):
+      # Reinstall from scratch: stop the recorded components, drop the dead
+      # record (runtime bundles too — publish rewrites binaries in place),
+      # then clone and build fresh. The recorded ref is the pin to re-clone;
+      # an empty ref keeps following the default branch / latest release,
+      # exactly as the original install did.
+      echo "plugin_update: checkout for " & package &
+           " is gone — reinstalling from scratch"
+      discard removeComps(rec)
+      cleanupRuntimes(rec)
+      try:
+        dropRecord(package)
+      except CatchableError:
+        discard
+      let r = doInstall(repo, rec{"ref"}.getStr(""))
+      if not r{"ok"}.getBool(false):
+        return errResult("reinstall of " & package & " failed",
+                         extra = %*{"detail": r})
+      r["updated"] = %true
+      r["reinstalled"] = %true
+      return r
     # Local file:// repos have no GitHub releases; skip the API round-trip
     # (offline it would hang resolveTag's client for its full timeout).
     let latest = if repo.startsWith("file://"): "" else: resolveTag(repo)

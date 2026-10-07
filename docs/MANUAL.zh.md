@@ -754,8 +754,8 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 |---|---|
 | `plugin_search {query?}` | GitHub 主题搜索；返回仓库、描述、星标，以及最终胜出的 `query` 和每次尝试的诊断信息——GitHub 对词做 AND 运算，所以零命中的查询会用更少的词重试 |
 | `plugin_installed` | 本 harness 上已安装的包 |
-| `plugin_install {repo, version?}` | 克隆到 `var/plugins/<pkg>@<ref>/`，通过构建器构建每个组件（v1 用 `build`，v2 用 `build_package`），然后 `spawn` 每个服务组件（需审批）。安装一个已有记录的包是错误，而不是重新安装——请用 `plugin_update`，或先 `plugin_remove`；克隆是浅克隆（`--depth 1`），v1 Go 包会带一个未跟踪的 `go.work` 供手动构建 |
-| `plugin_update {package}` | 更新到最新发布标签：移除，按新 ref 重新安装；没有发布（跟踪分支）的包就地拉取（对现有克隆执行 `git pull --ff-only`），当拉取移动了 HEAD 或已安装产物过期/缺失时重新构建 |
+| `plugin_install {repo, version?}` | 克隆到 `var/plugins/<pkg>@<ref>/`，通过构建器构建每个组件（v1 用 `build`，v2 用 `build_package`），然后 `spawn` 每个服务组件（需审批）。安装一个记录与克隆都存活的包是错误，而不是重新安装——请用 `plugin_update`，或先 `plugin_remove`；克隆已消失的记录（var/plugins 被手工删除、store 保留）属于过期记录，会由全新安装修复；克隆是浅克隆（`--depth 1`），v1 Go 包会带一个未跟踪的 `go.work` 供手动构建 |
+| `plugin_update {package}` | 更新到最新发布标签：移除，按新 ref 重新安装；没有发布（跟踪分支）的包就地拉取（对现有克隆执行 `git pull --ff-only`），当拉取移动了 HEAD 或已安装产物过期/缺失时重新构建；克隆已消失的记录会按记录的 ref 从头重新安装 |
 | `plugin_remove {package}` | 对每个受监督组件执行 `core.remove`，删除克隆，删除记录 |
 
 - 安装/更新/移除都带有 `x-harness.approval: "always"`——它们运行第三方代码，每一次单独的 spawn/remove 都会再次由 core 审批。除非你信任发布者，否则绝不要用 `NIF_AUTO_APPROVE=1` 运行它们。

@@ -4,7 +4,9 @@
 ## from a LOCAL git repo (file:// support) — no network needed. Covers
 ## the whole pipeline: clone → manifest → builder.build → core.spawn →
 ## registration → tool callable; interactive-only packages build without
-## spawning; duplicate-install rejection; plugin_remove teardown. A Go
+## spawning; duplicate-install rejection; a stale record (checkout and
+## binaries gone, store intact) self-heals on reinstall; plugin_remove
+## teardown. A Go
 ## package whose go.mod replace assumes a sibling checkout gets an
 ## untracked go.work at install so a manual `make` in the clone builds;
 ## plugin_update on a branch-tracked package (no release tags) pulls in
@@ -341,6 +343,32 @@ proc main() =
                    root = root)
   check("duplicate install rejected", dup.code != 0 and
         dup.output.contains("already installed"), dup.output)
+
+  # A record whose checkout AND binaries are gone (var/plugins wiped by
+  # hand while the store survived) is stale — plugin_install drops it and
+  # installs fresh instead of refusing with "already installed".
+  let staleDir = root / "var" / "plugins" / "tplugrepo@head"
+  let staleBin = root / "var" / "bin" / "tplug"
+  check("stale-record setup: checkout and binary present",
+        dirExists(staleDir) and fileExists(staleBin))
+  removeDir(staleDir)
+  removeFile(staleBin)
+  let redo = runCli(cliBin, url, @["install", "file://" & repoDir], 300_000,
+                    root = root)
+  check("install self-heals a stale record", redo.code == 0 and
+        redo.output.contains("INSTALL OK"), redo.output)
+  check("stale-record reinstall rebuilt the binary", fileExists(staleBin))
+
+  # plugin_update must repair the same state — the "already installed"
+  # error points at it, so its advice must hold for a vanished checkout.
+  removeDir(staleDir)
+  removeFile(staleBin)
+  let upd = runCli(cliBin, url,
+                   @["call", "plugin_update", "{\"package\":\"testpkg\"}"],
+                   300_000, root = root)
+  check("plugin_update reinstalls a stale record", upd.code == 0 and
+        upd.output.contains("\"reinstalled\":true") and
+        fileExists(staleBin), upd.output)
 
   # plugin_installed lists the package
   let list = runCli(cliBin, url, @["call", "plugin_installed", "{}"], 30_000,

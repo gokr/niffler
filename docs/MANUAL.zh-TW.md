@@ -847,8 +847,8 @@ project, build: {steps: [[argv...]], artifact: {path, runner}}}]}`：套件自�
 |---|---|
 | `plugin_search {query?}` | GitHub 主題搜尋；回傳 repo、description、stars，以及勝出的 `query` 與每次嘗試的診斷——GitHub 會對詞彙做 AND，因此零命中的查詢會以更少的詞重試 |
 | `plugin_installed` | 此 harness 上已安裝的套件 |
-| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`，透過 builder 建置每個元件（v1 用 `build`，v2 用 `build_package`），然後 `spawn` 每個服務元件（需核准）。安裝已有紀錄的套件是錯誤，而非重新安裝——請用 `plugin_update`，或先 `plugin_remove`；clone 是淺層的（`--depth 1`），且 v1 Go 套件會帶一個未追蹤的 `go.work` 供手動建置 |
-| `plugin_update {package}` | 更新至最新 release tag：移除、以新 ref 重新安裝；沒有 release（追蹤分支）的套件會就地拉取（對既有 clone 執行 `git pull --ff-only`），並在拉取移動 HEAD 或已安裝的 artifact 過期/遺失時重新建置 |
+| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`，透過 builder 建置每個元件（v1 用 `build`，v2 用 `build_package`），然後 `spawn` 每個服務元件（需核准）。安裝記錄與 clone 都存活的套件是錯誤，而非重新安裝——請用 `plugin_update`，或先 `plugin_remove`；clone 已消失的紀錄（var/plugins 被手動刪除、store 保留）屬於過期紀錄，會由全新安裝修復；clone 是淺層的（`--depth 1`），且 v1 Go 套件會帶一個未追蹤的 `go.work` 供手動建置 |
+| `plugin_update {package}` | 更新至最新 release tag：移除、以新 ref 重新安裝；沒有 release（追蹤分支）的套件會就地拉取（對既有 clone 執行 `git pull --ff-only`），並在拉取移動 HEAD 或已安裝的 artifact 過期/遺失時重新建置；clone 已消失的紀錄會依紀錄的 ref 從頭重新安裝 |
 | `plugin_remove {package}` | 對每個受監督元件執行 `core.remove`、刪除 clone、移除紀錄 |
 
 - Install/update/remove 全都帶有 `x-harness.approval: "always"`——它們

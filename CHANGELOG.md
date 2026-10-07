@@ -23,6 +23,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`plugin_install`/`plugin_update` repair a stale install record instead of
+  refusing.** A record whose checkout (`var/plugins/<pkg>@<ref>`) is gone —
+  e.g. that directory was wiped by hand while `var/store.db` survived — made
+  `make install` fail with `already installed: niffler-tui` even though no
+  binary existed, and the suggested `plugin_update` was just as stuck
+  (`package directory missing`). `plugin_install` now detects a vanished
+  checkout (matching records by their recorded repo, since the key is the
+  manifest name), stops the recorded components, drops the dead record and
+  installs fresh; `plugin_update` on such a record reinstalls from scratch at
+  its recorded ref. `plugin_update` on a live checkout with a missing binary
+  already repaired via its rebuild path; the install dance now falls back to
+  it when `plugin_install` refuses.
 - **Edit undo and seen-state are store documents now** (kinds `edit-undo` /
   `edit-seen`, ids `<session>:<path>`), not one shared
   `$XDG_CONFIG_HOME/niffler-edit/undo.json` rewritten in full on every

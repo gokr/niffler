@@ -13,6 +13,9 @@
 #   make install FORCE=1             # reinstall the plugin even if present
 #   make install NIF_BIN_DIR=~/bin   # explicit bin dir (auto-detected else)
 #   make uninstall                   # remove the PATH entries again
+# When the plugin is already installed, the dance first tries plugin_install
+# (a record whose checkout vanished self-heals there) and falls back to
+# plugin_update, which repairs a live checkout with a missing binary.
 # Env: NIF_BOOT_TIMEOUT_S (default 300) — how long the plugin install waits
 #      for the isolated harness boot before giving up.
 set -euo pipefail
@@ -188,11 +191,20 @@ install_tui_plugin() {
     die "harness did not come up — see $ROOT/var/logs/core.log"
   fi
 
-  if NIF_NATS_URL="$(cat "$DANCE_URL_FILE")" "$ROOT/var/bin/cli" install \
+  # First try a plain install. A record whose checkout is still there makes
+  # plugin_install refuse ("already installed"), and the repair for that is
+  # plugin_update: a branch pin pulls/rebuilds in place, and the repair-build
+  # path replaces a missing interactive binary without a reinstall.
+  local tui_url
+  tui_url="$(cat "$DANCE_URL_FILE")"
+  if NIF_NATS_URL="$tui_url" "$ROOT/var/bin/cli" install \
        --timeout:600 gokr/niffler-tui; then
     log "niffler-tui plugin installed"
+  elif NIF_NATS_URL="$tui_url" "$ROOT/var/bin/cli" call plugin_update \
+         '{"package":"niffler-tui"}'; then
+    log "niffler-tui plugin updated (existing install refreshed)"
   else
-    die "plugin install failed — see $ROOT/var/logs/core.log"
+    die "plugin install/update failed — see $ROOT/var/logs/core.log"
   fi
 
   cleanup_dance
