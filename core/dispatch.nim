@@ -1508,15 +1508,37 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       return resp.args
     # idle slot: keep core responsive to its own tools, the catalog, and the
     # live LLM token stream (so streaming thinking reaches the UI while we wait)
+    let idleAt = getMonoTime()
     pumpCoreWhileBusy(ct)
+    let afterBusy = getMonoTime()
     ct.cat.pump()
+    let afterCat = getMonoTime()
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
+    let afterSup = getMonoTime()
     pumpTokenStream(ct)
+    let afterTok = getMonoTime()
     pumpSteer(ct)
+    let afterSteer = getMonoTime()
     pumpBusyCall(ct)
+    let afterCall = getMonoTime()
     pumpMap(ct)
+    let afterMap = getMonoTime()
     pumpDiag(ct)
+    if coreTiming:
+      # NIF_CORE_TIMING=1: which idle-slot pump holds the reply up. The reply
+      # is only re-checked at the top of the loop, so a slow pump delays it by
+      # its own duration — flat in payload and load, which is exactly the
+      # ~450ms/call signature (bench/README.md, "Model-call overhead").
+      let ms = proc(a, b: MonoTime): int = int((b - a).inMilliseconds)
+      let total = ms(idleAt, getMonoTime())
+      if total >= 20:
+        stderr.writeLine("dispatch idle total=" & $total & "ms busy=" &
+          $ms(idleAt, afterBusy) & " cat=" & $ms(afterBusy, afterCat) &
+          " sup=" & $ms(afterCat, afterSup) & " tok=" &
+          $ms(afterSup, afterTok) & " steer=" & $ms(afterTok, afterSteer) &
+          " call=" & $ms(afterSteer, afterCall) & " map=" &
+          $ms(afterCall, afterMap) & " diag=" & $ms(afterMap, getMonoTime()))
     # Turn cancellation while THIS dispatch is in flight: stop waiting for
     # the reply (TurnCancelled). Only during a live turn, and only for a
     # fresh cancel — non-turn dispatches (model selection, session_prepare)

@@ -539,6 +539,18 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	// sees beyond pre+dur is bus and core dispatch.
 	entryAt := time.Now()
 	llmTiming := os.Getenv("NIF_LLM_TIMING") == "1"
+	if llmTiming {
+		// The handler's total, across every return path. `pre` is entry →
+		// provider resolved and `dur` is the stream, so total-(pre+dur) is
+		// everything this component does after the last byte: building the
+		// result, tool-call aggregation, and the reply publish. The runner
+		// waits for exactly this number, so a gap there is the component's,
+		// not the bus's.
+		defer func() {
+			log.Printf("INFO chat timing total=%s",
+				time.Since(entryAt).Truncate(time.Millisecond))
+		}()
+	}
 	var args chatArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("bad chat args: %w", err)
@@ -1087,6 +1099,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	defer cancel()
 
 	maxTokens, maxCompletion := lengthCap(providerName, outputSize)
+	csAt := time.Now()
 	stream, err := client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:               model,
 		Messages:            openAIMessages(args.Messages),
@@ -1099,6 +1112,15 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	})
 	if err != nil {
 		return nil, err
+	}
+	if os.Getenv("NIF_LLM_TIMING") == "1" {
+		// Time from entering chatStream to the provider's response headers:
+		// client construction, request marshal, DNS/TCP/TLS and the
+		// provider's own queue before it starts a response. Sits outside both
+		// `pre` and `dur`, so without this line it reads as harness overhead
+		// (bench/README.md, "Model-call overhead").
+		log.Printf("INFO chat timing setup=%s",
+			time.Since(csAt).Truncate(time.Millisecond))
 	}
 	defer stream.Close()
 
@@ -1225,8 +1247,22 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		return nil, interruptErr(finish)
 	}
 	logStreamStats(usage, reasoning.Len(), false)
-	return resultJSON(providerName, usedModel, contextSize, content.String(),
-		reasoning.String(), calls, usage, 0, usageSeen, finish)
+	// NIF_LLM_TIMING=1: split what happens after the last streamed byte. The
+	// runner's wait exceeds this component's `total` by only ~5ms, so anything
+	// here is the whole remaining per-call overhead (bench/README.md,
+	// "Model-call overhead").
+	buildAt := time.Now()
+	res, resErr := resultJSON(providerName, usedModel, contextSize,
+		content.String(), reasoning.String(), calls, usage, 0, usageSeen, finish)
+	if os.Getenv("NIF_LLM_TIMING") == "1" {
+		buildMs := time.Since(buildAt)
+		closeAt := time.Now()
+		stream.Close()
+		log.Printf("INFO chat timing post build=%s close=%s",
+			buildMs.Truncate(time.Millisecond),
+			time.Since(closeAt).Truncate(time.Millisecond))
+	}
+	return res, resErr
 }
 
 // resultJSON builds the wire result — the same shape llm-openai returns,
