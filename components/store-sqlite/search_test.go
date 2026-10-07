@@ -72,6 +72,17 @@ func TestIndexedTextFields(t *testing.T) {
 	if !strings.Contains(got, "plain body") {
 		t.Fatalf("message text missed string content: %q", got)
 	}
+	// message: reasoning is canonical history — indexed beside the content.
+	got = indexedText("message", "c:4", []byte(
+		`{"content":"the decision","reasoning":"considered SQLite over Postgres for the queue"}`))
+	if !strings.Contains(got, "decision") || !strings.Contains(got, "Postgres") {
+		t.Fatalf("message text missed reasoning: %q", got)
+	}
+	// reasoning that is not a string (null, absent, object) is skipped.
+	got = indexedText("message", "c:5", []byte(`{"content":"x","reasoning":null}`))
+	if !strings.Contains(got, "x") || strings.Contains(got, "null") {
+		t.Fatalf("null reasoning leaked into the index: %q", got)
+	}
 	// any other kind: id only.
 	got = indexedText("component", "bash", []byte(`{"binary":"/bin/sh","note":"spawn"}`))
 	if got != "bash" {

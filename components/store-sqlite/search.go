@@ -94,7 +94,7 @@ func appendIndexed(b *strings.Builder, s string) {
 // per-kind field list (docs/WIRE.md "Store contract" / searchSchema):
 //
 //	conversation: id + value.title
-//	message:      id + every string under value.content (capped)
+//	message:      id + every string under value.content (capped) + value.reasoning
 //	any other kind: id only
 //
 // Errors in the stored JSON degrade to indexing the id alone: the document
@@ -116,6 +116,17 @@ func indexedText(kind, id string, value []byte) string {
 			if content, ok := doc["content"]; ok {
 				appendIndexed(&b, " ")
 				appendContentStrings(&b, content)
+			}
+			// Reasoning is canonical history too (the recall contract:
+			// search reaches everything the store keeps) — a message's
+			// thinking is exactly what "what did I consider and reject"
+			// queries want. The cap bounds it like any other text.
+			if reasoning, ok := doc["reasoning"]; ok {
+				var s string
+				if json.Unmarshal(reasoning, &s) == nil && s != "" {
+					appendIndexed(&b, " ")
+					appendIndexed(&b, s)
+				}
 			}
 		}
 	}

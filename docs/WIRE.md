@@ -1057,8 +1057,9 @@ mode: search`, issue #51): `idPrefix` scopes to one conversation's
 messages, `rank` orders by relevance, `snippet` marks the matched span.
 
 - **Indexed fields** (documented, per kind): `conversation` = id +
-  `value.title`; `message` = id + every string under `value.content`
-  (capped at 16KB per document); any other kind = id only.
+  `value.title`; `message` = id + every string under `value.content` +
+  `value.reasoning` (capped at 16KB per document in total); any other kind
+  = id only.
 - **Matching** is contract, identical in every engine: query and indexed
   text tokenize the same way — runs of unicode letters/digits are tokens,
   every other character is a separator — and *every* query token must
