@@ -1473,11 +1473,12 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   let env = callEnvelope(tool, args, caller)
   let data = env.encode()
   let inbox = "_INBOX." & newId()
-  # NIF_CORE_TIMING=1: how long core itself waits for the callee's reply,
-  # measured across the publish and the reply — the difference against the
-  # callee's own handler time is this hop's bus cost. Used to attribute the
-  # ~450ms per model call that is neither the provider stream nor the
-  # callee's work (bench/README.md, "Model-call overhead").
+  # NIF_CORE_TIMING=1: how long this dispatch waited for the callee's reply —
+  # publish to reply, which for a model call is the whole provider round trip.
+  # Note the line lands in whichever process ran the dispatch: the session
+  # runner compiles this module too and calls the llm component directly, so
+  # the runner<->core hop is not in the model-call path at all (measured: 1ms).
+  # Budget and method: bench/README.md, "Model-call overhead".
   let coreTiming = getEnv("NIF_CORE_TIMING", "") == "1"
   let dispAt = getMonoTime()
   var sub: ptr natsSubscription
@@ -1500,7 +1501,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       let resp = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
       if coreTiming:
-        stderr.writeLine("core: dispatch " & tool & " wait=" &
+        stderr.writeLine("dispatch " & tool & " wait=" &
           $int((getMonoTime() - dispAt).inMilliseconds) & "ms")
       if resp.kind == ekError:
         raise newException(ValueError,
@@ -1508,37 +1509,15 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       return resp.args
     # idle slot: keep core responsive to its own tools, the catalog, and the
     # live LLM token stream (so streaming thinking reaches the UI while we wait)
-    let idleAt = getMonoTime()
     pumpCoreWhileBusy(ct)
-    let afterBusy = getMonoTime()
     ct.cat.pump()
-    let afterCat = getMonoTime()
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
-    let afterSup = getMonoTime()
     pumpTokenStream(ct)
-    let afterTok = getMonoTime()
     pumpSteer(ct)
-    let afterSteer = getMonoTime()
     pumpBusyCall(ct)
-    let afterCall = getMonoTime()
     pumpMap(ct)
-    let afterMap = getMonoTime()
     pumpDiag(ct)
-    if coreTiming:
-      # NIF_CORE_TIMING=1: which idle-slot pump holds the reply up. The reply
-      # is only re-checked at the top of the loop, so a slow pump delays it by
-      # its own duration — flat in payload and load, which is exactly the
-      # ~450ms/call signature (bench/README.md, "Model-call overhead").
-      let ms = proc(a, b: MonoTime): int = int((b - a).inMilliseconds)
-      let total = ms(idleAt, getMonoTime())
-      if total >= 20:
-        stderr.writeLine("dispatch idle total=" & $total & "ms busy=" &
-          $ms(idleAt, afterBusy) & " cat=" & $ms(afterBusy, afterCat) &
-          " sup=" & $ms(afterCat, afterSup) & " tok=" &
-          $ms(afterSup, afterTok) & " steer=" & $ms(afterTok, afterSteer) &
-          " call=" & $ms(afterSteer, afterCall) & " map=" &
-          $ms(afterCall, afterMap) & " diag=" & $ms(afterMap, getMonoTime()))
     # Turn cancellation while THIS dispatch is in flight: stop waiting for
     # the reply (TurnCancelled). Only during a live turn, and only for a
     # fresh cancel — non-turn dispatches (model selection, session_prepare)

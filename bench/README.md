@@ -376,6 +376,46 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
   may finish too late to affect short tasks. Check each result's `expert.active`,
   judgment, steer, acceptance and stale-drop counters before interpreting it.
 
+## Model-call overhead
+
+Where a turn's wall time goes, measured rather than assumed. Three env-gated
+seams exist for this — all are no-ops unless enabled, and each logs one line
+per call:
+
+| seam | logs | where |
+|---|---|---|
+| `NIF_LLM_TIMING=1` | `chat timing pre=` / `setup=` / `post=` / `total=` | `components/llm/main.go`, `var/logs/llm.log` |
+| `NIF_CORE_TIMING=1` | `dispatch <tool> wait=` | `core/dispatch.nim`, in the dispatching process's log |
+| `NIF_TURN_TIMING=1` | `session: llm call dur=` | `core/conversation.nim`, `var/logs/session-*.log` |
+
+The per-call budget (full31 subset, one model, `--jobs 1`, 24 calls):
+
+| segment | mean |
+|---|---:|
+| `pre` — unmarshal, sanitize, per-call cancel subscribe, provider/model resolve | 43 ms |
+| `setup` — client build, request marshal, HTTP/TLS, **provider's response headers** | 448 ms |
+| `stream` — `ttft` + decode (the `dur=` already in the llm log) | 1,934 ms |
+| `post` — result build + `stream.Close()` | 0 ms |
+| bus — the runner's dispatch wait beyond the component's total | 5 ms |
+
+Residual: 2 ms. **Harness-side cost per model call is ~48 ms** (`pre` + `post`
++ bus); the rest is the provider. Note `setup` sits outside both `pre` and
+`dur` — it is the request→headers window, flat per call (~450 ms, no warm-up
+effect), and reading it as harness overhead is the easy mistake this section
+exists to prevent.
+
+Ruled out by measurement, each with a number behind it: token fan-out per
+delta (overhead flat vs completion length, corr −0.07), contention on the
+shared pump (`--jobs 1` identical), the runner's post-call bookkeeping (6 ms),
+the llm component's pre-stream work (43 ms), the dispatch idle-slot pumps
+(never ≥ 20 ms), the runner↔core hop (1 ms — the session runner calls the llm
+component directly), and post-stream work (0 ms).
+
+To re-measure: run a task subset with the three variables set, then pair the
+llm log's `prompt=` token count with the transcript's `usage.prompt_tokens`
+(the assistant items carry it) and read `pre`/`setup`/`dur`/`post` off the
+per-call records. Go durations print as `450ms` or `1.258s` — parse both.
+
 ## SWE-bench Verified
 
 See `swe/README.md` for the active 10-task SymPy pilot. `uv` installs the
