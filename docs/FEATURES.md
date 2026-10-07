@@ -215,10 +215,14 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
 
 ### Files, search and repository inspection
 
-- `edit` — `read` (batched windows, unchanged detection, symbol outline for
-  large files), `edit` (unique-match replacement with a guarded fallback
-  cascade), `write` (atomic whole-file), `undo_last_edit` (persistent,
-  single-level, stale-aware); post-edit language-server diagnostics push.
+- `edit` — `read` (batched windows, select mode that locates-then-fetches with
+  grep semantics, unchanged detection, symbol outline for large files), `edit`
+  (unique-match replacement with a guarded fallback cascade), `replace_across`
+  (sed-style literal replacement across a file set in one call, with per-file
+  counts and per-file undo), `write` (atomic whole-file), `undo_last_edit`
+  (persistent, single-level, stale-aware); session-variable pipeline controls
+  (`save_as` / `resolve_vars`) on the read and mutation tools; post-edit
+  language-server diagnostics push.
 - `grep` — `grep` (content search, fixed argv, caps, exit codes) and `files`
   (sorted listing); gitignore-aware glob and hidden semantics; stateless
   replicas.
