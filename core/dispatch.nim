@@ -1473,13 +1473,13 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   let env = callEnvelope(tool, args, caller)
   let data = env.encode()
   let inbox = "_INBOX." & newId()
-  # NIF_CORE_TIMING=1: how long this dispatch waited for the callee's reply —
+  # NIF_LOG_LEVEL=debug: how long this dispatch waited for the callee's reply —
   # publish to reply, which for a model call is the whole provider round trip.
   # Note the line lands in whichever process ran the dispatch: the session
   # runner compiles this module too and calls the llm component directly, so
   # the runner<->core hop is not in the model-call path at all (measured: 1ms).
   # Budget and method: bench/README.md, "Model-call overhead".
-  let coreTiming = getEnv("NIF_CORE_TIMING", "") == "1"
+  let coreTiming = getEnv("NIF_LOG_LEVEL", "") == "debug"
   let dispAt = getMonoTime()
   var sub: ptr natsSubscription
   var st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
@@ -1501,8 +1501,11 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       let resp = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
       if coreTiming:
-        stderr.writeLine("dispatch " & tool & " wait=" &
-          $int((getMonoTime() - dispAt).inMilliseconds) & "ms")
+        # echo, not the SDK's ev.log: core imports only the pure SDK modules
+        # (never the Component machinery), and this line belongs in the
+        # dispatching process's own log either way.
+        echo "dispatch " & tool & " wait=" &
+          $int((getMonoTime() - dispAt).inMilliseconds) & "ms"
       if resp.kind == ekError:
         raise newException(ValueError,
           resp.error{"message"}.getStr("component error"))
