@@ -32,10 +32,16 @@ between, so this is a progress signal, not a single-change A/B):
   already passing as Go then — see the language note in the pilot's task
   table vs the import).
 - The **failure shapes changed**: the pilot's fails died at 600–700 s / ~90
-  rounds; these run 100–144 rounds and 977–2264 s. clack stopped at exactly
-  100 rounds — a budget interaction worth a follow-up (run.mjs passes
-  NIF_MAX_TURN_ROUNDS=1000; the 100 is the *turn*-level round cap) rather
-  than a capability wall.
+  rounds; these run 100–144 rounds and 977–2264 s. clack ended at exactly
+  100 rounds with a natural "Done." — NOT a budget cut (no budget-exhausted
+  record, and yjs ran 244 rounds in the same run, so no cap fired): the
+  model wrapped up on its own, and the verifier's f2p 73/82 (partial
+  0.988) says the miss is capability on 9 held-out tests. One real cost in
+  that cell: 3 rounds burned on a subagent review the model could not
+  launch (the child inherited the provider's model ECHO as an explicit pin
+  and died on the cross-catalog check) — fixed in components/agent:
+  children now inherit explicit pins only, resolving defaults like the
+  parent.
 - **Efficiency at long horizon**: avg 9.5M tokens/task (2.8× the pilot's
   3.4M) is the price of 2.4× the rounds and much longer turns; per-round
   tokens stayed flat. The prompt-cache discipline held: avg 9.2M of the
