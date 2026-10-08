@@ -30,6 +30,7 @@ type CoreOptions = object
   recovering: bool
   minimal: bool
   help: bool
+  logLevel: string   # "" = leave NIF_LOG_LEVEL alone (default info)
 
 proc onSig(sig: cint) {.noconv.} =
   gStop = true
@@ -279,12 +280,18 @@ proc stopSpawnedBus(serverProc: var Process) =
 
 proc usage(): string =
   ## Command-line help for the system harness.
-  """Usage: niffler [--minimal] [--recover]
+  """Usage: niffler [--minimal] [--recover] [--log=<level>]
 
   --minimal  start only store, bash, llm and systemprompt; do not restore spawned components
   --recover  rebuild shipped binaries and wipe spawned-component records
+  --log=LEVEL  set the log level for core and every component it spawns
+               (debug|info|warn|error; default info). debug adds the
+               per-call timing lines that explain where a turn's wall time
+               went; they land in var/logs/*.jsonl like any other log line.
   -h, --help show this help
 """
+
+const logLevels = ["debug", "info", "warn", "error"]
 
 proc parseOptions(args: seq[string]): CoreOptions =
   ## Parse independent startup modes; --minimal and --recover may be combined.
@@ -293,7 +300,16 @@ proc parseOptions(args: seq[string]): CoreOptions =
     of "--minimal": result.minimal = true
     of "--recover": result.recovering = true
     of "-h", "--help": result.help = true
-    else: raise newException(ValueError, "unknown option: " & arg)
+    else:
+      if arg.startsWith("--log="):
+        let level = arg["--log=".len .. ^1]
+        if level notin logLevels:
+          raise newException(ValueError,
+            "--log expects one of " & logLevels.join("|") & ", got '" &
+            level & "'")
+        result.logLevel = level
+      else:
+        raise newException(ValueError, "unknown option: " & arg)
 
 proc main() =
   var options: CoreOptions
@@ -314,6 +330,13 @@ proc main() =
   if minimalMode:
     echo "core: MINIMAL mode — starting store, bash, llm and systemprompt only"
   let root = getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
+  # --log=<level> reaches every component through the environment: children
+  # inherit this process's env, and the supervisor only ever overrides
+  # NIF_ROOT. A flag each component parsed for itself would need every
+  # component to grow an arg parser (and would miss core.spawn'd children).
+  if options.logLevel.len > 0:
+    putEnv("NIF_LOG_LEVEL", options.logLevel)
+    echo "core: log level " & options.logLevel
   # The clone is the home of a Niffler instance: its .env is the master
   # config, and a NIF_NATS_URL declared there is this harness's home bus —
   # claimed when free, never shared with another clone. A NIF_NATS_URL in
