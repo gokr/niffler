@@ -8,6 +8,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The ranked `search` lane indexes message reasoning too.** The FTS lane
+  indexed `value.content` only, while the recall component's grep fallback
+  matches the whole message JSON — so "what did I consider and reject" was
+  findable on one lane and not the other. `value.reasoning` is now indexed
+  beside content under the same 16KB per-document cap; `docs/WIRE.md`'s
+  store contract is updated to match.
+- **The test suite defaults to half the cores.** A pool job is not one
+  process — each boots its own core/store/llm children and several tests
+  compile a fixture with `nim c` — so one job per core oversubscribed the
+  box, showing up as load-dependent failures (drain races in `t_processes`,
+  fixture compiles timing out) rather than as useful speed. The full suite
+  ran green at `jobs=7`; `CORES` overrides the machine reading and
+  `TEST_JOBS` the pool depth.
 - Slimmed the base prompt and all eight direct tool descriptions without
   removing capabilities. Optional pipelines keep literal `$` by default;
   file selection and exact-edit routing are explicit, and models are asked
@@ -23,6 +36,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Past turns' reasoning no longer counts toward context pressure or rides
+  the wire.** Providers discard prior-turn reasoning on replay — measured on
+  the DeepSeek lane: identical `prompt_tokens` with a 62-token reasoning
+  block replayed; Anthropic strips prior turns' thinking server-side and
+  needs only the live turn's blocks for tool loops — but the meter counted
+  it, so the 90% whole-turn trim fired ahead of the provider's real window. A
+  thinking-heavy conversation carried ~129k phantom tokens of pressure in
+  this repo's own transcript. `pruneContext` now replaces every assistant
+  message's reasoning but the last with a one-line stub naming the canonical
+  recall ref (re-derived from position on every projection rebuild, so no
+  records are kept; idempotent; canonical docs untouched, so recall still
+  reads the original thinking), and the llm component's `sanitizeMessages`
+  strips prior-turn reasoning at the request boundary so the stub never
+  reaches the network. Covered by `tests/t_ctxcompact.nim` and
+  `components/llm/main_test.go`.
 - **`plugin_install`/`plugin_update` repair a stale install record instead of
   refusing.** A record whose checkout (`var/plugins/<pkg>@<ref>`) is gone —
   e.g. that directory was wiped by hand while `var/store.db` survived — made
@@ -93,6 +121,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   footprint table by base prompt + tools, and correct Maki's footprint to
   ≈7.4k with its tool count fixed at 19. Each table highlights its compared
   column.
+- **The model-call timing seams share one flag.** The llm component's
+  `pre=/setup=/post=` lines, the dispatching process's `dispatch wait=` line,
+  and the runner's `llm-call dur=` all gate on `NIF_LOG_LEVEL=debug` — the
+  log level `niffler --log=debug` distributes to every component's
+  environment at boot — not on per-seam env vars, so `NIF_LOG_LEVEL=debug`
+  in front of `bench/run.mjs` collects every line. `bench/README.md` writes
+  down the per-call budget they established: the harness's own cost per model
+  call is ~48ms (43 handler + 5 bus), while the ~450ms that looked like
+  harness overhead is provider-side setup — neither the token fan-out,
+  contention, nor the runner's bookkeeping (6ms).
 
 ### Added
 
