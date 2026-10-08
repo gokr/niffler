@@ -3,6 +3,7 @@
 Status: **landed on `main`**, with the TUI follow-up remaining in its own
 repository. The original feature branch and worktree are no longer
 authoritative; this file is the implementation runbook and decision record.
+Open work has one home — [../PLAN.md](../PLAN.md) — not this runbook.
 
 | phase | state |
 |---|---|
