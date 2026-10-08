@@ -6,6 +6,7 @@
 import std/[json, os, osproc, strutils, times]
 import natsnim
 import envelope
+import niffler/procutil
 import helpers
 
 proc main() =
@@ -102,6 +103,43 @@ proc main() =
         not out4.contains("line-10000"), spillPath)
   check("spill path is under the toolout dir",
         spillPath.contains("var/toolout"), spillPath)
+
+  # netScoped: no-network command execution (sdk/niffler/procutil.nim).
+  # Map flavor (docker sandbox) is checked as strings — the docker
+  # integration is the deepswe lane itself; the netns flavor is checked
+  # end-to-end where unprivileged user namespaces exist.
+  block netwrap:
+    check("no wrap by default", netScoped("echo plain") == "echo plain")
+    let mapVal = "/work/task-a=repo.test/img-a\n/work/task-a/nested=x/y\n/work/task-b=img-b"
+    putEnv("NIF_BASH_SANDBOX_MAP", mapVal)
+    let w = netScoped("echo hi", "/work/task-a/src")
+    check("sandbox wrap mounts the WORKSPACE ROOT (subdir cwds keep the whole repo visible)",
+          w.contains("docker run --rm --network none") and
+          w.contains("/work/task-a:/work/task-a") and
+          w.contains("-w /work/task-a/src"),
+          w)
+    check("longest matching prefix wins",
+          netScoped("true", "/work/task-a/nested/deep").contains("x/y"), w)
+    let other = netScoped("true", "/work/elsewhere")
+    check("no matching image refuses the command",
+          other.contains("no sandbox image") and other.contains("exit 125"), other)
+    putEnv("NIF_BASH_SANDBOX_MAP", "")
+    when defined(linux):
+      putEnv("NIF_BASH_NET", "off")
+      let wrapped = netScoped("cat /proc/net/route; echo local-ok")
+      putEnv("NIF_BASH_NET", "")
+      let probe = runCmd("unshare --net --map-root-user -- true", 5_000)
+      if probe.code == 0:
+        let r = runCmd(wrapped, 10_000)
+        check("netns wrap still runs the command", r.output.contains("local-ok"),
+              r.output)
+        var routes = 0
+        for line in r.output.splitLines():
+          let t = line.strip()
+          if t.len > 0 and not t.startsWith("Iface"): inc routes
+        check("no routes out of the namespace", routes == 0, r.output)
+      else:
+        echo "NOTE: unprivileged user namespaces blocked here — netns wrap untestable"
 
   # drain: component exits
   drain(nc)

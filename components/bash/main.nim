@@ -137,7 +137,11 @@ discard comp.tool("bash", bashSchema,
     if sessionId.len > 0 and wasCancelled(sessionId):
       return %*{"text": "(exit 130 — cancelled by request)",
                 "exit_code": 130, "cancelled": true}
-    let command = toolArgs{"command"}.getStr("")
+    # netScoped: NIF_BASH_SANDBOX_MAP runs every command inside its task's
+    # prepared container image (no network, workspace-only filesystem) and
+    # NIF_BASH_NET=off the lightweight netns variant (procutil docs).
+    let command = netScoped(toolArgs{"command"}.getStr(""),
+                            toolArgs{"cwd"}.getStr(""))
     # The caller's budget, clamped: an absurd value must not outlive core's
     # wait for this call (the component's exit-124 report carries the output;
     # a core-side timeout would not).
