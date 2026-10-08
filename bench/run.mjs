@@ -692,6 +692,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     else if (combo.harness === "claudecode") shape = cc.shapeFromRounds(roundUsages);
     else if (combo.harness === "openhands") shape = openhands.shapeFromRounds(roundUsages);
     else if (combo.harness === "maki") shape = maki.shapeFromRounds(roundUsages);
+    else if (combo.harness === "opencode") shape = oc.shapeFromRounds(roundUsages);
     else if (combo.harness === "dsh") shape = dsh.shapeFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness) && transcript)
       shape = niffler.transcriptShape(transcript);
