@@ -15,6 +15,7 @@
   var CATALOGS = {
     en: {
       "skip": "Skip to content",
+      "scroll.hint": "Scroll sideways to explore →",
 
       "nav.efficient": "Efficient",
       "nav.features": "Features",
@@ -167,6 +168,7 @@
 
     zh: {
       "skip": "跳到正文",
+      "scroll.hint": "左右滑动查看更多 →",
 
       "nav.efficient": "高效",
       "nav.features": "特性",
@@ -319,6 +321,7 @@
 
     "zh-TW": {
       "skip": "跳至主要內容",
+      "scroll.hint": "左右滑動查看更多 →",
 
       "nav.efficient": "高效",
       "nav.features": "特性",
