@@ -52,6 +52,7 @@ proc main() =
                      mapStream: new(MapStream),
                      diagStream: new(DiagStream),
                      activeTurn: new(ActiveTurn),
+                     lockState: new(LockState),
                      sessionAllowlist: new(seq[string]))
   # Persisted per-conversation auto-approve (see niffler.nim): the gate
   # consults the store so a decision made in any client is honored here too.

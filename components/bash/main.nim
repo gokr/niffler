@@ -130,6 +130,10 @@ let bashSchema = toolSchema(%*{
 bashSchema["x-harness"] = %*{"approval": "always",
                              "timeoutMs": BASH_CALL_TIMEOUT_MS,
                              "sessionId": true,
+                             # Opaque writer: a command can touch anything under
+                             # the workspace, so it claims the root and excludes
+                             # any path-bound writer inside it (WRITE-ARBITRATION).
+                             "writes": %*{"root": true},
                              "workspace": %*{"cwdField": "cwd"}}
 discard comp.tool("bash", bashSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =

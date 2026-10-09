@@ -96,6 +96,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Write arbitration between concurrent writers** — a `locks` component owns a
+  path-stripe **lease** table, and core's dispatch gate consults it before a
+  mutating tool runs, so two conversations can no longer interleave writes to
+  one file with the last writer silently winning. A tool declares its reach in
+  its own schema with the new `x-harness.writes` extension: `edit`, `write` and
+  `replace_across` name the argument fields holding their files (a claim over
+  exactly those paths), while `bash`, `builder` and `fabric` claim the whole
+  conversation workspace as **opaque** writers. A component that declares
+  nothing is also treated as opaque — the conservative default, so forgetting
+  the key cannot lose protection. Disjoint paths stay parallel: two
+  conversations editing *different* files of one repository both proceed, which
+  is the property a single global write lock would destroy. A conflict refuses
+  the call with an ordinary tool error that names the holder — `[E_WRITE_BUSY]
+  <path> is being modified by conversation <id> (edit, 4s ago)` — so the model
+  can wait, narrow, or ask; the refusal is append-only history, never a prefix
+  change. Leases are released when the call finishes and expire after
+  `NIF_LOCK_TTL_MS` (default 600000), so a runner that dies mid-call cannot
+  wedge a workspace. Absence of the component is fail-open (one `core: locks
+  component absent — writes are unarbitrated` warning, in the spirit of repomap
+  absent) while present-but-unreachable is fail-closed — a lock table existed a
+  moment ago, so the write is refused rather than silently unguarded. Read-only
+  tools declare nothing and pay nothing: no lease, no round trip. Design,
+  limits and the phase plan: [WRITE-ARBITRATION.md](docs/research/WRITE-ARBITRATION.md);
+  the two contract tests are `make test-locks` (the table's own contract) and
+  `make test-arbitration` (the gate refusing a real turn's edit end to end).
+
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
   ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
   idempotent, per-tool non-fatal target (apt/brew; Debian's fdfind/batcat

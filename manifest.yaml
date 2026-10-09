@@ -156,6 +156,18 @@ components:
     required: false
     restart: on-failure
 
+  # Write arbitration (docs/research/WRITE-ARBITRATION.md): a peer that owns a
+  # path-stripe lease table so two conversations cannot interleave writes to
+  # one file. Core's dispatch gate asks it before a mutating tool runs, via the
+  # data-only `x-harness.writes` declaration. Absence means no arbitration
+  # (one warning); present-but-unreachable refuses the write.
+  - name: locks
+    build: {lang: nim, src: components/locks/main.nim}
+    binary: var/bin/locks
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Language-server seam (docs/OCTOFRIEND-STEAL.md): one `lsp` tool
   # (diagnostics/definition/references/implementation/hover) over any
   # configured stdio language server. The registry is data —

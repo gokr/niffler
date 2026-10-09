@@ -69,6 +69,10 @@ type
     routeSession*: proc(env: Envelope, reply: string) {.closure.}
                                          ## system-core session forwarder;
                                          ## nil in unit/direct contexts
+    lockState*: LockState                ## write-lease bookkeeping for this
+                                         ## CoreTools (WRITE-ARBITRATION.md);
+                                         ## a ref so mutations survive the
+                                         ## by-value copies of CoreTools
   TokenStream* = ref object
     sub*: ptr natsSubscription
     session*: string                ## "" = not streaming a turn
@@ -156,6 +160,16 @@ type
   NestedLease* = object
     deadline*: MonoTime      ## monotonic limit for this lease
     hasDeadline*: bool
+
+  LockState* = ref object
+    ## Write-lease bookkeeping for one CoreTools (WRITE-ARBITRATION.md). A ref
+    ## so mutations survive CoreTools' by-value copies, like NestedState.
+    leases*: Table[string, bool]
+      ## Keys (sessionId:callId) of leases THIS CoreTools took: release is
+      ## skipped for a call we never guarded, and a take cannot double-release.
+    warned*: bool
+      ## The one-shot "locks component absent" notice — absence is fail-open,
+      ## so it must be said once, not on every write.
   SessionForward* = ref object
     ## An in-flight session request owned by the system core. Keeping the
     ## runner request on its own inbox lets the core route several different
@@ -1713,6 +1727,95 @@ proc lineageDepth*(ct: CoreTools, session: string, cap: int): int =
     cur = parent
   return depth
 
+proc leaseIdFor(sessionId, callId: string): string =
+  ## The lease key. Kept identical to the locks component's own derivation so
+  ## core can release a lease it took without a second round trip.
+  if callId.len > 0:
+    sessionId & ":" & callId
+  else:
+    sessionId & ":" & $epochTime()
+
+proc writePathsFor(schema, args: JsonNode, workspace: string): seq[string] =
+  ## The paths a call will write, from its `x-harness.writes` declaration
+  ## (docs/research/WRITE-ARBITRATION.md). Path-bound writers name their file
+  ## arguments — already workspace-resolved by applyWorkspace — and an opaque
+  ## writer (`bash`, `builder`) claims the workspace root itself. Core knows no
+  ## component names; a component that declares nothing is treated as opaque,
+  ## the conservative default, so forgetting to declare loses no protection.
+  if workspace.len == 0: return @[]
+  let w = if schema != nil: schema{"x-harness"}{"writes"} else: nil
+  if w == nil or w.kind != JObject: return @[workspace]
+  if w{"root"}.getBool(false): return @[workspace]
+  result = @[]
+  let fields = w{"paths"}
+  if fields != nil and fields.kind == JArray:
+    for f in fields:
+      let name = f.getStr("")
+      if name.len == 0 or args == nil: continue
+      let v = args{name}
+      if v == nil: continue
+      if v.kind == JString and v.getStr("").len > 0:
+        result.add(v.getStr(""))
+      elif v.kind == JArray:
+        for it in v:
+          if it.kind == JString and it.getStr("").len > 0:
+            result.add(it.getStr(""))
+  # A path-bound declaration that matched nothing is still a write somewhere
+  # in the workspace: fall back to the root rather than guard nothing.
+  if result.len == 0: result.add(workspace)
+  return result
+
+proc acquireWriteLease(ct: CoreTools, tool, callId: string,
+                       paths: seq[string]): bool =
+  ## Ask the locks component for a write lease before dispatching. Returns
+  ## true when the call may proceed.
+  ##
+  ## Fail-closed where it matters, fail-open where it does not (the proposal's
+  ## rule): the locks component being ABSENT means no arbitration — a warning,
+  ## like repomap absent, so a minimal boot is not broken by a capability that
+  ## only matters with concurrent writers. The component being PRESENT but
+  ## unreachable is a refusal: a lock table existed a moment ago and a write
+  ## must not silently go unguarded.
+  if ct.cat.toolIndex.getOrDefault("lock_acquire").len == 0:
+    if not ct.lockState.warned:
+      ct.lockState.warned = true
+      echo "core: locks component absent — writes are unarbitrated"
+    return true
+  var arr = newJArray()
+  for p in paths: arr.add(%p)
+  var roots = newJArray()
+  for r in workspaceRootsFor(ct): roots.add(%r)
+  let sessionId = if ct.nested != nil: ct.nested.session else: ""
+  var r: JsonNode
+  try:
+    r = dispatchSubjectCall(ct, "svc.locks.call", "lock_acquire", %*{
+      "root": paths[0], "roots": roots, "paths": arr,
+      "sessionId": sessionId, "tool": tool, "callId": callId}, 10_000)
+  except CatchableError as e:
+    raise newException(ValueError,
+      "[E_WRITE_BUSY] locks component unreachable: " & e.msg &
+      " — refusing " & tool & " rather than writing unguarded")
+  if r != nil and r{"ok"}.getBool(false):
+    ct.lockState.leases[leaseIdFor(sessionId, callId)] = true
+    return true
+  raise newException(ValueError,
+    if r != nil and r{"error"}.getStr("").len > 0: r{"error"}.getStr("E_WRITE_BUSY")
+    else: "[E_WRITE_BUSY] " & tool & " refused by the locks component")
+
+proc releaseWriteLease(ct: CoreTools, callId: string) =
+  ## Best-effort release: the TTL is the backstop, so a failed release costs a
+  ## window, never a wedge. Never raises into the tool result path.
+  let sessionId = if ct.nested != nil: ct.nested.session else: ""
+  let key = leaseIdFor(sessionId, callId)
+  if not ct.lockState.leases.hasKey(key): return
+  ct.lockState.leases.del(key)
+  if ct.cat.toolIndex.getOrDefault("lock_release").len == 0: return
+  try:
+    discard dispatchSubjectCall(ct, "svc.locks.call", "lock_release",
+                                %*{"leaseId": key}, 5_000)
+  except CatchableError:
+    discard
+
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
                        deadlineMs: int = 0): JsonNode =
@@ -1751,6 +1854,19 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   let callArgs = if args == nil: newJObject() else: args.copy()
   if ct.nested != nil:
     applyWorkspace(schema, callArgs, ct.nested.workspace)
+  # Write arbitration (docs/research/WRITE-ARBITRATION.md): a tool that mutates
+  # files takes a lease over them before it runs, so two conversations cannot
+  # interleave writes to one path. Read-only tools declare nothing and pay
+  # nothing; the lease is released on every exit below and its TTL is the
+  # backstop for a runner that dies mid-call.
+  let writePaths =
+    if ct.nested != nil: writePathsFor(schema, callArgs, ct.nested.workspace)
+    else: @[]
+  let lockCallId = if writePaths.len > 0: newId() else: ""
+  if writePaths.len > 0:
+    discard acquireWriteLease(ct, tool, lockCallId, writePaths)
+  defer:
+    if lockCallId.len > 0: releaseWriteLease(ct, lockCallId)
   let hasDeadline = deadlineMs > 0
   let deadline = if hasDeadline:
                    getMonoTime() + initDuration(milliseconds = deadlineMs)

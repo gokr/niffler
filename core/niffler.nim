@@ -551,6 +551,7 @@ proc main() =
                      adviseStream: new(AdviseStream),
                      mapStream: new(MapStream),
                      activeTurn: new(ActiveTurn),
+                     lockState: new(LockState),
                      uiReg: newUiRegistry())
   # Session calls are routed through private forwarding inboxes instead of
   # blocking this core process on one runner. Each runner still serializes

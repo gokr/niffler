@@ -140,6 +140,11 @@ var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/edit: components/edit/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/edit/main.nim
 
+# Write arbitration (docs/research/WRITE-ARBITRATION.md): the lock table core's
+# dispatch gate consults before a mutating tool runs.
+var/bin/locks: components/locks/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/locks/main.nim
+
 # Language-server seam (docs/OCTOFRIEND-STEAL.md): one `lsp` tool over any
 # configured stdio server; the registry is data, languages are never code.
 var/bin/lsp: $(call NIM_SRCS,lsp) $(SDK_NIM) $(NIM_CONF) | var/bin
@@ -304,7 +309,7 @@ components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
 components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
-	var/bin/edit var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
+	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
@@ -524,6 +529,8 @@ test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 # test itself into the sandbox; t_mcp needs the mcp manager + bridge binaries.
 test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
+test-locks:   build var/bin/test_t_locks   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_locks
+test-arbitration: build var/bin/test_t_arbitration ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_arbitration
 test-edit-lsp-slow: build var/bin/test_t_edit_lsp_slow var/bin/fixture-slow-lsp ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit_lsp_slow
 test-vars:    build var/bin/test_t_vars    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_vars
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp

@@ -219,7 +219,7 @@ proc wasCancelled(sessionId: string): bool =
   false
 
 comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true,
-              "sessionId": true}):
+              "sessionId": true, "writes": {"root": true}}):
   proc build(lang: string, name: string, source: string,
              files: JsonNode = nil, defines: seq[string] = @[]): JsonNode =
     ## Compile a new component from source into a binary under var/bin.
@@ -382,7 +382,7 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true,
                 "' (supported: nim, go, ts)"}
 
 comp.tool(%*{"approval": "always", "timeoutMs": 600000,
-                  "onDemand": true}):
+                  "onDemand": true, "writes": {"root": true}}):
   proc build_package(name: string, lang: string, sourceRoot: string,
                      project: string, steps: JsonNode,
                      artifact: JsonNode, publish: bool = true): JsonNode =

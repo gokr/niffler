@@ -630,6 +630,9 @@ let fabSchema = toolSchema(%*{
                  "approval gate and counts against maxCalls." )
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true,
+                            # Opaque writer: a guest program can reach anything
+                            # the workspace allows (WRITE-ARBITRATION).
+                            "writes": %*{"root": true},
                             "hint": "Not for ordinary local loops or computation — keep those in bash. Program multi-tool workflows whose calls depend on earlier results or need intermediate-data distillation."}
 
 const helpDir = currentSourcePath().parentDir()
