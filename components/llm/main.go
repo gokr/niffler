@@ -530,27 +530,28 @@ func (a chatArgs) emitTokens() bool {
 	return a.EmitTokens == nil || *a.EmitTokens
 }
 
-func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
-	// NIF_LLM_TIMING=1: this timestamp is the handler's first instruction, so
-	// the logged `pre=` (handler entry → startedAt, i.e. before the provider
-	// request exists) covers everything this component does around the call:
-	// unmarshal, sanitizeMessages, the per-call cancel subscription and
-	// provider/model resolution. `dur=` covers the stream. Anything the runner
-	// sees beyond pre+dur is bus and core dispatch.
-	entryAt := time.Now()
-	llmTiming := os.Getenv("NIF_LLM_TIMING") == "1"
-	if llmTiming {
-		// The handler's total, across every return path. `pre` is entry →
-		// provider resolved and `dur` is the stream, so total-(pre+dur) is
-		// everything this component does after the last byte: building the
-		// result, tool-call aggregation, and the reply publish. The runner
-		// waits for exactly this number, so a gap there is the component's,
-		// not the bus's.
-		defer func() {
-			log.Printf("INFO chat timing total=%s",
-				time.Since(entryAt).Truncate(time.Millisecond))
-		}()
+// logTiming emits one per-call line on the debug timing lane. The lane is on
+// when NIF_LOG_LEVEL=debug (what `niffler --log=debug` sets for every
+// component), and the line goes through the SDK's log so it lands in
+// var/logs/llm.jsonl with rotation like any other debug log — no separate
+// mechanism, no output the logfile component cannot see. Budget and method:
+// bench/README.md, "Model-call overhead".
+func logTiming(c *sdk.Component, format string, args ...any) {
+	if os.Getenv("NIF_LOG_LEVEL") != "debug" {
+		return
 	}
+	_ = c.Log("debug", fmt.Sprintf(format, args...), nil)
+}
+
+func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
+	// The handler's total, across every return path: `pre` (entry → provider
+	// resolved), `setup` (request → response headers), `dur` (the stream) and
+	// `post` (result build) are its parts, so a gap here is unaccounted work.
+	entryAt := time.Now()
+	defer func() {
+		logTiming(c, "chat timing total=%s",
+			time.Since(entryAt).Truncate(time.Millisecond))
+	}()
 	var args chatArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("bad chat args: %w", err)
@@ -587,12 +588,9 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	}
 
 	resolved, err := resolveRuntimeConfig(streamCtx, c, args.Provider, args.Model)
-	if llmTiming {
-		// NIF_LLM_TIMING=1: handler entry → provider/model resolved. Covers
-		// unmarshal, sanitizeMessages, the per-call cancel subscription and
-		// resolveRuntimeConfig (which may cross the bus for credentials).
-		log.Printf("INFO chat timing pre=%s", time.Since(entryAt).Truncate(time.Millisecond))
-	}
+	// `pre`: unmarshal, sanitizeMessages, the per-call cancel subscription and
+	// resolveRuntimeConfig (which may cross the bus for credentials).
+	logTiming(c, "chat timing pre=%s", time.Since(entryAt).Truncate(time.Millisecond))
 	if err != nil {
 		return nil, err
 	}
@@ -1136,15 +1134,11 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	if err != nil {
 		return nil, err
 	}
-	if os.Getenv("NIF_LLM_TIMING") == "1" {
-		// Time from entering chatStream to the provider's response headers:
-		// client construction, request marshal, DNS/TCP/TLS and the
-		// provider's own queue before it starts a response. Sits outside both
-		// `pre` and `dur`, so without this line it reads as harness overhead
-		// (bench/README.md, "Model-call overhead").
-		log.Printf("INFO chat timing setup=%s",
-			time.Since(csAt).Truncate(time.Millisecond))
-	}
+	// `setup`: client construction, request marshal, DNS/TCP/TLS and the
+	// provider's own queue before it starts responding. Sits outside both `pre`
+	// and `dur`, so without this line it reads as harness overhead — the easy
+	// mistake this lane exists to prevent.
+	logTiming(c, "chat timing setup=%s", time.Since(csAt).Truncate(time.Millisecond))
 	defer stream.Close()
 
 	// Per-request timing telemetry: TTFT (time to first visible delta) and
@@ -1270,21 +1264,16 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		return nil, interruptErr(finish)
 	}
 	logStreamStats(usage, reasoning.Len(), false)
-	// NIF_LLM_TIMING=1: split what happens after the last streamed byte. The
-	// runner's wait exceeds this component's `total` by only ~5ms, so anything
-	// here is the whole remaining per-call overhead (bench/README.md,
-	// "Model-call overhead").
+	// `post`: result build and stream teardown, after the last streamed byte.
 	buildAt := time.Now()
 	res, resErr := resultJSON(providerName, usedModel, contextSize,
 		content.String(), reasoning.String(), calls, usage, 0, usageSeen, finish)
-	if os.Getenv("NIF_LLM_TIMING") == "1" {
-		buildMs := time.Since(buildAt)
-		closeAt := time.Now()
-		stream.Close()
-		log.Printf("INFO chat timing post build=%s close=%s",
-			buildMs.Truncate(time.Millisecond),
-			time.Since(closeAt).Truncate(time.Millisecond))
-	}
+	buildMs := time.Since(buildAt)
+	closeAt := time.Now()
+	stream.Close()
+	logTiming(c, "chat timing post build=%s close=%s",
+		buildMs.Truncate(time.Millisecond),
+		time.Since(closeAt).Truncate(time.Millisecond))
 	return res, resErr
 }
 

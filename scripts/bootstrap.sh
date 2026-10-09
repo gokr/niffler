@@ -306,9 +306,11 @@ else
   fi
 fi
 
-# Step 3 — the build.
-say "step 3/5 — make build: building core + every component into var/bin (a few minutes)"
-run make build
+# Step 3 — the build. Release, not debug: this is the binary the user will
+# run. `make build` compiles debug (checks on, timing lanes available) and is
+# what developers want in the clone; the install path ships optimized.
+say "step 3/5 — make release: building core + every component into var/bin (a few minutes)"
+run make release
 
 # Step 4 — seed .env so the harness has a model to talk to.
 if [ ! -f .env ]; then

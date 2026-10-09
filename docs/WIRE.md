@@ -594,9 +594,15 @@ pull drain.
 
 Both drivers accept `session`: a previously returned `sessionId` gives that
 EXISTING child another turn instead of minting a fresh one. On a fresh
-spawn (no `session`) an omitted `model` inherits the parent conversation's
-persisted effective model — the override first, the provider default only
-when the parent never resolved one. Design and
+spawn (no `session`) an omitted `model` inherits the parent's EXPLICIT pin
+(`modelOverride` with the provider pinned beside it). With no explicit pin
+the child resolves from the same defaults the parent's own turns resolve
+from — the parent's serving configuration, not a snapshot of its header.
+The header's resolved/echo `model` name is deliberately never inherited as
+a pin: a provider's echo can name a model some OTHER provider owns
+(DeepSeek echoes `deepseek-flash` for a `deepseek-v4-flash` request), and
+pinning it manufactured a cross-catalog mismatch on the child's first turn
+while the parent kept working. Design and
 testing: docs/research/SUBAGENTS-PLAN.md P1.3.
 
 - **Authorization is the durable lineage relation**: the child's
@@ -870,9 +876,10 @@ chosen from:
   self-hosted model, a missing `models` component and an implicit model (the
   provider default) pass through untouched.
 
-Agents inherit the whole pin: a fresh subagent gets the parent's provider
-pin alongside its effective model, so the child cannot drift under a later
-global switch either. `session_info` and the status readback expose
+Agents inherit the whole EXPLICIT pin: a fresh subagent gets the parent's
+`modelOverride` with the provider pinned beside it, so the child cannot
+drift under a later global switch either. With no explicit pin the child
+inherits nothing and resolves defaults exactly as the parent's turns do. `session_info` and the status readback expose
 `provider`/`model` so a caller can read back the effective pair.
 
 ### Session calls during a turn

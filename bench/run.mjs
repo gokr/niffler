@@ -51,6 +51,22 @@ let taskTimeoutMs = Number(opt("task-timeout-min", cfg.defaults.taskTimeoutMin))
 let turnTimeoutMs = Number(opt("turn-timeout-min", cfg.defaults.turnTimeoutMin)) * 60_000;
 const testTimeoutMs = Number(opt("test-timeout-sec", cfg.defaults.testTimeoutSec)) * 1000;
 const JOBS = Number(opt("jobs", cfg.defaults.jobs));
+// --agent-env <file>: KEY=VALUE lines (the `export K=V` shell form) merged
+// into this process's env before anything spawns — the harness, its
+// components and every tool child inherit them (toolchain homes, offline
+// Python libs, NIF_BASH_NET=off). DeepSWE writes one per prepared run.
+const agentEnvFile = opt("agent-env", "");
+if (agentEnvFile) {
+  for (const line of fs.readFileSync(String(agentEnvFile), "utf8").split("\n")) {
+    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!m) continue;
+    let v = m[2].trim();
+    if (v.startsWith('"') && v.endsWith('"')) v = JSON.parse(v);
+    else if (v.startsWith("'") && v.endsWith("'")) v = v.slice(1, -1);
+    process.env[m[1]] = v.replace(/^"|"$/g, "");
+  }
+  console.log(`bench: agent env from ${agentEnvFile}`);
+}
 // Niffler-only: LLM round budget per turn (NIF_MAX_TURN_ROUNDS). Default 1000
 // (core's own ceiling): the old 100 ended long-horizon DeepSWE turns mid-problem
 // -- three cells hit it, one of them with a patch that still verified green, and
@@ -692,6 +708,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     else if (combo.harness === "claudecode") shape = cc.shapeFromRounds(roundUsages);
     else if (combo.harness === "openhands") shape = openhands.shapeFromRounds(roundUsages);
     else if (combo.harness === "maki") shape = maki.shapeFromRounds(roundUsages);
+    else if (combo.harness === "opencode") shape = oc.shapeFromRounds(roundUsages);
     else if (combo.harness === "dsh") shape = dsh.shapeFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness) && transcript)
       shape = niffler.transcriptShape(transcript);

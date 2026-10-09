@@ -8,7 +8,8 @@ separate evidence and has not been run without explicit approval.
 
 This document remains the transformation design record. The user-facing
 contract is [REFERENCE.md](REFERENCE.md) and
-[docs/MANUAL.md](../../../docs/MANUAL.md#fabric-and-subagents).
+[docs/MANUAL.md](../../../docs/MANUAL.md#fabric-and-subagents); open work has
+one home in [docs/PLAN.md](../../../docs/PLAN.md).
 Baseline: `be8d880`.
 
 ## Decision and success criteria

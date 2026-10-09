@@ -55,7 +55,11 @@ comp.tool(%*{"hidden": true}):
     ## Stub LLM surface for the session runner. Scripted per session kind:
     ## - agent-* sessions (real subagent children): depth-guard attempt,
     ##   then bash work, then final reply.
-    ## - "agt-parent": agent_run tool call, then final reply.
+    ## - "agt-parent": agent_run tool call, then final reply. Responses
+    ##   carry a model ECHO ("echo-model") like a real provider's reply
+    ##   names what served (DeepSeek echoes "deepseek-flash"): tests assert
+    ##   the echo never becomes a child's explicit model pin.
+    ## - "agt-inherit": same, for the explicit-pin inheritance test.
     ## - "sp-*": echo the conversation's system message (messages[0]) as the
     ##   final reply — t_systemprompt asserts on what the LLM actually saw.
     ## - anything else (t_nested): ctxecho probe, then final reply.
@@ -185,10 +189,23 @@ comp.tool(%*{"hidden": true}):
                                     %*{"command": "echo agent-ok"}))
       else: return withUsage(%*{"content": "subagent-done"})
     if sessionId == "agt-parent":
+      var r: JsonNode
       if stage == 0:
-        return toolCall("t1", "agent_run",
-                        %*{"task": "echo agent-ok via a subagent"})
-      return %*{"content": "agent-turn-done"}
+        r = toolCall("t1", "agent_run",
+                     %*{"task": "echo agent-ok via a subagent"})
+      else:
+        r = %*{"content": "agent-turn-done"}
+      r["model"] = %"echo-model"
+      return r
+    if sessionId == "agt-inherit":
+      var r: JsonNode
+      if stage == 0:
+        r = toolCall("t1", "agent_run",
+                     %*{"task": "echo agent-ok via an inheriting subagent"})
+      else:
+        r = %*{"content": "agent-turn-done"}
+      r["model"] = %"echo-model"
+      return r
     if sessionId == "agt-llmfail":
       if stage == 0:
         return toolCall("t1", "agent_run",

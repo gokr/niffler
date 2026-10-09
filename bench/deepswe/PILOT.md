@@ -1,5 +1,56 @@
 # DeepSWE pilot — niffler vs pi vs opencode on deepseek-v4-flash
 
+## Follow-up: niffler main after the reasoning/compaction work — 5/10
+
+Run `deepswe-1daa3cc`, 2026-10-08. One-shot (`--rounds 1`), 10 tasks × 1
+harness, **jobs=1**, release build (`-d:release`), niffler main @ `1daa3cc`
+(the run id's commit — carries the §5.2 reasoning tombstone, the llm
+request-boundary reasoning strip, and reasoning in the store search FTS).
+Same 10 pilot tasks, same verifier protocol, `NIF_LOG_LEVEL=debug` — the
+first run where the model-call timing seams fired end-to-end.
+
+| task (lang) | verdict | time | rounds | tokens | cost $ |
+|---|---|---:|---:|---:|---:|
+| fd-deterministic-multi-key-sorting (rust) | **pass** | 1119s | 138 | 10.9M | 0.25 |
+| geo-shapeindex-serialization (go) | **pass** | 363s | 66 | 3.1M | 0.11 |
+| igel-persist-feature-schema (python) | **pass** | 541s | 91 | 5.1M | 0.15 |
+| tomlkit-toml-table-converters (python) | **pass** | 854s | 147 | 13.8M | 0.31 |
+| yjs-map-conflict-detection (js) | **pass** | 3357s | 244 | 33.0M | 0.81 |
+| clack-async-autocomplete-options (ts) | fail | 977s | 100 | 6.5M | 0.20 |
+| csstree-shorthand-expansion-compression (js) | fail | 829s | 144 | 9.1M | 0.28 |
+| etree-xml-diff-patch (go) | fail | 270s | 32 | 1.0M | 0.08 |
+| pest-character-class-coalescing (rust) | fail | 2264s | 143 | 9.7M | 0.23 |
+| superjson-error-stack-serialization (ts) | fail | 571s | 73 | 2.9M | 0.16 |
+| **summary** | **5/10** | avg 1114s | avg 118 | avg 9.5M | 2.57 run |
+
+Reading (against the 8b08a1f pilot below — several weeks of harness work in
+between, so this is a progress signal, not a single-change A/B):
+
+- **5/10 vs the pilot's 3/10** on the same tasks. Newly passing: yjs (the
+  hardest cell — 244 rounds / 56 min / 33M tokens, and the round machinery
+  held together the whole way) and tomlkit. Rust's fd now passes too (was
+  already passing as Go then — see the language note in the pilot's task
+  table vs the import).
+- The **failure shapes changed**: the pilot's fails died at 600–700 s / ~90
+  rounds; these run 100–144 rounds and 977–2264 s. clack ended at exactly
+  100 rounds with a natural "Done." — NOT a budget cut (no budget-exhausted
+  record, and yjs ran 244 rounds in the same run, so no cap fired): the
+  model wrapped up on its own, and the verifier's f2p 73/82 (partial
+  0.988) says the miss is capability on 9 held-out tests. One real cost in
+  that cell: 3 rounds burned on a subagent review the model could not
+  launch (the child inherited the provider's model ECHO as an explicit pin
+  and died on the cross-catalog check) — fixed in components/agent:
+  children now inherit explicit pins only, resolving defaults like the
+  parent.
+- **Efficiency at long horizon**: avg 9.5M tokens/task (2.8× the pilot's
+  3.4M) is the price of 2.4× the rounds and much longer turns; per-round
+  tokens stayed flat. The prompt-cache discipline held: avg 9.2M of the
+  9.5M was cache reads (97%), uncached in 167k/task.
+
+---
+
+## Original pilot — Run `deepswe-pilot-8b08a1f`, 2026-09-05.
+
 Run `deepswe-pilot-8b08a1f`, 2026-09-05. One-shot (`--rounds 1`, canonical),
 10 tasks × 3 harnesses = 30 cells, 2 jobs, launched from the laptop with
 `bench/run.mjs` against `var/bench/deepswe/tasks-pilot` (see

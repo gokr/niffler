@@ -710,32 +710,46 @@ proc childModel(c: Component, parentSession, requested, requestedTier: string): 
       # empty, meaning the provider's default) stands alone.
       return (true, requested, "", "")
     let override = info{"modelOverride"}.getStr("").strip()
-    let inherited = if override.len > 0: override
-                    else: info{"model"}.getStr("").strip()
-    # The provider pin that makes the inherited model coherent. session_info
-    # does not carry it today, so read the conversation header directly (the
-    # same best-effort read the effective-model reporter uses below).
+    # Ranking base for modelTier only: the parent's effective model name
+    # (an echo name is fine here — unknown names rank at the ceiling).
+    let effectiveName = if override.len > 0: override
+                        else: info{"model"}.getStr("").strip()
+    # The provider pin that makes an inherited model coherent — the EXPLICIT
+    # pin only (providerOverride is written with modelOverride in one header
+    # write). The header's `provider` field is the resolved/echo name and is
+    # deliberately not inherited: pairing it with an inherited id is what
+    # manufactured the cross-catalog mismatch below.
     var parentProvider = ""
     try:
       let header = comp.storeGet("conversation", parentSession, 10_000).value
       if header != nil:
         parentProvider = header{"providerOverride"}.getStr("").strip()
-        if parentProvider.len == 0:
-          parentProvider = header{"provider"}.getStr("").strip()
     except CatchableError:
       discard
     if requestedTier.len > 0:
       let requestedRank = tierRank(requestedTier)
       if requestedRank < 0:
         return (false, "", "", "modelTier must be weak, medium, or strong")
-      let effectiveRank = min(requestedRank, parentTier(inherited))
+      let effectiveRank = min(requestedRank, parentTier(effectiveName))
       let selected = tierModel(effectiveRank)
       if selected.len == 0:
         return (false, "", "", "model tier '" & agentTiers[effectiveRank] &
           "' is not configured (set NIF_AGENT_MODEL_" &
           agentTiers[effectiveRank].toUpperAscii() & ")")
       return (true, selected, parentProvider, "")
-    return (true, inherited, parentProvider, "")
+    if override.len == 0:
+      # The parent runs on harness/provider defaults: its header `model` is
+      # the provider's ECHO of what was served (DeepSeek reports
+      # "deepseek-flash" for a request for "deepseek-v4-flash"), and pinning
+      # that echo turned a working default configuration into a catalog
+      # mismatch — the echo names a model some OTHER provider owns (302ai),
+      # so the child's first turn died on the cross-catalog check while the
+      # parent kept working (its requested id is unknown to the catalog,
+      # which cannot mismatch). Inherit NOTHING: the child resolves from the
+      # same defaults the parent's own turns resolve from — the parent's
+      # serving configuration, exactly.
+      return (true, "", "", "")
+    return (true, override, parentProvider, "")
   except CatchableError as e:
     # Same degradation as above, and note that core RAISES on an error
     # result (an unknown session reaches here as an exception, not an

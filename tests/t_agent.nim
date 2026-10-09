@@ -174,6 +174,44 @@ proc main() =
   let childId = (if agentResult != nil: agentResult{"sessionId"}.getStr("")
                  else: "")
 
+  # --- child model inheritance: explicit pins only, never the echo --------
+  # The stub echoes "echo-model" as what served (like DeepSeek echoing
+  # "deepseek-flash" for a "deepseek-v4-flash" request), and the runner
+  # stamps that echo into the parent header's `model` field. A child born
+  # with no explicit model must inherit NOTHING — pinning the echo as the
+  # child's model manufactured a cross-catalog mismatch on the child's
+  # first turn (the echo names a model some other provider owns) while the
+  # parent kept working.
+  let childHdr = call(nc, "store", "get",
+                      %*{"kind": "conversation", "id": childId}, 10_000)
+  check("the provider echo is not pinned as the child's model",
+        childHdr{"value"}{"modelOverride"}.getStr("") == "" and
+        childHdr{"value"}{"providerOverride"}.getStr("") == "", $childHdr)
+
+  # An EXPLICIT pin inherits as a pair: the parent pins mock-strong and the
+  # child's header carries the same pin (never the response echo beside it).
+  let inhTurn = call(nc, "core", "session",
+                     %*{"sessionId": "agt-inherit", "content": "go",
+                        "model": "mock-strong"}, 120_000)
+  check("inherit parent turn completed",
+        inhTurn{"reply"}.getStr("") == "agent-turn-done", $inhTurn)
+  var inhResult = JsonNode(nil)
+  for i in 1 .. 8:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": "agt-inherit:" & align($i, 6, '0')}, 10_000)
+    if m{"value"}{"role"}.getStr("") == "tool":
+      try: inhResult = parseJson(m{"value"}{"content"}.getStr(""))
+      except CatchableError: discard
+      break
+  let inhChild = (if inhResult != nil: inhResult{"sessionId"}.getStr("")
+                  else: "")
+  let inhHdr = call(nc, "store", "get",
+                    %*{"kind": "conversation", "id": inhChild}, 10_000)
+  check("an explicit model pin is inherited by the child",
+        inhChild.startsWith("agent-") and
+        inhHdr{"value"}{"modelOverride"}.getStr("") == "mock-strong", $inhHdr)
+
   # --- child transcript: depth guard denied, bash ran -----------------------
   var childTranscript = ""
   for i in 1 .. 8:
