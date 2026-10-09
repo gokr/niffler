@@ -192,7 +192,7 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 儲存的**匯流排契約就是產物本身**：`put/get/list/search/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。兩個引擎實作該契約，並以元件 `store` 註冊，提供完全相同的工具——消費者永遠不會知道目前執行的是哪個引擎。選擇是啟動時的一次決定：`NIF_STORE_BACKEND=sqlite|tidb`（預設 `sqlite`）；core 據此解析清單條目中的二進位，遇到未知值則拒絕啟動。從未建置的二進位只會發出警告（store 是 `required`，core 就此停下），絕不會被靜默替換為另一個引擎的資料庫。
 
-**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個 kind，即可依 id/標題尋找工作階段、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語意在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的大小寫不敏感**前綴**匹配（AND），非字母數字字元一律無作用，因此使用者輸入無需轉義；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 衍生狀態，可安全丟棄），而 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的匹配器（結果等價，每次呼叫 O(kind 中的文件數)）。
+**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個 kind，即可依 id/標題尋找工作階段、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語意在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 與 reasoning 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的大小寫不敏感**前綴**匹配（AND），非字母數字字元一律無作用，因此使用者輸入無需轉義；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 衍生狀態，可安全丟棄），而 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的匹配器（結果等價，每次呼叫 O(kind 中的文件數)）。
 
 - **sqlite**（預設，`var/bin/store-sqlite`，Go）：在 SQLite 上實作同一份文件契約。文件以 JSON TEXT 原樣存放；`put` 是單一原子陳述式（doc 與 rev 一起移動——KV 引擎的雙鍵崩潰窗口不復存在）；schema 透過內嵌的 goose migration 管理；純 Go 驅動程式（`modernc.org/sqlite`，無 cgo）。資料檔 `var/store.db`（WAL），可用任何 SQLite 工具檢視（`sqlite3 var/store.db 'select kind, count(*) from docs group by kind'`），也可從 DuckDB 以唯讀方式掛載以進行離線分析。自 context compaction 落地後即為預設：context projection 需要原子寫入與可範圍讀取的清單（docs/research/COMPACTION.md §2）。SQLite pragma 是程式碼內建、不可配置（`_txlock=immediate`、WAL、`synchronous(NORMAL)`、10 秒 `busy_timeout`、單一連線池），且 goose migration 會在啟動時自動套用。
 - **tidb**（`var/bin/store-tidb`，Go）：透過 MySQL 協定（go-sql-driver）實作同一份 schema——一個網路共享的儲存，任何數量的 harness 都能從中提供服務。`NIF_STORE_TIDB_DSN` 指向叢集（`root@tcp(host:4000)/niffler`；單節點 docker：`docker run -p 4000:4000 pingcap/tidb`）。`value` 維持 MEDIUMTEXT，而非原生 JSON 型別——二進位 JSON 會正規化鍵順序與數字精度，破壞原樣文件契約；索引查詢日後會以 TEXT 上的生成欄位形式到來（一個 goose migration）。`kind`/`id` 為 utf8mb4_bin：位元組精確相等、位元組序清單排序，以及大小寫敏感的 LIKE 前綴（與其他引擎的契約對等）。無 flock——叢集依設計即為共享狀態；資料列鎖（`SELECT … FOR UPDATE`、悲觀式交易）仲裁寫入者，而 rev 計數器仍是樂觀並行控制的檢查。也可對純 MySQL 8 運作。DSN 使用者需要 goose 建立其版本表並套用 migration 所需的權限；連線/讀取/寫入逾時為硬編碼（5 秒 / 60 秒 / 30 秒），且引擎持有單一連線池連線（單一會話，因此 `FOR UPDATE` 交易的陳述式會保持在一起）——同一叢集上的 N 個 harness 持有 N 條連線，不共享連線池。
@@ -457,9 +457,9 @@ cancel.<component>     cancellation side-channel: a runner publishes it when a
 這種分離——壓縮會取消 `llm.cancel.compaction.<sessionId>.<attemptId>`——因此
 使用者的回合停止既不能終止摘要呼叫，也不會被其終止。
 
-歷史會逐字重播給 provider，這就是為什麼轉接器在輸出時會修復它：被中斷的串流
+歷史幾乎逐字重播給 provider，這就是為什麼轉接器在輸出時會處理它：它會剝除除末尾仍在進行的助理輪次之外每條助理訊息的 `reasoning`（提供方本就會丟棄重播的 reasoning——在 DeepSeek 通道上實測；Anthropic 在伺服器端剝除過往輪次的思考——因此攜帶它只是無用的傳輸位元組），然後修復 `tool_calls`：被中斷的串流
 （或有缺陷的寫入者）留下未終止的助理 `tool_calls` 承載，其字串和容器會被關閉，
-而無法挽救的承載會變成 `{}`——否則嚴格的後端會拒絕整個請求。修復只讀取文字，
+而無法挽救的承載會變成 `{}`——否則嚴格的後端會拒絕整個請求。剝除與修復只讀取文字，
 絕不執行任何內容。
 
 附加到匯流排的 `nats sub '>'` 會即時顯示 harness 的思考過程。或者更好：**console
@@ -753,7 +753,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   被改寫為其前 4096 位元組、一個 `[tool result middle pruned: N bytes
   omitted — recall the original with context_recall {"ref": {"source": "spill",
   "id": "<convId>:<seq>"}}]` 標記，以及其最後 1024 位元組——絕不兩次，
-  且絕不在結果不會縮小時。該標記的 `source` 恰好在結果為 spill 背書且晉升的文件重新驗證時為 `spill`，否則為 `canonical`，而其 `id` 是該通知所引用的標準 seqNo，因此它可以直接傳回 `context_recall`。這三個
+  且絕不在結果不會縮小時。同一步驟會墓碑化過往輪次的 reasoning：除最後一條外，每條助理訊息的 `reasoning` 都會被替換為一行命名其標準 recall 引用的 `[thinking omitted — …]` 存根（`context_recall` 仍能取回原始內容），因為提供方會在重播時丟棄過往輪次的 reasoning，而計量器卻將其計入；最後一條助理輪次保留其 reasoning 以供工具循環續接。該標記的 `source` 恰好在結果為 spill 背書且晉升的文件重新驗證時為 `spill`，否則為 `canonical`，而其 `id` 是該通知所引用的標準 seqNo，因此它可以直接傳回 `context_recall`。這三個
   數字是常數，不是設定。`context_recall` 本身是隨選的，並非隱藏：`discover` 會列出它，`invoke` 接受它，且裸名稱
   仍會分派，但一個以 `tools` 允許清單凍結的會話會像任何清單外的工具一樣拒絕它——這是剪除或 spill
   通知的指示無法被遵循的唯一情況。
@@ -1944,6 +1944,8 @@ API 是對映的；*執行模型* 是各執行時自身的，因此契約依 SDK
 Nim 的任意信封請求輔助程式在等待時只會繼續泵送原始 tap 訂閱。工具與事件處理常式保持非巢狀，而觀察者可以在 `observe_request` 期間為目標請求與回覆加上時間戳。追蹤持續時間與過期使用單調時鐘；顯示的 `at` 值仍為牆鐘 epoch 秒。
 
 結構化日誌會以 `{component, level, msg, ctx?, at}` 在確切主體 `ev.log.<component>` 上發佈事件。等級為 `debug`、`info`、`warn` 與 `error`。`NIF_LOG_LEVEL` 預設為 `info`，並在每個 SDK 中於發佈前抑制較低等級。無效的發出等級會失敗；無效的閾值會退回 `info`。
+
+核心的 `--log=<level>` 旗標（`debug`、`info`、`warn`、`error`）為核心及其產生的所有元件設定 `NIF_LOG_LEVEL`，子程序繼承核心的環境。因此，`niffler --log=debug` 會啟用解釋一輪耗時的逐呼叫計時行：`llm` 元件的 `chat timing pre/setup/post/total`、核心的 `dispatch <tool> wait=` 與 runner 的 `session: llm call dur=`。`llm` 行寫入 `var/logs/llm.jsonl`；dispatch 計時寫入執行分派的程序的 `.log`，session 計時寫入 `var/logs/session-<id>.log`（參見 `bench/README.md` 的「Model-call overhead」）。
 
 ### Monitoring
 

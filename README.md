@@ -82,6 +82,8 @@ asks about the plugin on a terminal instead.
 `niffler-tui` is the conversation client; `niffler` (or `./var/bin/niffler`) is
 the terminal admin shell — status, catalog, sessions, not a chat UI — and
 `niffler --minimal` boots only the minimal store/bash/LLM/systemprompt profile.
+`niffler --log=debug` runs core and every spawned component at the debug log
+level, adding the per-call timing lines that explain a turn's wall time.
 
 A Wails-based desktop UI does exist, but it is an **experimental side project**
 in its own repository — [gokr/niffler-ui](https://github.com/gokr/niffler-ui).

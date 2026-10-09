@@ -156,13 +156,26 @@ fresh shell per call means `cd` does not persist; `cwd` (the conversation
 workspace) is realized as `cd -- <cwd> || exit $?`, so a missing workspace
 directory fails the call instead of running somewhere else.
 
+Commands optionally run inside a sandbox (the SDK's `netScoped` wrapper,
+`sdk/niffler/procutil.nim`). With `NIF_BASH_SANDBOX_MAP` set, every command —
+`run_in_background` included — runs as a fresh `docker run --rm --network none`
+of the image whose entry is the longest matching prefix of the command's `cwd`,
+with only that workspace root bind-mounted at the same path: the image's
+toolchains, the workspace, and nothing else on the host, so held-out material
+and other checkouts are unreachable by construction, and container state beyond
+the workspace does not persist between calls. `NIF_BASH_NET=off` is the
+lightweight variant — a host `unshare` netns (loopback only). A `cwd` with no
+map entry, and the netns variant on a host that forbids unprivileged user
+namespaces, fail the call loudly (exit 125) rather than run unsandboxed.
+
 Two timeouts are distinct: `timeoutMs` bounds the command (default 120 s,
 maximum 570 s), while `x-harness.timeoutMs` lets core wait 600 s for the reply.
 The inner clock stays below the outer one, so a command timeout kills the
 process group and returns exit 124 with captured output.
 
 Output is bounded by two compile-time constants with **no env knob** — the
-only `getEnv` in the component is `NIF_ROOT`, so a bigger transcript budget
+component reads no environment for its own output handling (besides
+`NIF_ROOT` and the two sandbox variables above), so a bigger transcript budget
 means rebuilding it: at most 2,000,000 bytes are captured and at most 12,000
 bytes of transcript reach the model, keeping head and tail and replacing the
 middle with
@@ -373,7 +386,8 @@ messages by content without downloading the whole kind; niffler-tui's
 `/session` uses it, and `context_recall mode: search` builds transcript
 retrieval on it, issue #51). Semantics are contract in every engine:
 per-kind indexed fields (conversation = id + title, message = id +
-content text capped at 16KB, others = id only), case-insensitive
+content and reasoning text, capped at 16KB per document in total, others = id
+only), case-insensitive
 **prefix** matching of every query word (AND), everything non-alphanumeric
 inert so user input needs no escaping, `idPrefix` narrowing to one id
 space (LIKE metacharacters escaped, never widened), and two documented
@@ -519,6 +533,8 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | Variable | Meaning | Default |
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
+| `NIF_BASH_SANDBOX_MAP` | `<absolute-dir>=<image>` lines (longest matching prefix of the command's `cwd` wins) that make the `bash` tool run every command — foreground and `run_in_background` alike — as `docker run --rm --network none` with only that workspace root bind-mounted at the same path (the image's toolchains and caches, the workspace, and nothing else). Written by hosted-benchmark lanes (the DeepSWE port); a `cwd` that matches no entry fails the call loudly (exit 125) rather than running unsandboxed. Takes precedence over `NIF_BASH_NET` | unset |
+| `NIF_BASH_NET` | `off` runs `bash` commands in a host `unshare` network namespace (loopback up, no routes) — the lightweight variant, used only when `NIF_BASH_SANDBOX_MAP` is unset; needs unprivileged user namespaces (Ubuntu's AppArmor refuses them without root). Off Linux, or with no `unshare`, the call fails (exit 125) | unset |
 | `NIF_NATS_URL` | bus address. In the **environment** (tests, bench, scripts): attach-only — core uses exactly that bus. Declared in **`.env`** (or the well-known `nats://127.0.0.1:4222`): the clone's **home bus** — claimed when free, attached to only when the answering core serves this root (identity via the catalog's `root` field), yielded loudly to a foreign core or bare nats-server (isolated random bus instead; a recorded leftover `var/nats-pid` is reclaimed first), and written to `var/nats-url` | auto |
 | `NIF_NATS_SPAWN` | `1` forces an isolated core-owned bus on a random port — never 4222, never attaches (dev clones and tests). With an explicit `NIF_NATS_URL` the URL wins | unset |
 | `NIF_AUTOSTART` | set by an SDK's `ensureHarness` when a UI had to spawn core: that core exits when the last interactive client departs (see Starting and stopping) | unset |
@@ -560,7 +576,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_LSP_BIN` | install directory used by `make install-lsp` (server wrappers and the user-local JDK); also resolved as a default fallback bin dir | `~/.local/bin` |
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (colon-separated; a leading `~` means your home directory) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
-| `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
+| `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`). Core's `--log=<level>` flag sets it for core and every component it spawns | `info` |
 | `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.<id>.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | additional attempts when a streamed response drops mid-flight — budgeted separately from the general case because a dropped stream may already have billed output | `2` |
@@ -764,11 +780,16 @@ that separation — compaction cancels
 `llm.cancel.compaction.<sessionId>.<attemptId>` — so a user's turn stop can
 neither kill nor be killed by a summarization call.
 
-History is replayed to the provider verbatim, which is why the adapter
-repairs it on the way out: an assistant `tool_calls` payload left unterminated
+History is replayed to the provider almost verbatim, and that is why the
+adapter touches it on the way out: it strips `reasoning` from every assistant
+message but the trailing live turn (providers discard replayed reasoning
+anyway — measured on the DeepSeek lane; Anthropic strips prior turns'
+thinking server-side — so carrying it is dead wire bytes), then repairs
+`tool_calls`: an assistant `tool_calls` payload left unterminated
 by a dropped stream (or a buggy writer) has its strings and containers closed,
 and an unsalvageable payload becomes `{}` — a strict backend rejects the whole
-request otherwise. The repair reads text only and never executes anything.
+request otherwise. The strip and repair read text only and never execute
+anything.
 
 `nats sub '>'` attached to the bus shows the harness thinking in real time.
 Or better: **the console component** (`./var/bin/console`, not in the
@@ -1135,7 +1156,8 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   warns once at 75% of the way to the effective line
   (`ev.session.<id>.context {reason: "warn:threshold"}`); at it — never later
   than 90% of the window — core executes a bounded ladder: deterministic
-  tool-result prune → configured compactor → oldest complete-turn trim →
+  prune (tool results and past-turn reasoning) → configured compactor →
+  oldest complete-turn trim →
   explicit `context-recovery-required`. On the wire the `llm` component
   additionally clamps the requested output to the headroom the serialized
   prompt (messages plus tool schemas) leaves, so estimation drift in either
@@ -1273,7 +1295,13 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   rewritten as its first 4096 bytes, an `[tool result middle pruned: N bytes
   omitted — recall the original with context_recall {"ref": {"source": "spill",
   "id": "<convId>:<seq>"}}]` marker, and its last 1024 bytes — never twice,
-  and never when the result would not shrink. The marker's `source` is `spill`
+  and never when the result would not shrink. The same step tombstones past
+  turns' reasoning: every assistant message but the last has its `reasoning`
+  replaced by a one-line `[thinking omitted — …]` stub naming its canonical
+  recall ref (`context_recall` still reaches the original), since providers
+  discard prior-turn reasoning on replay while the meter counted it; the last
+  assistant turn keeps its reasoning for a tool-loop continuation. The
+  marker's `source` is `spill`
   exactly when the result was spill-backed and the promoted document
   re-verified, else `canonical`, and its `id` is the canonical seqNo the notice
   quotes, so it can be passed straight back to `context_recall`. Those three
@@ -3245,6 +3273,16 @@ Structured logs publish an event on the exact subject `ev.log.<component>` with
 publication in every SDK. Invalid emitted levels fail; an invalid threshold
 falls back to `info`.
 
+Core's `--log=<level>` flag (`debug`, `info`, `warn`, `error`) sets
+`NIF_LOG_LEVEL` for core and every component it spawns — children inherit
+core's environment — so `niffler --log=debug` turns on the per-call timing
+lines that explain a turn's wall time: the `llm` component's
+`chat timing pre/setup/post/total`, core's `dispatch <tool> wait=` and the
+runner's `session: llm call dur=`. The `llm` line lands in
+`var/logs/llm.jsonl`; dispatch timing goes to the dispatching process's
+`.log`, and session timing goes to `var/logs/session-<id>.log`
+(see `bench/README.md`, "Model-call overhead").
+
 ### Monitoring
 
 When core spawns nats-server it uses distinct loopback client and HTTP ports,
@@ -3812,8 +3850,10 @@ There is no launcher script — the binaries own the lifecycle:
   127.0.0.1:4222 and never the cwd, while the bash `dialog` uses
   `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222. Start the harness first —
   `niffler-tui` or `./var/bin/niffler`.
-- **Terminal admin shell** — `./var/bin/niffler` directly, or
-  `./var/bin/niffler --minimal` for the four-component boot profile. A
+- **Terminal admin shell** — `./var/bin/niffler` directly,
+  `./var/bin/niffler --minimal` for the four-component boot profile, or
+  `./var/bin/niffler --log=debug` to run core and every spawned component at
+  the debug log level. A
   manually started core never self-terminates; stop it with Ctrl-C / SIGTERM.
   `NIF_AUTOSTART=1` in the environment overrides the shell — that core is
   service mode even on a tty — and while it sits at the prompt it keeps

@@ -42,11 +42,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **The one-line installer builds release binaries.** `bootstrap.sh`'s build
-  step ran `make build`, which compiles debug (checks on, timing lanes
-  available) — right for a developer's clone, wrong for the binary an install
-  ships. It now runs `make release`, so a fresh install gets the optimized
-  harness.
+- **The one-line installer ships release binaries.** `scripts/bootstrap.sh`
+  now runs `make release` for its build step instead of `make build`, so a
+  fresh install runs the optimized (`-d:release`) binaries rather than the
+  debug build a developer clone wants; `make build` still swaps debug back.
 - **A subagent no longer inherits the provider's model echo.** A fresh
   subagent with no explicit model pin inherited the parent conversation
   header's `model` field — which is the provider's *echo* of what served
@@ -121,16 +120,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Benchmarks
 
-- **The DeepSWE lane runs each agent in its prepared container image.** The
-  port had run agents in a bare host checkout and forbidden validation in the
-  prompt; now `NIF_BASH_SANDBOX_MAP='<workspace>=<image>'` makes every `bash`
-  command — foreground and background alike — run as `docker run --rm
-  --network none` with only the workspace root bind-mounted, and
-  `prepare.mjs` overlays the image's `/app` on the checkout so dependencies
-  are exactly as the task ships them. The held-out upstream mirror moves to
-  `~/.cache/niffler-deepswe/upstream`, outside the repo tree, and
-  `bench/run.mjs --agent-env <file>` merges KEY=VALUE lines into the run's
-  environment.
+- **The DeepSWE lane now runs the agent in its task's prepared environment.**
+  `NIF_BASH_SANDBOX_MAP` makes every `bash` call run as
+  `docker run --rm --network none` of the task image with only the workspace
+  bind-mounted (`NIF_BASH_NET=off` is the netns variant), so the agent has the
+  image's dependencies and can validate — the upstream container's semantics —
+  while held-out material and the live network stay unreachable. `bench/run.mjs
+  --agent-env <file>` merges `KEY=VALUE` lines into a run's environment. On the
+  `clack` smoke task this moved f2p 73/82 → 82/82 and cut bash calls 54 → 8.
 - **A fresh full31 sweep updates the website's benchmark table.** Pi upgraded
   0.99.2 → 1.1.0, Opencode 1.18.35 joins as a row, and Niffler's row is now
   the average of two fresh runs (15.4s / $0.0039 per task, 89% cache hit).
@@ -170,8 +167,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ≈7.4k with its tool count fixed at 19. Each table highlights its compared
   column.
 - **The model-call timing seams share one flag.** The llm component's
-  `pre=/setup=/post=` lines, the dispatching process's `dispatch wait=` line,
-  and the runner's `llm-call dur=` all gate on `NIF_LOG_LEVEL=debug` — the
+  `chat timing pre/setup/post/total` line, the dispatching process's
+  `dispatch <tool> wait=` line, and the runner's `session: llm call dur=`
+  all gate on `NIF_LOG_LEVEL=debug` — the
   log level `niffler --log=debug` distributes to every component's
   environment at boot — not on per-seam env vars, so `NIF_LOG_LEVEL=debug`
   in front of `bench/run.mjs` collects every line. `bench/README.md` writes
@@ -182,13 +180,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`niffler --log=<level>`** sets the log level (`debug|info|warn|error`,
-  default `info`) for core and every component it spawns, distributing
-  `NIF_LOG_LEVEL` through the environment rather than asking each component to
-  grow a flag parser. `debug` turns on the per-call timing lines (the llm
-  component's `pre=/setup=/post=`, the dispatcher's `dispatch wait=`, and the
-  runner's `llm-call dur=`), which land in `var/logs/*.jsonl` like any other
-  log line.
+- **`niffler --log=<level>`** — one flag (`debug`, `info`, `warn`, `error`)
+  sets `NIF_LOG_LEVEL` for core and every component it spawns (children
+  inherit core's environment). `--log=debug` turns on the per-call timing
+  lines — the `llm` component's `chat timing pre/setup/post/total`, core's
+  `dispatch <tool> wait=` and the runner's `session: llm call dur=`. The
+  `llm` line lands in `var/logs/llm.jsonl`; dispatch and session timing
+  lines go to the dispatching process's `.log` and
+  `var/logs/session-<id>.log`, respectively. This replaces the
+  ad-hoc `NIF_LLM_TIMING`/`NIF_TURN_TIMING` switches.
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
   ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
   idempotent, per-tool non-fatal target (apt/brew; Debian's fdfind/batcat
