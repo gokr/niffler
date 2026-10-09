@@ -1161,6 +1161,7 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if onEvent != nil:
       onEvent("steer", %*{"sessionId": sessionId, "turnId": turnId,
                           "content": steered})
+    ct.steerStream.folded.add(steered)
     result += 1
   ct.steerStream.queue.setLen(0)
 
@@ -1176,20 +1177,20 @@ proc drainMapQueue*(queue: var seq[tuple[workspace, map: string]],
     appended = true
   queue.setLen(0)
 
-proc drainDiagnosticsQueue*(queue: var seq[tuple[path, text: string]]):
-                            seq[tuple[path, text: string]] =
+proc drainDiagnosticsQueue*(queue: var seq[tuple[path, text: string, clean: bool]]):
+                            seq[tuple[path, text: string, clean: bool]] =
   ## Consume only the diagnostics lane. Newest text per path wins so five
   ## edits to one file yield one append-only message, not five.
   if queue.len == 0: return
-  var latest: seq[tuple[path, text: string]]
-  for (path, text) in queue:
+  var latest: seq[tuple[path, text: string, clean: bool]]
+  for (path, text, clean) in queue:
     var replaced = false
     for i in 0 ..< latest.len:
       if latest[i].path == path:
-        latest[i] = (path, text)
+        latest[i] = (path, text, clean)
         replaced = true
         break
-    if not replaced: latest.add((path, text))
+    if not replaced: latest.add((path, text, clean))
   queue.setLen(0)
   result = latest
 
@@ -1207,17 +1208,48 @@ proc drainMap(ct: CoreTools, p: var Persister,
       onEvent("map", %*{"sessionId": p.convId, "workspace": ws,
                         "bytes": map.len})
 
+func diagnosticMessage*(path, text: string, clean: bool): JsonNode =
+  ## Display-only clean verdicts never enter the model projection.
+  if clean: return nil
+  %*{"role": "user", "content": "[lsp diagnostics for " & path &
+      " — asynchronously delivered after your edit, when the server answered]\n" & text}
+
 proc drainDiagnostics(ct: CoreTools, p: var Persister,
                       messages: var seq[JsonNode],
                       onEvent: proc(kind: string, data: JsonNode) {.closure.}) =
   if ct.diagStream == nil: return
-  for (path, text) in drainDiagnosticsQueue(ct.diagStream.queue):
-    ctxAppend(p, messages, %*{"role": "user",
-      "content": "[lsp diagnostics for " & path & " — asynchronously " &
-                 "delivered after your edit, when the server answered]\n" & text})
+  for (path, text, clean) in drainDiagnosticsQueue(ct.diagStream.queue):
+    # Clean checks are display/storage-only, never model context. Actionable
+    # checks still enter append-only history; the frozen prefix is unchanged.
+    let verdict = %*{"sessionId": p.convId, "path": path,
+                     "bytes": text.len, "text": text, "clean": clean,
+                     "createdAt": epochTime()}
+    try:
+      discard ct.storePutRev("diagnostic", p.convId & ":" & newId(), verdict)
+    except CatchableError as e:
+      echo "core: WARNING diagnostic persistence failed: " & e.msg
+    let msg = diagnosticMessage(path, text, clean)
+    if msg != nil: ctxAppend(p, messages, msg)
     if onEvent != nil:
-      onEvent("diagnostics", %*{"sessionId": p.convId, "path": path,
-                                "bytes": text.len, "text": text})
+      onEvent("diagnostics", verdict)
+
+proc drainIdleCleanDiagnostics*(ct: CoreTools, sessionId: string) =
+  ## Late clean verdicts are persisted/displayed even when no next turn runs.
+  ## Non-clean verdicts stay queued for append-only history at the next turn.
+  if ct.diagStream == nil: return
+  let latest = drainDiagnosticsQueue(ct.diagStream.queue)
+  for item in latest:
+    if not item.clean: ct.diagStream.queue.add(item)
+  var cleanCt = ct
+  cleanCt.diagStream = DiagStream()
+  for item in latest:
+    if item.clean: cleanCt.diagStream.queue.add(item)
+  var p = Persister(ct: ct, convId: sessionId)
+  var messages: seq[JsonNode]
+  drainDiagnostics(cleanCt, p, messages,
+    proc(kind: string, data: JsonNode) =
+      ct.nc.publish("ev.session." & sessionId & "." & kind,
+        Envelope(v: 1, id: newId(), kind: ekEvent, payload: data).encode()))
 
 proc drainAdvisories(ct: CoreTools, p: var Persister,
                      messages: var seq[JsonNode],
@@ -2616,6 +2648,22 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     while true:
       var failMsg = ""
       try:
+        # A steer folded during an in-flight request is not in that request.
+        # Acknowledge only those already included in this candidate history.
+        if ct.steerStream != nil and ct.steerStream.folded.len > 0:
+          var sent, pending: seq[string]
+          for content in ct.steerStream.folded:
+            var included = false
+            for msg in llmArgs["messages"]:
+              if msg{"role"}.getStr("") == "user" and
+                  msg{"content"}.getStr("") == "Steer: " & content:
+                included = true
+                break
+            if included: sent.add(content)
+            else: pending.add(content)
+          if sent.len > 0 and onEvent != nil:
+            onEvent("steer_sent", %*{"sessionId": p.convId, "contents": sent})
+          ct.steerStream.folded = pending
         resp = ct.dispatchToolCall("chat", llmArgs, 300000)
         # NIF_LOG_LEVEL=debug: the runner's own view of each model call. The
         # llm component logs its provider-side parts (pre/setup/dur/post); this

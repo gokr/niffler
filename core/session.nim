@@ -201,6 +201,7 @@ proc main() =
       pumpAdvise(ct)
       pumpMap(ct)
       pumpDiag(ct)
+      drainIdleCleanDiagnostics(ct, sessionId)
       if epochTime() - lastActivity > idleLimitSecs:
         echo "session: retiring after " & $idleLimitSecs.int & "s idle"
         break

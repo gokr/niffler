@@ -237,6 +237,9 @@ ev.session.<id>.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
                        #   (error keeps its legacy string shape; durationMs is
                        #   on done only)
 ev.session.<id>.steer       # {sessionId, turnId?, content} a steer message was folded in
+ev.session.<id>.steer_sent # {sessionId, contents: [string]} folded steers included
+                       #   in the candidate dispatched to chat (not merely queued).
+                       #   Clients clear their pending "Steer: " display marker.
 ev.session.<id>.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
 ev.session.<id>.notice      # {sessionId, turnId?, kind?, content?, jobId?, child?,
@@ -249,10 +252,13 @@ ev.session.<id>.map         # {sessionId, workspace, bytes} the workspace map wa
                        #   appended to history (once per conversation; the append
                        #   itself arrives on svc.session.<id>.map). Appended, not
                        #   injected into the frozen prefix
-ev.session.<id>.diagnostics # {sessionId, path, bytes, text} asynchronously delivered
-                            #   diagnostics for an edited file were appended to
-                            #   history (the append arrives on svc.session.<id>.diag).
-                            #   text is the rendered diagnostic body, for live display.
+ev.session.<id>.diagnostics # {sessionId, path, bytes, text, clean, createdAt}
+                            #   async verdict received on svc.session.<id>.diag.
+                            #   All verdicts persist as kind diagnostic, id <session>:<id>.
+                            #   clean:true is UI/storage-only, including late idle delivery;
+                            #   other verdicts also append to model history. Missing clean
+                            #   defaults false (never hide unknown/failure results).
+                            #   No wake or extra model call; frozen prefix unchanged.
 ev.session.<id>.done        # {sessionId, turnId, reply} or {sessionId, turnId, error}
                        #   the legacy end-of-turn frame; it deliberately carries
                        #   NO accounting, so a client that reads both this and

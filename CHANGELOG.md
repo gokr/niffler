@@ -27,6 +27,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fixture compiles timing out) rather than as useful speed. The full suite
   ran green at `jobs=7`; `CORES` overrides the machine reading and
   `TEST_JOBS` the pool depth.
+- Clean async LSP verdicts persist separately and remain visible to clients
+  without adding model-history tokens; late clean checks deliver while idle.
+  Failures and actionable diagnostics still append to history.
+- `steer_sent` events distinguish history folding from model dispatch.
+
 - Slimmed the base prompt and all eight direct tool descriptions without
   removing capabilities. Optional pipelines keep literal `$` by default;
   file selection and exact-edit routing are explicit, and models are asked

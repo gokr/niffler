@@ -83,6 +83,7 @@ type
   SteerStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[string]      # injected user messages (drained by runTurn)
+    folded*: seq[string]     # in history, awaiting the next model dispatch
     notices*: seq[JsonNode]  # settlement notices (drained by runTurn)
     cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
     cancelAt*: float         # when it arrived (stale cancels self-expire)
@@ -105,7 +106,7 @@ type
   # never the frozen prefix.
   DiagStream* = ref object
     sub*: ptr natsSubscription
-    queue*: seq[tuple[path, text: string]]
+    queue*: seq[tuple[path, text: string, clean: bool]]
   # Raised from a dispatch's idle slot when a turn cancellation arrives
   # while that dispatch is in flight: the caller stops waiting for the
   # reply immediately. The callee keeps running (NATS request/reply has no
@@ -520,7 +521,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       # Per-conversation file-tool state (edit undo records + seen digests)
       # is scoped by session id, so it goes with the conversation that owns
       # it instead of lingering in the store forever.
-      for kind in ["edit-undo", "edit-seen"]:
+      for kind in ["edit-undo", "edit-seen", "diagnostic"]:
         for item in ct.storeListAll(kind, sessionId & ":"):
           try:
             discard ct.dispatchToolCall("del",
@@ -1265,7 +1266,7 @@ proc pumpDiag*(ct: CoreTools) =
     let path = env.payload{"path"}.getStr("")
     let text = env.payload{"text"}.getStr("")
     if path.len == 0 or text.len == 0: continue
-    ct.diagStream.queue.add((path, text))
+    ct.diagStream.queue.add((path, text, env.payload{"clean"}.getBool(false)))
 
 proc pumpAdvise*(ct: CoreTools) =
   ## Drain svc.session.<id>.advise — turn-bound advisory requests from the

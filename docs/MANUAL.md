@@ -1918,7 +1918,11 @@ another checkout got no diagnostics and no signal that it had none.
 After every successful edit it queues diagnostics asynchronously — the check
 runs in the lsp component's idle seam and the verdict is delivered on the
 conversation's `.diag` lane — and the edit result names that lane, so
-"checked and clean" can never look like "nothing happened". When the check
+"checked and clean" can never look like "nothing happened" in the UI.
+Clean verdicts are display/storage-only (`diagnostic` records), not LLM
+messages; failures and actionable diagnostics still append to model history.
+Late clean checks deliver while the runner is idle without waking the model.
+When the check
 cannot be queued (a file outside the conversation workspace, or a failure to
 reach the lsp component) the edit result says so instead, with the reason.
 Silence is reserved for files whose extension no registry entry claims: a
