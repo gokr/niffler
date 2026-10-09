@@ -3265,8 +3265,10 @@ Core's `--log=<level>` flag (`debug`, `info`, `warn`, `error`) sets
 core's environment — so `niffler --log=debug` turns on the per-call timing
 lines that explain a turn's wall time: the `llm` component's
 `chat timing pre/setup/post/total`, core's `dispatch <tool> wait=` and the
-runner's `session: llm call dur=`. They land in `var/logs/*.jsonl` like any
-other log line (see `bench/README.md`, "Model-call overhead").
+runner's `session: llm call dur=`. The `llm` line lands in
+`var/logs/llm.jsonl`; dispatch timing goes to the dispatching process's
+`.log`, and session timing goes to `var/logs/session-<id>.log`
+(see `bench/README.md`, "Model-call overhead").
 
 ### Monitoring
 

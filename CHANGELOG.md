@@ -112,8 +112,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sets `NIF_LOG_LEVEL` for core and every component it spawns (children
   inherit core's environment). `--log=debug` turns on the per-call timing
   lines — the `llm` component's `chat timing pre/setup/post/total`, core's
-  `dispatch <tool> wait=` and the runner's `session: llm call dur=` — which
-  land in `var/logs/*.jsonl` like any other log line. This replaces the
+  `dispatch <tool> wait=` and the runner's `session: llm call dur=`. The
+  `llm` line lands in `var/logs/llm.jsonl`; dispatch and session timing
+  lines go to the dispatching process's `.log` and
+  `var/logs/session-<id>.log`, respectively. This replaces the
   ad-hoc `NIF_LLM_TIMING`/`NIF_TURN_TIMING` switches.
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
   ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one

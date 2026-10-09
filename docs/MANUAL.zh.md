@@ -1790,6 +1790,8 @@ Nim 的任意信封请求助手在等待时仅继续泵送原始 tap 订阅。�
 
 结构化日志在确切主题 `ev.log.<component>` 上发布事件，内容为 `{component, level, msg, ctx?, at}`。级别为 `debug`、`info`、`warn` 和 `error`。`NIF_LOG_LEVEL` 默认为 `info`，并在每个 SDK 中于发布前抑制更低级别。发出的无效级别会失败；无效阈值回退到 `info`。
 
+core 的 `--log=<level>` 标志（`debug`、`info`、`warn`、`error`）为 core 及其生成的所有组件设置 `NIF_LOG_LEVEL`，子进程继承 core 的环境。因此，`niffler --log=debug` 会启用解释一轮耗时的逐调用计时行：`llm` 组件的 `chat timing pre/setup/post/total`、core 的 `dispatch <tool> wait=` 和 runner 的 `session: llm call dur=`。`llm` 行写入 `var/logs/llm.jsonl`；dispatch 计时写入执行分派的进程的 `.log`，session 计时写入 `var/logs/session-<id>.log`（参见 `bench/README.md` 的“Model-call overhead”）。
+
 ### Monitoring
 
 当 core 生成 nats-server 时，它使用不同的回环客户端和 HTTP 端口，然后写入（二进制文件是存在时来自 `components/nats` 的已构建组件 `var/bin/nats-server`，否则是 PATH 中的 `nats-server`）：
