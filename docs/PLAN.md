@@ -35,13 +35,15 @@ of this file.
   proxy only. Parallel dispatch, several conversations per workspace and
   pre-created worktrees are all shipped, so two session runners can interleave
   edits in one tree with no owner and no conflict signal. This is a correctness
-  hole, not a safety one ([REASONIX.md](research/REASONIX.md) #7,
+  hole, not a safety one. Design: [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md)
+  proposal A ([REASONIX.md](research/REASONIX.md) #7,
   [CODEWHALE.md](research/CODEWHALE.md) D1).
 - **Evidence ledger + host-adjudicated completion claims** — a subagent settles
   with prose and nothing checks its citations against what the host actually
   observed. The seam exists (`agent`'s transcript-derived `resolveStale`); it
-  simply does not adjudicate. Pairs with the structured-output half of the
-  subagent row below ([REASONIX.md](research/REASONIX.md) #2).
+  simply does not adjudicate. Design:
+  [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md) proposal B, which reads
+  the receipts proposal A produces ([REASONIX.md](research/REASONIX.md) #2).
 - **Eval harness — completion-integrity class + metering proxy** — the
   decisions above are bench-gated and the bench still has no
   unsolvable-by-construction tasks with inverse-contract graders and no neutral
