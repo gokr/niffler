@@ -33,6 +33,46 @@ When writing reports, always say "DeepSWE (Datacurve)" or "DeepSWE-Preview
 | Runner | `swebench==4.1.0` Docker harness | Harbor task format, run by [Pier](https://github.com/datacurve-ai/pier) (Harbor fork; per-agent network allowlists) |
 | Official protocol | `--rounds 1` one-shot | one-shot, agent commits its work, collect hook extracts `git diff --binary <base> HEAD` |
 
+## Protocol fidelity
+
+Upstream gives the agent its prepared image (`/app`: the repo at
+`base_commit` with dependencies installed) and **no network**; the hidden
+tests grade in a separate no-network container. Earlier iterations of this
+port ran the agent in a bare host checkout and compensated with prompt
+rules ("never run the project's tests and never install dependencies") —
+a double deviation: the agent was denied the sanctioned environment AND
+denied validation the upstream agent performs. The port now matches the
+protocol:
+
+- **Commands run inside the task's agent image** — the upstream agent
+  container's semantics. `NIF_BASH_SANDBOX_MAP` (written by prepare.mjs to
+  `var/bench/deepswe/image-home/env.sh`, applied with `--agent-env`) maps
+  each workspace to its image; the bash component wraps every command in
+  `docker run --rm --network none` of that image with **only the workspace
+  bind-mounted at the same path**. The image's toolchains, package caches
+  and site-packages are simply there; held-out material and other
+  checkouts are invisible by construction. Deviation, documented: the
+  container is per command, so nothing outside the workspace persists
+  between commands (the workspace is the whole state).
+- **Dependencies as the task ships them.** prepare.mjs overlays the image's
+  `/app` (minus `.git` — the `base` tag stays the diff baseline) on the
+  checkout: `node_modules` and friends exactly as prepared.
+- **No network, enforced** (`--network none` for every command; loopback is
+  up for local test servers). The leak detector keeps watching the fetch/
+  url surface as before.
+- **Held-out material stays unreachable**: the `upstream/` mirror (hidden
+  tests + reference solutions) defaults to `~/.cache/niffler-deepswe/
+  upstream` — outside the repository tree, like the hidden cards — and the
+  verifier takes it by absolute path.
+- **Validation is expected**: the instruction's hard rules ask the agent to
+  run the project's own tests/typecheck/build (the hidden suite is separate
+  and grades the diff afterwards), never to install or download anything,
+  to stay inside `{{REPO}}`, and to leave tests/protected files untouched.
+
+(Hosts that cannot run unprivileged containers have the `NIF_BASH_NET=off`
+netns variant in procutil — host userland, `unshare` — but the sandbox map
+is the fidelity path and the one this port uses.)
+
 ## Task anatomy (Harbor format, per task)
 
 ```text
@@ -72,6 +112,7 @@ node bench/run.mjs --task-root var/bench/deepswe/tasks --task all \
      --harness niffler,pi,opencode --model deepseek-v4-flash \
      --rounds 1 --jobs 2 \
      --turn-timeout-min 185 --task-timeout-min 200 --test-timeout-sec 2000 \
+     --agent-env var/bench/deepswe/image-home/env.sh \
      --run-id deepswe-<sha>
 ```
 

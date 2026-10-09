@@ -15,14 +15,23 @@
 #   --all    install every optional language unattended (CI)
 #   no TTY   optional languages are skipped with a note
 #
-# The script never uses sudo and only writes under $HOME. Where a server
-# needs a runtime we do not ship (JDK, .NET SDK, rustup), the failure names
-# the exact command — runtimes are deliberately not auto-installed.
+# The script never uses sudo and only writes under $HOME — npm servers
+# included: they install into ~/.local/share/niffler-lsp/npm and are
+# symlinked into the bin dir, never `npm install -g` (apt- and snap-shipped
+# Node put the global prefix under /usr(/local), where the write dies
+# EACCES without sudo). Where a server needs a runtime we do not ship
+# (JDK, .NET SDK, rustup), the failure names the exact command — runtimes
+# are deliberately not auto-installed.
 set -uo pipefail
 
 BIN="${NIF_LSP_BIN-$HOME/.local/bin}"
 SHARE="$HOME/.local/share/niffler-lsp"
 mkdir -p "$BIN" "$SHARE"
+# The script installs into $BIN; put it on PATH so its own output is visible
+# to every probe (java -version in ensure_java, command -v after npmServer)
+# even in a non-login shell where ~/.local/bin is absent entirely (snap and
+# Ubuntu default PATHs) — the JDK path used to re-download and fail there.
+export PATH="$BIN:$PATH"
 ARCH=$(uname -m)
 installed=0
 ALL=0
@@ -52,6 +61,32 @@ want() {
   [ -z "$a" ] || [ "$a" = "y" ] || [ "$a" = "Y" ]
 }
 
+npmServer() {
+  # npmServer <pkg> <bin>... — install an npm language server into the
+  # HOME-local $SHARE/npm tree and symlink its binaries into $BIN. Never
+  # `npm install -g`: apt- and snap-shipped Node carry a global prefix
+  # under /usr(/local) and that write dies EACCES without sudo — the wall
+  # of unexplained "npm install failed" lines on fresh boxes. Prints its
+  # own FAIL with npm's own last error line when something goes wrong.
+  local pkg="$1" err bin ok_all=1
+  shift
+  mkdir -p "$SHARE/npm"
+  if ! err=$(npm install --prefix "$SHARE/npm" "$pkg" 2>&1 >/dev/null); then
+    fail "$pkg" "npm install failed: $(echo "$err" | tail -1)"
+    return 1
+  fi
+  for bin in "$@"; do
+    chmod +x "$SHARE/npm/node_modules/.bin/$bin" 2>/dev/null
+    if [ -x "$SHARE/npm/node_modules/.bin/$bin" ]; then
+      ln -sf "$SHARE/npm/node_modules/.bin/$bin" "$BIN/$bin"
+    else
+      fail "$bin" "npm package $pkg did not provide it"
+      ok_all=0
+    fi
+  done
+  [ "$ok_all" = 1 ]
+}
+
 # ---- Go: gopls (mandatory) --------------------------------------------------
 if have gopls; then ok "gopls"
 elif have go;   then go install golang.org/x/tools/gopls@latest && new "gopls" \
@@ -66,16 +101,20 @@ else
     # Remember which of the pair was already present so the summary counts
     # only what this run installs.
     had_tls=0; have typescript-language-server && had_tls=1
-    npm install -g typescript-language-server >/dev/null 2>&1 \
-      || fail "typescript-language-server" "npm install failed"
+    if ! have typescript-language-server; then
+      npmServer typescript-language-server typescript-language-server
+    fi
     # TS7 dropped the classic tsserver; the language server bridges over it,
     # so install a classic typescript@5 tree out of the way and symlink.
     if ! have tsserver; then
       mkdir -p "$HOME/.local/ts5"
-      npm install --prefix "$HOME/.local/ts5" typescript@5 >/dev/null 2>&1 \
-        && ln -sf "$HOME/.local/ts5/node_modules/.bin/tsserver" "$BIN/tsserver" \
-        && new "tsserver (classic TS5 bridge)" \
-        || fail "tsserver" "npm install failed"
+      if tserr=$(npm install --prefix "$HOME/.local/ts5" typescript@5 2>&1 >/dev/null); then
+        ln -sf "$HOME/.local/ts5/node_modules/.bin/tsserver" "$BIN/tsserver" \
+          && new "tsserver (classic TS5 bridge)" \
+          || fail "tsserver" "could not link $HOME/.local/ts5/node_modules/.bin/tsserver"
+      else
+        fail "tsserver" "npm install failed: $(echo "$tserr" | tail -1)"
+      fi
       # Pin the classic tsserver into the user registry: the language server
       # resolves typescript from the workspace, then tsserver.path, then the
       # global module — and a global TS7 (tsgo) install has a layout it
@@ -107,7 +146,7 @@ PYEOF
       [ "$had_tls" = 1 ] && ok "typescript-language-server" \
         || new "typescript-language-server"
     fi
-  else fail "typescript-language-server" "no npm"; fi
+  else fail "typescript-language-server" "no npm (Node 20+: make install-node)"; fi
 fi
 
 # ---- Nim: nimtortoise (mandatory — Niffler is written in Nim) ---------------
@@ -131,11 +170,13 @@ elif have nimble; then
 else fail "nimtortoise" "no nimble (make install-nim)"; fi
 
 # ---- Python: pyright (optional) ---------------------------------------------
+# The registry launches `pyright-langserver --stdio`, so that binary (not the
+# pyright CLI) is what presence is judged on.
 if want "Python (pyright)"; then
-if have pyright; then ok "pyright"
-elif have npm;   then npm install -g pyright >/dev/null 2>&1 && new "pyright" \
-  || fail "pyright" "npm install failed"; \
-else skip "pyright" "no npm"; fi
+if have pyright-langserver; then ok "pyright-langserver"
+elif have npm; then npmServer pyright pyright-langserver pyright \
+  && new "pyright-langserver"; \
+else skip "pyright-langserver" "no npm (Node 20+: make install-node)"; fi
 fi
 
 # ---- C/C++: clangd (optional) ------------------------------------------------
@@ -159,9 +200,9 @@ fi
 # ---- Shell: bash-language-server (optional) ----------------------------------
 if want "Bash (bash-language-server)"; then
 if have bash-language-server; then ok "bash-language-server"
-elif have npm; then npm install -g bash-language-server >/dev/null 2>&1 \
-  && new "bash-language-server" || fail "bash-language-server" "npm install failed"; \
-else skip "bash-language-server" "no npm"; fi
+elif have npm; then npmServer bash-language-server bash-language-server \
+  && new "bash-language-server"; \
+else skip "bash-language-server" "no npm (Node 20+: make install-node)"; fi
 fi
 
 # ---- Rust: rust-analyzer (optional) ------------------------------------------
@@ -244,9 +285,9 @@ fi
 # Node-based, so it needs no PHP runtime on the host.
 if want "PHP (intelephense)"; then
 if have intelephense; then ok "intelephense"
-elif have npm; then npm install -g intelephense >/dev/null 2>&1 \
-  && new "intelephense" || fail "intelephense" "npm install failed"; \
-else skip "intelephense" "no npm"; fi
+elif have npm; then npmServer intelephense intelephense \
+  && new "intelephense"; \
+else skip "intelephense" "no npm (Node 20+: make install-node)"; fi
 fi
 
 # ---- Ruby: solargraph (optional) -----------------------------------------------
@@ -290,7 +331,7 @@ fi
 
 available=0
 listing=""
-for s in gopls pyright typescript-language-server tsserver bash-language-server \
+for s in gopls pyright-langserver typescript-language-server tsserver bash-language-server \
          rust-analyzer clangd nimtortoise nimlangserver jdtls csharp-ls \
          intelephense solargraph; do
   if have "$s"; then

@@ -806,6 +806,47 @@ proc main() =
           savedGated == 0 and
           gmsgs[0]{"content"}.getStr("").contains("[full output:"), $savedGated)
 
+  # --- 5c. reasoning tombstone: past turns' thinking leaves the projection
+  # The providers discard prior-turn reasoning on replay (measured DeepSeek:
+  # identical prompt_tokens with a 62-token reasoning block replayed), but
+  # the meter counted it — so the 90% trim fired ahead of the real window.
+  # Every assistant message but the LAST is tombstoned; canonical reasoning
+  # is untouched (recall still reaches it).
+  block reasoningTombstone:
+    var rp = newPersister(ct)
+    rp.convId = "reasoning-tombstone"
+    rp.seqNo = 0
+    var rmsgs: seq[JsonNode] = @[]
+    rp.nodes = @[]
+    rp.canonicalHigh = 0
+    rp.ctxAppend(rmsgs, %*{"role": "user", "content": "q1"})
+    rp.ctxAppend(rmsgs, %*{"role": "assistant", "content": "a1",
+                           "reasoning": repeat('x', 4000)})
+    rp.ctxAppend(rmsgs, %*{"role": "tool", "tool_call_id": "c1", "content": "r1"})
+    rp.ctxAppend(rmsgs, %*{"role": "user", "content": "q2"})
+    rp.ctxAppend(rmsgs, %*{"role": "assistant", "content": "a2",
+                           "reasoning": repeat('y', 3000)})
+    let savedR = rp.pruneContext(rmsgs)
+    check("older assistant reasoning tombstoned",
+          rmsgs[1]{"reasoning"}.getStr("").startsWith("[thinking omitted") and
+          savedR > 3000, $savedR)
+    check("the tombstone names the canonical ref",
+          rmsgs[1]{"reasoning"}.getStr("").contains(rp.nodes[1].id),
+          rmsgs[1]{"reasoning"}.getStr(""))
+    check("the LAST assistant keeps its reasoning",
+          rmsgs[4]{"reasoning"}.getStr("").len == 3000,
+          rmsgs[4]{"reasoning"}.getStr("")[0 ..< 80])
+    check("tool pairing untouched",
+          rmsgs[2]{"tool_call_id"}.getStr("") == "c1" and
+          rmsgs[2]{"content"}.getStr("") == "r1")
+    let savedR2 = rp.pruneContext(rmsgs)
+    check("tombstone is idempotent", savedR2 == 0, $savedR2)
+    let stored = ct.storeGetItem("message", rp.nodes[1].id, 5_000)
+    check("canonical reasoning untouched — recall still reaches it",
+          stored.value != nil and
+          stored.value{"reasoning"}.getStr("").len == 4000,
+          $(if stored.value != nil: stored.value{"reasoning"}.getStr("").len else: -1))
+
   # --- 11. projection + prune + later trim: the reload must still resolve --
   # Regression: a committed projection records its prunes in the record's
   # `prunes` list, and §6.3 trim may run AFTER that commit (header

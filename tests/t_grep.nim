@@ -139,6 +139,46 @@ proc main() =
   check("files caps paths", f4{"text"}.getStr("").contains("many.txt"),
         $f4)
 
+  # Private workspace context changes display only, including context records.
+  let source = "path-marker " & tmp & "/src/alpha.nim"
+  writeFile(tmp / "src" / "paths.txt", "before " & source & "\n" & source & "\nafter\n")
+  let relative = call(nc, "grep", "grep", %*{"pattern": "^path-marker",
+    "path": tmp / "src", "context": 1, "__workspace": {"root": tmp}})
+  let relativeText = relative{"text"}.getStr("")
+  check("grep displays workspace-relative match and context paths",
+    relativeText.contains("\nsrc/paths.txt:2:" & source) and
+    relativeText.contains("\nsrc/paths.txt-1-before " & source), $relative)
+  check("grep never rewrites paths inside matched source",
+    relativeText.contains(source), $relative)
+  let unchanged = call(nc, "grep", "grep", %*{"pattern": "^path-marker",
+    "path": tmp / "src"})
+  check("grep without workspace keeps absolute display",
+    unchanged{"text"}.getStr("").contains(tmp / "src/paths.txt" & ":2:"), $unchanged)
+  let outside = call(nc, "grep", "grep", %*{"pattern": "^path-marker",
+    "path": tmp / "src", "__workspace": {"root": tmp / "sub"}})
+  check("grep outside workspace keeps original paths",
+    outside{"text"}.getStr("") == unchanged{"text"}.getStr(""), $outside)
+  let relativeFiles = call(nc, "grep", "files", %*{"path": tmp / "src",
+    "__workspace": {"root": tmp}})
+  check("files displays workspace-relative paths",
+    relativeFiles{"text"}.getStr("").contains("\nsrc/alpha.nim") and
+    not relativeFiles{"text"}.getStr("").contains(tmp), $relativeFiles)
+  let outsideFiles = call(nc, "grep", "files", %*{"path": tmp / "src",
+    "__workspace": {"root": tmp / "sub"}})
+  check("files outside workspace keeps original paths",
+    outsideFiles{"text"}.getStr("").contains(tmp / "src/alpha.nim"), $outsideFiles)
+
+  createSymlink(tmp / "src", tmp / "mirror")
+  let mirrored = call(nc, "grep", "grep", %*{
+    "pattern": "^path-marker", "path": tmp / "mirror",
+    "__workspace": {"root": tmp}})
+  check("grep shortens symlinked dispatch filenames without rewriting source",
+        mirrored{"text"}.getStr().contains("\nsrc/paths.txt:2:" & source), $mirrored)
+  let mirroredFiles = call(nc, "grep", "files", %*{
+    "path": tmp / "mirror", "__workspace": {"root": tmp}})
+  check("files shortens symlinked dispatch filenames",
+        mirroredFiles{"text"}.getStr().contains("\nsrc/alpha.nim"), $mirroredFiles)
+
   # drain: component exits
   drain(nc)
   sleep(700)

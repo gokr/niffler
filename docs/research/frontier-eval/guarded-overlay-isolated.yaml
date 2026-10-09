@@ -1,0 +1,21 @@
+# DeepSWE-style allow_internet=false tasks: Harbor forces `main` into the
+# egress sidecar's network namespace (network_mode: service:...), where Docker
+# forbids extra_hosts ("conflicting options", observed). So no hostname games:
+# pin the compose network to a fixed subnet, making the host gateway — where
+# the budget guard listens — the constant IP 172.31.250.1. Both the job's
+# extra_allowed_hosts and the model URL can then name it directly.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+services:
+  main:
+    cap_drop:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/runta-ca-bundle.crt:ro
+    environment:
+      CURL_CA_BUNDLE: /etc/ssl/certs/runta-ca-bundle.crt
+      SSL_CERT_FILE: /etc/ssl/certs/runta-ca-bundle.crt

@@ -3,7 +3,8 @@
 > Historical prioritization plan derived from [PI_EFFICIENCY_FINDINGS.md](PI_EFFICIENCY_FINDINGS.md).
 > Runner fan-out, replicas, Go concurrency, usage accounting, retries and the
 > context/compaction work have since landed; the remaining open items below are
-> retained as research. Current behavior is in [../MANUAL.md](../MANUAL.md).
+> retained as research. Current behavior is in [../MANUAL.md](../MANUAL.md),
+> and open work has one home in [../PLAN.md](../PLAN.md).
 >
 > Operating plan derived from [PI_EFFICIENCY_FINDINGS.md](PI_EFFICIENCY_FINDINGS.md)
 > (same directory). Ordered by **impact ÷ effort**, split into phases. Each item

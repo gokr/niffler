@@ -517,6 +517,17 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           inc deleted
         except CatchableError:
           discard
+      # Per-conversation file-tool state (edit undo records + seen digests)
+      # is scoped by session id, so it goes with the conversation that owns
+      # it instead of lingering in the store forever.
+      for kind in ["edit-undo", "edit-seen"]:
+        for item in ct.storeListAll(kind, sessionId & ":"):
+          try:
+            discard ct.dispatchToolCall("del",
+              %*{"kind": kind, "id": item{"id"}.getStr("")})
+            inc deleted
+          except CatchableError:
+            discard
     except CatchableError as e:
       echo "core: warning — conversation messages not deleted: " & e.msg
     # Attachment pixels are their own docs (kinds "attachment" metadata +
@@ -1462,6 +1473,14 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   let env = callEnvelope(tool, args, caller)
   let data = env.encode()
   let inbox = "_INBOX." & newId()
+  # NIF_LOG_LEVEL=debug: how long this dispatch waited for the callee's reply —
+  # publish to reply, which for a model call is the whole provider round trip.
+  # Note the line lands in whichever process ran the dispatch: the session
+  # runner compiles this module too and calls the llm component directly, so
+  # the runner<->core hop is not in the model-call path at all (measured: 1ms).
+  # Budget and method: bench/README.md, "Model-call overhead".
+  let coreTiming = getEnv("NIF_LOG_LEVEL", "") == "debug"
+  let dispAt = getMonoTime()
   var sub: ptr natsSubscription
   var st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
   if not checkStatus(st):
@@ -1481,6 +1500,12 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ns == NATS_OK:
       let resp = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
+      if coreTiming:
+        # echo, not the SDK's ev.log: core imports only the pure SDK modules
+        # (never the Component machinery), and this line belongs in the
+        # dispatching process's own log either way.
+        echo "dispatch " & tool & " wait=" &
+          $int((getMonoTime() - dispAt).inMilliseconds) & "ms"
       if resp.kind == ekError:
         raise newException(ValueError,
           resp.error{"message"}.getStr("component error"))

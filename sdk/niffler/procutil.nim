@@ -67,6 +67,57 @@ proc killGroup*(pid: Pid, sig: cint) =
   ## grandchildren — `sleep 100 &` keeps running after bash dies).
   discard posix.kill(-pid, sig)
 
+proc netScoped*(script: string, cwd = ""): string =
+  ## Wrap a command so it runs with no network — and optionally inside a
+  ## task's prepared environment. Both modes fail loud: a silent fallback
+  ## would reopen the hole these exist to close.
+  ##
+  ## - NIF_BASH_SANDBOX_MAP="<absolute-dir>=<image>" lines (hosted
+  ##   benchmarks, e.g. the DeepSWE port): the longest matching directory
+  ##   prefix of `cwd` selects the image, and the command runs in a fresh
+  ##   `docker run --rm --network none` of it with ONLY the workspace
+  ##   bind-mounted at the same path. That is the upstream agent container's
+  ##   semantics: the image's toolchains and caches, the workspace, and
+  ##   nothing else on this machine — held-out materials and other
+  ##   checkouts are unreachable by construction. Container state beyond
+  ##   the workspace does not survive between commands (workspace is the
+  ##   only persistent state).
+  ##
+  ## - NIF_BASH_NET=off: the lightweight variant — `unshare` netns on the
+  ##   host userland (loopback up, no routes). Needs unprivileged user
+  ##   namespaces: AppArmor-restricted Ubuntu refuses them without root.
+  ##
+  ## Exported for tests.
+  let map = getEnv("NIF_BASH_SANDBOX_MAP", "").strip()
+  if map.len > 0:
+    let dir = if cwd.len > 0: absolutePath(cwd) else: getCurrentDir()
+    var image = ""
+    var root = ""
+    for line in map.splitLines():
+      let eq = line.find('=')
+      if eq <= 0: continue
+      let prefix = line[0 ..< eq].strip()
+      # Longest matching workspace root wins. The ROOT is what gets mounted
+      # (a subdir cwd must still see the whole repo); the requested dir is
+      # only the working directory inside it.
+      if prefix.len <= root.len: continue
+      if dir == prefix or dir.startsWith(prefix & "/"):
+        root = prefix
+        image = line[eq + 1 .. ^1].strip()
+    if image.len == 0:
+      return "echo 'NIF_BASH_SANDBOX_MAP: no sandbox image for " &
+        dir.replace("'", "") & "' >&2; exit 125"
+    return "docker run --rm --network none -v " &
+      quoteShell(root & ":" & root) & " -w " & quoteShell(dir) &
+      " " & quoteShell(image) & " bash -c " & quoteShell(script)
+  if getEnv("NIF_BASH_NET", "").strip() != "off":
+    return script
+  when defined(linux):
+    "unshare --net --map-root-user -- bash -c " &
+      quoteShell("ip link set lo up 2>/dev/null || true\n" & script)
+  else:
+    "echo 'NIF_BASH_NET=off needs Linux unshare(1)' >&2; exit 125"
+
 proc runCmd*(cmd: string, timeoutMs: int = 120_000,
              cancelled: proc(): bool = nil, workingDir: string = ""): RunResult =
   ## Run `cmd` via bash -c and return its exit code plus the combined

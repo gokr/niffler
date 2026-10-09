@@ -4,7 +4,8 @@ Status: **revised plan; nothing implemented**. The historical sandbox branch
 and worktree are not part of the current checkout. This revision supersedes the
 implementation decisions
 in [SANDBOX.md](SANDBOX.md) and the original version of this plan. The research
-is useful background, not an implementation specification.
+is useful background, not an implementation specification. Open work has one
+home — [../PLAN.md](../PLAN.md); this file is the design record it points at.
 
 **Recommendation: first ship opt-in shell write protection, not a new security
 framework.** Use the same small launcher on Linux and macOS, leave the shared

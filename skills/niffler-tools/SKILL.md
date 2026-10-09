@@ -7,16 +7,21 @@ description: When-to-use guidance for every Niffler core component and tool — 
 
 Niffler is a self-extending harness. Many capabilities are NOT in the direct
 toolset: they are **on-demand tools** reachable only via `discover` + `invoke`.
+The stock direct set is `bash`, `read`, `edit`, `write`, `replace_across`,
+`grep`, `discover`, `invoke`; `agent_run` is on demand.
 The cardinal rule: **before hand-rolling a job in bash, ask whether a Niffler
 component already does it** — `discover` (query, or `component` for one
 component, or `tools` alone to look names up across every component) lists
 live components and tools outside the fixed direct set;
-`invoke` calls a discovered tool with its documented arguments.
+`invoke` calls a discovered tool with its documented arguments. If a registry
+page has `hasMore`, continue with `discover {after: "<nextAfter>"}`. Query
+keywords all must match; use fewer words when nothing matches.
 
 ## File tools (direct)
 
-- `read` — one file (`path`) or up to 12 files/ranges in one call
-  (`reads`: `{path, offset?, limit?}` items). Batch related reads; cut
+- `read` — one file (`path`) OR up to 12 files/ranges in one call
+  (`reads`: `{path, offset?, limit?}` items). Prefer one shape; both remain
+  accepted with existing union/deduplication. Batch related reads; cut
   tool round trips when inspecting several files at once.
 - `write` — atomic whole-file write (create or overwrite). Use for new files
   or full rewrites.
@@ -24,10 +29,15 @@ live components and tools outside the fixed direct set;
   `replace_all` for repeated replacements, a guarded fallback cascade when
   the exact string is ambiguous. Use edit for small precise changes, write
   for whole files.
+- `replace_across` — DIRECT identical literal replacements across the union
+  of explicit `paths` and/or `glob`; rules run in order, every occurrence is
+  replaced, no pre-read required. Use `edit` for contextual changes.
 - `undo_last_edit` — approval-gated revert of the last edit mutation.
-  ON-DEMAND: discover + invoke.
+  ON-DEMAND: discover + invoke; the first mutation result points to it.
 
-Never `cat`, `sed -i` or `python -c` file edits in bash when edit/write exist.
+Never use `cat`, `sed -i` or `python -c` instead of read/edit/write for
+ordinary file operations. A genuine scripted codemod or simple loop still
+belongs in bash; identical literal substitutions belong in replace_across.
 
 ## Search
 
@@ -51,10 +61,13 @@ is the classic misuse.
 
 ## bash
 
-Still right for: builds and test runs, pipelines, git mutations, and anything
-without a dedicated tool. Wrong for: reading/searching files, git inspection,
+Still right for: builds and test runs, pipelines, simple loops/codemods, git
+mutations, and anything without a dedicated tool. Do not invent a nested-call
+DSL for a shell-sized job. Wrong for: reading/searching files, git inspection,
 web fetching, or repeating what a listed tool already does. Oversized output
-spills to a file instead of the transcript.
+spills to a file instead of the transcript. Start servers/watchers with
+`run_in_background`; the result gives the exact discover, waiting poll and
+stop calls. Follow those controls instead of tight empty polling.
 
 ## Web
 
@@ -111,14 +124,15 @@ before checking the ecosystem is the classic mistake.
 ## Context economy
 
 - `agent_run` — exploratory subtask in a FRESH context (own loop, summary
-  returned). DIRECT tool. Give subagents per-job budgets: maxRounds,
+  returned). ON-DEMAND tool. Give subagents per-job budgets: maxRounds,
   maxCalls, maxTokens.
 - `fabric` — one Nim program orchestrates many tool calls; only `finish()`'s
   value enters the conversation. ON-DEMAND. See the niffler-fabric skill for
   program construction.
 - Direct loop — right when each result changes the plan.
-- Decision rule: one step or plan-changing results → direct loop; mechanical
-  known-shape fan-out / big intermediates / edit-then-verify / polling →
+- Decision rule: simple mechanical loops/codemods → bash; one step or
+  plan-changing results → direct loop; governed multi-tool fan-out / big
+  intermediates / edit-then-verify / polling →
   fabric; exploratory with per-step judgment → agent_run; mechanical
   collection plus ONE judgment → a fabric program calling agent_run.
 - Oversized outputs spill to files instead of the transcript.

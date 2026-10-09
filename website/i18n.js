@@ -15,6 +15,7 @@
   var CATALOGS = {
     en: {
       "skip": "Skip to content",
+      "scroll.hint": "Scroll sideways to explore →",
 
       "nav.efficient": "Efficient",
       "nav.features": "Features",
@@ -79,7 +80,7 @@
 
       "ed.lab1": "Code, files &amp; the web",
       "ed.filetools.h": "File tools",
-      "ed.filetools.p": "batched windowed reads, exact-match edit with a guarded fallback, atomic write, persistent undo",
+      "ed.filetools.p": "batched windowed reads, locate-and-fetch select reads, exact-match edit with a guarded fallback, literal bulk replace across a file set, atomic write, persistent undo",
       "ed.search.h": "Search",
       "ed.search.p": "gitignore-aware grep and file finding — stateless replicas so parallel calls really run in parallel",
       "ed.git.h": "Git",
@@ -101,7 +102,7 @@
       "ed.controls.h": "Per-conversation controls",
       "ed.controls.p": "tool allowlists, budgets, workspace pin, provider/model/effort pins",
       "ed.introspect.h": "Introspection",
-      "ed.introspect.p": "<code>/export</code> the exact provider request, <code>prompt_preview</code>, per-role counts, <code>/compact</code> now",
+      "ed.introspect.p": "<code>/export</code> the exact provider request, <code>prompt_preview</code>, per-role counts, <code>/compact</code> now — <code>--log=debug</code> logs per-model-call timing to <code>var/logs</code>",
       "ed.slash.h": "Slash commands",
       "ed.slash.p": "built in — plus ones contributed by installed plugins and MCP servers",
 
@@ -160,13 +161,14 @@
       "ins.h2": "Two minutes in.",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">— optional: npx skills, npm MCP servers, TypeScript components (the core, clients and the TUI are Nim/Go — the installer asks)</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">— optional, richer HTML extraction</span>",
-      "ins.fine": "Niffler is built from source and distributed that way — there are no prebuilt binaries. The one-line installer brings in everything missing (git, make, Go, Node.js, the Nim toolchain and nimble packages); building by hand, <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server. The desktop UI is an experimental spin-off — install it like any package: <code>cli install gokr/niffler-ui</code>. Full story in the <a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">manual ↗</a>.",
+      "ins.fine": "Niffler is built from source and distributed that way — there are no prebuilt binaries. The one-line installer brings in everything missing (git, make, curl, Go, then the Nim toolchain and nimble packages via <code>make setup</code>); Node.js and npm are optional and it asks first; at the end it offers the optional extras one by one — language servers (<code>make install-lsp</code>), the agent CLI toolkit for bash (<code>make install-tools</code>) and jev (<code>make install-jev</code>) — each defaulting to no. Building by hand, <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server. The desktop UI is an experimental spin-off — install it like any package: <code>cli install gokr/niffler-ui</code>. Full story in the <a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">manual ↗</a>.",
 
       "foot.line": "Small by default. It builds the rest."
     },
 
     zh: {
       "skip": "跳到正文",
+      "scroll.hint": "左右滑动查看更多 →",
 
       "nav.efficient": "高效",
       "nav.features": "特性",
@@ -231,7 +233,7 @@
 
       "ed.lab1": "代码、文件与网络",
       "ed.filetools.h": "文件工具",
-      "ed.filetools.p": "批量分窗读取、唯一匹配编辑并带回退保护、原子写入、持久撤销",
+      "ed.filetools.p": "批量分窗读取、定位即取的选择式读取、唯一匹配编辑并带回退保护、跨文件的字面量批量替换、原子写入、持久撤销",
       "ed.search.h": "搜索",
       "ed.search.p": "遵循 gitignore 的 grep 与文件查找——无状态副本让并行调用真正并行",
       "ed.git.h": "Git",
@@ -253,7 +255,7 @@
       "ed.controls.h": "按对话控制",
       "ed.controls.p": "工具白名单、预算、工作区固定、供应商/模型/思考力度固定",
       "ed.introspect.h": "自我观察",
-      "ed.introspect.p": "<code>/export</code> 导出发送给供应商的确切请求、<code>prompt_preview</code>、按角色统计、随时 <code>/compact</code>",
+      "ed.introspect.p": "<code>/export</code> 导出发送给供应商的确切请求、<code>prompt_preview</code>、按角色统计、随时 <code>/compact</code>——<code>--log=debug</code> 将每次模型调用的耗时写入 <code>var/logs</code>",
       "ed.slash.h": "斜杠命令",
       "ed.slash.p": "内置一批——已安装的插件与 MCP 服务器还可以贡献更多",
 
@@ -312,13 +314,14 @@
       "ins.h2": "两分钟，装好了。",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">——可选：npx skills、npm MCP 服务器、TypeScript 组件（核心、客户端和 TUI 都是 Nim/Go——安装器会询问）</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">——可选，HTML 正文提取更佳</span>",
-      "ins.fine": "Niffler 从源码构建、也以源码分发——没有预编译二进制。一行安装器补齐所有缺失的依赖（git、make、Go、Node.js、Nim 工具链和 nimble 包）；手动构建则用 <code>make doctor</code> 查看缺什么。总线随包自带——core 会启动自己的 nats-server。桌面 UI 是实验性衍生品——像普通包一样安装：<code>cli install gokr/niffler-ui</code>。完整故事见<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手册 ↗</a>。",
+      "ins.fine": "Niffler 从源码构建、也以源码分发——没有预编译二进制。一行安装器补齐所有缺失的依赖（git、make、curl、Go，随后通过 <code>make setup</code> 装好 Nim 工具链和 nimble 包）；Node.js 和 npm 是可选项，安装前会先询问；最后还会逐一询问可选的附加项——语言服务器（<code>make install-lsp</code>）、面向 bash 的智能体 CLI 工具集（<code>make install-tools</code>）和 jev（<code>make install-jev</code>）——默认都不安装。手动构建则用 <code>make doctor</code> 查看缺什么。总线随包自带——core 会启动自己的 nats-server。桌面 UI 是实验性衍生品——像普通包一样安装：<code>cli install gokr/niffler-ui</code>。完整故事见<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手册 ↗</a>。",
 
       "foot.line": "默认够小。其余的，它自己造。"
     },
 
     "zh-TW": {
       "skip": "跳至主要內容",
+      "scroll.hint": "左右滑動查看更多 →",
 
       "nav.efficient": "高效",
       "nav.features": "特性",
@@ -383,7 +386,7 @@
 
       "ed.lab1": "程式碼、檔案與網路",
       "ed.filetools.h": "檔案工具",
-      "ed.filetools.p": "批次分窗讀取、唯一匹配編輯並帶回退保護、原子寫入、持久復原",
+      "ed.filetools.p": "批次分窗讀取、定位即取的選擇式讀取、唯一匹配編輯並帶回退保護、跨檔案的字面量批次取代、原子寫入、持久復原",
       "ed.search.h": "搜尋",
       "ed.search.p": "遵循 gitignore 的 grep 與檔案尋找——無狀態副本讓平行呼叫真正平行",
       "ed.git.h": "Git",
@@ -405,7 +408,7 @@
       "ed.controls.h": "按對話控制",
       "ed.controls.p": "工具白名單、預算、工作區固定、供應商/模型/思考力度固定",
       "ed.introspect.h": "自我觀察",
-      "ed.introspect.p": "<code>/export</code> 匯出發送給供應商的確切請求、<code>prompt_preview</code>、按角色統計、隨時 <code>/compact</code>",
+      "ed.introspect.p": "<code>/export</code> 匯出發送給供應商的確切請求、<code>prompt_preview</code>、按角色統計、隨時 <code>/compact</code>——<code>--log=debug</code> 將每次模型呼叫的耗時寫入 <code>var/logs</code>",
       "ed.slash.h": "斜線指令",
       "ed.slash.p": "內建一批——已安裝的外掛與 MCP 伺服器還可以貢獻更多",
 
@@ -464,7 +467,7 @@
       "ins.h2": "兩分鐘，裝好了。",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">——選配：npx skills、npm MCP 伺服器、TypeScript 元件（核心、用戶端和 TUI 都是 Nim/Go——安裝器會詢問）</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">——選配，HTML 內文提取更佳</span>",
-      "ins.fine": "Niffler 從原始碼建置、也以原始碼發佈——沒有預先編譯的二進位。一行安裝器補齊所有缺失的依賴（git、make、Go、Node.js、Nim 工具鏈和 nimble 套件）；手動建置則用 <code>make doctor</code> 查看缺什麼。匯流排隨包自帶——core 會啟動自己的 nats-server。桌面 UI 是實驗性衍生品——像一般套件一樣安裝：<code>cli install gokr/niffler-ui</code>。完整故事見<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手冊 ↗</a>。",
+      "ins.fine": "Niffler 從原始碼建置、也以原始碼發佈——沒有預先編譯的二進位。一行安裝器補齊所有缺失的依賴（git、make、curl、Go，隨後透過 <code>make setup</code> 裝好 Nim 工具鏈和 nimble 套件）；Node.js 和 npm 是選配，安裝前會先詢問；最後還會逐一詢問可選的附加項目——語言伺服器（<code>make install-lsp</code>）、面向 bash 的代理 CLI 工具組（<code>make install-tools</code>）和 jev（<code>make install-jev</code>）——預設都不安裝。手動建置則用 <code>make doctor</code> 查看缺什麼。匯流排隨包自帶——core 會啟動自己的 nats-server。桌面 UI 是實驗性衍生品——像一般套件一樣安裝：<code>cli install gokr/niffler-ui</code>。完整故事見<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手冊 ↗</a>。",
 
       "foot.line": "預設夠小。其餘的，它自己造。"
     }

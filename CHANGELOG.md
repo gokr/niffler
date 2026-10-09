@@ -6,6 +6,180 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Slimmed the base prompt and all eight direct tool descriptions without
+  removing capabilities. Optional pipelines keep literal `$` by default;
+  file selection and exact-edit routing are explicit, and models are asked
+  to omit default arguments rather than duplicate `path` and `reads`.
+- Capability discovery omits tool-less components and retains routing hints
+  under pressure, reducing hint density before paging within 6000 bytes.
+  `after` continues `nextAfter`; `limit` is now advertised and failed keyword
+  searches explain their word-AND matching.
+- File/search result text uses workspace-relative filenames; bulk replacement
+  lists are bounded without dropping structured counts. Undo discovery and
+  background-process controls are taught at the result, not repeated in the
+  frozen schema. Empty non-waiting polls get one waiting hint per process.
+
+### Fixed
+
+- **The one-line installer ships release binaries.** `scripts/bootstrap.sh`
+  now runs `make release` for its build step instead of `make build`, so a
+  fresh install runs the optimized (`-d:release`) binaries rather than the
+  debug build a developer clone wants; `make build` still swaps debug back.
+- **`plugin_install`/`plugin_update` repair a stale install record instead of
+  refusing.** A record whose checkout (`var/plugins/<pkg>@<ref>`) is gone —
+  e.g. that directory was wiped by hand while `var/store.db` survived — made
+  `make install` fail with `already installed: niffler-tui` even though no
+  binary existed, and the suggested `plugin_update` was just as stuck
+  (`package directory missing`). `plugin_install` now detects a vanished
+  checkout (matching records by their recorded repo, since the key is the
+  manifest name), stops the recorded components, drops the dead record and
+  installs fresh; `plugin_update` on such a record reinstalls from scratch at
+  its recorded ref. `plugin_update` on a live checkout with a missing binary
+  already repaired via its rebuild path; the install dance now falls back to
+  it when `plugin_install` refuses.
+- **Edit undo and seen-state are store documents now** (kinds `edit-undo` /
+  `edit-seen`, ids `<session>:<path>`), not one shared
+  `$XDG_CONFIG_HOME/niffler-edit/undo.json` rewritten in full on every
+  mutation. That file was machine-global (two conversations editing one file
+  shared a single undo entry) and unbounded — measured at 51 MB, it made a
+  27-file bulk replacement rewrite ~2.8 GB and hold the edit component's pump
+  for 53 s, with another session's reads stalled behind it (full31 t13/t14:
+  218 s of a run's wall time in six calls). Undo is now scoped to the
+  conversation that owns it and is swept with it by `conversation_delete`; a
+  caller with no conversation (cli scripting) shares one standalone scope,
+  exactly as before. The bench adapter passes `XDG_CONFIG_HOME` to the
+  harness it spawns, so a run no longer shares the developer's config.
+- **A mutation no longer waits for the language server.** The edit tool's
+  diagnostics push is a request/reply, and the lsp component answers it from
+  the same single-threaded pump that runs the *previous* asynchronous check —
+  so a cold or busy server made the ack, not the check, the bottleneck: 39s
+  on one full31 task, and because the edit component's pump is serialized too,
+  one waiting edit stalled every other session's mutation behind it. The ack
+  budget is now 250ms (the request is already published, so the verdict still
+  arrives on the conversation's `.diag` lane) and the slow path no longer
+  makes a second `lsp_servers` lookup that would re-block on the same queue.
+  `E_LSP_UNCONFIGURED` (no registry entry for the file type) is now distinct
+  from `E_LSP_UNAVAILABLE` (a configured server that is missing or broken), so
+  "nobody's business" stays silent while a real failure still gets a line.
+  Covered by `tests/t_edit_lsp_slow.nim` against a deliberately busy lsp.
+- Bare-string tool results reach the model unescaped. Opt-in read captures
+  separate raw source from paging/instruction notices, bypass outline and
+  unchanged shortcuts, and refuse unavailable/oversized regions; capture
+  receipts report the actual encoded value size.
+- The Niffler benchmark waits for all eight direct tools and the prompt
+  component before freezing a session, eliminating startup-dependent toolsets.
+  Shape telemetry covers pipelines, selectors, argument verbosity and result
+  sizes; `make test-bench` joins the full gate.
+
+### Benchmarks
+
+- **The DeepSWE lane now runs the agent in its task's prepared environment.**
+  `NIF_BASH_SANDBOX_MAP` makes every `bash` call run as
+  `docker run --rm --network none` of the task image with only the workspace
+  bind-mounted (`NIF_BASH_NET=off` is the netns variant), so the agent has the
+  image's dependencies and can validate — the upstream container's semantics —
+  while held-out material and the live network stay unreachable. `bench/run.mjs
+  --agent-env <file>` merges `KEY=VALUE` lines into a run's environment. On the
+  `clack` smoke task this moved f2p 73/82 → 82/82 and cut bash calls 54 → 8.
+- Full31 tool-diet run on `fdf2ae0`: 31/31 pass, all eight tools frozen for
+  every task; first prompts −23.6% and total tokens −5.3% on the comparable
+  t03–t31 subset. Model rounds increased, so this establishes prefix/result
+  savings, not improved routing. The t13 bulk result shrank 5,586→741 chars.
+  Recorded in `bench/reports/full31-tool-diet-low-report.csv`. First-party
+  DeepSeek low, one round/task, jobs=2; full-31 tokens 1,351,705→1,308,532,
+  model rounds 173→188. The matched subset excludes the baseline's two
+  startup-raced four-tool sessions. Single-run totals are noisy; no routing
+  or wall-time improvement is claimed.
+- The Maki bench lane now records `firstPromptTokens` — the first request's
+  total prompt, summed across DeepSeek's `input_tokens`, `cache_read` and
+  `cache_creation` usage fields (a warm implicit-cache prefix is reported even
+  on a first request, so `input_tokens` alone under-reports). The bench README
+  documents the hand-probe trap this exposed: Maki's folder-trust walks up to
+  the enclosing git root and adds its AGENTS.md chain (~8.4k tokens from
+  inside this repo), which is how its footprint was once over-measured at
+  ≈15.9k instead of the true ≈7.4k.
+- The website's benchmark tables now carry the 0.4.0 run's numbers — Niffler
+  13.5s and $0.0040 per task, eight direct tools at ≈2.1k — re-sort the
+  footprint table by base prompt + tools, and correct Maki's footprint to
+  ≈7.4k with its tool count fixed at 19. Each table highlights its compared
+  column.
+
+### Added
+
+- **`niffler --log=<level>`** — one flag (`debug`, `info`, `warn`, `error`)
+  sets `NIF_LOG_LEVEL` for core and every component it spawns (children
+  inherit core's environment). `--log=debug` turns on the per-call timing
+  lines — the `llm` component's `chat timing pre/setup/post/total`, core's
+  `dispatch <tool> wait=` and the runner's `session: llm call dur=`. The
+  `llm` line lands in `var/logs/llm.jsonl`; dispatch and session timing
+  lines go to the dispatching process's `.log` and
+  `var/logs/session-<id>.log`, respectively. This replaces the
+  ad-hoc `NIF_LLM_TIMING`/`NIF_TURN_TIMING` switches.
+- **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
+  ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
+  idempotent, per-tool non-fatal target (apt/brew; Debian's fdfind/batcat
+  get plain-name symlinks in `~/.local/bin`).
+- **The one-line installer offers the optional extras** — after the five
+  steps, `bootstrap.sh` asks one by one about `make install-lsp`, `make
+  install-tools` and `make install-jev`, each `[y/N]` (Enter skips; no-tty
+  runs just name the targets), so a fresh install can get language servers
+  and the CLI toolkit without knowing the make surface.
+- **bench: the OpenHands and Maki lanes, each with a `full31` record.**
+  OpenHands (Agent Canvas v1.24) is driven through its
+  `openhands-agent-server` over the documented REST API on the product's
+  default toolset (usage from `stats.usage_to_metrics`); Maki
+  (tontinton/maki, Rust) over its Claude-Code-compatible `--print
+  --output-format stream-json` mode with `--resume` for feedback rounds
+  (`bench/reports/full31-openhands-low*`, `full31-maki-low*`).
+
+### Changed
+
+- **The website's benchmark section is two tables, not five cards.** A
+  `full31` table (pass rate, wall time, tokens and cost per task, cache hit)
+  sorted by cost, and a direct-tools / fixed-prompt-size table, over an
+  explicit scope statement that this measures normal work rather than
+  capability; the Niffler row is accented. The install copy is corrected too:
+  Node.js/npm are optional and the installer asks, and the one-line command
+  offers the stable release or `main`.
+
+### Removed
+
+- **`make install-nats`** — nats-server has been built from source by
+  `make build` (`components/nats`) since 0.4.0 and the target only said so.
+- **`make install-jq`** — folded into `make install-tools`.
+
+### Fixed
+
+- **`niffler-tui` no longer prints a spurious read error on first start.** With
+  no `var/nats-url` yet, the wrapper's discovery read leaked bash's own `No
+  such file or directory` diagnostic — redirections run left to right, so the
+  failing `<` reported before the `2>/dev/null` took effect. The suppression is
+  now ordered first; behavior (an empty url falls through to probe/boot) is
+  unchanged.
+- **bench: OpenHands cells no longer share a conversation.** The adapter keyed
+  conversations on the bench session id, which is `null` on round 1 and shared
+  across concurrent cells, so with `jobs=2` one cell continued another's
+  conversation; the committed `full31-openhands-low` record was regenerated
+  with conversations keyed per task repo.
+- **`make install-lsp` installs npm servers without `npm install -g`** —
+  apt- and snap-shipped Node put the global prefix under `/usr(/local)`,
+  where that write dies EACCES without sudo, so fresh boxes got `FAIL …
+  npm install failed` for every npm server. They now install into
+  `~/.local/share/niffler-lsp/npm` with symlinks in the bin dir, npm's own
+  last error line is surfaced when an install fails, and
+  `pyright-langserver` — the binary the `lsp` registry actually launches —
+  is linked and checked instead of the `pyright` CLI.
+- **`make install-lsp` probes what it installs** — its bin dir is now on
+  its own PATH, so `ensure_java` sees the JDK the script installed even in
+  non-login shells (snap/Ubuntu default PATHs lack `~/.local/bin`); it
+  used to re-download the JDK and fail there.
+- **`make install-jev` bootstraps uv when missing** — its old hint said
+  `pip install uv` on boxes that have no pip at all (fresh Ubuntu ships
+  bare python3). It now runs uv's HOME-local standalone installer (no
+  sudo) and only falls back to naming the manual commands when that fails.
+
 ## [0.4.0] — 2026-10-05
 
 Niffler 0.4.0 replaces the BitBarrel store with SQLite by default (or TiDB),
@@ -166,13 +340,16 @@ there is no automatic migration in this release.
   example, and the `make install-jq` target stays — jq is a general CLI tool
   agents use constantly, not demo plumbing.
 
-- **The native prerequisite list is pruned to what the build actually needs.**
-  The liblz4 / libpcre / libclang chain belonged to the removed bitbarrel store
-  (`bitbarrel → lz4wrapper → futhark`, whose `opir` generator links libclang);
-  `install-native-deps` now installs only libssl-dev and a C compiler (plus the
-  toolchain basics), `install-nim-deps` lost the `LIBRARY_PATH` dance for
-  libclang, and `doctor` checks `cc` instead of `clang` — pristine boxes only
-  ever had gcc — and no longer probes libraries nothing links.
+- **The native dependency list tracks what the build actually needs.** libpcre
+  is gone for good: `observe`, `logfile` and `processes` moved off Nim's
+  `std/re` (a dynlib binding to PCRE, uninstallable on some distributions) to
+  the pure-Nim `regex` package, so nothing links PCRE and those components no
+  longer crash-loop at boot when it is absent. liblz4 and libclang stay — they
+  come back through natsnim's dependency tree (`bitbarrel → lz4wrapper →
+  futhark`, whose `opir` generator links libclang and whose `lz4wrapper` links
+  liblz4 into core at runtime) — so `install-native-deps` installs
+  `liblz4-dev` and `libclang-dev` (macOS: `brew install lz4`; clang comes with
+  the CLT) and `doctor` probes both alongside `cc`.
 
 - **The Wails desktop UI is no longer an official part of the harness.** Its
   code has been behind `niffler-tui` for a while and nobody is maintaining it, so
@@ -314,6 +491,29 @@ there is no automatic migration in this release.
   handed-off diff — and its frontmatter description names the case so
   `skill_list` surfaces it. The base-prompt sentence that pointed at the skill
   by name in the same window was measured to have no effect and removed again.
+
+- **The build checks its Nim dependencies before it compiles, and the installer
+  gives the isolated harness boot a real window.** `make check-nim-deps` (wired
+  into `components`) verifies `yaml`, `htmlparser`, `checksums`, `regex` and
+  `natsnim` are in the nimble store first, so a fresh clone — or a pull that
+  adds a dependency — fails with `nimble packages missing: … — run 'make
+  install-nim-deps'` instead of Nim's bare `cannot open file: <pkg>` mid-build.
+  `make install`'s plugin install boots nats + core + every component and waited
+  only 60s; it now waits `NIF_BOOT_TIMEOUT_S` (default 300s) with a heartbeat
+  naming the phase, and on timeout prints the tail of `core.log` plus the prime
+  suspects (the OOM killer on a small VM; a stale harness holding the store
+  lock). The "not on PATH" warning now says the login shell adds `~/.local/bin`
+  once it exists instead of reading as a hard failure.
+
+- **bench: the DSH lane now drives DSH's out-of-the-box surface.** It defaulted
+  to `sdk-minimal`, a bash-only composition that is not what DSH ships, which
+  made DSH look slower and costlier than the product on the heavy tasks;
+  `dsh.profile`/`DSH_PROFILE` now selects `sdk` — the out-of-the-box `dsh-base`
+  tool surface (fs read/edit/write, bash, fs-search, skills, web, subagent)
+  over SDK JSON-RPC, the faithful programmatic equivalent of the interactive
+  defaults. `full31-direct-dsh-ootb-low` replaces the earlier record (DSH 35s →
+  17.9s average at the same 31/31 pass rate); the lean profile stays one env
+  var away.
 
 ### Removed
 

@@ -89,17 +89,27 @@
 | `logfile` | Nim | optional | 輪替的 JSONL 接收器和有界的持久日誌搜尋（見[觀察與日誌](#observation-and-logs)）— 兩個工具都是隨需的，且兩者都不宣告 `x-harness.effect`，因此 fabric 批次主機將甚至 `logfile_search` 排程為寫入 |
 | `hooks` | Nim | off by default | 當選定的匯流排事件觸發時執行操作者 shell 命令（僅觀察；stdin 上的 JSON，環境配置；見[掛鉤](#hooks)） |
 | `mcp` | Go | optional | 外部 MCP 伺服器（Model Context Protocol）：儲存後端的註冊表（`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`），每個伺服器一個受監督的橋接（子項是單獨的 `mcp-bridge` 二進位檔 — `var/bin/mcp-bridge`，由 `make build` 建置，路徑可用 `NIF_MCP_BRIDGE_BIN` 覆寫；它沒有 manifest 條目，且絕不手動啟動）；工具成為可透過 `discover` ＋ `invoke` 到達的普通目錄工具（見[外部 MCP 伺服器](#external-mcp-servers-mcp)） |
-| `nats-server` | Go | **not in the manifest** | 匯流排本身作為一等元件：官方 `nats-server` main 的忠實重建（固定在 `components/nats/go.mod`），由 `make build` 建置到 `var/bin/nats-server`，core 優先於 PATH 安裝，因此不需要 NATS 先決條件。刻意*不是*匯流排元件 — core 在匯流排存在之前啟動它，它不註冊任何工具，且 `core.spawn` 無法啟動它。Niffler 新增一個旗標 `--max_payload <bytes>`（core 傳遞 8388608），並在 Linux 上設定 `PR_SET_PDEATHSIG` 使沒有孤兒匯流排比其載具活得更久。沒有什麼需要為它安裝：`make install-nats` 只是這麼說，而 `make doctor` 報告 `nats-server: OK` 或解釋它是從原始碼建置的 |
+| `nats-server` | Go | **not in the manifest** | 匯流排本身作為一等元件：官方 `nats-server` main 的忠實重建（固定在 `components/nats/go.mod`），由 `make build` 建置到 `var/bin/nats-server`，core 優先於 PATH 安裝，因此不需要 NATS 先決條件。刻意*不是*匯流排元件 — core 在匯流排存在之前啟動它，它不註冊任何工具，且 `core.spawn` 無法啟動它。Niffler 新增一個旗標 `--max_payload <bytes>`（core 傳遞 8388608），並在 Linux 上設定 `PR_SET_PDEATHSIG` 使沒有孤兒匯流排比其載具活得更久。沒有什麼需要為它安裝 —— `make doctor` 報告 `nats-server: OK` 或解釋它由 `make build` 從原始碼建置 |
 
 `components/` 不再包含 bash 示範：無 SDK 的 `dialog` 元件已移至 `examples/dialog/dialog.sh`，附有自己的 README，脫離隨附建置與 `make setup` — nats CLI 與 `zenity` 安裝器隨之退役（`jq` 作為一般 CLI 工具保留）。對照執行中的 harness 手動執行它（`bash examples/dialog/dialog.sh`）；它不在 `manifest.yaml` 中，沒有任何東西將它建置到 `var/bin`，`make doctor` 只是指向它。
 
 `components/ctxtest/` 是每個元件一個目錄 = 一個隨附元件的例外：它是契約測試自己的夾具 — 一個 stub `chat` LLM 加上巢狀呼叫探針 — 測試自己編譯成註冊為 `ctxtest` 和 `ctxsink` 的二進位檔。它不在此表中，不在 `manifest.yaml` 中，且絕不由 `make build` 建置。
 
+檔案工具選擇器中的相對 `glob` 模式以會話工作區為基準解析，包括 `read` 選擇項和 `replace_across`；絕對模式保持不變。沒有會話的獨立匯流排呼叫以 `NIF_ROOT` 為基準解析相對模式。`replace_across` 選取 `paths` 與 `glob` 的去重聯集，而非交集；512 個已選取檔案的上限不變。僅 glob 未匹配檔案時回傳 `E_NO_MATCH`，明確說明沒有修改。成功結果報告總次數、已修改/已選取數量和預覽；文字最多列出 24 個已修改檔案，並限制未匹配/缺失清單長度，結構化 `files`、`unmatched`、`missing` 保持完整。檔案工具結果文字中的工作區檔名使用相對路徑，外部檔名保持絕對路徑，機器欄位路徑不變。`edit` 伺服器端仍接受舊別名（標準欄位優先），但只公布 `old_string`/`new_string`；匹配、歧義與復原語義不變。
+
+建議使用 `read {path}` 或 `read {reads: [{path, offset?, limit?}, ...]}`（最多 12 項），而非同時使用。兩者同時提供仍被接受，聯集/去重行為不變。選擇項限制不變，不能與內容項混用。每個會話在 edit 元件生命週期中的首次成功 `edit` 或 `replace_across` 修改會附加 `undo_last_edit` 探索提示，不會每次修改都重複。
+
+### File pipelines
+
+檔案工具透過 `save_as: "name"`（預設 `text`）或 `save_as: {name, from: "items.0.content"}` 明確擷取。只有 `resolve_vars: true` 才替換變數；否則 `$` 保持字面值，即使擷取時也是如此。值保存在會話標頭，runner 重啟後仍可用。工具歷史只收到報告實際 JSON 編碼大小的小收據，不重複複製內容。裸字串結果顯示原文而非 JSON 引號/跳脫；物件有 `text` 時投影該欄位。
+
+僅在 `read` 擷取時，core 提供私有 `__capture: true` 並覆寫用戶端意圖；這繞過 unchanged/outline 捷徑，但不繞過大小限制。`__captureText` 與顯示 `text` 分離，保存原始來源視窗，不含分頁或延遲指令提示。省略位元組、超出 EOF，或非連續的 batch/select 頂層視圖使它為 null；擷取這些視圖報 `E_CAPTURE_UNAVAILABLE`。請縮小視窗，或明確擷取 batch 的 `items.N.content`、select 的 `items.N.contents.M` 單個原始區域。普通讀取的顯示與 unchanged 行為不變。不可用的項目/區域欄位也會拒絕擷取，而非保存 null；原始 select 區域每個最多 64KB，總計最多 512KB。這是選用檔案管線，不是巢狀呼叫 DSL；簡單迴圈和 codemod 留在 bash。
+
 ### `bash` in detail
 
 上方的 bash 列是摘要；這是模型據以工作的契約。`bash {command, timeoutMs?, cwd?, run_in_background?}` 以全新程序群組的領導者身分執行 `bash -c <command>`（`$PATH` 解析，無覆寫），stderr 按到達順序合併到 stdout，子項繼承元件的環境（`NIF_ROOT`、`.env`、core 匯出的一切）和 stdin，且高於 stderr 的描述符在生成前關閉。每次呼叫全新 shell 意味著 `cd` 不持久；`cwd`（會話工作區）實現為 `cd -- <cwd> || exit $?`，因此缺失的工作區目錄會使呼叫失敗而非在別處執行。
 
-兩個逾時容易混淆。參數（`timeoutMs`，預設 30 秒）界定*命令* — 逾時殺死整個程序群組並報告退出碼 124 — 而 schema 的 `x-harness.timeoutMs`（60 秒）界定*core* 等待回覆多久。因此命令可以合法地比派送預算活得更久：使用 `timeoutMs: 120000` 時呼叫者看到派送逾時，而非整齊的 124。
+兩種逾時不同：`timeoutMs` 限制命令（預設 120 秒，最多 570 秒），而 `x-harness.timeoutMs` 讓 core 等待回覆最多 600 秒。內部時鐘始終小於外部時鐘，因此命令逾時會殺死程序群組並返回退出碼 124 與已擷取的輸出。
 
 輸出由兩個編譯期常數界定且**沒有環境旋鈕** — 元件中唯一的 `getEnv` 是 `NIF_ROOT`，因此更大的對話記錄預算意味著重建它：最多擷取 2,000,000 位元組，且最多 12,000 位元組的對話記錄到達模型，保留頭部和尾部並將中間替換為
 `[... truncated <omitted> of <total> bytes (capped at <max>) — <hint> ...]`，
@@ -124,7 +134,7 @@ heredoc termination]` 而非裸退出碼。Heredoc 本身受支援：包含 `<<`
 
 ### `grep` in detail
 
-上方的 `grep` 列是摘要。兩個工具都以固定 argv 執行 ripgrep — 模式作為 `--` 之後的參數傳遞，絕不通過 shell — 因此引號、反斜線和空格無需轉義，這是相對 `bash grep` 的可靠性優勢。`rg` 透過 `PATH` 解析；當它缺失時兩個工具都以退出碼 127 回答並附帶指向 `bash grep -rn` 的安裝提示。`.gitignore` 和隱藏/二進位檔案預設跳過，`hidden: true` 新增隱藏檔案而 `.gitignore` 仍適用，且 `glob` 縮小而不取消隱藏。`path` 在派送時相對於工作區，結果以絕對路徑返回。
+上方的 `grep` 列是摘要。兩個工具都以固定 argv 執行 ripgrep — 模式作為 `--` 之後的參數傳遞，絕不通過 shell — 因此引號、反斜線和空格無需轉義，這是相對 `bash grep` 的可靠性優勢。`rg` 透過 `PATH` 解析；當它缺失時兩個工具都以退出碼 127 回答並附帶指向 `bash grep -rn` 的安裝提示。`.gitignore` 和隱藏/二進位檔案預設跳過，`hidden: true` 新增隱藏檔案而 `.gitignore` 仍適用，且 `glob` 縮小而不取消隱藏。`path` 在派送時相對於工作區。會話結果文字中的檔名相對於工作區，匹配來源文字不改寫；外部檔名與獨立呼叫輸出仍使用絕對路徑。
 
 `grep {pattern, path?, glob?, context? (≤50), case_insensitive?, hidden?,
 max_results? (default 200), timeoutMs? (default 30000)}` 返回 `path:line:match`
@@ -183,7 +193,7 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 儲存的**匯流排契約就是產物本身**：`put/get/list/search/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。兩個引擎實作該契約，並以元件 `store` 註冊，提供完全相同的工具——消費者永遠不會知道目前執行的是哪個引擎。選擇是啟動時的一次決定：`NIF_STORE_BACKEND=sqlite|tidb`（預設 `sqlite`）；core 據此解析清單條目中的二進位，遇到未知值則拒絕啟動。從未建置的二進位只會發出警告（store 是 `required`，core 就此停下），絕不會被靜默替換為另一個引擎的資料庫。
 
-**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個 kind，即可依 id/標題尋找工作階段、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語意在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的大小寫不敏感**前綴**匹配（AND），非字母數字字元一律無作用，因此使用者輸入無需轉義；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 衍生狀態，可安全丟棄），而 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的匹配器（結果等價，每次呼叫 O(kind 中的文件數)）。
+**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個 kind，即可依 id/標題尋找工作階段、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語意在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 與 reasoning 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的大小寫不敏感**前綴**匹配（AND），非字母數字字元一律無作用，因此使用者輸入無需轉義；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 衍生狀態，可安全丟棄），而 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的匹配器（結果等價，每次呼叫 O(kind 中的文件數)）。
 
 - **sqlite**（預設，`var/bin/store-sqlite`，Go）：在 SQLite 上實作同一份文件契約。文件以 JSON TEXT 原樣存放；`put` 是單一原子陳述式（doc 與 rev 一起移動——KV 引擎的雙鍵崩潰窗口不復存在）；schema 透過內嵌的 goose migration 管理；純 Go 驅動程式（`modernc.org/sqlite`，無 cgo）。資料檔 `var/store.db`（WAL），可用任何 SQLite 工具檢視（`sqlite3 var/store.db 'select kind, count(*) from docs group by kind'`），也可從 DuckDB 以唯讀方式掛載以進行離線分析。自 context compaction 落地後即為預設：context projection 需要原子寫入與可範圍讀取的清單（docs/research/COMPACTION.md §2）。SQLite pragma 是程式碼內建、不可配置（`_txlock=immediate`、WAL、`synchronous(NORMAL)`、10 秒 `busy_timeout`、單一連線池），且 goose migration 會在啟動時自動套用。
 - **tidb**（`var/bin/store-tidb`，Go）：透過 MySQL 協定（go-sql-driver）實作同一份 schema——一個網路共享的儲存，任何數量的 harness 都能從中提供服務。`NIF_STORE_TIDB_DSN` 指向叢集（`root@tcp(host:4000)/niffler`；單節點 docker：`docker run -p 4000:4000 pingcap/tidb`）。`value` 維持 MEDIUMTEXT，而非原生 JSON 型別——二進位 JSON 會正規化鍵順序與數字精度，破壞原樣文件契約；索引查詢日後會以 TEXT 上的生成欄位形式到來（一個 goose migration）。`kind`/`id` 為 utf8mb4_bin：位元組精確相等、位元組序清單排序，以及大小寫敏感的 LIKE 前綴（與其他引擎的契約對等）。無 flock——叢集依設計即為共享狀態；資料列鎖（`SELECT … FOR UPDATE`、悲觀式交易）仲裁寫入者，而 rev 計數器仍是樂觀並行控制的檢查。也可對純 MySQL 8 運作。DSN 使用者需要 goose 建立其版本表並套用 migration 所需的權限；連線/讀取/寫入逾時為硬編碼（5 秒 / 60 秒 / 30 秒），且引擎持有單一連線池連線（單一會話，因此 `FOR UPDATE` 交易的陳述式會保持在一起）——同一叢集上的 N 個 harness 持有 N 條連線，不共享連線池。
@@ -221,7 +231,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | **The store**（kind 表見 [The store](#the-store)） | 對話標頭、訊息、`provider` 註冊表（含憑證）、凍結的每對話工具集、slash 表、plugin/component 安裝記錄、subagent 工作/血統記錄、fabric 程式、MCP 伺服器配置 | 持久——harness 的資料庫 |
 | **Conversation header**（`conversation` kind） | 每對話選擇：provider、providerOverride、model、modelOverride、thinking、profile、title、預算/token 計量——透過 `session` 呼叫設定（UI 中的 `/model`、`/effort`），並在回合結果中回顯 | 每對話 |
 | **Home / project files** | skills 樹（專案 `.agents|.claude|.opencode/skills` > 內附 `skills/` > home `~/.niffler/skills` + agent 標準目錄 > `~/.config/opencode/skills`，然後是最後手段、編譯進二進位檔的樹）；LSP 註冊表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，使用者可編輯 |
-| **Home files（edit undo store）** | `$XDG_CONFIG_HOME/niffler-edit/undo.json`（否則 `~/.config/niffler-edit/undo.json`）：每個檔案最後的編輯前位元組，加上每對話的已見狀態摘要。每個被編輯的檔案一筆記錄，無大小上限、無淘汰——它隨被編輯的不同檔案數量成長，且隨時可安全刪除（刪除它只會失去 undo 歷史與未變更讀取 stub，絕不會失去檔案內容） | 持久，使用者可編輯 |
+| **Edit undo + seen state** | 不再是家目錄檔案：每個（對話，檔案）一個 **store 文件** —— 類型 `edit-undo`（上次編輯前的位元組，供 `undo_last_edit` 使用）與 `edit-seen`（已觀察的摘要/大小/行數，用於未變更讀取 stub 與 `E_STALE` 閘門），id 為 `<session>:<絕對路徑>`。作用域限於擁有它們的對話，並隨對話一併刪除（`conversation_delete` 會清理這兩種類型）。它們曾共用一個 `$XDG_CONFIG_HOME/niffler-edit/undo.json`，每次修改都整體重寫——機器全域、無上限，也是 27 檔案批次替換曾佔用 edit 元件泵 53 秒的原因。刪除這些文件只會失去 undo 歷史與讀取 stub，絕不會失去檔案內容 | 持久，store 支撐 |
 | **`var/`**（gitignored） | `bin/` 建置的二進位檔、`logs/` 匯流排 JSONL 與各元件 JSONL（`.1`…`.N` 輪替）加上子行程日誌、`models/` 目錄快取、`nats-url`/`nats-pid` 匯流排認領、`processes/` spool（每次啟動的 `pN.out`/`pN.err`，開機時清空；id 從持久化計數器繼續，而非從 `p1` 重新開始）、`repomap-tags/` 每檔案標籤快取（以絕對路徑的 sha1 為鍵的 `{mtime, tags}` JSON；空結果永不快取）、`fetch/`、`captures/`、`store.db`（SQLite 引擎的檔案）加上其 `.lock`，同一時間只能由一個 `store` 行程持有 | 執行時，可重新產生 |
 | **Browser localStorage** | 僅顯示：reasoning/工具卡詳細程度、locale（`niffler-think`、`niffler-tools`） | 每瀏覽器 |
 | **Repo files** | `manifest.yaml`（隨附的元件註冊表）、`skills/`（內附 skills）、建置檔（`config.nims`、`*.nimble`、`Makefile`） | 版本化 |
@@ -448,9 +458,9 @@ cancel.<component>     cancellation side-channel: a runner publishes it when a
 這種分離——壓縮會取消 `llm.cancel.compaction.<sessionId>.<attemptId>`——因此
 使用者的回合停止既不能終止摘要呼叫，也不會被其終止。
 
-歷史會逐字重播給 provider，這就是為什麼轉接器在輸出時會修復它：被中斷的串流
+歷史幾乎逐字重播給 provider，這就是為什麼轉接器在輸出時會處理它：它會剝除除末尾仍在進行的助理輪次之外每條助理訊息的 `reasoning`（提供方本就會丟棄重播的 reasoning——在 DeepSeek 通道上實測；Anthropic 在伺服器端剝除過往輪次的思考——因此攜帶它只是無用的傳輸位元組），然後修復 `tool_calls`：被中斷的串流
 （或有缺陷的寫入者）留下未終止的助理 `tool_calls` 承載，其字串和容器會被關閉，
-而無法挽救的承載會變成 `{}`——否則嚴格的後端會拒絕整個請求。修復只讀取文字，
+而無法挽救的承載會變成 `{}`——否則嚴格的後端會拒絕整個請求。剝除與修復只讀取文字，
 絕不執行任何內容。
 
 附加到匯流排的 `nats sub '>'` 會即時顯示 harness 的思考過程。或者更好：**console
@@ -744,7 +754,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   被改寫為其前 4096 位元組、一個 `[tool result middle pruned: N bytes
   omitted — recall the original with context_recall {"ref": {"source": "spill",
   "id": "<convId>:<seq>"}}]` 標記，以及其最後 1024 位元組——絕不兩次，
-  且絕不在結果不會縮小時。該標記的 `source` 恰好在結果為 spill 背書且晉升的文件重新驗證時為 `spill`，否則為 `canonical`，而其 `id` 是該通知所引用的標準 seqNo，因此它可以直接傳回 `context_recall`。這三個
+  且絕不在結果不會縮小時。同一步驟會墓碑化過往輪次的 reasoning：除最後一條外，每條助理訊息的 `reasoning` 都會被替換為一行命名其標準 recall 引用的 `[thinking omitted — …]` 存根（`context_recall` 仍能取回原始內容），因為提供方會在重播時丟棄過往輪次的 reasoning，而計量器卻將其計入；最後一條助理輪次保留其 reasoning 以供工具循環續接。該標記的 `source` 恰好在結果為 spill 背書且晉升的文件重新驗證時為 `spill`，否則為 `canonical`，而其 `id` 是該通知所引用的標準 seqNo，因此它可以直接傳回 `context_recall`。這三個
   數字是常數，不是設定。`context_recall` 本身是隨選的，並非隱藏：`discover` 會列出它，`invoke` 接受它，且裸名稱
   仍會分派，但一個以 `tools` 允許清單凍結的會話會像任何清單外的工具一樣拒絕它——這是剪除或 spill
   通知的指示無法被遵循的唯一情況。
@@ -838,8 +848,8 @@ project, build: {steps: [[argv...]], artifact: {path, runner}}}]}`：套件自�
 |---|---|
 | `plugin_search {query?}` | GitHub 主題搜尋；回傳 repo、description、stars，以及勝出的 `query` 與每次嘗試的診斷——GitHub 會對詞彙做 AND，因此零命中的查詢會以更少的詞重試 |
 | `plugin_installed` | 此 harness 上已安裝的套件 |
-| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`，透過 builder 建置每個元件（v1 用 `build`，v2 用 `build_package`），然後 `spawn` 每個服務元件（需核准）。安裝已有紀錄的套件是錯誤，而非重新安裝——請用 `plugin_update`，或先 `plugin_remove`；clone 是淺層的（`--depth 1`），且 v1 Go 套件會帶一個未追蹤的 `go.work` 供手動建置 |
-| `plugin_update {package}` | 更新至最新 release tag：移除、以新 ref 重新安裝；沒有 release（追蹤分支）的套件會就地拉取（對既有 clone 執行 `git pull --ff-only`），並在拉取移動 HEAD 或已安裝的 artifact 過期/遺失時重新建置 |
+| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`，透過 builder 建置每個元件（v1 用 `build`，v2 用 `build_package`），然後 `spawn` 每個服務元件（需核准）。安裝記錄與 clone 都存活的套件是錯誤，而非重新安裝——請用 `plugin_update`，或先 `plugin_remove`；clone 已消失的紀錄（var/plugins 被手動刪除、store 保留）屬於過期紀錄，會由全新安裝修復；clone 是淺層的（`--depth 1`），且 v1 Go 套件會帶一個未追蹤的 `go.work` 供手動建置 |
+| `plugin_update {package}` | 更新至最新 release tag：移除、以新 ref 重新安裝；沒有 release（追蹤分支）的套件會就地拉取（對既有 clone 執行 `git pull --ff-only`），並在拉取移動 HEAD 或已安裝的 artifact 過期/遺失時重新建置；clone 已消失的紀錄會依紀錄的 ref 從頭重新安裝 |
 | `plugin_remove {package}` | 對每個受監督元件執行 `core.remove`、刪除 clone、移除紀錄 |
 
 - Install/update/remove 全都帶有 `x-harness.approval: "always"`——它們
@@ -1148,7 +1158,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 | `lsp_registry {action: add\|remove, name, command, extensions?, initializationOptions?, requires?, cheap?}` | 變更使用者登錄（受核准閘門的寫入）。`add` 接受 `{name (lowercase letters/digits/hyphens), command, extensions: {".ext": "languageId"}}`，會覆寫同名的內建項目，並以 `E_LSP_CONFLICT` 拒絕已對應至另一個伺服器的副檔名（請先移除該對應）；`remove` 只刪除使用者項目 |
 
 模型傳送從 1 開始的 line/character（UTF-16，符合 LSP 的 code-unit 慣例）；`findReferences` 一律包含宣告；結果有上限（100 個位置 / 約 16 000 個字元），並附帶截斷中介資料；結構化
-`[E_LSP_*]` 錯誤（`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）讓呼叫者依代碼而非文字來路由 ——
+`[E_LSP_*]` 錯誤（`E_LSP_UNCONFIGURED`、`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）讓呼叫者依代碼而非文字來路由 ——
 逾時與協定錯誤會附加伺服器的最後一行 stderr，該行會指出實際的失敗（缺少二進位檔、崩潰、索引中）。
 
 **範圍是界限，不是相等。** 對話工作區內的檔案會在工作區根目錄下被索引（其已暖機的伺服器會被重用）；在其*之外*的檔案 —— 同層 checkout、git worktree、代理正在工作的任何其他目錄 —— 會在其自身由標記衍生的根目錄下被索引，且回覆會帶有命名它的 `workspaceRoot`，因為否則答案中的相對路徑會有歧義。`E_LSP_SCOPE` 僅保留給兩種會把無界樹交給伺服器的情況：路徑中含有 `..` 元件，以及檔案的標記走訪到達檔案系統根目錄或 `$HOME`（訊息會要求明確的 `workspaceRoot`）。直接拒絕工作區外的檔案曾被嘗試過，且實際上是有害的：edit 工具的診斷推送會將該拒絕吞掉為「未設定伺服器」，因此代理在另一個 checkout 中工作時既得不到診斷，也得不到它沒有的訊號。
@@ -1171,7 +1181,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 當會話工作區被宣告時（`ev.workspace.opened`），Core 會自動觸發一次**預熱**：元件執行一次有界的副檔名普查（在 5 000 個檔案或 2 秒預算時停止；隱藏檔案與垃圾目錄如 `node_modules`、`vendor`、`dist`、`build` 和 `target` 會被跳過），並為最普遍的語言預先啟動伺服器，讓第一次真正的查詢不必付出伺服器啟動成本。接著它發佈 `ev.lsp.warm {workspace, warmed, skipped}`，讓 UI 能顯示哪些伺服器已啟動、哪些被跳過。`warmup` 操作會明確重跑同一條路徑。
 
-未配置的語言會降級，絕不會中斷：沒有伺服器（或缺少二進位檔）的副檔名會回傳 `E_LSP_UNAVAILABLE`，訊息中附帶修正方式——「add one with the lsp_registry tool (or edit <registry path>)」。模型會自行退回使用 grep/read。
+未配置的語言會降級，絕不會中斷：沒有伺服器的副檔名回傳 `E_LSP_UNCONFIGURED`（已配置但缺失或損壞的伺服器回傳 `E_LSP_UNAVAILABLE`），兩者都在訊息中附帶修正方式——「add one with the lsp_registry tool (or edit <registry path>)」。模型會自行退回使用 grep/read。edit 工具依錯誤碼區分兩者：未被聲明的檔案類型保持靜默，註冊表知道的類型一定會得到一行說明。
 
 ### Registry: adding a language
 
@@ -1222,6 +1232,8 @@ git 工作流程的唯讀一半，作為一等工具；寫入的一半（add/com
 **git 二進位檔。** `git` 必須能在 `PATH` 上解析，而命中元件自己的 `var/bin/git` 的 `PATH` 會被跳過（那會遞迴）；無法解析的 git 回傳退出碼 127 並附帶安裝提示。
 
 ## Background processes (`processes`)
+
+啟動結果給出精確控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<回傳 id>", waitMs: 25000}` 等待輸出或退出，用 `process_kill {id: "<回傳 id>"}` 停止。`filter` 仍排空所有新輸出但只顯示匹配行；`tail: "1"` 重讀最近原始輸出且不推進游標。仍執行行程的空非等待輪詢，每個行程只提示一次使用等待。排空語義不變。
 
 狀態：**已實作**（Nim 元件；`tests/t_processes.nim`）。
 
@@ -1384,6 +1396,8 @@ SDK 的凍結註冊閘門（`Announce` 在延遲註冊時 panic；
 
 ## Progressive tool discovery
 
+預設直接工具仍為八個：`bash`、`read`、`edit`、`write`、`replace_across`、`grep`、`discover`、`invoke`。精簡描述保留路由與選用/預設參數。精簡 schema 和系統提示詞只影響未來會話，不改寫既有凍結快照。結果路由提示附加至工具歷史，絕不注入易變前綴。
+
 狀態：**已實作**。
 
 Niffler 維護一份完整的全域目錄，同時對每個會話只暴露一組小型、不可變的元件集。額外的結構描述會透過 `discover` 進入僅可附加的訊息歷史；對這些元件的呼叫則經由固定的 `invoke` 閘道。這能在不削弱核心核准或逾時政策的前提下減少提示詞膨脹。
@@ -1460,12 +1474,7 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
 依名稱排序，描述是經空白正規化、上限為
 200 字元的單行提示，且會排除諸如 pid 與註冊時間等易變欄位。
 
-**空查詢**會傳回元件登錄表：每個元件一行，帶有其名稱、版本與工具計數
-（`tools`，拆分為 `direct` 與 `onDemand`），以及最多三句使用時機句子——
-`hints`，每項為 `{tool, hint}`，取自該元件的 on-demand 工具，並以 `more`
-計數未列出的 on-demand 工具數。工具的宣告式 `x-harness.hint` 句子優先於其描述的第一句。
-當登錄表超過 6000 位元組時，提示會被捨棄，答案會以名稱加計數重建，並附帶 `budget` 註記，
-因此病態的元件集合無法讓一次發現呼叫變成數十 KB。
+**空查詢**回傳能力登錄表，只包含至少一個可見工具的元件；按名稱排序，保留版本、`tools`（拆為 `direct`/`onDemand`）和最多三個路由 `hints`，優先使用宣告的 `x-harness.hint`。為滿足含游標中繼資料的 6000 編碼位元組上限，先從三個提示減至一個，再縮短提示，最後確定性分頁，不會捨棄路由提示。部分頁帶 `hasMore`、`nextAfter`；僅用 `discover {after: "<nextAfter>"}` 繼續。`limit` 已公布，限制每個暴露組的摘要（0 為全部，最大 200）。`tools: []` 等同省略。查詢無匹配時會提示關鍵詞採用 word-AND，可減少關鍵詞或查看登錄表。
 
 ```json
 {
@@ -1486,8 +1495,8 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 篩選�
 **非空查詢**會傳回相符的元件，並附上其相符非 hidden 工具的完整描述
 （`direct`/`onDemand` 陣列，每項為 `{name, description}`）。
 `discover {component: "fetch"}` 會以相同形狀傳回該單一元件，置於頂層 `component` 鍵下；
-`query` 在其中篩選，`limit` 為每個陣列設限。`component` 與 `tools` 呼叫會傳回完整的
-描述與結構描述。沒有非 hidden 工具的元件會被省略。
+`query` 在其中篩選，`limit` 為每個陣列設限。`component` 單獨呼叫回傳摘要；
+`tools` 請求回傳完整結構描述。沒有非 hidden 工具的元件會被省略。
 
 #### Schemas
 
@@ -1937,6 +1946,8 @@ Nim 的任意信封請求輔助程式在等待時只會繼續泵送原始 tap �
 
 結構化日誌會以 `{component, level, msg, ctx?, at}` 在確切主體 `ev.log.<component>` 上發佈事件。等級為 `debug`、`info`、`warn` 與 `error`。`NIF_LOG_LEVEL` 預設為 `info`，並在每個 SDK 中於發佈前抑制較低等級。無效的發出等級會失敗；無效的閾值會退回 `info`。
 
+核心的 `--log=<level>` 旗標（`debug`、`info`、`warn`、`error`）為核心及其產生的所有元件設定 `NIF_LOG_LEVEL`，子程序繼承核心的環境。因此，`niffler --log=debug` 會啟用解釋一輪耗時的逐呼叫計時行：`llm` 元件的 `chat timing pre/setup/post/total`、核心的 `dispatch <tool> wait=` 與 runner 的 `session: llm call dur=`。`llm` 行寫入 `var/logs/llm.jsonl`；dispatch 計時寫入執行分派的程序的 `.log`，session 計時寫入 `var/logs/session-<id>.log`（參見 `bench/README.md` 的「Model-call overhead」）。
+
 ### Monitoring
 
 當核心生成 nats-server 時，它使用不同的回送用戶端與 HTTP 埠，然後寫入（二進位檔為存在時來自 `components/nats` 的已建置元件 `var/bin/nats-server`，否則為 PATH 中的 `nats-server`）：
@@ -2237,6 +2248,8 @@ core 及其元件使用中的種類（store 工具自身的 docstring 只列出
 | `spill` | `<convId>:<n>` | 一個被提升出上下文視窗的過大工具結果，可用 `context_recall {"ref": {"source": "spill", "id": "…"}}` 定址。提升在附加時為盡力而為（失敗會保留暫存檔指標且不加入參照）；缺失、空或格式錯誤的 spill 文件會被大聲拒絕，而非以空成功回應，且修剪閘門在修剪前會重新驗證該文件，因此損壞的 spill 絕不可能賠上最後一份副本 |
 | `mcp` | 伺服器名稱 | `mcp` 元件的 MCP 伺服器設定記錄（見 [External MCP servers](#external-mcp-servers-mcp)） |
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建議式探索實驗（`jev`）的每回合影子觀測：候選快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。絕不向模型暴露，也絕不寫入轉錄；後端缺席時**不**寫任何記錄（見[建議式探索](#advisory-discovery-jev-and-the-von-launcher)）。記錄包含任務文字 — 按敏感資料處理 |
+| `edit-undo` | `<session>:<絕對路徑>` | 檔案的最後編輯前位元組，供 `undo_last_edit` 使用（單層，按會話 + 檔案）。在編輯*之前*寫入；寫入失敗會拒絕編輯，而不是失去撤銷歷史。作用域限於擁有它的會話——沒有會話的呼叫方（cli 指令碼）共用一個 `__standalone` 作用域。由 `conversation_delete` 清理 |
+| `edit-seen` | `<session>:<絕對路徑>` | 會話最後觀察到的檔案狀態（`digest`/`bytes`/`lines`/`full`），支撐未變更讀取 stub 與 `E_STALE` 閘門。僅確認記錄已有內容的讀取不寫入；更正（或任何修改）才寫入。store 不可達時讀取結果為「從未查看」——這是安全的方向（見上文[儲存](#the-store)）。由 `conversation_delete` 清理 |
 | `selftest` | store 自我測試探針 | 用後即丟——由 store 自身的自我測試往返寫入並刪除 |
 
 後端是所選的引擎——預設為位於 `var/store.db` 的 SQLite，或
@@ -2252,16 +2265,19 @@ core 中所有必須看見整個種類的東西都走 `storeListAll`——
 
 ## Testing
 
+基準適配器在私有匯流排上等待全部八個直接工具、`systemprompt.systemprompt` 和 manifest 中每個 required autostart 元件，並在建立會話前檢查目錄 root 與物件 schema。上下文排除項不變，包括 `AGENTS.md` 與 `AGENTS.local.md`；就緒檢查不允許將 harness 貢獻者上下文注入基準任務。
+
 ```bash
 make test           # the full gate: the bus-contract suite
-make test-server    # ... server side only: one test-owned NATS per test, no node
+make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test-bench     # ... Node adapter readiness and telemetry tests only
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`
 ```
 
 `make test-server` 透過 `scripts/run-tests.sh` 在有界池中執行約 60 個
-測試二進位檔（預設每個 core 一個測試）：測試各自擁有私有的 NATS
+測試二進位檔（預設一半的 core——池中的每個作業不是單一行程：它會啟動自己的 core/store/llm 子行程，且若干測試會用 `nim c` 編譯 fixture，因此每個 core 一個作業會讓機器過載）：測試各自擁有私有的 NATS
 伺服器與暫存 root，因此它們能安全地重疊。每個測試的輸出會擷取到
 `var/test-logs/<name>.log`，其牆鐘時間在完成時印出，摘要則列出最慢
 者——可用 `TEST_JOBS=N`（或直接對腳本用 `NIF_TEST_JOBS=N`）覆寫；

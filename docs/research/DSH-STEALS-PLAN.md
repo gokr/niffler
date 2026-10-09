@@ -5,7 +5,8 @@ Status: **historical runbook.** Phases A (context/compaction) and B
 `fabric {api: true}` declarations) remains open. The execution details below
 were written before implementation and are retained as design rationale and
 provenance. The current contracts are in [MANUAL.md](../MANUAL.md),
-[WIRE.md](../WIRE.md), and the [research index](README.md).
+[WIRE.md](../WIRE.md), and the [research index](README.md). Open work has one
+home — [../PLAN.md](../PLAN.md) — not this runbook.
 
 Original baseline: `fea84d6`. The feature branch and worktree named in the
 original plan are no longer authoritative.

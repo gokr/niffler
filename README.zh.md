@@ -29,9 +29,9 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
 
 要求：Nim 2.2.12+ 和 Go。`make setup` 安装这些以及其他平台先决条件（Ubuntu/macOS）和 Nimble 依赖。Node.js 20+ 和 npm 是可选的——它们用于 TypeScript 组件、`npx` 技能和基于 npm 的 MCP 服务器。Niffler 使用纯 Nim 的 [natsnim](https://github.com/gokr/natsnim) 客户端；无需安装 `libnats` 或 `cnats`。
 
-一行安装：`scripts/bootstrap.sh` 会找到或创建克隆、安装先决条件，然后运行 `make setup`、`make build` 和 `make install-tui`：
+一行安装：`scripts/bootstrap.sh` 会找到或创建克隆、安装先决条件，然后运行 `make setup`、`make release` 和 `make install-tui`：
 `curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`。
-以下步骤是手动等价操作。
+以下步骤是手动开发设置（`make build` 生成调试二进制文件；安装程序使用优化的发布二进制文件）。
 
 ```bash
 git clone https://github.com/gokr/niffler.git
@@ -67,6 +67,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make install` | 安装 `niffler`、`niffler-cli`、`niffler-console` 的 PATH 入口（终端上会询问是否安装 TUI） |
 | `make install-tui` | `make install WITH_TUI=1`：上面的全部，外加 `niffler-tui` 聊天客户端 |
 | `make install-lsp` | 安装 `lsp` 组件的默认语言服务器 |
+| `make install-tools` | agent 的 CLI 工具箱（经 bash 使用）：jq、yq、ripgrep、fd、fzf、bat、tree、htop、wget、zip、unzip、sqlite3 |
 | `make test` | 完整测试门：总线契约测试套件（UI 自身的测试与类型检查在 `gokr/niffler-ui`） |
 | `make test-server` | 总线契约测试套件（每个测试自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 单个组件的契约测试，例如 `make test-fetch` |

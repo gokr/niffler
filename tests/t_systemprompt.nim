@@ -140,8 +140,25 @@ proc main() =
   # pinned here rather than left to drift. Fragments avoid the line wraps.
   check("base prompt carries the change-scope discipline",
         directPrompt.contains("changes scoped") and
-        directPrompt.contains("cover every path that produces the behavior"),
+        directPrompt.contains("cover every path") and
+        directPrompt.contains("that produces the behavior you change"),
         $direct)
+  # Batching is the one workflow rule the constitution owns; the pipeline
+  # contract lives in the tool schemas (read/edit/write/replace_across) where
+  # the model reads it at the point of use, and the tutorial this used to
+  # carry was never adopted in 62 task cells.
+  check("base prompt teaches batching without duplicating tool schemas",
+        directPrompt.contains("Batch independent") and
+        directPrompt.contains("Never bypass an approval gate") and
+        not directPrompt.contains("save_as") and
+        not directPrompt.contains("resolve_vars") and
+        not directPrompt.contains("Omit unused options"),
+        $direct)
+  const productPromptBytes = staticRead("../components/systemprompt/baseprompt.txt").len
+  check("base prompt is bounded and avoids duplicate pipeline tutorials",
+        productPromptBytes < 1300 and
+        not directPrompt.contains("old_string: \"$span\"") and
+        not directPrompt.contains("file tools don't"), $direct)
 
   # The independent-review instruction is GATED on a spec-sized first message
   # and inserted MID-PROMPT at the "Working on Niffler itself:" anchor: a big
@@ -170,6 +187,11 @@ proc main() =
         longPrompt.contains("agent_spawn") and
         longPrompt.contains("no review: <reason>") and
         longPrompt.contains("no build, test or linter"), $longPrompt.len)
+  check("review is conditional on having no executable validation",
+        longPrompt.contains("Only when nothing here can validate the change") and
+        longPrompt.contains("Otherwise, skip the review and report the validation") and
+        not longPrompt.contains("Before you finish a change, get a second pair"),
+        longPrompt)
   let reviewAt = longPrompt.find("second pair of eyes")
   let anchorAt = longPrompt.find("Working on Niffler itself:")
   let anchorDirect = directPrompt.find("Working on Niffler itself:")

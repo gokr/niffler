@@ -65,10 +65,11 @@ npm-based MCP servers. Niffler uses the pure-Nim
 installation is needed.
 
 For a one-line install, `scripts/bootstrap.sh` finds or creates the clone,
-installs the prerequisites, then runs `make setup`, `make build` and
+installs the prerequisites, then runs `make setup`, `make release` and
 `make install-tui`:
 `curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`.
-The steps below are the manual equivalent.
+The steps below are the manual development setup (`make build` produces
+debug binaries; the installer uses optimized release binaries).
 
 ```bash
 git clone https://github.com/gokr/niffler.git
@@ -89,6 +90,8 @@ asks about the plugin on a terminal instead.
 `niffler-tui` is the conversation client; `niffler` (or `./var/bin/niffler`) is
 the terminal admin shell — status, catalog, sessions, not a chat UI — and
 `niffler --minimal` boots only the minimal store/bash/LLM/systemprompt profile.
+`niffler --log=debug` runs core and every spawned component at the debug log
+level, adding the per-call timing lines that explain a turn's wall time.
 
 A Wails-based desktop UI does exist, but it is an **experimental side project**
 in its own repository — [gokr/niffler-ui](https://github.com/gokr/niffler-ui).
@@ -116,6 +119,7 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 | `make install` | PATH entries for `niffler`, `niffler-cli`, `niffler-console`, plus `niffler-tui` on request |
 | `make install-tui` | `make install WITH_TUI=1`: the above plus the `niffler-tui` chat client |
 | `make install-lsp` | install the default language servers for the `lsp` component |
+| `make install-tools` | the agent CLI toolkit for bash: jq, yq, ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip, sqlite3 |
 | `make test` | the complete gate: the bus-contract suite (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
 | `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
 | `make test-<name>` | one component's contract test, e.g. `make test-fetch` |

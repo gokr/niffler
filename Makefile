@@ -71,15 +71,15 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components components-inner run down down-here \
-        test test-server test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
+         test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
-        setup doctor recover install-go install-nim install-nats \
+        setup doctor recover install-go install-nim \
         install-node install-native-deps install-nim-deps check-nim-deps \
-        install-jq install-lsp install-jev von-up von-down
+        install-tools install-lsp install-jev von-up von-down
 
 help:
 	@echo 'make all       build core + components (default)'
@@ -97,6 +97,7 @@ help:
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'
 	@echo 'make install-lsp  install the lsp component language servers'
+	@echo 'make install-tools  agent CLI toolkit: jq, yq, ripgrep, fd, fzf, bat, tree, ...'
 	@echo 'make install-jev  install the Von runtime for the jev component (opt-in, ~5.4 GB)'
 	@echo 'make von-up      enable the supervised Von launcher (persists across boots)'
 	@echo 'make von-down    disable it again (spawn record removed)'
@@ -387,17 +388,24 @@ TEST_ENV := env -u NIF_OPENAI_API_KEY -u NIF_OPENAI_BASE_URL \
 
 # Bus-contract suite parallelism: a bounded pool over the isolated test
 # binaries (each owns its NATS server + temp root). Override per run:
-#   make test-server TEST_JOBS=1      # sequential (old behavior)
-#   make test-server TEST_JOBS=6      # deeper pool
-TEST_JOBS ?= $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) | head -1)
+#   make test-server TEST_JOBS=1                 # sequential (old behavior)
+#   make test-server TEST_JOBS=$(nproc)          # one job per core (old default)
+# Half the cores by default: a pool job is not one process — it boots its own
+# core/store/llm children, and several tests compile a fixture with `nim c` —
+# so one job per core oversubscribes the box. That showed up as
+# load-dependent failures (drain races in t_processes, fixture compiles
+# timing out) rather than as useful speed.
+CORES ?= $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) | head -1)
+TEST_JOBS ?= $(shell c=$(CORES); n=$$((c / 2)); [ $$n -lt 2 ] && n=2; echo $$n)
 
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/smoke.nim
 
 # ---------------------------------------------------------------------------
 # tests: one binary per tests/*.nim; `make test-server` runs the whole suite
-# through scripts/run-tests.sh in a bounded pool (TEST_JOBS, default one per
-# core). Runtime state and NATS are isolated per test, so individual test
+# through scripts/run-tests.sh in a bounded pool (TEST_JOBS, default half the
+# cores — CORES overrides the machine reading, TEST_JOBS the pool depth).
+# Runtime state and NATS are isolated per test, so individual test
 # targets may run concurrently with each other and a live harness.
 # Individual: make test-bash, test-store, test-store-sqlite, test-store-tidb,
 # test-builder, test-console, test-plugins, test-skills, test-fetch,
@@ -413,10 +421,15 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 # them per sandbox started a dozen concurrent `nim c` runs per pooled gate and
 # those died under load without any compiler output (issue #108, deterministic
 # in CI). Not part of `build` — they are fixtures, not shipped components.
-FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server
+FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp
 
 var/bin/ctxtest: components/ctxtest/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/main.nim
+
+# A busy `lsp` stand-in (answers only after SLOW_LSP_MS): pins the contract
+# that a mutation never waits for the language server's ack.
+var/bin/fixture-slow-lsp: tests/fixtures/slow_lsp.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/fixtures/slow_lsp.nim
 
 var/bin/ctxsink: components/ctxtest/sink.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/sink.nim
@@ -457,13 +470,18 @@ var/bin/test_t_attachments: core/conversation.nim core/attachments.nim \
     var/bin/session var/bin/niffler
 
 var/bin/test_t_context_drains: core/conversation.nim
+var/bin/test_t_discover: core/catalog.nim
 
 # The full gate, self-contained: core + components + the bus-contract suite
 # (each test owns a private NATS server and a temporary root).
 test: test-server
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
-test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest
+test-bench:
+	@mkdir -p var
+	node --test bench/tests/*.test.mjs
+
+test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
 
@@ -506,6 +524,8 @@ test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 # test itself into the sandbox; t_mcp needs the mcp manager + bridge binaries.
 test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
+test-edit-lsp-slow: build var/bin/test_t_edit_lsp_slow var/bin/fixture-slow-lsp ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit_lsp_slow
+test-vars:    build var/bin/test_t_vars    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_vars
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp
 test-repomap: build var/bin/test_t_repomap_tags var/bin/test_t_repomap_score \
     var/bin/test_t_repomap ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_tags && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_score && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap
@@ -601,7 +621,9 @@ doctor:
 	else echo "  node: MISSING or too old — run 'make install-node'"; fi
 	$(call check_tool,npm,install-node)
 	@echo "Optional (generally useful on the CLI):"
-	$(call check_tool,jq,install-jq)
+	$(call check_tool,jq,install-tools)
+	@echo "     agent CLI toolkit (yq, ripgrep, fd, fzf, bat, tree, htop, wget,"
+	@echo "     zip, unzip, sqlite3): 'make install-tools'"
 	@echo "  (the bash dialog demo lives in examples/dialog — its nats CLI + zenity"
 	@echo "   dependencies are its own; see examples/dialog/README.md)"
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
@@ -673,16 +695,12 @@ install-nim-deps:
 		fi; \
 	done
 
-install-nats:
-	@echo "nats-server: built from source by 'make build' (components/nats) — nothing to install"
-
-# jq is a general CLI tool agents reach for constantly (via bash) — kept as a
-# one-command install. The nats CLI and zenity installers were removed with
-# the dialog demo's toolchain (examples/dialog/README.md documents them).
-install-jq:
-	@if command -v jq >/dev/null 2>&1; then echo "jq: already installed"; \
-	elif [ -n "$(IS_MAC)" ]; then brew install jq; \
-	else $(SUDO) apt-get install -y jq; fi
+# The agent CLI toolkit: the small, constantly-reached-for tools an LLM uses
+# through the bash component (jq and friends). One command, idempotent per
+# tool, failures non-fatal — a missing tool only costs a fallback to
+# coreutils. See scripts/install-tools.sh for the set and why each is there.
+install-tools:
+	@bash scripts/install-tools.sh
 
 install-node:
 	@# Node is OPTIONAL (Niffler core is Nim + Go): it serves TypeScript

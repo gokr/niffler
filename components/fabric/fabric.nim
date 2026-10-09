@@ -629,7 +629,8 @@ let fabSchema = toolSchema(%*{
                  "give code or name; only finish()'s value reaches this conversation; every call crosses the " &
                  "approval gate and counts against maxCalls." )
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
-                            "sessionContext": true, "onDemand": true}
+                            "sessionContext": true, "onDemand": true,
+                            "hint": "Not for ordinary local loops or computation — keep those in bash. Program multi-tool workflows whose calls depend on earlier results or need intermediate-data distillation."}
 
 const helpDir = currentSourcePath().parentDir()
 proc exampleIndex(): string =
@@ -663,7 +664,8 @@ helpSchema["x-harness"] = %*{"onDemand": true}
 discard comp.tool("fabric_help", helpSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let topic = toolArgs{"topic"}.getStr("")
-    return %*{"content": fabricHelpContent(topic)})
+    let content = fabricHelpContent(topic)
+    return %*{"content": content, "text": content})
 discard comp.tool("fabric", fabSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let sess = toolArgs{"__session"}{"session"}.getStr("")

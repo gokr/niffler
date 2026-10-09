@@ -26,6 +26,27 @@ proc main() =
   var nc = waitConnect(url)
   defer: nc.close()
 
+  # The edit tool keeps its undo records and seen digests as STORE documents
+  # (kinds edit-undo / edit-seen, scoped to the calling conversation), so a
+  # mutation refuses rather than lose undo history when the store is down.
+  let storeBin = root / "var" / "bin" / "store-sqlite"
+  if not fileExists(storeBin):
+    fail(storeBin & " missing — run `make build` first")
+    quit(1)
+  let sProc = startComponent(storeBin, url, root = tmp)
+  defer:
+    if sProc.running():
+      sProc.terminate()
+      sleep(200)
+    sProc.close()
+  var storeUp = false
+  for _ in 0 ..< 50:
+    if not call(nc, "store", "list", %*{"kind": "probe"}, 2000).hasKey("error"):
+      storeUp = true
+      break
+    sleep(100)
+  check("store answers before the first edit", storeUp)
+
   let eProc = startComponent(bin, url, root = tmp,
                              extra = [("XDG_CONFIG_HOME", tmp / "config")])
   defer:
@@ -49,6 +70,50 @@ proc main() =
   check("edit response previews removed/added lines and context",
         r1{"text"}.getStr("").contains("- hello\n+ hi\n    world"), $r1)
 
+  # Short aliases match replace_across without changing exact-edit semantics.
+  writeFile(tmp / "alias.txt", "alpha\nbeta\n")
+  let aliasEdit = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "alpha", "new": "ALPHA"}]})
+  check("edit accepts old/new aliases", not aliasEdit.hasKey("error") and
+        readFile(tmp / "alias.txt") == "ALPHA\nbeta\n", $aliasEdit)
+  let mixedEdit = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old_string": "beta", "new": "BETA"}]})
+  check("edit accepts mixed canonical and alias fields",
+        not mixedEdit.hasKey("error") and
+        readFile(tmp / "alias.txt") == "ALPHA\nBETA\n", $mixedEdit)
+  let canonicalEdit = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old_string": "ALPHA", "old": "missing",
+                                    "new_string": "A", "new": "wrong"}]})
+  check("canonical edit fields take precedence over aliases",
+        not canonicalEdit.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\nBETA\n", $canonicalEdit)
+  let aliasDelete = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "BETA\n", "new_string": ""}]})
+  check("alias needle supports canonical empty replacement",
+        not aliasDelete.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\n", $aliasDelete)
+  let aliasUndo = call(nc, "edit", "undo_last_edit", %*{"path": "alias.txt"})
+  check("alias edits retain undo", not aliasUndo.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\nBETA\n", $aliasUndo)
+  let badAlias = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "A", "new": false}]})
+  check("invalid alias replacement is refused without mutation",
+        badAlias.hasKey("error") and
+        readFile(tmp / "alias.txt") == "A\nBETA\n", $badAlias)
+  let emptyAlias = call(nc, "edit", "edit", %*{
+    "path": "alias.txt", "edits": [{"old": "", "new": "x"}]})
+  check("empty alias needle is refused", emptyAlias.hasKey("error"), $emptyAlias)
+  writeFile(tmp / "alias-amb.txt", "same\nsame\n")
+  let aliasAmb = call(nc, "edit", "edit", %*{
+    "path": "alias-amb.txt", "edits": [{"old": "same", "new": "x"}]})
+  check("aliases preserve ambiguity refusal", aliasAmb.hasKey("error") and
+        readFile(tmp / "alias-amb.txt") == "same\nsame\n", $aliasAmb)
+  let aliasAll = call(nc, "edit", "edit", %*{
+    "path": "alias-amb.txt",
+    "edits": [{"old": "same", "new": "x", "replace_all": true}]})
+  check("aliases support replace_all", not aliasAll.hasKey("error") and
+        readFile(tmp / "alias-amb.txt") == "x\nx\n", $aliasAll)
+
   # ambiguity refused, file untouched
   writeFile(tmp / "amb.txt", "same\nsame\n")
   let r2 = call(nc, "edit", "edit",
@@ -58,6 +123,8 @@ proc main() =
         r2{"error"}.getStr("").contains("occurs 2 times"), $r2)
   check("ambiguous edit wrote nothing",
         readFile(tmp / "amb.txt") == "same\nsame\n")
+  check("ambiguity hint distinguishes contextual and all-occurrence edits",
+        r2{"error"}.getStr().contains("only if every occurrence should change"))
 
   # not found refused
   let r3 = call(nc, "edit", "edit",
@@ -411,6 +478,25 @@ proc main() =
                 %*{"path": "w.txt", "force": true,
                    "__session": {"session": "s1"}})
   check("force re-dumps the bytes", rf.getStr("") == bigContent, $rf)
+  let captureSeen = call(nc, "edit", "read", %*{
+    "path": "w.txt", "__capture": true, "__session": {"session": "s1"}})
+  check("capture bypasses unchanged confirmation", captureSeen{"__captureText"}.getStr() == bigContent,
+        $captureSeen)
+  let captureWindow = call(nc, "edit", "read", %*{
+    "path": "w.txt", "offset": 2, "limit": 1, "__capture": true})
+  check("capture separates window bytes from paging footer",
+        captureWindow{"__captureText"}.getStr() == "line of text that keeps going\n" and
+        captureWindow{"text"}.getStr().contains("Use offset=3"), $captureWindow)
+  let capturePast = call(nc, "edit", "read", %*{
+    "path": "w.txt", "offset": 100, "__capture": true})
+  check("beyond-EOF capture is explicitly unavailable",
+        capturePast{"__captureText"}.kind == JNull, $capturePast)
+  writeFile(tmp / "long-capture.txt", repeat("x", 2500))
+  let captureLong = call(nc, "edit", "read", %*{
+    "path": "long-capture.txt", "__capture": true})
+  check("omitted line cannot be captured as exact bytes",
+        captureLong{"__captureText"}.kind == JNull and
+        captureLong{"__captureError"}.getStr().contains("omitted bytes"), $captureLong)
   let rs2 = call(nc, "edit", "read",
                  %*{"path": "w.txt", "__session": {"session": "s2"}})
   check("other session gets full bytes (no cross-talk)",
@@ -503,13 +589,13 @@ proc main() =
                %*{"path": "wedge.txt", "force": true,
                   "__session": {"session": "s1"}})
   var persisted = false
-  let store = tmp / "config" / "niffler-edit" / "undo.json"
-  if fileExists(store):
-    for key, node in parseJson(readFile(store)){"seen"}:
-      if key.contains("wedge.txt") and
-          node{"bytes"}.getInt(0) == readFile(tmp / "wedge.txt").len:
-        persisted = true
-  check("changed read persists the observed bytes", persisted, store)
+  # The seen record is a store document now (kind edit-seen, id
+  # "<session>:<absolute path>") — assert the correction landed there.
+  let seenDoc = call(nc, "store", "get",
+    %*{"kind": "edit-seen", "id": "s1:" & (tmp / "wedge.txt")}, 5000)
+  if not seenDoc.hasKey("error") and seenDoc{"value"} != nil:
+    persisted = seenDoc{"value"}{"bytes"}.getInt(0) == readFile(tmp / "wedge.txt").len
+  check("changed read persists the observed bytes", persisted, $seenDoc)
   let rw = call(nc, "edit", "edit",
                 %*{"path": "wedge.txt",
                    "edits": [{"old_string": "external tail",
@@ -594,6 +680,11 @@ proc main() =
         ro.getStr("").contains("offset/limit"), $ro)
   check("outline read does not leak the bytes",
         not ro.getStr("").contains("line\nline"), $ro)
+  let rawOutlineCapture = call(nc, "edit", "read", %*{
+    "path": "big.nx", "__capture": true})
+  check("capture bypasses outlines and returns exact source separately",
+        rawOutlineCapture{"__captureText"}.getStr() == repeat("line\n", 8) and
+        not rawOutlineCapture{"text"}.getStr().contains("Outline"), $rawOutlineCapture)
 
   # the documented escape hatch: explicit offset=1 reads whole anyway
   let rd = call(nc, "edit", "read", %*{"path": "big.nx", "offset": 1})
@@ -638,6 +729,192 @@ proc main() =
                    "edits": [{"old_string": "one", "new_string": "1"}]})
   check("session-less edit stays quiet",
         not rDiagAnon{"text"}.getStr("").contains("[lsp:"), $rDiagAnon)
+
+  # --- replace_across: sed-style bulk literal replace (the sed 's/A/B/g
+  # f*.go' move Pi reaches for) — glob selection, per-file counts, per-file
+  # undo, word option, zero-total refusal, 12-file cap.
+  createDir(tmp / "bulk")
+  writeFile(tmp / "bulk" / "a.go", "package a\nfunc OldName() {}\nfunc OldName2() {}\n")
+  writeFile(tmp / "bulk" / "b.go", "package b\nfunc Helper() {}\n")
+  writeFile(tmp / "bulk" / "c.go", "package c\nvar OldName = 1\n")
+  let rBulk = call(nc, "edit", "replace_across",
+             %*{"glob": "bulk/*.go",
+                "replace": [{"old": "OldName", "new": "NewName"}]})
+  check("replace_across rewrites the matching files with per-file counts",
+        not rBulk.hasKey("error") and
+        rBulk{"total_replaced"}.getInt(0) == 3 and
+        rBulk{"files_changed"}.getInt(0) == 2 and
+        readFile(tmp / "bulk" / "a.go").contains("func NewName2() {}") and
+        readFile(tmp / "bulk" / "c.go").contains("var NewName = 1"), $rBulk)
+  check("replace_across leaves zero-match files untouched and names them",
+        rBulk{"text"}.getStr("").contains("no match:") and
+        not readFile(tmp / "bulk" / "b.go").contains("NewName"), $rBulk)
+  let rUndoBulk = call(nc, "edit", "undo_last_edit", %*{"path": "bulk/c.go"})
+  check("undo_last_edit reverts one bulk-changed file",
+        not rUndoBulk.hasKey("error") and
+        readFile(tmp / "bulk" / "c.go").contains("var OldName = 1") and
+        readFile(tmp / "bulk" / "a.go").contains("NewName"), $rUndoBulk)
+  writeFile(tmp / "bulk" / "w.txt", "block\nblockhead\n")
+  let rWord = call(nc, "edit", "replace_across",
+             %*{"paths": ["bulk/w.txt"],
+                "replace": [{"old": "block", "new": "hdr", "word": true}]})
+  check("word option replaces word spans only (\\b semantics)",
+        not rWord.hasKey("error") and
+        rWord{"total_replaced"}.getInt(0) == 1 and
+        readFile(tmp / "bulk" / "w.txt") == "hdr\nblockhead\n", $rWord)
+  writeFile(tmp / "bulk" / "z.txt", "alpha\n")
+  let rNo = call(nc, "edit", "replace_across",
+           %*{"paths": ["bulk/z.txt"],
+              "replace": [{"old": "missing", "new": "x"}]})
+  check("replace_across refuses a zero-total match and mutates nothing",
+        rNo.hasKey("error") and
+        rNo{"error"}.getStr("").contains("[E_NO_MATCH]") and
+        readFile(tmp / "bulk" / "z.txt") == "alpha\n", $rNo)
+  let rEmptyGlob = call(nc, "edit", "replace_across", %*{
+    "glob": "bulk/absent*.go", "replace": [{"old": "x", "new": "y"}]})
+  check("unmatched glob names the pattern, not a missing argument",
+        rEmptyGlob.hasKey("error") and
+        rEmptyGlob{"error"}.getStr("").contains("[E_NO_MATCH]") and
+        rEmptyGlob{"error"}.getStr("").contains("bulk/absent*.go"), $rEmptyGlob)
+  let rNoSelector = call(nc, "edit", "replace_across", %*{
+    "replace": [{"old": "x", "new": "y"}]})
+  check("missing selector remains a shape error", rNoSelector.hasKey("error") and
+        rNoSelector{"error"}.getStr("").contains("[E_BAD_SHAPE]"), $rNoSelector)
+  for i in 0 .. 512:
+    writeFile(tmp / "bulk" / ("cap" & align($i, 3, '0') & ".txt"), "x\n")
+  let rCap = call(nc, "edit", "replace_across",
+            %*{"glob": "bulk/cap*.txt",
+               "replace": [{"old": "x", "new": "y"}]})
+  check("replace_across circuit-breaks an accidental 513-file glob untouched",
+        rCap.hasKey("error") and
+        rCap{"error"}.getStr("").contains("[E_BAD_SHAPE]") and
+        readFile(tmp / "bulk" / "cap000.txt") == "x\n", $rCap)
+  # no ergonomic file cap: a 40-file batch is ordinary sed work and must
+  # pass the circuit breaker (the undo budget is the real bound)
+  createDir(tmp / "many")
+  for i in 0 .. 39:
+    writeFile(tmp / "many" / ("m" & align($i, 2, '0') & ".txt"), "hit\n")
+  let rMany = call(nc, "edit", "replace_across",
+             %*{"glob": "many/m*.txt",
+                "replace": [{"old": "hit", "new": "done"}]})
+  check("a 40-file batch passes (count is not the bound)",
+        not rMany.hasKey("error") and
+        rMany{"files_changed"}.getInt(0) == 40 and
+        readFile(tmp / "many" / "m39.txt") == "done\n", $rMany)
+  check("bulk file listing is bounded without dropping machine counts",
+        rMany{"text"}.getStr().contains("16 more changed files") and
+        rMany{"files"}.len == 40, $rMany)
+  let rSeq = call(nc, "edit", "replace_across",
+            %*{"paths": ["bulk/w.txt"],
+               "replace": [{"old": "hdr", "new": "block"},
+                           {"old": "blockhead", "new": "longform"}]})
+  check("replace rules apply in order like a sed pipeline",
+        not rSeq.hasKey("error") and
+        readFile(tmp / "bulk" / "w.txt") == "block\nlongform\n", $rSeq)
+
+  let rDisplay = call(nc, "edit", "replace_across", %*{
+    "paths": [tmp / "bulk" / "w.txt"],
+    "replace": [{"old": "longform", "new": "shortform"}],
+    "__workspace": {"root": tmp}, "__session": {"session": "display"}})
+  check("bulk text uses workspace-relative paths; machine paths stay absolute",
+        rDisplay{"text"}.getStr().contains("bulk/w.txt (1)") and
+        not rDisplay{"text"}.getStr().contains(tmp & "/bulk/") and
+        rDisplay{"files"}[0]{"path"}.getStr() == tmp / "bulk" / "w.txt", $rDisplay)
+  check("first mutation routes to exact undo schema discovery",
+        rDisplay{"text"}.getStr().contains("discover {tools: [\"undo_last_edit\"]}"))
+  let rDisplayNext = call(nc, "edit", "edit", %*{
+    "path": tmp / "bulk" / "w.txt", "edits": [{"old": "shortform", "new": "final"}],
+    "__workspace": {"root": tmp}, "__session": {"session": "display"}})
+  check("undo discovery hint is not repeated in the same session",
+        not rDisplayNext{"text"}.getStr().contains("To revert") and
+        not rDisplayNext{"text"}.getStr().contains(tmp & "/bulk/"), $rDisplayNext)
+  let rOutside = call(nc, "edit", "write", %*{
+    "path": tmp / "external.txt", "content": "outside\n",
+    "__workspace": {"root": tmp / "bulk"}})
+  check("paths outside the workspace stay absolute",
+        rOutside{"text"}.getStr().contains(tmp / "external.txt"), $rOutside)
+  let rRootDisplay = call(nc, "edit", "write", %*{
+    "path": tmp / "root-display.txt", "content": "root\n",
+    "__workspace": {"root": "/"}})
+  check("filesystem-root workspace shortens contained paths",
+        rRootDisplay{"text"}.getStr().endsWith("to " & relativePath(tmp / "root-display.txt", "/")),
+        $rRootDisplay)
+  let mirror = tmp / "mirror"
+  createSymlink(tmp / "bulk", mirror)
+  let rMirror = call(nc, "edit", "replace_across", %*{
+    "glob": mirror / "w.txt", "replace": [{"old": "final", "new": "mirrored"}],
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked workspace dispatch paths shorten in bulk text",
+        rMirror{"text"}.getStr().contains("\nw.txt (1)") and
+        not rMirror{"text"}.getStr().contains(mirror), $rMirror)
+  let rMirrorWrite = call(nc, "edit", "write", %*{
+    "path": mirror / "new.txt", "content": "new\n",
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked parents shorten new-file text without changing machine path",
+        rMirrorWrite{"text"}.getStr().endsWith("to new.txt") and
+        rMirrorWrite{"path"}.getStr() == mirror / "new.txt", $rMirrorWrite)
+  let rMirrorBatch = call(nc, "edit", "read", %*{
+    "reads": [{"path": mirror / "new.txt"}, {"path": mirror / "w.txt"}],
+    "__workspace": {"root": tmp / "bulk"}})
+  check("symlinked batch headings are relative; raw bytes stay unchanged",
+        rMirrorBatch{"text"}.getStr().contains("### new.txt\nnew\n") and
+        rMirrorBatch{"items"}[0]{"content"}.getStr() == "new\n", $rMirrorBatch)
+  let rUnion = call(nc, "edit", "replace_across", %*{
+    "paths": [tmp / "many" / "m00.txt", tmp / "many" / "m00.txt"],
+    "glob": "many/m0*.txt", "replace": [{"old": "done", "new": "union"}],
+    "__workspace": {"root": tmp}})
+  check("paths plus glob form a deduplicated union",
+        rUnion{"files_changed"}.getInt() == 10 and
+        rUnion{"total_replaced"}.getInt() == 10, $rUnion)
+
+  # --- read select mode: locate + fetch in one call (the grep-then-cat
+  # move) — hit regions verbatim, inventory without a pattern, no mixing.
+  let rSel = call(nc, "edit", "read",
+            %*{"reads": [{"glob": "bulk/*.go", "pattern": "NewName",
+                          "context": 0}]})
+  check("select returns verbatim hit regions with counts",
+        not rSel.hasKey("error") and
+        rSel{"count"}.getInt(0) == 2 and
+        rSel{"text"}.getStr("").contains("func NewName2() {}") and
+        rSel{"items"}.len == 3, # per-file rows, zero-hit files included
+      $rSel)
+  let rWordSel = call(nc, "edit", "read",
+               %*{"reads": [{"path": "bulk/w.txt", "pattern": "block",
+                             "word": true, "context": 0}]})
+  check("select word option skips embedded matches",
+        not rWordSel.hasKey("error") and
+        rWordSel{"count"}.getInt(0) == 1, $rWordSel)
+  let rInv = call(nc, "edit", "read",
+            %*{"reads": [{"glob": "bulk/*.go"}]})
+  check("pattern-less select lists matched paths (find/ls move)",
+        not rInv.hasKey("error") and
+        rInv{"text"}.getStr("").contains("a.go") and
+        rInv{"text"}.getStr("").contains("b.go") and
+        not rInv{"text"}.getStr("").contains("func "), $rInv)
+  let rMix = call(nc, "edit", "read",
+            %*{"reads": [{"path": "bulk/a.go"},
+                         {"pattern": "NewName"}]})
+  check("mixed content/select call is refused as a shape error",
+        rMix.hasKey("error") and
+        rMix{"error"}.getStr("").contains("[E_BAD_SHAPE]"), $rMix)
+  let captureHugeRegion = call(nc, "edit", "read", %*{
+    "reads": [{"path": "long-capture.txt", "pattern": "x", "context": 0}],
+    "__capture": true})
+  check("select capture separates raw bytes from filename headings",
+        captureHugeRegion{"items"}[0]{"contents"}[0].getStr() == repeat("x", 2500),
+        $captureHugeRegion)
+  writeFile(tmp / "region-overflow.txt", "needle" & repeat("x", 2_000_000) & "\n")
+  let captureRegionOverflow = call(nc, "edit", "read", %*{
+    "reads": [{"path": "region-overflow.txt", "pattern": "needle", "context": 0}],
+    "__capture": true})
+  check("oversized raw region is unavailable and bus response bounded",
+        captureRegionOverflow{"items"}[0]{"contents"}[0].kind == JNull and
+        ($captureRegionOverflow).len < 600000, $($captureRegionOverflow).len)
+  let rNone = call(nc, "edit", "read",
+             %*{"reads": [{"glob": "bulk/*.go", "pattern": "nothing-here"}]})
+  check("select with no hits answers zero without error",
+        not rNone.hasKey("error") and
+        rNone{"count"}.getInt(0) == 0, $rNone)
 
   # drain: the outline-configured component exits
   drain(nc)

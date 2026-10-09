@@ -42,10 +42,15 @@ const
   MAX_READ_BYTES = 256 * 1024
   MAX_READ_LINE_BYTES = 2 * 1024  # minified lines must not flood context
   MIN_STUB_BYTES = 512      # unchanged re-reads below this just re-dump
-  DIAG_PUSH_TIMEOUT_MS = 10_000  # async diagnostics request: an enqueue round trip,
-                                 # not the check itself (that runs in the lsp
-                                 # component's idle seam and comes back on the
-                                 # conversation's .diag subject)
+  DIAG_ACK_TIMEOUT_MS = 250  # the lsp enqueue ACK budget only. The request is
+                             # already published, so a busy lsp pump (single
+                             # threaded — its idle seam runs the previous check
+                             # there) delays only our receipt, never the check
+                             # and never the write that already happened.
+                             # Waiting longer here is what made a cold server
+                             # cost an edit 25s+, and because this component is
+                             # single-threaded too, one waiting edit stalled
+                             # every other session's mutation behind it.
   OUTLINE_MIN_LINES = 1000  # whole-reads above this get an lsp outline (NIF_READ_OUTLINE_LINES)
   OUTLINE_TIMEOUT_MS = 8_000  # the outline is opportunistic — never stall a read
   OUTLINE_MAX_PER_CALL = 2  # per batch call: 2 × timeout stays inside the read budget
@@ -386,17 +391,25 @@ proc compactDiff(oldContent, newContent: string, context = 3):
 # ---------------------------------------------------------------------------
 # undo store (single-level, per file, persisted across restarts)
 
-const STORE_VERSION = 1
-
 type UndoEntry = object
   content: string        # pre-edit content (LF-normalized)
   bom: string
   ending: string
   resultContent: string  # post-edit content, for staleness checks
 
-var
-  gStorePath = ""
-  gUndo = initTable[string, UndoEntry]()
+# Undo and seen-state live in the STORE — one document per (conversation,
+# file): kinds edit-undo / edit-seen, id "<session>:<absolute path>". They used
+# to share one JSON file under XDG_CONFIG_HOME, rewritten in full on every
+# mutation: machine-global (two conversations editing one file shared a single
+# undo entry) and unbounded (measured 51 MB after a few bench runs), so a
+# 27-file bulk replacement rewrote ~2.8 GB and held this component's pump for
+# 53 s — stalling every other session's reads queued behind it. Store documents
+# are O(1) to write, scoped to the conversation that owns them, and swept with
+# it (core's conversation_delete drops both kinds).
+const
+  undoKind = "edit-undo"
+  seenKind = "edit-seen"
+  STORE_TIMEOUT_MS = 5000
 
 # ---------------------------------------------------------------------------
 # seen-state: what each conversation last observed of a file
@@ -419,10 +432,7 @@ type SeenEntry = object
   lines: int
   full: bool     # the conversation holds (or can derive) the full content
 
-var gSeen = initTable[string, SeenEntry]()
 var gLazyInstructions = initTable[string, bool]()
-
-proc seenKey(session, target: string): string = session & "\x1f" & target
 
 const instructionCandidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
                                "CLAUDE.md", "CLAUDE.MD"]
@@ -472,95 +482,101 @@ proc unchangedText(path, raw: string): string =
     "bytes already in context are current; not re-dumping. Pass force=true " &
     "(or an offset/limit window) to see them again."
 
-proc configDir(): string =
-  let xdg = getEnv("XDG_CONFIG_HOME")
-  if xdg.len > 0: xdg / "niffler-edit"
-  else: getHomeDir() / ".config" / "niffler-edit"
+proc stateId(session, target: string): string = session & ":" & target
 
-proc loadStore() =
-  let dir = configDir()
-  gStorePath = dir / "undo.json"
-  createDir(dir)
-  if not fileExists(gStorePath): return
-  var doc: JsonNode
+proc undoScope(session: string): string =
+  ## Undo is conversation-scoped. A caller with no conversation (cli scripting,
+  ## another component) shares one standalone scope — which is what it
+  ## effectively had when undo was keyed by path alone, minus the collision
+  ## with every live conversation editing the same file.
+  if session.len > 0: session else: "__standalone"
+
+proc putDoc(c: Component, kind, id: string, value: JsonNode): bool =
+  ## One document per (conversation, file). Failure is the caller's business:
+  ## a mutation refuses rather than lose undo history, an observation is
+  ## best-effort.
   try:
-    doc = parseJson(readFile(gStorePath))
+    discard c.request("store", "put",
+      %*{"kind": kind, "id": id, "value": value}, STORE_TIMEOUT_MS)
+    result = true
   except CatchableError:
-    return
-  if doc == nil or doc.kind != JObject: return
-  let undo = doc{"undo"}
-  if undo == nil or undo.kind != JObject: return
-  for path, node in undo:
-    if node == nil or node.kind != JObject: continue
-    let ending = node{"ending"}.getStr("\n")
-    if ending != "\n" and ending != "\r\n": continue
-    gUndo[path] = UndoEntry(
-      content: node{"content"}.getStr(""),
-      bom: node{"bom"}.getStr(""),
-      ending: ending,
-      resultContent: node{"resultContent"}.getStr(""))
-  let seen = doc{"seen"}
-  if seen != nil and seen.kind == JObject:
-    for key, node in seen:
-      if node == nil or node.kind != JObject: continue
-      gSeen[key] = SeenEntry(digest: node{"digest"}.getStr(""),
-                             bytes: node{"bytes"}.getInt(0),
-                             lines: node{"lines"}.getInt(0),
-                             full: node{"full"}.getBool(false))
+    result = false
 
-proc saveStore() =
-  var doc = %*{"version": STORE_VERSION, "undo": newJObject(),
-               "seen": newJObject()}
-  for path, e in gUndo:
-    doc["undo"][path] = %*{"content": e.content, "bom": e.bom,
-                           "ending": e.ending,
-                           "resultContent": e.resultContent}
-  for key, s in gSeen:
-    doc["seen"][key] = %*{"digest": s.digest, "bytes": s.bytes,
-                          "lines": s.lines, "full": s.full}
-  writeAtomic(gStorePath, $doc)
+proc getDoc(c: Component, kind, id: string): JsonNode =
+  try:
+    result = c.request("store", "get", %*{"kind": kind, "id": id},
+                       STORE_TIMEOUT_MS){"value"}
+  except CatchableError:
+    result = nil
 
-proc saveUndo(path: string, entry: UndoEntry): tuple[persisted: bool,
-                                                      restore: proc()] =
+proc delDoc(c: Component, kind, id: string) =
+  try:
+    discard c.request("store", "del", %*{"kind": kind, "id": id},
+                      STORE_TIMEOUT_MS)
+  except CatchableError:
+    discard
+
+proc seenOf(c: Component, session, target: string): SeenEntry =
+  ## What this conversation last observed of this file. The zero value means
+  ## "never looked" — also what an unreachable store answers, which is always
+  ## the safe direction: it costs a full dump or an unrefused edit, never a
+  ## wrong refusal.
+  result = SeenEntry()
+  if session.len == 0: return
+  let v = getDoc(c, seenKind, stateId(session, target))
+  if v == nil or v.kind != JObject: return
+  result = SeenEntry(digest: v{"digest"}.getStr(""),
+                     bytes: v{"bytes"}.getInt(0),
+                     lines: v{"lines"}.getInt(0),
+                     full: v{"full"}.getBool(false))
+
+proc observe(c: Component, session, target, raw: string, full: bool,
+             persist = false) =
+  ## Record what a conversation just observed. `persist` is the correction
+  ## gate, not a durability knob: a read that only confirms what the record
+  ## already says writes nothing (saving a bus round trip per read), while a
+  ## read that observes different bytes writes the correction so a stale
+  ## record cannot wedge edits that re-reads would otherwise never clear.
+  ## Mutations always record.
+  if session.len == 0 or not persist: return
+  let (_, body) = stripBom(raw)
+  discard putDoc(c, seenKind, stateId(session, target),
+    %*{"digest": $secureHash(raw), "bytes": raw.len,
+       "lines": splitLf(toLf(body)).len, "full": full})
+
+proc undoEntry(c: Component, session, target: string): tuple[found: bool,
+                                                             entry: UndoEntry] =
+  result = (false, UndoEntry(ending: "\n"))
+  let v = getDoc(c, undoKind, stateId(undoScope(session), target))
+  if v == nil or v.kind != JObject: return
+  let ending = v{"ending"}.getStr("\n")
+  if ending != "\n" and ending != "\r\n": return
+  result = (true, UndoEntry(content: v{"content"}.getStr(""),
+                            bom: v{"bom"}.getStr(""),
+                            ending: ending,
+                            resultContent: v{"resultContent"}.getStr("")))
+
+proc saveUndo(c: Component, session, path: string,
+              entry: UndoEntry): tuple[persisted: bool, restore: proc()] =
   ## Persist the undo record BEFORE the edit is written; a failed persist
   ## refuses the edit (the file is never touched). restore() re-installs the
   ## previous record if the write itself fails.
-  let hadPrevious = gUndo.hasKey(path)
-  let previous = if hadPrevious: gUndo[path] else: UndoEntry(ending: "\n")
-  gUndo[path] = entry
-  try:
-    saveStore()
-    result.persisted = true
-    result.restore = proc() =
-      if hadPrevious: gUndo[path] = previous
-      else: gUndo.del(path)
-      try: saveStore()
-      except CatchableError: discard
-  except CatchableError:
-    if hadPrevious: gUndo[path] = previous
-    else: gUndo.del(path)
+  let id = stateId(undoScope(session), path)
+  let previous = getDoc(c, undoKind, id)
+  if not putDoc(c, undoKind, id,
+      %*{"content": entry.content, "bom": entry.bom, "ending": entry.ending,
+         "resultContent": entry.resultContent}):
     result.persisted = false
+    return
+  result.persisted = true
+  result.restore = proc() =
+    if previous == nil or previous.kind != JObject:
+      delDoc(c, undoKind, id)
+    else:
+      discard putDoc(c, undoKind, id, previous)
 
-proc clearUndo(path: string) =
-  if gUndo.hasKey(path):
-    gUndo.del(path)
-    saveStore()
-
-proc observe(session, target, raw: string, full: bool, persist = false) =
-  ## Record the state a conversation just observed. Read calls persist=false
-  ## when they confirm what we already remembered (in-memory only: a restart
-  ## merely loses stub hints, never correctness); a read that observes
-  ## different bytes persists the correction, so a stale entry written by an
-  ## earlier run/process cannot wedge edits that re-reads would otherwise
-  ## never clear. Mutations persist alongside the undo store.
-  if session.len == 0: return
-  let (_, body) = stripBom(raw)
-  gSeen[seenKey(session, target)] = SeenEntry(
-    digest: $secureHash(raw), bytes: raw.len,
-    lines: splitLf(toLf(body)).len, full: full)
-  if persist:
-    try: saveStore()
-    except CatchableError: discard
+proc clearUndo(c: Component, session, path: string) =
+  delDoc(c, undoKind, stateId(undoScope(session), path))
 
 # ---------------------------------------------------------------------------
 # edit resolution
@@ -605,7 +621,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
   if exact.count > 1 and not replaceAll:
     raise newException(ValueError,
       "[E_AMBIGUOUS] old_string occurs " & $exact.count & " times in " & path &
-      " — include more surrounding lines so it matches exactly once.")
+      " — include surrounding lines to match once; set replace_all only if " &
+      "every occurrence should change.")
   if exact.count >= 1:
     return allSpans(content, oldNorm, newNorm)
 
@@ -624,7 +641,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
     raise newException(ValueError,
       "[E_AMBIGUOUS] old_string (after " & tierName &
       " normalization) occurs " & $wins.len & " times in " & path &
-      " — include more surrounding lines so it matches exactly once.")
+      " — include surrounding lines to match once; set replace_all only if " &
+      "every occurrence should change.")
   if wins.len == 1:
     return @[windowSpan(content, lines, starts, wins[0], oldNorm, newNorm)]
 
@@ -635,7 +653,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
     if cnt > 1:
       raise newException(ValueError,
         "[E_AMBIGUOUS] old_string (unescaped) occurs " & $cnt & " times in " &
-        path & " — include more surrounding lines so it matches exactly once.")
+         path & " — include surrounding lines to match once; set replace_all only if " &
+         "every occurrence should change.")
     if cnt == 1:
       return @[(first, oldUn.len, newNorm,
                 splitLf(newNorm).len, splitLf(oldUn).len)]
@@ -644,7 +663,8 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
       raise newException(ValueError,
         "[E_AMBIGUOUS] old_string (after escaped-text normalization) occurs " &
         $wins.len & " times in " & path &
-        " — include more surrounding lines so it matches exactly once.")
+        " — include surrounding lines to match once; set replace_all only if " &
+        "every occurrence should change.")
     if wins.len == 1:
       return @[windowSpan(content, lines, starts, wins[0], oldNorm, newNorm)]
 
@@ -692,28 +712,6 @@ proc outlineSection(c: Component, target, path: string, total: int): string =
     "\n\n[Outline instead of the full text. Read windows with offset/limit " &
     "(up to 12 ranges per call), or offset=1 to read the whole file anyway.]"
 
-proc lspKnownLanguage(c: Component, target: string): bool =
-  ## True when the lsp registry maps this file's extension to a language
-  ## server — the languages this harness expects diagnostics for. Silence is
-  ## only right for files no entry claims (a .md file is nobody's
-  ## language-server business); anything the registry knows must be told what
-  ## happened. Every lookup failure answers false: an unsolicited note is
-  ## noise, and a missing lsp component is not the edit's problem.
-  let ext = splitFile(target).ext.toLowerAscii()
-  if ext.len == 0: return false
-  var resp: JsonNode
-  try:
-    resp = c.request("lsp", "lsp_servers", %*{}, DIAG_PUSH_TIMEOUT_MS)
-  except CatchableError:
-    return false
-  let servers = resp{"servers"}
-  if servers == nil or servers.kind != JArray: return false
-  for s in servers:
-    let exts = s{"extensions"}
-    if exts != nil and exts.kind == JObject and exts.hasKey(ext):
-      return true
-  return false
-
 proc diagWhy(resp: JsonNode): string =
   ## One readable reason out of a failed lsp reply (its error code/message, or
   ## failing that its text), for the "not checked" note.
@@ -734,41 +732,74 @@ proc lspDiagnosticsSection(c: Component, session, target: string,
   ##
   ## This used to block the edit: every cold server cost 25s and answered
   ## "server busy or still indexing" (39 times in one ten-cell bench run, ~16
-  ## minutes, no information). An edit that already succeeded must not wait for
-  ## a language server, so the VERDICT cannot be synchronous here — but the
-  ## ambiguity can go: for a language the registry knows, this never returns
-  ## empty. It says the check is on its way (with the verdict arriving as a
-  ## message), or that it did not run and why. "checked and clean" must never
-  ## look like "nothing happened". Only files no registry entry claims stay
-  ## silent, and a missing or crashed server still never affects the edit.
+  ## minutes, no information). The check runs in the lsp component's idle
+  ## seam; the edit only has to hand it over.
+  ##
+  ## The ack budget is short on purpose, and there is deliberately no second
+  ## lookup when it runs out. The lsp component is single-threaded and runs
+  ## the previous check in that same pump, so its answer to the NEXT request
+  ## can be seconds away; asking it a second question (the old lsp_servers
+  ## fallback) would re-block the edit on exactly the same queue. The request
+  ## is already published when the ack misses its budget, so the verdict is
+  ## on its way regardless — say so and return. This component's own pump is
+  ## serialized too, so a mutation that waits here delays every other
+  ## session's mutation as well.
+  ##
+  ## One case stays silent: a file type no registry entry claims (a .md edit
+  ## is nobody's language-server business). Everything else gets a line, so
+  ## "checked and clean" never looks like "nothing happened".
   if session.len == 0: return ""     # no conversation to report back to
   var resp: JsonNode
   try:
     resp = c.request("lsp", "lsp",
       %*{"operation": "diagnostics", "path": target, "async": true,
          "session": session, "first": first, "last": last},
-      DIAG_PUSH_TIMEOUT_MS)
+      DIAG_ACK_TIMEOUT_MS)
   except CatchableError as e:
-    # One refusal is worth saying out loud: a file outside the conversation's
-    # workspace is a fact about where the agent is working, and the lsp
-    # component answers [E_LSP_SCOPE] for it — silently, that looks identical
-    # to "no server for this file type" and a whole session can go by with no
-    # diagnostics and no signal.
+    if "E_LSP_UNCONFIGURED" in e.msg: return ""
+    # A file outside the conversation's workspace is a fact about where the
+    # agent is working: silently, it looks identical to "no server for this
+    # file type" and a whole session can go by with no diagnostics and no
+    # signal.
     if "E_LSP_SCOPE" in e.msg:
       return "\n\n[lsp: not checked — " & target & " is outside this " &
              "conversation's workspace; language-server diagnostics only " &
              "cover files inside it.]"
-    if lspKnownLanguage(c, target):
-      return "\n\n[lsp: not checked — " & e.msg & "]"
-    return ""
+    if "timed out" in e.msg:
+      return "\n\n[lsp: diagnostics queued — they arrive as a message " &
+             "when the language server answers.]"
+    return "\n\n[lsp: not checked — " & e.msg & "]"
   if not resp{"ok"}.getBool(false):
-    if lspKnownLanguage(c, target):
-      return "\n\n[lsp: not checked — " & diagWhy(resp) & "]"
-    return ""
+    return "\n\n[lsp: not checked — " & diagWhy(resp) & "]"
   let textN = resp{"text"}
   if textN == nil or textN.kind != JString or textN.getStr().len == 0:
     return ""
   return "\n\n[lsp: " & textN.getStr() & "]"
+
+proc displayPath(args: JsonNode, path: string): string =
+  ## Shorten only filenames inside the caller's workspace. Source text and
+  ## machine paths remain untouched; external paths remain absolute.
+  let workspace = args{"__workspace"}{"root"}.getStr("")
+  if workspace.len == 0 or not path.isAbsolute(): return path
+  var root = normalizedPath(workspace)
+  var target = normalizedPath(path)
+  try: root = expandFilename(root)
+  except CatchableError: discard
+  try: target = expandFilename(target)
+  except CatchableError: discard
+  if target == root: return "."
+  let prefix = if root.endsWith($DirSep): root else: root & DirSep
+  if target.startsWith(prefix): return relativePath(target, root)
+  path
+
+var gUndoHinted = initTable[string, bool]()
+
+proc undoHint(args: JsonNode): string =
+  ## One result-local routing hint per conversation, never a prompt splice.
+  let session = args{"__session"}{"session"}.getStr("")
+  if session.len == 0 or gUndoHinted.hasKey(session): return ""
+  gUndoHinted[session] = true
+  "\n[To revert: discover {tools: [\"undo_last_edit\"]}.]"
 
 proc hEdit(c: Component, args: JsonNode): JsonNode =
   if args == nil or args.kind != JObject:
@@ -803,12 +834,12 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
       raise newException(ValueError,
         "[E_BAD_SHAPE] each element of \"edits\" must be an object with old_string and new_string.")
     var oldS = ""
-    for key in ["old_string", "old_str", "oldText"]:
+    for key in ["old_string", "old_str", "oldText", "old"]:
       let n = ed{key}
       if n != nil and n.kind == JString: oldS = n.getStr(); break
     var newS = ""
     var newFound = false
-    for key in ["new_string", "new_str", "newText"]:
+    for key in ["new_string", "new_str", "newText", "new"]:
       let n = ed{key}
       if n != nil and n.kind == JString:
         newS = n.getStr()
@@ -837,12 +868,12 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   # never seen.
   let session = args{"__session"}{"session"}.getStr("")
   if session.len > 0:
-    let key = seenKey(session, file.absPath)
-    if gSeen.hasKey(key) and gSeen[key].digest !=
+    let seen = seenOf(c, session, file.absPath)
+    if seen.digest.len > 0 and seen.digest !=
         $secureHash(file.bom & restoreEnding(file.normalized, file.ending)):
       raise newException(ValueError,
         "[E_STALE] " & path & " changed since you last read/wrote it (" &
-        $gSeen[key].bytes & " bytes then, " & $getFileSize(file.absPath) &
+        $seen.bytes & " bytes then, " & $getFileSize(file.absPath) &
         " bytes now) — re-read it and redo the edit against current " &
         "content; your old_string may match text you have never seen.")
 
@@ -878,7 +909,7 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
 
   let entry = UndoEntry(content: content, bom: file.bom, ending: file.ending,
                         resultContent: applied)
-  let undo = saveUndo(file.absPath, entry)
+  let undo = saveUndo(c, session, file.absPath, entry)
   if not undo.persisted:
     raise newException(ValueError,
       "[E_UNDO_UNAVAILABLE] Could not persist undo history; " & path &
@@ -891,11 +922,9 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   if session.len > 0:
     # the model derives the post-edit content from what it saw plus the
     # edit, so carry the full flag rather than resetting it
-    let key = seenKey(session, file.absPath)
-    let prevFull = if gSeen.hasKey(key): gSeen[key].full else: false
-    observe(session, file.absPath,
-            file.bom & restoreEnding(applied, file.ending), prevFull,
-            persist = true)
+    observe(c, session, file.absPath,
+            file.bom & restoreEnding(applied, file.ending),
+            seenOf(c, session, file.absPath).full, persist = true)
   let d = compactDiff(content, applied)
   let diagNote = lspDiagnosticsSection(c, session, file.absPath, d.firstLine, d.lastLine)
   let noun = if planned.len == 1: "edit" else: "edits"
@@ -903,14 +932,302 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
     " Added " & $addedTotal & " line(s), removed " & $removedTotal & " line(s)."
     else: ""
   result = %*{"text": "Successfully applied " & $planned.len & " " & noun &
-                       " to " & path & "." & lineSummary &
+                       " to " & displayPath(args, path) & "." & lineSummary &
                        "\n\nChange preview (- removed, + added; context included):\n" &
-                       d.diff & diagNote,
+                       d.diff & diagNote & undoHint(args),
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine,
               "added_lines": addedTotal,
               "removed_lines": removedTotal,
               "edits_applied": planned.len}
+
+# ---------------------------------------------------------------------------
+# replace_across helpers — sed-style literal replace over a bounded file set.
+#
+# The gap Pi's bash corpus keeps filling: `sed -i 's/A/B/g' f*.go` plus a
+# leftover check. Same sed semantics (literal needle, s///g per file,
+# zero-match files pass), our rails on top: an undo pre-image budget, a
+# glob-accident ceiling, per-file counts, per-file undo entries, and a
+# refusal when NOTHING matched — sed silently
+# "succeeds" on a mistyped needle. No dry-run round trip: the counting pass
+# runs before any write inside the same call.
+
+const MAX_REPLACE_FILES = 512  # glob-accident circuit breaker, NOT an
+                               # ergonomic limit: sed parity means file
+                               # count is not the risk (responses carry
+                               # counts, not contents). The real bound is
+                               # the undo pre-image budget below.
+const MAX_UNDO_BYTES = 32 * 1024 * 1024  # per-call undo pre-image budget
+const MAX_SELECT_FILES = 64    # read select scan cap (find | head parity;
+                               # the 512KB byte cap bounds the response)
+
+proc isWordRune(r: char): bool =
+  ## Word character for the `word` option (\b-style spans).
+  r.isAlphaNumeric or r == '_'
+
+proc wordEdge(content: string, start, finish: int): bool =
+  ## True when content[start ..< finish] sits on word boundaries.
+  (start == 0 or not isWordRune(content[start - 1])) and
+    (finish >= content.len or not isWordRune(content[finish]))
+
+type ReplaceRule = object
+  oldString: string
+  newString: string
+  word: bool
+
+proc applyRules(content: string, rules: seq[ReplaceRule]):
+    tuple[applied: string, counts: seq[int]] =
+  ## Sequential sed-style s///g per rule (later rules see earlier output),
+  ## literal needles only; `word` restricts each match to word spans.
+  ## Per-rule occurrence counts come back for the response.
+  var applied = content
+  var counts: seq[int] = @[]
+  for rule in rules:
+    counts.add(0)
+    if rule.oldString.len == 0: continue
+    var outp = ""
+    var i = 0
+    while true:
+      let j = applied.find(rule.oldString, i)
+      if j < 0:
+        outp.add applied[i .. ^1]
+        break
+      outp.add applied[i ..< j]
+      let finish = j + rule.oldString.len
+      if rule.word and not wordEdge(applied, j, finish):
+        outp.add rule.oldString
+      else:
+        outp.add rule.newString
+        inc counts[^1]
+      i = finish
+    applied = outp
+  result = (applied, counts)
+
+proc globMatch(name, pat: string): bool =
+  ## Minimal shell matcher for file names (* and ?).
+  var si = 0
+  var pi = 0
+  var star = -1
+  var mark = 0
+  while si < name.len:
+    if pi < pat.len and (pat[pi] == '?' or pat[pi] == name[si]):
+      inc si
+      inc pi
+    elif pi < pat.len and pat[pi] == '*':
+      star = pi
+      mark = si
+      inc pi
+    elif star >= 0:
+      pi = star + 1
+      inc mark
+      si = mark
+    else:
+      return false
+  while pi < pat.len and pat[pi] == '*':
+    inc pi
+  result = pi == pat.len
+
+proc expandGlob(pattern: string): seq[string] =
+  ## File selection relative to the component root for standalone calls;
+  ## core resolves conversation glob arguments to absolute workspace paths.
+  ## "f*.go" selects one directory, "**/name*" recursively. Sorted batches.
+  let root = rootDir()
+  let pat = pattern.replace("\\\\", "/")
+  var files: seq[string] = @[]
+  if "**" in pat:
+    let idx = pat.find("**/")
+    let head = if idx > 0: pat[0 ..< idx] else: ""
+    let tail = if idx >= 0 and idx + 3 <= pat.high: pat[idx + 3 .. ^1] else: "*"
+    let base = if head.len > 0: followSymlink(toCwd(head, root)) else: root
+    if dirExists(base):
+      for p in walkDirRec(base):
+        if fileExists(p) and globMatch(p.extractFilename, tail):
+          files.add(p)
+  else:
+    for p in walkFiles(toCwd(pat, root)):
+      if fileExists(p):
+        files.add(p)
+  files.sort()
+  result = files
+
+proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
+  ## Handler for replace_across — see the section doc above. Two phases:
+  ## count and build post-content per file (nothing written), then write
+  ## with per-file undo entries. Refusal has zero blast radius.
+  if args == nil or args.kind != JObject:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across request must be an object.")
+  var raw: seq[string] = @[]
+  let pathsN = args{"paths"}
+  if pathsN != nil:
+    if pathsN.kind != JArray:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace_across \"paths\" must be an array of file paths.")
+    for p in pathsN:
+      if p.kind != JString or p.getStr().len == 0:
+        raise newException(ValueError,
+          "[E_BAD_SHAPE] replace_across \"paths\" entries must be non-empty strings.")
+      raw.add(p.getStr())
+  let globN = args{"glob"}
+  if globN != nil:
+    if globN.kind != JString or globN.getStr().len == 0:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace_across \"glob\" must be a non-empty pattern (f*.go, **/*.go).")
+    raw.add(expandGlob(globN.getStr()))
+  if raw.len == 0:
+    if globN != nil:
+      raise newException(ValueError,
+        "[E_NO_MATCH] replace_across glob " & globN.getStr() &
+        " matched no files — nothing was modified. Check the pattern and directory.")
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across needs \"paths\" (explicit files) or " &
+      "\"glob\" (e.g. \"f*.go\", \"**/*.go\").")
+  var files: seq[string] = @[]
+  for f in raw:
+    let abs = followSymlink(toCwd(f, rootDir()))
+    if abs notin files:
+      files.add(abs)
+  if files.len > MAX_REPLACE_FILES:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across covers at most " & $MAX_REPLACE_FILES &
+      " files per call (got " & $files.len &
+      ") — narrow the glob or split into batches.")
+  let rulesNode = args{"replace"}
+  if rulesNode == nil or rulesNode.kind != JArray or rulesNode.len == 0:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] replace_across requires \"replace\": " &
+      "[{\"old\": ..., \"new\": ...}] (non-empty).")
+  var rules: seq[ReplaceRule] = @[]
+  for r in rulesNode:
+    if r == nil or r.kind != JObject:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] each \"replace\" entry must be an object with \"old\" and \"new\".")
+    let oldN = r{"old"}
+    let newN = r{"new"}
+    if oldN == nil or oldN.kind != JString or oldN.getStr().len == 0:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace[].old must be a non-empty literal string.")
+    if newN == nil or newN.kind != JString:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace[].new must be a string (\"\" deletes every occurrence).")
+    let w = r{"word"}
+    if w != nil and w.kind != JBool:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace[].word must be a boolean.")
+    rules.add(ReplaceRule(oldString: toLf(oldN.getStr()),
+                          newString: toLf(newN.getStr()),
+                          word: if w != nil: w.getBool() else: false))
+  var minMatches = 1
+  let minN = args{"min_matches"}
+  if minN != nil:
+    if minN.kind != JInt:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] replace_across \"min_matches\" must be an integer.")
+    minMatches = min(max(minN.getInt(1), 0), 10_000)
+
+  # Phase 1 — count and build post-content per file; nothing is written yet.
+  type Planned = tuple[path, pre, post, bom, ending: string,
+                       counts: seq[int]]
+  var planned: seq[Planned] = @[]
+  var total = 0
+  var missing: seq[string] = @[]
+  var undoBytes = 0
+  for abs in files:
+    if not fileExists(abs):
+      missing.add(abs)
+      continue
+    let file = loadText(abs)
+    let pre = file.normalized
+    let (post, counts) = applyRules(pre, rules)
+    for n in counts: total += n
+    if post != pre:
+      planned.add((abs, pre, post, file.bom, file.ending, counts))
+      undoBytes += pre.len
+  if undoBytes > MAX_UNDO_BYTES:
+    raise newException(ValueError,
+      "[E_TOO_LARGE] this call would persist " & $undoBytes &
+      " bytes of undo pre-images (budget " & $MAX_UNDO_BYTES &
+      ") across " & $planned.len & " changed file(s) — nothing was " &
+      "modified. Split the batch (the rules apply identically per file).")
+
+  # Phase 2 — refuse first, write second: a failed run mutates nothing.
+  if total < minMatches:
+    raise newException(ValueError,
+      "[E_NO_MATCH] replace_across matched " & $total & " occurrence(s) " &
+      "across " & $files.len & " file(s) (min_matches " & $minMatches &
+      ") — nothing was modified. Check the literal \"old\" strings: " &
+      "matching is exact (zero-match files pass like sed, but a zero-total " &
+      "is refused so a mistyped needle cannot succeed).")
+  # Pre-reserve every undo entry BEFORE the first write: a refusal at file
+  # 40 must not leave files 1..39 changed.
+  let session = args{"__session"}{"session"}.getStr("")
+  var savedPaths: seq[string] = @[]
+  for p in planned:
+    let undo = saveUndo(c, session, p.path,
+                        UndoEntry(content: p.pre, bom: p.bom,
+                                  ending: p.ending, resultContent: p.post))
+    if not undo.persisted:
+      for sp in savedPaths:
+        clearUndo(c, session, sp)
+      raise newException(ValueError,
+        "[E_UNDO_UNAVAILABLE] Could not persist undo history; nothing was " &
+        "modified. Retry after the store recovers.")
+    savedPaths.add(p.path)
+  var changed: seq[string] = @[]
+  var perFile = newJArray()
+  var firstDiff = ""
+  var diagNote = ""
+  for p in planned:
+    try:
+      writeAtomic(p.path, p.bom & restoreEnding(p.post, p.ending))
+    except CatchableError:
+      # this file is unmodified; clear its reservation and surface. Earlier
+      # files in this call keep their changes and their own undo entries.
+      clearUndo(c, session, p.path)
+      raise
+    if session.len > 0:
+      observe(c, session, p.path,
+              p.bom & restoreEnding(p.post, p.ending), full = false,
+              persist = true)
+    changed.add(p.path)
+    let d = compactDiff(p.pre, p.post)
+    if firstDiff.len == 0:
+      firstDiff = d.diff
+      diagNote = lspDiagnosticsSection(c, session, p.path,
+                                      d.firstLine, d.lastLine)
+    perFile.add(%*{"path": p.path, "replaced": p.counts})
+  var noMatch: seq[string] = @[]
+  for abs in files:
+    if abs notin changed and abs notin missing:
+      noMatch.add(abs)
+  var summary = "replaced " & $total & " occurrence(s) in " & $changed.len &
+    " of " & $files.len & " file(s)."
+  const maxListedFiles = 24
+  for i, p in planned:
+    if i >= maxListedFiles:
+      summary.add("\n... " & $(planned.len - i) & " more changed files (counts in files).")
+      break
+    var n = 0
+    for k in p.counts: n += k
+    summary.add("\n" & displayPath(args, p.path) & " (" & $n & ")")
+  for (label, paths) in [("no match", noMatch), ("missing", missing)]:
+    if paths.len == 0: continue
+    var shown: seq[string]
+    for i in 0 ..< min(paths.len, maxListedFiles):
+      shown.add(displayPath(args, paths[i]))
+    summary.add("\n" & label & ": " & shown.join(", "))
+    if paths.len > maxListedFiles:
+      summary.add(" ... " & $(paths.len - maxListedFiles) & " more")
+  summary.add(undoHint(args))
+  if firstDiff.len > 0:
+    summary.add("\n\nChange preview (first changed file; - removed, + added):\n" &
+      firstDiff[0 .. min(firstDiff.high, 1200)] & diagNote)
+  result = %*{"text": summary,
+              "files": perFile,
+              "files_changed": changed.len,
+              "files_unchanged": noMatch.len + missing.len,
+              "unmatched": noMatch, "missing": missing,
+              "total_replaced": total}
 
 # ---------------------------------------------------------------------------
 # undo handler
@@ -924,29 +1241,29 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
       "[E_BAD_SHAPE] Undo request requires a non-empty \"path\" string.")
   let path = pathNode.getStr()
   let target = followSymlink(toCwd(path, rootDir()))
-  if not gUndo.hasKey(target):
+  let session = args{"__session"}{"session"}.getStr("")
+  let (found, entry) = undoEntry(c, session, target)
+  if not found:
     raise newException(ValueError,
       "No undo history for " & path & " — there is no previous edit to revert.")
-  let entry = gUndo[target]
   if not fileExists(target):
-    clearUndo(target)
+    clearUndo(c, session, target)
     raise newException(ValueError,
       "[E_UNDO_STALE] Cannot undo " & path & ": the file no longer exists.")
   let currentRaw = readFile(target)
   let expected = entry.bom & restoreEnding(entry.resultContent, entry.ending)
   if currentRaw != expected:
-    clearUndo(target)
+    clearUndo(c, session, target)
     raise newException(ValueError,
       "[E_UNDO_STALE] Cannot undo " & path &
       ": the file was modified after the edit, so undoing would overwrite those changes.")
   writeAtomic(target, entry.bom & restoreEnding(entry.content, entry.ending))
-  clearUndo(target)
+  clearUndo(c, session, target)
   # the model saw the revert diff, not the restored bytes: mark unseen so
   # the documented "re-read it before further edits" actually dumps
-  observe(args{"__session"}{"session"}.getStr(""), target,
-          readFile(target), false, persist = true)
+  observe(c, session, target, readFile(target), false, persist = true)
   let d = compactDiff(entry.resultContent, entry.content)
-  result = %*{"text": "Undid the last edit on " & path &
+  result = %*{"text": "Undid the last edit on " & displayPath(args, path) &
               ". File reverted to its previous state; re-read it before further edits.",
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine}
@@ -982,9 +1299,12 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   let force = args{"force"}.getBool(false)
 
   let target = followSymlink(toCwd(path, rootDir()))
+  let shownPath = displayPath(args, path)
+  let capture = args{"__capture"}.getBool(false)
   if dirExists(target):
     raise newException(ValueError,
-      "[E_NOT_TEXT] " & path & " is a directory — list it with bash or grep files")
+      "[E_NOT_TEXT] " & shownPath & " is a directory — use read {reads: " &
+      "[{glob: \"*\"}]} to list files, or discover {tools: [\"files\"]}.")
   if not fileExists(target):
     raise newException(ValueError,
       "[E_NOT_FOUND] File not found: " & path)
@@ -994,7 +1314,9 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   let raw = readFile(target)
   let lazy = lazyInstructionText(session, target)
   if raw.len == 0:
-    return %("[] " & path & " is empty (0 lines). Use write to create content.")
+    let notice = "[] " & shownPath & " is empty (0 lines). Use write to create content."
+    if capture: return %*{"text": notice, "__captureText": ""}
+    return %notice
   let sampleLen = min(SNIFF_BYTES, raw.len)
   let sample = raw[0 ..< sampleLen]
   if '\0' in sample:
@@ -1014,37 +1336,41 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   # "dump it anyway" offset=1 and force re-dumps all bypass it.
   let outlineMin = outlineMinLines()
   if outlineMin > 0 and offN == nil and limN == nil and not force and
-      total > outlineMin:
-    let ol = outlineSection(c, target, path, total)
+      not capture and total > outlineMin:
+    let ol = outlineSection(c, target, shownPath, total)
     if ol.len > 0:
       if session.len > 0:
         # the model saw no bytes: keep any prior full-view state, and
         # persist only a correction (same rules as the windowed path)
         let dig = $secureHash(raw)
-        let key = seenKey(session, target)
-        let prev = if gSeen.hasKey(key): gSeen[key] else: SeenEntry()
-        observe(session, target, raw, prev.full, persist = prev.digest != dig)
+        let prev = seenOf(c, session, target)
+        observe(c, session, target, raw, prev.full, persist = prev.digest != dig)
       return %ol
   # full view = one-shot whole-file delivery (explicit offset=1 is the
   # caller saying "dump it anyway" — the pre-force escape hatch)
   var fullDelivered = offN == nil and total <= limit and raw.len <= MAX_READ_BYTES
-  if session.len > 0 and not force and fullDelivered and raw.len >= MIN_STUB_BYTES:
+  if session.len > 0 and not force and not capture and fullDelivered and raw.len >= MIN_STUB_BYTES:
     let dig = $secureHash(raw)
-    let key = seenKey(session, target)
-    if gSeen.hasKey(key) and gSeen[key].digest == dig and gSeen[key].full:
-      let unchanged = unchangedText(path, raw)
+    let seen = seenOf(c, session, target)
+    if seen.digest == dig and seen.full:
+      let unchanged = unchangedText(shownPath, raw)
       return %(if lazy.len > 0: lazy & "\n\n" & unchanged else: unchanged)
   if offset > total:
-    return %("Offset " & $offset & " is beyond end of file (" & $total &
-      " lines). Use offset=1 to read from the start.")
+    let notice = "Offset " & $offset & " is beyond end of file (" & $total &
+      " lines). Use offset=1 to read from the start."
+    if capture: return %*{"text": notice, "__captureText": nil,
+                          "__captureError": "Offset is beyond end of file."}
+    return %notice
   let endIdx = min(offset - 1 + limit, total)
   var selected = lines[offset - 1 ..< endIdx]
+  var omitted = false
   for i, line in selected:
     if line.len > MAX_READ_LINE_BYTES:
       selected[i] = "[line " & $(offset + i) & " exceeds " &
         $MAX_READ_LINE_BYTES & " bytes; content not shown. Use bash: sed -n '" &
         $(offset + i) & "p' <path> | head -c " & $MAX_READ_LINE_BYTES & "]"
       fullDelivered = false
+      omitted = true
   var text = selected.join("\n")
   if toLf(body).endsWith("\n") and selected.len > 0: text.add("\n")
   var shownCount = selected.len
@@ -1056,6 +1382,7 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     text.add("\n... [truncated at " & $MAX_READ_BYTES &
       " bytes — page with offset/limit]")
     fullDelivered = false
+    omitted = true
   let lastLine = offset + shownCount - 1
   if not text.endsWith("\n"): text.add("\n")
   if lastLine < total:
@@ -1068,14 +1395,22 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     # track what this conversation last saw: a full view delivers every
     # byte; a window only carries an already-full view of identical bytes
     let dig = $secureHash(raw)
-    let key = seenKey(session, target)
-    let prev = if gSeen.hasKey(key): gSeen[key] else: SeenEntry()
+    let prev = seenOf(c, session, target)
     let same = prev.digest == dig
-    observe(session, target, raw, fullDelivered or (same and prev.full),
+    observe(c, session, target, raw, fullDelivered or (same and prev.full),
             persist = not same)
   if lazy.len > 0:
     text = lazy & "\n\n" & text
-  result = %text
+  if capture:
+    var source = ""
+    if not omitted:
+      source = lines[offset - 1 ..< endIdx].join("\n")
+      if endIdx < total or toLf(body).endsWith("\n"): source.add("\n")
+    result = %*{"text": text, "__captureText": (if omitted: newJNull() else: %source)}
+    if omitted:
+      result["__captureError"] = %"Read omitted bytes; use a narrower offset/limit window."
+  else:
+    result = %text
 
 type ReadRequest = tuple[path: string, offset: int, limit: int,
                          hasRange: bool, err: string]
@@ -1187,17 +1522,23 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
       blocks.add("### " & name & "\n[E_BAD_SHAPE] " & req.err)
       items.add(%*{"path": req.path, "error": req.err})
       continue
+    let shown = displayPath(args, req.path)
     let heading = if req.hasRange:
-                    req.path & ":" & $req.offset & "+" & $req.limit
-                  else: req.path
+                    shown & ":" & $req.offset & "+" & $req.limit
+                  else: shown
     try:
       var itemArgs = %*{"path": req.path, "force": force,
-                        "__session": args{"__session"}}
+                        "__session": args{"__session"},
+                        "__workspace": args{"__workspace"},
+                        "__capture": args{"__capture"}.getBool(false)}
       if req.hasRange:
         itemArgs["offset"] = %req.offset
         itemArgs["limit"] = %req.limit
       let content = hRead(c, itemArgs)
-      let text = content.getStr()
+      let text = if content.kind == JString: content.getStr()
+                 else: content{"text"}.getStr()
+      let source = if content.kind == JString: content
+                   else: content{"__captureText"}
       if used + text.len > 512_000:
         blocks.add("### " & heading &
           "\n[read limit: aggregate output exceeds 512000 bytes; read remaining items separately]")
@@ -1207,12 +1548,170 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
       used += text.len
       blocks.add("### " & heading & "\n" & text)
       items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
-                   "content": content})
+                   "content": source})
     except CatchableError as e:
       blocks.add("### " & heading & "\n" & e.msg)
       items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
                    "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
+  if args{"__capture"}.getBool(false):
+    result["__captureText"] = newJNull()
+    result["__captureError"] = %"A batch contains separate files/ranges; capture items.0.content (or another item) explicitly."
+
+type SelectItem = object
+  path: string          # empty when glob-based
+  glob: string
+  pattern: string       # empty = inventory mode (list matched paths)
+  word: bool
+  context: int          # lines around each hit (default 2)
+  maxHits: int          # per item (default 8)
+
+proc readSelectItems(args: JsonNode): seq[SelectItem] =
+  ## Collect select-shaped items: reads[] entries (and the sugar keys) that
+  ## carry "glob" or "pattern". The mix rule lives in hReadSelect.
+  proc toItem(n: JsonNode): SelectItem =
+    result = SelectItem(path: "", glob: "", pattern: "", word: false,
+                        context: 2, maxHits: 8)
+    let p = n{"path"}
+    if p != nil and p.kind == JString: result.path = p.getStr()
+    let g = n{"glob"}
+    if g != nil and g.kind == JString: result.glob = g.getStr()
+    let pat = n{"pattern"}
+    if pat != nil and pat.kind == JString: result.pattern = pat.getStr()
+    let w = n{"word"}
+    if w != nil and w.kind == JBool: result.word = w.getBool()
+    let ctx = n{"context"}
+    if ctx != nil and ctx.kind == JInt:
+      result.context = min(max(ctx.getInt(2), 0), 20)
+    let mx = n{"max"}
+    if mx != nil and mx.kind == JInt:
+      result.maxHits = min(max(mx.getInt(8), 1), 64)
+  let reads = args{"reads"}
+  if reads != nil and reads.kind == JArray:
+    for n in reads:
+      if n != nil and n.kind == JObject and
+          (n.hasKey("glob") or n.hasKey("pattern")):
+        result.add(toItem(n))
+  if args.hasKey("glob") or args.hasKey("pattern"):
+    var sugar = newJObject()
+    for k in ["path", "glob", "pattern", "word", "context", "max"]:
+      if args.hasKey(k): sugar[k] = args{k}
+    result.add(toItem(sugar))
+
+proc hasSelectItem(args: JsonNode): bool =
+  readSelectItems(args).len > 0
+
+proc hReadSelect(c: Component, args: JsonNode): JsonNode =
+  ## Select mode: locate + fetch in one call — the grep-then-cat move Pi
+  ## does in bash. Line-based literal matching (grep semantics: a hit is a
+  ## line); regions copy verbatim into edit's old_string, so no line numbers,
+  ## same as the content path. No pattern = inventory (the find/ls move).
+  let items = readSelectItems(args)
+  if items.len == 0:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] read select items need \"glob\" or \"pattern\".")
+  let reads = args{"reads"}
+  if reads != nil and reads.kind == JArray:
+    for n in reads:
+      if n == nil or n.kind != JObject: continue
+      if not n.hasKey("glob") and not n.hasKey("pattern"):
+        raise newException(ValueError,
+          "[E_BAD_SHAPE] a select call cannot mix {path, offset, limit} " &
+          "content reads with select items — split the call (content reads " &
+          "first, then the select).")
+  var blocks: seq[string] = @[]
+  var jsItems = newJArray()
+  var filesBudget = MAX_SELECT_FILES
+  var totalHits = 0
+  var truncated = false
+  var captureBytes = 0
+  for it in items:
+    var targets: seq[string] = @[]
+    if it.glob.len > 0:
+      targets = expandGlob(it.glob)
+    else:
+      targets.add(followSymlink(toCwd(it.path, rootDir())))
+    if targets.len == 0:
+      blocks.add("### " & (if it.glob.len > 0: it.glob else: it.path) &
+                 "\n[no files match]")
+      continue
+    for abs in targets:
+      if filesBudget <= 0:
+        truncated = true
+        break
+      dec filesBudget
+      if not fileExists(abs):
+        jsItems.add(%*{"path": abs, "error": "not a file"})
+        continue
+      let file = loadText(abs)
+      let content = file.normalized
+      if it.pattern.len == 0:
+        # inventory mode: paths only (the find/ls move)
+        jsItems.add(%*{"path": abs, "listed": true})
+        blocks.add(displayPath(args, abs))
+        continue
+      let lines = splitLf(content)
+      var hitLines: seq[int] = @[]
+      var i = 0
+      while hitLines.len < it.maxHits:
+        let j = content.find(it.pattern, i)
+        if j < 0: break
+        let finish = j + it.pattern.len
+        if not it.word or wordEdge(content, j, finish):
+          var off = 0
+          for k, ln in lines:
+            if j >= off and j < off + ln.len + 1:
+              hitLines.add(k)
+              break
+            off += ln.len + 1
+        i = j + max(it.pattern.len, 1)
+      if hitLines.len == 0:
+        jsItems.add(%*{"path": abs, "hits": 0})
+        continue
+      hitLines.sort()
+      var regions: seq[tuple[a, b: int]] = @[]
+      for li in hitLines:
+        let a = max(0, li - it.context)
+        let b = min(lines.high, li + it.context)
+        if regions.len > 0 and a <= regions[^1].b + 1:
+          regions[^1].b = max(regions[^1].b, b)
+        else:
+          regions.add((a, b))
+      var parts: seq[string] = @[]
+      for r in regions:
+        parts.add(lines[r.a .. r.b].join("\n"))
+      totalHits += hitLines.len
+      var selectedItem = %*{"path": abs, "hits": hitLines.len,
+                             "regions": regions.len}
+      if args{"__capture"}.getBool(false):
+        var sourceParts = newJArray()
+        for r in regions:
+          var size = 0
+          for li in r.a .. r.b: size += lines[li].len + 1
+          if size > 65536 or captureBytes + size > 512000:
+            sourceParts.add(newJNull())
+          else:
+            var source = lines[r.a .. r.b].join("\n")
+            if r.b < lines.high or content.endsWith("\n"): source.add("\n")
+            captureBytes += source.len
+            sourceParts.add(%source)
+        selectedItem["contents"] = sourceParts
+      jsItems.add(selectedItem)
+      blocks.add("### " & displayPath(args, abs) & " (" & $hitLines.len & " hit(s), " &
+                 $regions.len & " region(s); lines are verbatim)\n" &
+                 parts.join("\n\n"))
+  var text = blocks.join("\n")
+  if truncated:
+    text.add("\n[read limit: file cap " & $MAX_SELECT_FILES &
+             " reached; select the rest in another call]")
+  if text.len > 512_000:
+    text = text[0 .. 512_000] &
+      "\n[read limit: output truncated at 512000 bytes]"
+  result = %*{"text": text, "items": jsItems, "count": totalHits,
+              "files": jsItems.len}
+  if args{"__capture"}.getBool(false):
+    result["__captureText"] = newJNull()
+    result["__captureError"] = %"Select output includes filenames and separate regions; capture items.0.contents.0 explicitly."
 
 proc hReadTool(c: Component, args: JsonNode): JsonNode =
   ## Canonical read entry point: "reads" [{path, offset?, limit?}, ...]
@@ -1224,6 +1723,8 @@ proc hReadTool(c: Component, args: JsonNode): JsonNode =
   if args == nil or args.kind != JObject:
     raise newException(ValueError,
       "[E_BAD_SHAPE] Read request must be an object.")
+  if hasSelectItem(args):
+    return hReadSelect(c, args)
   let requests = normalizeReadRequests(args)
   if requests.len == 0:
     raise newException(ValueError,
@@ -1241,7 +1742,9 @@ proc hReadTool(c: Component, args: JsonNode): JsonNode =
     # forwarded when the caller supplied a range, so the unchanged-stub
     # shortcut still keys off absent offset/limit.
     var itemArgs = %*{"path": requests[0].path, "force": force,
-                      "__session": args{"__session"}}
+                      "__session": args{"__session"},
+                      "__workspace": args{"__workspace"},
+                      "__capture": args{"__capture"}.getBool(false)}
     if requests[0].hasRange:
       itemArgs["offset"] = %requests[0].offset
       itemArgs["limit"] = %requests[0].limit
@@ -1283,23 +1786,22 @@ proc hWrite(c: Component, args: JsonNode): JsonNode =
   let digest = $secureHash(content)
   if session.len > 0:
     # the conversation authored every byte: it holds the full content
-    observe(session, target, content, full = true, persist = true)
+    observe(c, session, target, content, full = true, persist = true)
+  let shownTarget = displayPath(args, target)
   result = %*{"path": target, "bytes_written": content.len,
               "lines": wlines, "digest": digest,
               "overwrote": overwrote,
               "text": (if overwrote:
-                         "Overwrote " & target & " (" & $content.len &
+                         "Overwrote " & shownTarget & " (" & $content.len &
                          " bytes, " & $wlines & " lines, digest " & digest & ")"
                        else:
                          "Wrote " & $content.len & " bytes (" & $wlines &
-                         " lines, digest " & digest & ") to " & target)}
+                         " lines, digest " & digest & ") to " & shownTarget)}
 
 # ---------------------------------------------------------------------------
 # component
 
 let comp = newComponent("edit", "0.3.0")
-
-loadStore()
 
 discard comp.tool("read", toolSchema(%*{
   "reads": {"type": "array", "minItems": 1, "maxItems": 12,
@@ -1307,23 +1809,40 @@ discard comp.tool("read", toolSchema(%*{
                 "properties": {
                   "path": {"type": "string",
                            "description": "File to read"},
+                  "glob": {"type": "string",
+                           "description": "File pattern; **/ recurses"},
+                  "pattern": {"type": "string",
+                           "description": "Literal match; omit to list paths"},
+                  "word": {"type": "boolean",
+                           "description": "Require word boundaries (default false)"},
+                  "context": {"type": "integer", "minimum": 0, "maximum": 20,
+                           "description": "Neighbor lines (default 2)"},
+                  "max": {"type": "integer", "minimum": 1, "maximum": 64,
+                           "description": "Hits per item (default 8)"},
                   "offset": {"type": "integer", "minimum": 1,
                              "description": "Start line (default 1)"},
                   "limit": {"type": "integer", "minimum": 1,
                             "description": "Max lines (default 2000)"}},
-                "required": ["path"], "additionalProperties": false},
-              "description": "1..12 files/ranges in one call — the canonical form; batch known-relevant reads (grep hits, imports) instead of one per turn"},
+                "required": [], "additionalProperties": false},
+              "description": "Up to 12 file/range or select items"},
   "path": {"type": "string",
-           "description": "Sugar for one file: same as \"reads\": [{\"path\": ...}]; given with \"reads\", it is read first"},
+           "description": "One file"},
   "offset": {"type": "integer", "minimum": 1,
-             "description": "Start line for the sugar \"path\" (default 1)"},
+             "description": "1-based start line (default 1)"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Max lines for the sugar \"path\" (default 2000)"},
+            "description": "Max lines (default 2000)"},
   "force": {"type": "boolean",
-            "description": "Re-dump even if unchanged since your last read/write"}
+            "description": "Re-dump unchanged text (default false)"},
+  "resolve_vars": {"type": "boolean",
+            "description": "Resolve $name; default false keeps $ literal."},
+  "save_as": {"description": "Save text as name, or {name,from} for a dotted field.",
+            "oneOf": [{"type": "string"}, {"type": "object",
+              "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
+              "required": ["name"], "additionalProperties": false}]}
 }, @[],
-  "Read files for editing. \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges per call, per-item errors, 512KB cap; a single item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) returns its symbol outline when a language server knows the type — read windows with offset/limit, or offset=1 for the whole file. Batch known-relevant reads (grep hits, imports) rather than one per turn; lines are verbatim (copy into edit's old_string), and an unchanged re-read returns [unchanged]."), hReadTool,
+  "Read verbatim text: path for one file, reads for up to 12 files/ranges; offset/limit window them. Select items use glob to list paths, or a literal pattern to fetch match regions. Do not mix content and select items."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
+     "variables": true,
      # `effect: read` is deliberate: fabric's batch host would otherwise
      # classify `read` as a write and serialize every batch read. The tool is
      # workspace-read-only; the only writes it can make are (a) the rare
@@ -1331,10 +1850,12 @@ discard comp.tool("read", toolSchema(%*{
      # spells out why losing one is a hint loss, never a correctness loss) and
      # (b) the undo store that `edit`/`write` own anyway.
      "effect": "read",
-     "workspace": {"pathFields": ["path"],
+     "workspace": {"pathFields": ["path", "glob"],
                    "pathArrayFields": ["paths"],
                    "pathObjectArrayFields": [{"field": "reads",
                                               "pathField": "path"},
+                                             {"field": "reads",
+                                              "pathField": "glob"},
                                              {"field": "windows",
                                               "pathField": "path"}]}})
 
@@ -1342,22 +1863,62 @@ discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",
            "description": "File to edit"},
   "edits": {"type": "array",
-    "description": "Replacements to apply, all matched against the original file",
+    "description": "Changes matched against the original file",
     "items": {"type": "object",
       "properties": {
         "old_string": {"type": "string",
-          "description": "Exact text to replace (verbatim, whitespace included)"},
+          "description": "Exact original text (whitespace included)"},
         "new_string": {"type": "string",
           "description": "Replacement text; \"\" deletes old_string"},
         "replace_all": {"type": "boolean",
-          "description": "Replace every occurrence (default false)"}
+          "description": "Replace all occurrences (default false)"}
       },
-      "required": ["old_string", "new_string"]}
-  }
+      "allOf": [
+        {"anyOf": [{"required": ["old_string"]}, {"required": ["old"]}]},
+        {"anyOf": [{"required": ["new_string"]}, {"required": ["new"]}]}]}
+  },
+  "resolve_vars": {"type": "boolean",
+    "description": "Resolve $name; default false keeps $ literal."},
+  "save_as": {"description": "Save text as name, or {name,from} for a dotted field.",
+    "oneOf": [{"type": "string"}, {"type": "object",
+      "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
+      "required": ["name"], "additionalProperties": false}]}
 }, @["path", "edits"],
-  "Replace exact text in an existing file. Each old_string must occur exactly once — add context lines to disambiguate, or set replace_all. undo_last_edit reverts."), hEdit,
+  "Apply contextual replacements in one existing file. Copy old_string from a read; each must match once unless replace_all. All edits match the original file."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
+     "variables": true,
      "workspace": {"pathFields": ["path"]}})
+
+discard comp.tool("replace_across", toolSchema(%*{
+  "paths": {"type": "array", "minItems": 1, "maxItems": 512,
+            "items": {"type": "string"},
+            "description": "Explicit files, combined with glob (max 512)"},
+  "glob": {"type": "string",
+           "description": "Additional file pattern; **/ recurses; combined with paths"},
+  "replace": {"type": "array", "minItems": 1,
+    "description": "Ordered literal replacement rules",
+    "items": {"type": "object",
+      "properties": {
+        "old": {"type": "string",
+          "description": "Literal text to replace everywhere"},
+        "new": {"type": "string",
+          "description": "Replacement; \"\" deletes"},
+        "word": {"type": "boolean",
+          "description": "Require word boundaries (default false)"}},
+      "required": ["old", "new"]}},
+  "min_matches": {"type": "integer", "minimum": 0,
+    "description": "Refuse below this total match count (default 1)"},
+  "resolve_vars": {"type": "boolean",
+    "description": "Resolve $name; default false keeps $ literal."},
+  "save_as": {"description": "Save text as name, or {name,from} for a dotted field.",
+    "oneOf": [{"type": "string"}, {"type": "object",
+      "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
+      "required": ["name"], "additionalProperties": false}]}
+}, @["replace"],
+  "Apply identical literal replacements across files selected by paths and/or glob; no pre-read needed. Every occurrence; rules run in order. Unmatched files pass, a zero total refuses. Use edit for contextual changes."), hReplaceAcross,
+  %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
+     "variables": true,
+     "workspace": {"pathFields": ["glob"], "pathArrayFields": ["paths"]}})
 
 discard comp.tool("undo_last_edit", toolSchema(%*{
   "path": {"type": "string",
@@ -1377,11 +1938,18 @@ discard comp.tool("write", toolSchema(%*{
   "path": {"type": "string",
            "description": "File to write"},
   "content": {"type": "string",
-              "description": "Full new content (\"\" truncates)"}
+              "description": "Full new content (\"\" truncates)"},
+  "resolve_vars": {"type": "boolean",
+              "description": "Resolve $name; default false keeps $ literal."},
+  "save_as": {"description": "Save text as name, or {name,from} for a dotted field.",
+              "oneOf": [{"type": "string"}, {"type": "object",
+                "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
+                "required": ["name"], "additionalProperties": false}]}
 }, @["path", "content"],
-  "Create or replace a whole file atomically (parent dirs created). Cap " &
-  $maxWriteBytes() & " bytes (NIF_WRITE_MAX_BYTES)."), hWrite,
+  "Create or overwrite a complete file atomically; creates parent directories. Use edit for partial changes. Cap " &
+  $maxWriteBytes() & " bytes."), hWrite,
   %*{"approval": "always", "timeoutMs": 60000, "sessionId": true,
+     "variables": true,
      "workspace": {"pathFields": ["path"]}})
 
 comp.run()

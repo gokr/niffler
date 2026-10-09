@@ -530,7 +530,28 @@ func (a chatArgs) emitTokens() bool {
 	return a.EmitTokens == nil || *a.EmitTokens
 }
 
+// logTiming emits one per-call line on the debug timing lane. The lane is on
+// when NIF_LOG_LEVEL=debug (what `niffler --log=debug` sets for every
+// component), and the line goes through the SDK's log so it lands in
+// var/logs/llm.jsonl with rotation like any other debug log — no separate
+// mechanism, no output the logfile component cannot see. Budget and method:
+// bench/README.md, "Model-call overhead".
+func logTiming(c *sdk.Component, format string, args ...any) {
+	if os.Getenv("NIF_LOG_LEVEL") != "debug" {
+		return
+	}
+	_ = c.Log("debug", fmt.Sprintf(format, args...), nil)
+}
+
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
+	// The handler's total, across every return path: `pre` (entry → provider
+	// resolved), `setup` (request → response headers), `dur` (the stream) and
+	// `post` (result build) are its parts, so a gap here is unaccounted work.
+	entryAt := time.Now()
+	defer func() {
+		logTiming(c, "chat timing total=%s",
+			time.Since(entryAt).Truncate(time.Millisecond))
+	}()
 	var args chatArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("bad chat args: %w", err)
@@ -567,6 +588,9 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	}
 
 	resolved, err := resolveRuntimeConfig(streamCtx, c, args.Provider, args.Model)
+	// `pre`: unmarshal, sanitizeMessages, the per-call cancel subscription and
+	// resolveRuntimeConfig (which may cross the bus for credentials).
+	logTiming(c, "chat timing pre=%s", time.Since(entryAt).Truncate(time.Millisecond))
 	if err != nil {
 		return nil, err
 	}
@@ -902,12 +926,35 @@ func repairToolArgs(raw string) string {
 }
 
 // sanitizeMessages repairs tool-call arguments in assistant messages so a
-// strict backend never rejects replayed history. Only assistant tool_calls
-// are touched; everything else round-trips unchanged.
+// strict backend never rejects replayed history, and strips prior turns'
+// reasoning from the request. The strip is API semantics, not projection:
+// providers discard replayed reasoning anyway (measured on the DeepSeek
+// lane — identical prompt_tokens with a 62-token reasoning block replayed;
+// Anthropic keeps only the live turn's blocks for tool loops and strips
+// prior turns' server-side), so carrying it is dead wire bytes — core's
+// §5.2 tombstone keeps the METER honest, this keeps the REQUEST honest.
+// Only assistant messages are touched; everything else round-trips
+// unchanged.
 func sanitizeMessages(msgs []chatMessage) {
+	last, lastUser := -1, -1
+	for i := range msgs {
+		switch msgs[i].Role {
+		case openai.ChatMessageRoleAssistant:
+			last = i
+		case openai.ChatMessageRoleUser:
+			lastUser = i
+		}
+	}
 	for i := range msgs {
 		if msgs[i].Role != openai.ChatMessageRoleAssistant {
 			continue
+		}
+		// The live turn keeps its reasoning — the trailing assistant turn
+		// (one a tool loop is continuing: nothing user-shaped after it).
+		// Once a user message follows, that turn is complete and its
+		// reasoning is dead weight.
+		if i != last || i < lastUser {
+			msgs[i].ReasoningContent = ""
 		}
 		for j := range msgs[i].ToolCalls {
 			msgs[i].ToolCalls[j].Function.Arguments =
@@ -1073,6 +1120,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	defer cancel()
 
 	maxTokens, maxCompletion := lengthCap(providerName, outputSize)
+	csAt := time.Now()
 	stream, err := client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:               model,
 		Messages:            openAIMessages(args.Messages),
@@ -1086,6 +1134,11 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	if err != nil {
 		return nil, err
 	}
+	// `setup`: client construction, request marshal, DNS/TCP/TLS and the
+	// provider's own queue before it starts responding. Sits outside both `pre`
+	// and `dur`, so without this line it reads as harness overhead — the easy
+	// mistake this lane exists to prevent.
+	logTiming(c, "chat timing setup=%s", time.Since(csAt).Truncate(time.Millisecond))
 	defer stream.Close()
 
 	// Per-request timing telemetry: TTFT (time to first visible delta) and
@@ -1211,8 +1264,17 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		return nil, interruptErr(finish)
 	}
 	logStreamStats(usage, reasoning.Len(), false)
-	return resultJSON(providerName, usedModel, contextSize, content.String(),
-		reasoning.String(), calls, usage, 0, usageSeen, finish)
+	// `post`: result build and stream teardown, after the last streamed byte.
+	buildAt := time.Now()
+	res, resErr := resultJSON(providerName, usedModel, contextSize,
+		content.String(), reasoning.String(), calls, usage, 0, usageSeen, finish)
+	buildMs := time.Since(buildAt)
+	closeAt := time.Now()
+	stream.Close()
+	logTiming(c, "chat timing post build=%s close=%s",
+		buildMs.Truncate(time.Millisecond),
+		time.Since(closeAt).Truncate(time.Millisecond))
+	return res, resErr
 }
 
 // resultJSON builds the wire result — the same shape llm-openai returns,

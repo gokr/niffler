@@ -1,0 +1,11 @@
+{
+  "job_name": "pi099-openssl",
+  "jobs_dir": "/work/jobs",
+  "n_attempts": 1,
+  "n_concurrent_trials": 1,
+  "retry": {"max_retries": 0},
+  "datasets": [{"name": "terminal-bench", "version": "2.0", "task_names": ["openssl-selfsigned-cert"]}],
+  "agents": [{"name": "pi", "model_name": "openai/accounts/fireworks/models/kimi-k3", "kwargs": {"version": "0.99.2", "model_api": "openai-completions"}, "env": {"OPENAI_API_KEY": "runta-secret-stub", "OPENAI_BASE_URL": "http://host.docker.internal:19040/v1"}, "override_setup_timeout_sec": 300, "override_timeout_sec": 1200}],
+  "environment": {"type": "docker", "delete": true, "override_cpus": 2, "override_memory_mb": 8192, "extra_docker_compose": ["/work/guarded-overlay.yaml"]},
+  "verifier": {"override_timeout_sec": 300}
+}

@@ -410,6 +410,47 @@ func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
 	}
 }
 
+func TestSanitizeMessagesStripsPriorTurnsReasoning(t *testing.T) {
+	// Prior turns' reasoning is dead on the wire: providers discard it on
+	// replay (DeepSeek measured — identical prompt_tokens; Anthropic strips
+	// prior turns' server-side). The live turn's reasoning travels — a
+	// tool-loop continuation may need it.
+	msgs := []chatMessage{
+		{Role: openai.ChatMessageRoleAssistant, Content: "first",
+			ReasoningContent: "old thinking block"},
+		{Role: openai.ChatMessageRoleTool, Content: "{}"},
+		{Role: openai.ChatMessageRoleUser, Content: "go on"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "",
+			ReasoningContent: "live thinking block",
+			ToolCalls: []openai.ToolCall{
+				{ID: "c1", Type: openai.ToolTypeFunction,
+					Function: openai.FunctionCall{Name: "bash", Arguments: `{}`}},
+				}},
+		{Role: openai.ChatMessageRoleTool, Content: "{}"},
+	}
+	sanitizeMessages(msgs)
+	if msgs[0].ReasoningContent != "" {
+		t.Fatalf("prior turn's reasoning survived the strip: %q", msgs[0].ReasoningContent)
+	}
+	if msgs[3].ReasoningContent != "live thinking block" {
+		t.Fatalf("the live turn's reasoning was stripped: %q", msgs[3].ReasoningContent)
+	}
+	if msgs[3].ToolCalls[0].Function.Arguments != `{}` {
+		t.Fatalf("tool args altered by the reasoning strip: %q", msgs[3].ToolCalls[0].Function.Arguments)
+	}
+
+	// The tombstone stub core sends is reasoning like any other — gone too.
+	stubbed := []chatMessage{
+		{Role: openai.ChatMessageRoleAssistant, Content: "earlier",
+			ReasoningContent: "[thinking omitted — 4000 chars; recall via context_recall]"},
+		{Role: openai.ChatMessageRoleUser, Content: "next"},
+	}
+	sanitizeMessages(stubbed)
+	if stubbed[0].ReasoningContent != "" {
+		t.Fatalf("tombstone stub reached the wire: %q", stubbed[0].ReasoningContent)
+	}
+}
+
 func TestChatArgsAuxiliaryControls(t *testing.T) {
 	var args chatArgs
 	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":"x"}],"sessionId":"compaction.s.a","cancelId":"cancel.s.a","stream":true,"emitTokens":false,"purpose":"compaction"}`), &args); err != nil {

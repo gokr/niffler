@@ -1,0 +1,128 @@
+{
+    "id": "78ffd83b-84d6-4a8a-9894-44ff4b7b578e",
+    "task_name": "openssl-selfsigned-cert",
+    "trial_name": "openssl-selfsigned-cert__jRYGgDQ",
+    "trial_uri": "file:///work/jobs/pi099-openssl1/openssl-selfsigned-cert__jRYGgDQ",
+    "task_id": {
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "openssl-selfsigned-cert"
+    },
+    "source": "terminal-bench",
+    "task_checksum": "8c096d8af92f88d8f876e26efc7f495ff13f50586736e56f35140fbb080ff390",
+    "config": {
+        "task": {
+            "path": "openssl-selfsigned-cert",
+            "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+            "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench"
+        },
+        "trial_name": "openssl-selfsigned-cert__jRYGgDQ",
+        "trials_dir": "/work/jobs/pi099-openssl1",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "pi",
+            "import_path": null,
+            "model_name": "openai/accounts/fireworks/models/kimi-k3",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": 1200.0,
+            "override_setup_timeout_sec": 300.0,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "version": "0.99.2",
+                "model_api": "openai-completions"
+            },
+            "env": {
+                "OPENAI_API_KEY": "runt****tub",
+                "OPENAI_BASE_URL": "http://host.docker.internal:19040/v1"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": 2,
+            "override_memory_mb": 8192,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [
+                "/work/guarded-overlay.yaml"
+            ],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": 300.0,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "ac7bc974-5078-4ec2-8c0d-21b1affb5e60",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "pi",
+        "version": "0.99.2",
+        "model_info": {
+            "name": "accounts/fireworks/models/kimi-k3",
+            "provider": "openai"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 26713,
+        "n_cache_tokens": 22104,
+        "n_output_tokens": 2494,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-10-05T22:37:49.745911Z",
+    "finished_at": "2026-10-05T22:39:44.799975Z",
+    "environment_setup": {
+        "started_at": "2026-10-05T22:37:49.755772Z",
+        "finished_at": "2026-10-05T22:37:50.530424Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-10-05T22:37:50.530468Z",
+        "finished_at": "2026-10-05T22:38:12.181743Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-10-05T22:38:12.181866Z",
+        "finished_at": "2026-10-05T22:39:28.192513Z"
+    },
+    "verifier": {
+        "started_at": "2026-10-05T22:39:28.362347Z",
+        "finished_at": "2026-10-05T22:39:33.899545Z"
+    },
+    "step_results": null
+}

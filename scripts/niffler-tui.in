@@ -24,7 +24,7 @@ answers() { NIF_NATS_URL="$1" "$CLI" catalog >/dev/null 2>&1; }
 if [ -n "${NIF_NATS_URL:-}" ]; then
   url="$NIF_NATS_URL"                       # explicit bus: attach only
 else
-  url="$(tr -d '[:space:]' < "$ROOT/var/nats-url" 2>/dev/null || true)"
+  url="$(tr -d '[:space:]' 2>/dev/null < "$ROOT/var/nats-url" || true)"
   found=""
   for cand in "$url" "nats://127.0.0.1:4222"; do
     [ -n "$cand" ] || continue

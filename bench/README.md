@@ -225,6 +225,36 @@ patch instead of burning the remaining feedback rounds.
   comparing token/time/tool-call figures — the profiles have very different
   prompt footprints (`sdk` mounts the full tool schema set, `sdk-minimal`
   is bash-only).
+- **openhands** — OpenHands (Agent Canvas v1.24) driven through its
+  `openhands-agent-server` (PyPI 1.50.1, launched directly via the exact `uvx`
+  package set the product launcher uses — the UI ingress is not involved).
+  One stack per combo; each cell gets one conversation over the documented
+  REST API (`agent_settings` builds the product's default agent and toolset:
+  `terminal`, `file_editor`, `task_tracker`, `think`, `finish`), completion on
+  `execution_status`, final text from `agent_final_response`. Usage comes from
+  `stats.usage_to_metrics` (provider-reported); tool calls from `ActionEvent`s.
+  Auth is `X-Session-API-Key`; the LLM is pinned per conversation
+  (`openai/<model>` over `https://api.deepseek.com/v1` — litellm appends
+  `/chat/completions` to `base_url` verbatim, so the `/v1` must stay).
+- **maki** — Maki (tontinton/maki, Rust) over its Claude-Code-compatible
+  `--print --output-format stream-json` mode: one process per round in the
+  task repo, `--resume` continues feedback rounds, `--yolo --trust` keep
+  permission/project prompts out of the timed region. The bench model key is
+  sent as `deepseek/<id>`; `MAKI_BIN`/`../harnesses/maki/target/release/maki`
+  supplies the binary. Usage and tool counts come from the stream's
+  `assistant`/`result` usage blocks and `system/init` inventory.
+  `firstPromptTokens` is the first assistant frame's TOTAL prompt — DeepSeek
+  splits it across `input_tokens` + `cache_read_input_tokens` +
+  `cache_creation_input_tokens`, and all three are summed (a warm 512-token
+  implicit-cache prefix shows up even on a first request, so `input_tokens`
+  alone under-reports). Caution when probing by hand: run in an empty
+  git-rooted workspace — Maki's folder-trust walks up to the enclosing git
+  root and adds its AGENTS.md chain to the request (~8.4k tokens from inside
+  this repo, which is how a first measurement of Maki's footprint landed at
+  ≈15.9k instead of the true ≈7.4k).
+  `thinking`
+  profiles are not expressible (only `--max-thinking-tokens`), so the lane
+  runs at Maki's own default thinking configuration.
 - **niffler** — one private harness per (model) combo: own `nats-server` on a
   free port + isolated `NIF_ROOT` (symlink farm over the bench worktree, real
   `var/`), pinned to the model gateway via `NIF_OPENAI_*` env. Each round is a
@@ -233,6 +263,11 @@ patch instead of burning the remaining feedback rounds.
   `usage`). `NIF_AUTO_APPROVE=1` is set on this private harness because gated
   tools (edit/write) otherwise deny with no human reachable — it affects only
   the bench's throwaway harness, never a developer's.
+  - **Readiness**: before a task can freeze its session, ordinary private-bus
+    catalog probes must show all eight direct tools, the prompt component and
+    every required autostart manifest component. Object schemas and the private
+    root are checked; a 120s deadline reports missing capabilities rather than
+    measuring an incomplete startup toolset.
   - **Workspace isolation**: the task repo is handed to the session as its
     immutable `cwd` workspace (mirrored under the harness root via
     `var/bench`), so relative paths stay inside the workspace by
@@ -264,7 +299,10 @@ patch instead of burning the remaining feedback rounds.
     exported `transcript.json` doubles as the timing event stream. Each
     `result.json` records `sessionId`, the workspace path and
     `firstPromptTokens` (prompt tokens of the first assistant answer — the
-    cheapest cross-run proxy for system-prompt + toolset footprint).
+    cheapest cross-run proxy for system-prompt + toolset footprint). Shape
+    telemetry also counts multi-call/pipeline messages, selector use, explicitly
+    emitted/default arguments, and result characters per tool. Tool results
+    never count as additional calls. `make test-bench` tests these contracts.
 - **niffler-expert** — the same private Niffler setup, but the runner waits for
   the expert component and calls `expert_follow` with the exact task session id
   before the first turn. The result records judgment/steer/acceptance counters,
@@ -337,6 +375,52 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
   the advisor uses additional model calls concurrently, can remain silent, and
   may finish too late to affect short tasks. Check each result's `expert.active`,
   judgment, steer, acceptance and stale-drop counters before interpreting it.
+
+## Model-call overhead
+
+Where a turn's wall time goes, measured rather than assumed. Three env-gated
+seams exist for this — all are no-ops unless enabled, and each logs one line
+per call:
+
+| seam | logs | where |
+|---|---|---|
+| `NIF_LOG_LEVEL=debug` (what `niffler --log=debug` distributes at boot) | all three below | — |
+| ↳ llm | `chat timing pre=` / `setup=` / `post=` / `total=` | `components/llm/main.go`, `var/logs/llm.jsonl` |
+| ↳ core dispatch | `dispatch <tool> wait=` | `core/dispatch.nim`, in the dispatching process's log |
+| ↳ runner | `session: llm call dur=` | `core/conversation.nim`, `var/logs/session-*.log` |
+
+The bench harness starts its core with the caller's env: `NIF_LOG_LEVEL=debug`
+in front of any `node bench/run.mjs` invocation collects all three lines per
+call (the env reaches the spawned components through the same inheritance
+`NIF_ROOT` uses).
+
+The per-call budget (full31 subset, one model, `--jobs 1`, 24 calls):
+
+| segment | mean |
+|---|---:|
+| `pre` — unmarshal, sanitize, per-call cancel subscribe, provider/model resolve | 43 ms |
+| `setup` — client build, request marshal, HTTP/TLS, **provider's response headers** | 448 ms |
+| `stream` — `ttft` + decode (the `dur=` already in the llm log) | 1,934 ms |
+| `post` — result build + `stream.Close()` | 0 ms |
+| bus — the runner's dispatch wait beyond the component's total | 5 ms |
+
+Residual: 2 ms. **Harness-side cost per model call is ~48 ms** (`pre` + `post`
++ bus); the rest is the provider. Note `setup` sits outside both `pre` and
+`dur` — it is the request→headers window, flat per call (~450 ms, no warm-up
+effect), and reading it as harness overhead is the easy mistake this section
+exists to prevent.
+
+Ruled out by measurement, each with a number behind it: token fan-out per
+delta (overhead flat vs completion length, corr −0.07), contention on the
+shared pump (`--jobs 1` identical), the runner's post-call bookkeeping (6 ms),
+the llm component's pre-stream work (43 ms), the dispatch idle-slot pumps
+(never ≥ 20 ms), the runner↔core hop (1 ms — the session runner calls the llm
+component directly), and post-stream work (0 ms).
+
+To re-measure: run a task subset with the three variables set, then pair the
+llm log's `prompt=` token count with the transcript's `usage.prompt_tokens`
+(the assistant items carry it) and read `pre`/`setup`/`dur`/`post` off the
+per-call records. Go durations print as `450ms` or `1.258s` — parse both.
 
 ## SWE-bench Verified
 

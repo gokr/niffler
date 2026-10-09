@@ -22,6 +22,7 @@
       <img src="niffler-logo-with-text.svg" alt="Niffler" width="427" height="64">
     </a>
     <nav aria-label="Main">
+      <div class="nav-links">
       <a href="#fast" data-i18n="nav.efficient">Efficient</a>
       <a href="#features" data-i18n="nav.features">Features</a>
       <a href="#everyday" data-i18n="nav.basics">Basics</a>
@@ -29,6 +30,8 @@
       <a href="#unix" data-i18n="nav.arch">Architecture</a>
       <a href="#credits" data-i18n="nav.credits">Credits</a>
       <a href="#install" data-i18n="nav.install">Install</a>
+      </div>
+      <div class="nav-actions">
       <span class="locales" role="group" aria-label="Language">
         <button type="button" data-locale-btn="en">EN</button>
         <button type="button" data-locale-btn="zh">中文</button>
@@ -36,6 +39,7 @@
       </span>
       <a class="nav-gh" href="https://github.com/gokr/niffler">GitHub ↗</a>
       <a class="nav-gh nav-discord" href="https://discord.gg/ThJFEAJUAk">Discord ↗</a>
+      </div>
     </nav>
   </header>
 
@@ -52,8 +56,12 @@
         use. Sub-agents, background processes, a permission gate, MCP, LSP? In
         the box as well.</p>
       <div class="hero-cta">
-        <code class="hero-cmd"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash</code>
+        <a class="btn btn-primary" href="#install" data-i18n="nav.install">Install</a>
         <a class="btn" href="https://github.com/gokr/niffler">GitHub ↗</a>
+        <div class="hero-command">
+          <code class="hero-cmd" id="hero-code">curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash</code>
+          <button class="copy" type="button" data-copy-target="hero-code" aria-label="Copy install command">copy</button>
+        </div>
       </div>
       <p class="release-line"><a href="https://github.com/gokr/niffler/releases/tag/v0.4.0" target="_blank" rel="noopener">v0.4.0</a><span> — <span data-i18n="hero.release">First stable and complete release</span></span></p>
 
@@ -87,53 +95,89 @@
           <span class="legend-dim" data-i18n="fast.legend3">99.3% — printed in the UI, every turn</span>
         </div>
       </div>
-      <div class="grid grid-3 grid-compare">
-        <article>
-          <h3>Pi <span class="ver">0.99.2</span></h3>
-          <p class="cmp-tools">read · bash · edit · write</p>
-          <p class="cmp-note" data-i18n-html="cmp.pi.note">3 more built in — grep · find · ls — off by default (<code>+grep</code> to enable)</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈0.68k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈1.4k</b></p>
-        </article>
-        <article class="cmp-us">
-          <h3>Niffler <span class="ver">0.3.0</span></h3>
-          <p class="cmp-tools">discover · invoke · bash · read · write · edit · grep</p>
-          <p class="cmp-note" data-i18n-html="cmp.nif.note">the whole catalog (~25 components) sits behind discover / invoke</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈0.36k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b class="b-hero">≈2.25k</b></p>
-        </article>
-        <article>
-          <h3>Claude Code <span class="ver">2.1.286</span></h3>
-          <p class="cmp-tools">23 tools — Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈1.5k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈18k</b></p>
-        </article>
-        <article>
-          <h3>DSH <span class="ver">0.2.0-rc.2</span></h3>
-          <p class="cmp-tools">25 tools — bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</p>
-          <p class="cmp-note" data-i18n-html="cmp.dsh.note">out of the box — every base-backed profile
-            (tui · web · headless)</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈6.5k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈11.7k</b></p>
-        </article>
-        <article>
-          <h3>Opencode <span class="ver">1.18.32 · v2.0.22 out</span></h3>
-          <p class="cmp-tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</p>
-          <p class="cmp-note" data-i18n-html="cmp.oc.note">captured from the v1.18.32 wire — v2's docs list
-            a slightly different set (adds apply_patch · question ·
-            websearch)</p>
-          <p class="cmp-row"><span data-i18n="cmp.row.base">base prompt</span><b>≈10.7k</b></p>
-          <p class="cmp-row"><span data-i18n="cmp.row.first">base prompt + tools</span><b>≈16k</b></p>
-        </article>
-        <article class="cmp-method">
-          <h3 data-i18n="cmp.method.h">How to read this</h3>
-          <p class="cmp-note" data-i18n-html="cmp.method.p">≈ k tokens (chars/4) from the exact first-request
-          bytes each harness sends into an empty workspace — captured from live
-          wire requests, Oct 2026. User content excluded (Pi lists your
-          installed skills in its prompt by default, Niffler adds the repo's
-          AGENTS.md chain, Claude Code the CLAUDE.md) — all five captured the
-          same way.</p>
-        </article>
+      <style>
+        .bench-copy{border-left:3px solid var(--accent,#4a5);padding:.8em 1em;margin:1.4em 0;background:rgba(127,127,127,.06);font-size:.92em;line-height:1.55}
+        table.bench{width:100%;border-collapse:collapse;margin:1.2em 0 .4em;font-size:.92em}
+        table.bench caption{text-align:left;font-weight:600;padding:.4em 0}
+        table.bench th,table.bench td{border-bottom:1px solid rgba(127,127,127,.28);padding:.45em .6em;text-align:right;vertical-align:top}
+        table.bench th:first-child,table.bench td:first-child,table.bench td.tools{text-align:left}
+        table.bench tbody tr:hover{background:rgba(127,127,127,.07)}
+        table.bench .us{font-weight:600}
+        table.bench th.sortcol{color:var(--accent,#4a5)}
+        table.bench th.sortcol::after{content:" ↑";font-weight:400;opacity:.85}
+        table.bench th.sortcol,table.bench td.sortcol{background:color-mix(in srgb,var(--accent,#4a5) 8%,transparent)}
+        table.bench td.sortcol{font-variant-numeric:tabular-nums}
+        .bench-note{font-size:.85em;opacity:.8;line-height:1.5}
+        .bench-frame{position:relative;margin:2em 0;padding:1.3em 1.5em 1.1em;border:1px solid rgba(127,127,127,.25);border-radius:14px;
+          background:linear-gradient(180deg,rgba(127,127,127,.055),rgba(127,127,127,.015));
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 6px 20px rgba(0,0,0,.055)}
+        .bench-frame::before{content:"";position:absolute;left:1.5em;top:-.28em;width:2.4em;height:.42em;border-radius:99px;
+          background:var(--accent,#4a5);box-shadow:0 0 0 3px rgba(127,127,127,.08)}
+        .bench-frame table.bench{margin:.2em 0 .5em}
+        .bench-frame table.bench caption{font-size:.78em;letter-spacing:.08em;text-transform:uppercase;opacity:.75;padding:.2em 0 .7em}
+        .bench-frame table.bench th{border-bottom:1.5px solid rgba(127,127,127,.4)}
+        table.bench tr.us{background:rgba(74,170,85,.10);background:color-mix(in srgb,var(--accent,#4a5) 11%,transparent);
+          box-shadow:inset 3px 0 0 var(--accent,#4a5)}
+        table.bench tr.us td:first-child{font-weight:700}
+        table.bench tr.us:hover{background:color-mix(in srgb,var(--accent,#4a5) 16%,transparent)}
+      </style>
+      <p class="bench-copy"><strong>What this measures.</strong> Numbers gathered with
+        <strong>DeepSeek&#8209;V4.1&#8209;Flash</strong> (<code>deepseek-v4-flash</code>) at
+        <strong>low thinking effort</strong>, called <strong>directly through DeepSeek's
+        first&#8209;party API</strong> — no gateway, no proxy; the same key and endpoint for every
+        harness. The tasks are <strong>deliberately simple, well&#8209;specified coding
+        exercises</strong>: this is <strong>not a capability benchmark</strong>. It measures the
+        three things that dominate real daily cost — <strong>tokens per task, wall&#8209;clock per
+        task, and price per task</strong> — for normal work.</p>
+
+      <div class="bench-frame">
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
+      <table class="bench">
+        <caption>Benchmark full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026)</caption>
+        <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Turns</th><th>Tool calls</th><th>Tokens / task (in / cache / out)</th><th class="sortcol">Cost / task</th><th>Cache hit</th></tr></thead>
+        <tbody>
+          <tr><td>Pi 1.1.0</td><td>31/31</td><td>13.4s</td><td>5.3</td><td>5.5</td><td>3.7k / 18.1k / 2.0k</td><td class="sortcol">$0.0037</td><td>83%</td></tr>
+          <tr class="us"><td>Niffler 0.4.0</td><td>31/31</td><td>15.4s</td><td>6.1</td><td>7.8</td><td>4.0k / 31.6k / 2.1k</td><td class="sortcol">$0.0039</td><td>89%</td></tr>
+          <tr><td>Maki 0.6.0</td><td>31/31</td><td>12.1s</td><td>6.3</td><td>8.0</td><td>9.7k / 53.2k / 1.5k</td><td class="sortcol">$0.0050</td><td>85%</td></tr>
+          <tr><td>DSH 0.2.1 (<code>sdk</code>, out of the box)</td><td>31/31</td><td>17.9s</td><td>6.1</td><td>7.1</td><td>8.3k / 45.6k / 2.7k</td><td class="sortcol">$0.0061</td><td>85%</td></tr>
+          <tr><td>Opencode 1.18.35</td><td>31/31</td><td>23.3s</td><td>5.4</td><td>5.7</td><td>18.2k / 87.9k / 1.1k</td><td class="sortcol">$0.0073</td><td>83%</td></tr>
+          <tr><td>OpenHands 1.24</td><td>31/31</td><td>25.7s</td><td>0.9</td><td>6.6</td><td>8.8k / 84.6k / 3.9k</td><td class="sortcol">$0.0078</td><td>91%</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
+      <p class="bench-note">Full record and methodology: <code>bench/reports/</code> in the repository.
+        Cache hit = cached read ÷ (cached read + uncached input) over the whole run.
+        All lanes run one cell at a time (jobs&#8209;1), so wall times are uncontended.
+        Niffler = the average of two runs.</p>
+      </div>
+
+      <div class="bench-frame">
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
+      <table class="bench">
+        <caption>Direct tools &amp; fixed prompt — what each harness puts in front of the model</caption>
+        <thead><tr><th>Harness</th><th>Direct tools</th><th class="tools">Which</th><th>Base prompt</th><th class="sortcol">Base prompt + tools</th></tr></thead>
+        <tbody>
+          <tr><td>Pi</td><td>4 (+3 optional)</td><td class="tools">read · bash · edit · write <span class="bench-note">(grep · find · ls off by default)</span></td><td>≈0.68k</td><td class="sortcol">≈1.4k</td></tr>
+          <tr class="us"><td>Niffler</td><td>8</td><td class="tools">discover · invoke · bash · read · write · edit · replace_across · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td>≈0.28k</td><td class="sortcol">≈2.1k</td></tr>
+          <tr><td>Maki</td><td>19</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td>—</td><td class="sortcol">≈7.4k</td></tr>
+          <tr><td>DSH (out of the box)</td><td>25</td><td class="tools">bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</td><td>≈6.5k</td><td class="sortcol">≈11.7k</td></tr>
+          <tr><td>OpenHands</td><td>3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td>generated per request</td><td class="sortcol">≈12–16k</td></tr>
+          <tr><td>Opencode</td><td>10</td><td class="tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</td><td>≈10.7k</td><td class="sortcol">≈16k</td></tr>
+          <tr><td>Claude Code</td><td>23</td><td class="tools">Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</td><td>≈1.5k</td><td class="sortcol">≈18k</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
+      <p class="bench-note">≈ k tokens (chars/4) from the exact first&#8209;request bytes each harness sends into
+        an empty workspace — captured from live wire requests, Oct 2026. User content excluded (Pi lists
+        your installed skills in its prompt by default, Niffler adds the repo's AGENTS.md chain, Claude Code
+        the CLAUDE.md) — all captured the same way. Maki's figure is the measured first request of a
+        three&#8209;word prompt in an empty <em>git-rooted</em> workspace (system + all 19 tool schemas; split
+        not exposed) — a probe run outside a git root silently adds the enclosing repo's AGENTS.md chain
+        (~8.4k tokens) to the request, which is where an earlier ≈15.9k figure came from. OpenHands generates its
+        system prompt at request time (not stored server&#8209;side); the range is the observed first&#8209;request
+        budget including its tool schemas.</p>
       </div>
     </section>
 
@@ -238,7 +282,7 @@
       <div class="feat-group">
         <p class="feat-label" data-i18n-html="ed.lab1">Code, files &amp; the web</p>
         <ul class="features">
-          <li><strong data-i18n="ed.filetools.h">File tools</strong><span data-i18n="ed.filetools.p">batched windowed reads, exact-match edit with a guarded fallback, atomic write, persistent undo</span></li>
+          <li><strong data-i18n="ed.filetools.h">File tools</strong><span data-i18n="ed.filetools.p">batched windowed reads, locate-and-fetch select reads, exact-match edit with a guarded fallback, literal bulk replace across a file set, atomic write, persistent undo</span></li>
           <li><strong data-i18n="ed.search.h">Search</strong><span data-i18n="ed.search.p">gitignore-aware grep and file finding — stateless replicas so parallel calls really run in parallel</span></li>
           <li><strong data-i18n="ed.git.h">Git</strong><span data-i18n="ed.git.p">status, diff, log, show, blame — read-only and approval-free</span></li>
           <li><strong data-i18n="ed.web.h">Web fetch</strong><span data-i18n="ed.web.p">real HTML extraction, SSRF-validated, oversized bodies spill to disk</span></li>
@@ -315,6 +359,7 @@
         compile and spawn a new tool <em>mid-conversation</em>, and teardown is
         just <code>exit()</code>. The OS is the disposer.</p>
       <figure class="arch" role="img" aria-label="Process anatomy of a Niffler instance: optional clients connect to one NATS bus (nats-server, one process); core (one process) supervises child component processes — store, bash, llm and systemprompt in the minimal profile, twenty-one more in a stock boot — and every conversation gets its own ephemeral session runner process.">
+        <div class="diagram-scroll" tabindex="0" role="region" aria-label="Architecture diagram">
         <svg viewBox="0 0 920 540" aria-hidden="true" focusable="false">
           <text class="a-tag" x="40" y="24">CLIENTS — THIN ATTACHERS, ANY NUMBER AT ONCE</text>
           <g class="a-client"><rect x="180" y="36" width="170" height="40" rx="8"/><text x="265" y="61">niffler-tui</text></g>
@@ -374,6 +419,8 @@
 
           <text class="a-note a-totals" x="40" y="510">a minimal boot: 6 processes · a stock boot: 30 · +1 session runner per active conversation</text>
         </svg>
+        </div>
+        <figcaption class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</figcaption>
       </figure>
 
       <div class="inv">
@@ -474,10 +521,10 @@
       <div class="term">
         <div class="term-bar">
           <span>terminal</span>
-          <button class="copy" type="button" data-copy-target="setup-code">copy</button>
+          <button class="copy" type="button" data-copy-target="setup-code" aria-label="Copy setup commands">copy</button>
         </div>
         <pre id="setup-code"><code>curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash
-<span class="dim"># asks before creating ~/niffler — or pick a location: | bash -s -- /your/dir</span>
+<span class="dim"># asks: stable release or main, where to create ~/niffler (or | bash -s -- /your/dir), then offers the optional extras one by one</span>
 <span class="dim"># or manually, from a clone:</span>
 git clone https://github.com/gokr/niffler.git &amp;&amp; cd niffler
 make setup &amp;&amp; make build
@@ -493,9 +540,13 @@ niffler-tui            <span class="dim"># boots the harness on demand</span></c
       </ul>
       <p class="fineprint" data-i18n-html="ins.fine">Niffler is built from source and distributed that way —
         there are no prebuilt binaries. The one-line installer brings in
-        everything missing (git, make, Go, Node.js, the Nim toolchain and
-        nimble packages); building by hand, <code>make doctor</code> reports
-        what is missing. The bus is bundled — core spawns its own nats-server.
+        everything missing (git, make, curl, Go, then the Nim toolchain and
+        nimble packages via <code>make setup</code>); Node.js and npm are
+        optional and it asks first; at the end it offers the optional extras
+        one by one — language servers (<code>make install-lsp</code>), the
+        agent CLI toolkit for bash (<code>make install-tools</code>) and jev
+        (<code>make install-jev</code>) — each defaulting to no. Building by
+        hand, <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server.
         The desktop UI is an experimental spin-off — install it like any
         package: <code>cli install gokr/niffler-ui</code>. Full story in the
         <a href="https://github.com/gokr/niffler/blob/main/docs/MANUAL.md">manual ↗</a>.</p>

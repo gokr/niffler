@@ -161,22 +161,25 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find components/tools outside the fixed direct set. No query returns the component registry: one line per component with its tool counts and a few when-to-use hints — look there before picking a tool. `component` returns that component's tools with descriptions (add `query` to filter inside it, `limit` to bound the answer); `tools` (up to 16, with or without a component) returns full schemas — prefer `tools: [name]` when you already know which tool you need.",
+      "description": "Find capabilities: no query lists component routing hints; component lists tool summaries. For exact schemas use discover {tools:[name]}, then invoke.",
       "properties": {
-        "query": {"type": "string", "description": "Name/description filter (case-insensitive)"},
-        "component": {"type": "string", "description": "Component whose tools to inspect"},
+        "query": {"type": "string", "description": "Case-insensitive keywords (word-AND)"},
+        "component": {"type": "string", "description": "Component tool summaries"},
+        "limit": {"type": "integer", "minimum": 0, "maximum": 200,
+                  "description": "Max summaries (0 = all)"},
+        "after": {"type": "string", "description": "Page cursor: copy nextAfter"},
         "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 16,
-                  "description": "Tool names whose full schemas to return"}
+                  "description": "Exact tool names for full schemas; empty = omitted"}
       }
     }))
   coreReg.tools.add(ToolReg(name: "invoke", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Call a non-hidden tool after discover returns its schema: put the target's arguments unchanged under arguments. Its approval/timeout policy applies.",
+      "description": "Call a discovered tool with its schema-matching arguments. Target approval and timeout apply.",
       "properties": {
-        "tool": {"type": "string", "description": "Tool name returned by discover"},
-        "arguments": {"type": "object", "description": "Arguments matching the target schema"},
-        "sticky": {"type": "boolean", "description": "Promote into this conversation's direct toolset after success (skips later invoke hops; one prefix re-read)"}
+        "tool": {"type": "string", "description": "Exact discovered tool name"},
+        "arguments": {"type": "object", "description": "Target arguments, unchanged"},
+        "sticky": {"type": "boolean", "description": "Add to direct tools after success (prefix change)"}
       },
       "required": ["tool", "arguments"]
     }))
@@ -439,11 +442,6 @@ proc shortDescription(schema: JsonNode, cap = 200): string =
 proc toolHint(tool: ToolReg): JsonNode =
   %*{"name": tool.name, "description": shortDescription(tool.schema)}
 
-proc hintedLine(tool: ToolReg): JsonNode =
-  ## A registry line: the tool plus its when-to-use sentence, kept short (the
-  ## registry repeats once per component, and the caller may render dozens).
-  %*{"tool": tool.name, "hint": shortDescription(tool.schema, 110)}
-
 proc declaredHint(schema: JsonNode): string =
   ## A component may state its own routing sentence in the schema. It is used
   ## verbatim: for a component whose choice is between shapes (fabric: one-shot
@@ -469,8 +467,7 @@ const registryHintCount = 3
   ## tools, 40KB with descriptions).
 
 const registryBudgetBytes = 6000
-  ## Hard ceiling for a whole registry answer. Over it, the answer is rebuilt
-  ## without hints (name + counts only) rather than growing without bound.
+  ## Hard ceiling for each registry page, including cursor metadata.
 
 proc visibleTools(reg: ComponentReg): seq[ToolReg] =
   for tool in reg.tools:
@@ -478,7 +475,8 @@ proc visibleTools(reg: ComponentReg): seq[ToolReg] =
       result.add(tool)
   result.sort(proc(a, b: ToolReg): int = cmp(a.name, b.name))
 
-proc componentLine(reg: ComponentReg, withHints: bool): JsonNode =
+proc componentLine(reg: ComponentReg, hintCount = registryHintCount,
+                   hintCap = 110): JsonNode =
   ## One registry line per component: what it is, how much of it there is, and
   ## a few when-to-use sentences — the routing signal the roster in the
   ## system prompt used to carry, but fetched on demand instead of re-sent in
@@ -490,7 +488,7 @@ proc componentLine(reg: ComponentReg, withHints: bool): JsonNode =
   result = %*{"name": reg.name, "version": reg.version,
               "tools": tools.len, "onDemand": onDemandCount,
               "direct": tools.len - onDemandCount}
-  if not withHints:
+  if hintCount == 0:
     return
   var declared: seq[ToolReg] = @[]
   var derived: seq[ToolReg] = @[]
@@ -501,11 +499,13 @@ proc componentLine(reg: ComponentReg, withHints: bool): JsonNode =
   # A component's own statements come first, then its tools in name order.
   var picked: seq[ToolReg] = declared
   for tool in derived:
-    if picked.len >= registryHintCount: break
+    if picked.len >= hintCount: break
     picked.add(tool)
-  if picked.len > registryHintCount: picked.setLen(registryHintCount)
+  if picked.len > hintCount: picked.setLen(hintCount)
   var hints = newJArray()
-  for tool in picked: hints.add(hintedLine(tool))
+  for tool in picked:
+    hints.add(%*{"tool": tool.name,
+                 "hint": shortDescription(tool.schema, hintCap)})
   if hints.len > 0:
     result["hints"] = hints
     result["more"] = %max(0, onDemandCount - hints.len)
@@ -544,26 +544,45 @@ proc componentSummary(reg: ComponentReg, words: seq[string],
   return %*{"name": reg.name, "version": reg.version,
             "direct": direct, "onDemand": onDemand}
 
-proc registryAnswer(cat: Catalog, withHints: bool): JsonNode =
-  ## The bus directory: every component as one line. Cheaper and far more
-  ## useful than listing every tool name — 201 tools cost 9KB as names alone
-  ## and 40KB with descriptions (measured on a loaded harness), and a 65-tool
-  ## MCP server is unreadable either way. The trailing `next` line is read at
-  ## the moment a model is deciding whether to keep browsing, which is exactly
-  ## where the exit belongs (three passes of full31 showed cells browsing five
-  ## components and invoking nothing, and cells reading one hint and moving on).
-  var components = newJArray()
+proc registryAnswer(cat: Catalog, after: string): JsonNode =
+  ## Sorted capability pages only (the administrative catalog is unchanged).
+  ## Spend on one routing hint per on-demand component before extra hints.
+  ## Reduce density first, then page; nextAfter is the last component name,
+  ## resumed exclusively with discover {after: nextAfter} on the live catalog.
+  var names: seq[string]
   for name in cat.sortedComponentNames():
-    components.add(componentLine(cat.components[name], withHints))
-  %*{"components": components, "count": components.len,
-     "next": "If a direct tool already fits, use it and work — discovery is for when you cannot tell which tool does the job."}
+    if name > after and visibleTools(cat.components[name]).len > 0:
+      names.add(name)
+  for density in [(registryHintCount, 110), (1, 110), (1, 60)]:
+    var components = newJArray()
+    for name in names:
+      components.add(componentLine(cat.components[name], density[0], density[1]))
+    result = %*{"components": components, "count": components.len}
+    if ($result).len <= registryBudgetBytes:
+      return
+  var components = newJArray()
+  for i, name in names:
+    let line = componentLine(cat.components[name], 1, 60)
+    var candidate = components.copy()
+    candidate.add(line)
+    var page = %*{"components": candidate, "count": candidate.len}
+    if i < names.high:
+      page["hasMore"] = %true
+      page["nextAfter"] = %name
+    if ($page).len > registryBudgetBytes:
+      if components.len == 0:
+        return %*{"error": "component routing entry exceeds registry budget"}
+      return result
+    components = candidate
+    result = page
 
 proc discover*(cat: Catalog, args: JsonNode): JsonNode =
   ## Return deterministic component hints or selected non-hidden schemas.
   let component = args{"component"}.getStr("").strip()
   let requested = args{"tools"}
   if component.len == 0:
-    if requested != nil and requested.kind != JNull:
+    if requested != nil and requested.kind != JNull and
+        not (requested.kind == JArray and requested.len == 0):
       # Tool-name lookup across ALL components: callers often know the tool
       # name but not which component owns it (observed in bench: models
       # repeatedly passed tools without a component and got a bare error).
@@ -594,7 +613,7 @@ proc discover*(cat: Catalog, args: JsonNode): JsonNode =
         if not found:
           notFound.add(%name)
       if schemas.len == 0:
-        return %*{"error": "no discoverable tools named: " & names.join(", ")}
+        return %*{"error": "one or more requested tools are not discoverable"}
       result = %*{"tools": schemas}
       if notFound.len > 0:
         result["notFound"] = notFound
@@ -602,20 +621,16 @@ proc discover*(cat: Catalog, args: JsonNode): JsonNode =
     let query = args{"query"}.getStr("").strip().toLowerAscii()
     let words = query.split(Whitespace)
     if query.len == 0:
-      # Registry, hints first; over the budget it is rebuilt as name+counts
-      # only, so a pathological component set (many MCP servers) can never
-      # turn one discovery call into tens of kilobytes.
-      result = registryAnswer(cat, withHints = true)
-      if ($result).len > registryBudgetBytes:
-        result = registryAnswer(cat, withHints = false)
-        result["budget"] = %*{"bytes": registryBudgetBytes, "hints": "dropped"}
-      return result
+      return registryAnswer(cat, args{"after"}.getStr(""))
     var components = newJArray()
     for name in cat.sortedComponentNames():
       let summary = componentSummary(cat.components[name], words)
       if summary != nil:
         components.add(summary)
-    return %*{"components": components, "count": components.len}
+    result = %*{"components": components, "count": components.len}
+    if components.len == 0:
+      result["next"] = %"Every keyword must match; try fewer keywords or discover {tools:[name]} for exact names."
+    return result
 
   if not cat.components.hasKey(component):
     return %*{"error": "no discoverable component '" & component & "'"}
@@ -627,7 +642,11 @@ proc discover*(cat: Catalog, args: JsonNode): JsonNode =
   if limit > 200: limit = 200
   let summary = componentSummary(cat.components[component], words, limit = limit)
   if summary == nil:
-    return %*{"error": "no discoverable component '" & component & "'"}
+    result = %*{"error": "no discoverable component '" & component & "'"}
+    if words.len > 0 and visibleTools(cat.components[component]).len > 0:
+      result["next"] = %"Every keyword must match; try fewer keywords or discover {tools:[name]} for exact names."
+      result["error"] = %(result["error"].getStr() & ". " & result["next"].getStr())
+    return result
   if requested == nil or requested.kind == JNull or
       (requested.kind == JArray and requested.len == 0):
     return %*{"component": summary}

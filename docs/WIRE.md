@@ -24,6 +24,9 @@ Rules:
 
 - `call` → `result` (or `error`), matched by `id`. One reply per call.
 - `args`/`payload` are JSON values (objects, or anything JSON — array, string).
+  Tool-history projection uses bare strings raw (no JSON quotes/escapes),
+  an object's string `text` when present, otherwise serialized JSON;
+  machine-readable bus results are unchanged.
 - Missing fields are omitted, never null. Unknown fields ignored (forward compat).
 - Errors: `code` is a stable machine string (`timeout`, `no-tool`, `boom`),
   `message` is human text.
@@ -246,9 +249,10 @@ ev.session.<id>.map         # {sessionId, workspace, bytes} the workspace map wa
                        #   appended to history (once per conversation; the append
                        #   itself arrives on svc.session.<id>.map). Appended, not
                        #   injected into the frozen prefix
-ev.session.<id>.diagnostics # {sessionId, path, bytes} asynchronously delivered
+ev.session.<id>.diagnostics # {sessionId, path, bytes, text} asynchronously delivered
                             #   diagnostics for an edited file were appended to
-                            #   history (the append arrives on svc.session.<id>.diag)
+                            #   history (the append arrives on svc.session.<id>.diag).
+                            #   text is the rendered diagnostic body, for live display.
 ev.session.<id>.done        # {sessionId, turnId, reply} or {sessionId, turnId, error}
                        #   the legacy end-of-turn frame; it deliberately carries
                        #   NO accounting, so a client that reads both this and
@@ -371,7 +375,21 @@ appends a successful target's schema to the persisted direct toolset —
 one durable prefix change, capped by `NIF_MAX_DIRECT_TOKENS`). `profile`
 (onDemand) manages the named tool profiles a new conversation resolves
 its direct toolset from — see docs/MANUAL.md, section
-"Progressive tool discovery".
+"Progressive tool discovery". The stock direct set is eight tools: `bash`,
+`read`, `edit`, `write`, `replace_across`, `grep`, `discover`, `invoke`.
+Shortened schemas and prompts affect only future conversations; existing
+snapshots remain frozen. Routing hints in results append to tool history,
+never the prefix.
+
+`discover`'s capability registry excludes components with zero visible tools.
+It tries three hints, then one, then a shorter hint before deterministic
+name-sorted pages, each bounded to 6000 encoded bytes including cursor
+metadata. It preserves on-demand routing hints. Continue a `hasMore` page
+with `discover {after: "<nextAfter>"}` (no query/component/tools).
+`limit` bounds summaries per exposure group (0 = all, maximum 200);
+`tools: []` behaves as omitted. Query words use case-insensitive word-AND;
+a no-match answer includes that routing hint. The administrative catalog
+remains complete.
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
@@ -576,9 +594,15 @@ pull drain.
 
 Both drivers accept `session`: a previously returned `sessionId` gives that
 EXISTING child another turn instead of minting a fresh one. On a fresh
-spawn (no `session`) an omitted `model` inherits the parent conversation's
-persisted effective model — the override first, the provider default only
-when the parent never resolved one. Design and
+spawn (no `session`) an omitted `model` inherits the parent's EXPLICIT pin
+(`modelOverride` with the provider pinned beside it). With no explicit pin
+the child resolves from the same defaults the parent's own turns resolve
+from — the parent's serving configuration, not a snapshot of its header.
+The header's resolved/echo `model` name is deliberately never inherited as
+a pin: a provider's echo can name a model some OTHER provider owns
+(DeepSeek echoes `deepseek-flash` for a `deepseek-v4-flash` request), and
+pinning it manufactured a cross-catalog mismatch on the child's first turn
+while the parent kept working. Design and
 testing: docs/research/SUBAGENTS-PLAN.md P1.3.
 
 - **Authorization is the durable lineage relation**: the child's
@@ -852,9 +876,10 @@ chosen from:
   self-hosted model, a missing `models` component and an implicit model (the
   provider default) pass through untouched.
 
-Agents inherit the whole pin: a fresh subagent gets the parent's provider
-pin alongside its effective model, so the child cannot drift under a later
-global switch either. `session_info` and the status readback expose
+Agents inherit the whole EXPLICIT pin: a fresh subagent gets the parent's
+`modelOverride` with the provider pinned beside it, so the child cannot
+drift under a later global switch either. With no explicit pin the child
+inherits nothing and resolves defaults exactly as the parent's turns do. `session_info` and the status readback expose
 `provider`/`model` so a caller can read back the effective pair.
 
 ### Session calls during a turn
@@ -894,6 +919,29 @@ keys:
 - `approval`: `"always"` gates the call on a human (see Approvals).
 - `timeoutMs`: per-tool request timeout (default 120s).
 - `hidden`: tool invisible to the LLM catalog (e.g. `chat`, `session`).
+- `variables`: the tool may opt a call into pipeline plumbing: `resolve_vars: true`
+  substitutes explicit `$name` references in its args and `save_as: {name, from?}`
+  captures a response field. Calls without those directives are untouched even
+  when their strings contain `$` (`$HOME`, shell syntax and code stay literal).
+  Pipelined calls execute in message order on the serial spine; the resolved
+  copy is dispatched (so approvals show real values) while raw args remain in
+  history. Values live in the conversation header, never the prompt. bash never
+  sets this — its `$` is shell syntax. Capture alone does not enable
+  substitution. A capture receipt reports the actual JSON encoded size of
+  the saved value; captured payloads stay in the persistent header instead
+  of being copied into history.
+
+  For `read` only, core overwrites private `__capture` with capture intent.
+  When true, read bypasses unchanged/outline shortcuts and returns separate
+  `__captureText` source-window content without paging or lazy-instruction
+  notices; rendered `text` remains for display. Source omission, beyond-EOF
+  windows and non-contiguous batch/select top-level views yield null and
+  default text capture refuses with `E_CAPTURE_UNAVAILABLE`. Explicit batch
+  `items.N.content` and select `items.N.contents.M` capture one raw region;
+  unavailable item/region fields also refuse instead of silently saving null.
+  Raw select regions are bounded at 64KB each and 512KB aggregate.
+  These private fields are not advertised arguments; ordinary reads keep
+  their existing behavior and limits.
 - `onDemand`: kept out of a conversation's frozen direct toolset; reachable
   via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
 - `hint`: the when-to-use sentence `discover` shows for this tool instead of
@@ -1016,8 +1064,9 @@ mode: search`, issue #51): `idPrefix` scopes to one conversation's
 messages, `rank` orders by relevance, `snippet` marks the matched span.
 
 - **Indexed fields** (documented, per kind): `conversation` = id +
-  `value.title`; `message` = id + every string under `value.content`
-  (capped at 16KB per document); any other kind = id only.
+  `value.title`; `message` = id + every string under `value.content` +
+  `value.reasoning` (capped at 16KB per document in total); any other kind
+  = id only.
 - **Matching** is contract, identical in every engine: query and indexed
   text tokenize the same way — runs of unicode letters/digits are tokens,
   every other character is a separator — and *every* query token must

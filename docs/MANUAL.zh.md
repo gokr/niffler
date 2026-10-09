@@ -89,17 +89,27 @@
 | `logfile` | Nim | 可选 | 轮转 JSONL 接收器和有界持久日志搜索（见[观察与日志](#observation-and-logs)）—— 两个工具都是按需的，且都没有声明 `x-harness.effect`，因此 fabric 批处理主机即使对 `logfile_search` 也按写入调度 |
 | `hooks` | Nim | 默认关闭 | 当选定的总线事件触发时运行操作员 shell 命令（仅观察；stdin 上的 JSON，环境配置；见[钩子](#hooks)） |
 | `mcp` | Go | 可选 | 外部 MCP 服务器（Model Context Protocol）：存储支持的注册表（`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`），每个服务器一个受监督的桥（子进程是单独的 `mcp-bridge` 二进制 —— `var/bin/mcp-bridge`，由 `make build` 构建，路径可用 `NIF_MCP_BRIDGE_BIN` 覆盖；它没有清单条目，从不手动启动）；工具成为普通的目录工具，可通过 `discover` + `invoke` 到达（见[外部 MCP 服务器](#external-mcp-servers-mcp)） |
-| `nats-server` | Go | **不在清单中** | 总线本身作为一等组件：官方 `nats-server` main 的忠实重建（固定在 `components/nats/go.mod`），由 `make build` 构建到 `var/bin/nats-server`，core 优先于 PATH 安装使用它，因此不需要 NATS 先决条件。故意*不是*总线组件 —— core 在总线存在之前启动它，它不注册任何工具，`core.spawn` 无法启动它。Niffler 添加一个标志 `--max_payload <bytes>`（core 传递 8388608），在 Linux 上它设置 `PR_SET_PDEATHSIG`，使没有孤儿总线比其 harness 活得更久。无需为它安装任何东西：`make install-nats` 只是这么说，`make doctor` 报告 `nats-server: OK` 或解释它从源码构建 |
+| `nats-server` | Go | **不在清单中** | 总线本身作为一等组件：官方 `nats-server` main 的忠实重建（固定在 `components/nats/go.mod`），由 `make build` 构建到 `var/bin/nats-server`，core 优先于 PATH 安装使用它，因此不需要 NATS 先决条件。故意*不是*总线组件 —— core 在总线存在之前启动它，它不注册任何工具，`core.spawn` 无法启动它。Niffler 添加一个标志 `--max_payload <bytes>`（core 传递 8388608），在 Linux 上它设置 `PR_SET_PDEATHSIG`，使没有孤儿总线比其 harness 活得更久。无需为它安装任何东西 —— `make doctor` 报告 `nats-server: OK` 或解释它由 `make build` 从源码构建 |
 
 `components/` 不再包含 bash 演示：无 SDK 的 `dialog` 组件已移至 `examples/dialog/dialog.sh`，并带有自己的 README，脱离随附构建和 `make setup` —— nats CLI 和 `zenity` 安装器随之退役（`jq` 作为通用 CLI 工具保留）。对照运行中的 harness 手动运行它（`bash examples/dialog/dialog.sh`）；它不在 `manifest.yaml` 中，没有任何东西将其构建到 `var/bin`，`make doctor` 仅指向它。
 
 `components/ctxtest/` 是“每个组件一个目录 = 一个随附组件”的例外：它是契约测试自己的夹具 —— 一个存根 `chat` LLM 加上嵌套调用探针 —— 测试自己将其编译为注册为 `ctxtest` 和 `ctxsink` 的二进制文件。它不在此表中，不在 `manifest.yaml` 中，且从不被 `make build` 构建。
 
+文件工具选择器中的相对 `glob` 模式以会话工作区为基准解析，包括 `read` 选择项和 `replace_across`；绝对模式保持不变。没有会话的独立总线调用以 `NIF_ROOT` 为基准解析相对模式。`replace_across` 选择 `paths` 与 `glob` 的去重并集，而不是交集；512 个已选择文件的上限不变。仅 glob 未匹配到文件时返回 `E_NO_MATCH`，明确说明没有修改。成功结果报告总次数、已修改/已选择数量和预览；文本最多列出 24 个已修改文件，并限制未匹配/缺失列表长度，结构化 `files`、`unmatched`、`missing` 保持完整。文件工具结果文本中的工作区文件名使用相对路径，外部文件名保持绝对路径，机器字段路径不变。`edit` 服务端仍接受旧别名（标准字段优先），但只公布 `old_string`/`new_string`；匹配、歧义与撤销语义不变。
+
+建议使用 `read {path}` 或 `read {reads: [{path, offset?, limit?}, ...]}`（最多 12 项），而不是同时使用。两者同时提供仍被接受，并集/去重行为不变。选择项的限制不变，不能与内容项混用。每个会话在 edit 组件生命周期中的首次成功 `edit` 或 `replace_across` 修改会追加 `undo_last_edit` 发现提示，不会每次修改都重复。
+
+### File pipelines
+
+文件工具通过 `save_as: "name"`（默认 `text`）或 `save_as: {name, from: "items.0.content"}` 显式捕获。只有 `resolve_vars: true` 才替换变量；否则 `$` 保持字面值，即使捕获时也是如此。值保存在会话头部，runner 重启后仍可用。工具历史只收到报告实际 JSON 编码大小的小收据，不重复复制内容。裸字符串结果显示原文而不是 JSON 引号/转义；对象有 `text` 时投影该字段。
+
+仅在 `read` 捕获时，core 提供私有 `__capture: true` 并覆盖客户端意图；这绕过 unchanged/outline 快捷方式，但不绕过大小限制。`__captureText` 与显示 `text` 分离，保存原始源窗口，不含分页或延迟指令提示。省略字节、超出 EOF，或非连续的 batch/select 顶层视图使它为 null；捕获这些视图报 `E_CAPTURE_UNAVAILABLE`。请缩小窗口，或显式捕获 batch 的 `items.N.content`、select 的 `items.N.contents.M` 单个原始区域。普通读取的显示与 unchanged 行为不变。不可用的项目/区域字段也会拒绝捕获，而不是保存 null；原始 select 区域每个最多 64KB，总计最多 512KB。这是可选文件管道，不是嵌套调用 DSL；简单循环和 codemod 留在 bash。
+
 ### `bash` in detail
 
 上面的 bash 行是摘要；这是模型所依据的契约。`bash {command, timeoutMs?, cwd?, run_in_background?}` 将 `bash -c <command>`（`$PATH` 解析，无覆盖）作为新进程组的领导者运行，stderr 按到达顺序合并到 stdout，子进程继承组件的环境（`NIF_ROOT`、`.env`、core 导出的一切）和 stdin，且高于 stderr 的描述符在生成前关闭。每次调用一个新 shell 意味着 `cd` 不持久；`cwd`（会话工作区）实现为 `cd -- <cwd> || exit $?`，因此缺失的工作区目录会使调用失败，而不是在别处运行。
 
-两个超时容易混淆。参数（`timeoutMs`，默认 30 秒）约束*命令* —— 超时会杀死整个进程组并报告退出码 124 —— 而 schema 的 `x-harness.timeoutMs`（60 秒）约束*core* 等待回复的时间。因此命令可以合法地比分发预算活得更久：使用 `timeoutMs: 120000` 时调用者看到的是分发超时，而不是整齐的 124。
+两种超时不同：`timeoutMs` 限制命令（默认 120 秒，最多 570 秒），而 `x-harness.timeoutMs` 让 core 等待回复最多 600 秒。内部时钟始终小于外部时钟，因此命令超时会杀死进程组并返回退出码 124 和已捕获的输出。
 
 输出由两个编译时常量约束，**没有环境旋钮** —— 组件中唯一的 `getEnv` 是 `NIF_ROOT`，因此更大的转录预算意味着重建它：最多捕获 2,000,000 字节，最多 12,000 字节的转录到达模型，保留头部和尾部，中间替换为
 `[... truncated <omitted> of <total> bytes (capped at <max>) — <hint> ...]`，
@@ -123,7 +133,7 @@ heredoc termination]` 而不是裸退出码。Heredoc 本身受支持：包含 `
 
 ### `grep` in detail
 
-上面的 `grep` 行是摘要。两个工具都以固定 argv 运行 ripgrep —— 模式作为 `--` 之后的参数传递，绝不通过 shell —— 因此引号、反斜杠和空格无需转义，这是相对于 `bash grep` 的可靠性优势。`rg` 通过 `PATH` 解析；当它缺失时两个工具都回答退出码 127 并给出指向 `bash grep -rn` 的安装提示。`.gitignore` 和隐藏/二进制文件默认跳过，`hidden: true` 添加隐藏文件而 `.gitignore` 仍然适用，`glob` 缩小范围而不取消隐藏。`path` 在分发时是工作区相对的，结果以绝对路径返回。
+上面的 `grep` 行是摘要。两个工具都以固定 argv 运行 ripgrep —— 模式作为 `--` 之后的参数传递，绝不通过 shell —— 因此引号、反斜杠和空格无需转义，这是相对于 `bash grep` 的可靠性优势。`rg` 通过 `PATH` 解析；当它缺失时两个工具都回答退出码 127 并给出指向 `bash grep -rn` 的安装提示。`.gitignore` 和隐藏/二进制文件默认跳过，`hidden: true` 添加隐藏文件而 `.gitignore` 仍然适用，`glob` 缩小范围而不取消隐藏。`path` 在分发时相对于工作区。会话结果文本中的文件名相对于工作区，匹配源文本不重写；外部文件名和独立调用输出仍使用绝对路径。
 
 `grep {pattern, path?, glob?, context? (≤50), case_insensitive?, hidden?,
 max_results? (default 200), timeoutMs? (default 30000)}` 返回 `path:line:match`
@@ -177,7 +187,7 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是会话 UI：它只�
 
 存储的**总线契约就是产物**：`put/get/list/search/del`、`expectRev` 乐观并发、按 id 排序的列表（docs/WIRE.md）。两个引擎实现该契约，并以组件 `store` 注册，提供完全相同的工具——消费者永远不会知道当前运行的是哪个引擎。选择是启动时的一次决定：`NIF_STORE_BACKEND=sqlite|tidb`（默认 `sqlite`）；core 据此解析清单条目中的二进制，遇到未知值则拒绝启动。从未构建的二进制只会发出警告（store 是 `required`，core 就此停下），绝不会被静默替换为另一个引擎的数据库。
 
-**`search`** 是服务端过滤器（`{kind, query, limit?, after?}` —— 不下载整个 kind，即可按 id/标题查找会话、按内容查找消息；niffler-tui 的 `/session` 使用它）。语义在每个引擎中都是契约：按 kind 划分的索引字段（conversation = id + title，message = id + content 文本（单文档上限 16KB），其他 kind 仅 id）、每个查询词的大小写不敏感**前缀**匹配（AND），非字母数字字符一律无作用，因此用户输入无需转义；排序/游标/上限沿用 `list` 的规则。引擎只在应答方式上不同：**sqlite** 维护一个 FTS5 索引（`docs_fts`，rowid 与 `docs` 共享，与文档在同一事务中维护；启动时两者不一致就从 `docs` 重建 —— 派生状态，可安全丢弃），而 **tidb** 没有索引，按 id 顺序扫描该 kind 并应用相同的匹配器（结果等价，每次调用 O(kind 中的文档数)）。
+**`search`** 是服务端过滤器（`{kind, query, limit?, after?}` —— 不下载整个 kind，即可按 id/标题查找会话、按内容查找消息；niffler-tui 的 `/session` 使用它）。语义在每个引擎中都是契约：按 kind 划分的索引字段（conversation = id + title，message = id + content 与 reasoning 文本（单文档上限 16KB），其他 kind 仅 id）、每个查询词的大小写不敏感**前缀**匹配（AND），非字母数字字符一律无作用，因此用户输入无需转义；排序/游标/上限沿用 `list` 的规则。引擎只在应答方式上不同：**sqlite** 维护一个 FTS5 索引（`docs_fts`，rowid 与 `docs` 共享，与文档在同一事务中维护；启动时两者不一致就从 `docs` 重建 —— 派生状态，可安全丢弃），而 **tidb** 没有索引，按 id 顺序扫描该 kind 并应用相同的匹配器（结果等价，每次调用 O(kind 中的文档数)）。
 
 - **sqlite**（默认，`var/bin/store-sqlite`，Go）：在 SQLite 上实现同一套文档契约。文档以 JSON TEXT 原样存储；`put` 是一条原子语句（文档与 rev 一起移动——KV 引擎的双键崩溃窗口不复存在）；schema 通过内嵌的 goose 迁移管理；纯 Go 驱动（`modernc.org/sqlite`，无 cgo）。数据文件 `var/store.db`（WAL），可用任何 SQLite 工具内省（`sqlite3 var/store.db 'select kind, count(*) from docs group by kind'`），也可从 DuckDB 以只读方式挂载用于离线分析。自上下文压缩落地以来成为默认：上下文投影需要原子写入和可范围读取的列表（docs/research/COMPACTION.md §2）。SQLite 的 pragma 是代码内置的，不可配置（`_txlock=immediate`、WAL、`synchronous(NORMAL)`、10 秒 `busy_timeout`、单个池化连接），goose 迁移在启动时自动应用。
 - **tidb**（`var/bin/store-tidb`，Go）：在 MySQL 协议（go-sql-driver）上实现同一套 schema——一个网络共享存储，任意数量的 harness 都可以从它提供服务。`NIF_STORE_TIDB_DSN` 指向集群（`root@tcp(host:4000)/niffler`；单节点 docker：`docker run -p 4000:4000 pingcap/tidb`）。`value` 保持 MEDIUMTEXT，而非原生 JSON 类型——二进制 JSON 会规范化键顺序和数字精度，破坏原样文档契约；索引查询稍后以 TEXT 上的生成列形式出现（一次 goose 迁移）。`kind`/`id` 为 utf8mb4_bin：字节精确相等、字节序列表排序和区分大小写的 LIKE 前缀（与其他引擎的契约对等）。无 flock——集群按设计就是共享状态；行锁（`SELECT … FOR UPDATE`，悲观事务）仲裁写入者，rev 计数器仍是乐观并发检查。也可用于普通 MySQL 8。DSN 用户需要 goose 创建版本表并应用迁移所需的权限；连接/读/写超时是硬编码的（5 秒 / 60 秒 / 30 秒），引擎持有单个池化连接（一个会话，因此 `FOR UPDATE` 事务的语句保持在一起）——一个集群上的 N 个 harness 持有 N 个连接，不共享连接池。
@@ -215,7 +225,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | **The store**（kind 表见 [The store](#the-store)） | 对话头、消息、`provider` 注册表（含凭据）、冻结的每对话工具集、slash 表、插件/组件安装记录、子代理作业/血缘记录、fabric 程序、MCP 服务器配置 | 持久——harness 的数据库 |
 | **Conversation header**（`conversation` kind） | 每对话选择：provider、providerOverride、model、modelOverride、thinking、profile、title、预算/token 计量——通过 `session` 调用设置（UI 中的 `/model`、`/effort`），并在轮次结果中回显 | 每对话 |
 | **Home / project files** | skills 树（项目 `.agents|.claude|.opencode/skills` > 内置 `skills/` > home `~/.niffler/skills` + agent 标准目录 > `~/.config/opencode/skills`，最后是编译进二进制的树作为最后手段）；LSP 注册表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，用户可编辑 |
-| **Home files (edit undo store)** | `$XDG_CONFIG_HOME/niffler-edit/undo.json`（否则 `~/.config/niffler-edit/undo.json`）：每个文件上次编辑前的字节，加上每对话的已见状态摘要。每个被编辑文件一条记录，无大小上限也无淘汰——它随被编辑的不同文件数量增长，随时可安全删除（删除它只会丢失撤销历史和未更改读取的存根，绝不丢失文件内容） | 持久，用户可编辑 |
+| **Edit undo + seen state** | 不再是主目录文件：每个（对话，文件）一个 **store 文档** —— 类型 `edit-undo`（上次编辑前的字节，供 `undo_last_edit` 使用）和 `edit-seen`（已观察的摘要/大小/行数，用于未更改读取存根和 `E_STALE` 门控），id 为 `<session>:<绝对路径>`。作用域限于拥有它们的对话，并随对话一起删除（`conversation_delete` 会清理这两种类型）。它们曾共用一个 `$XDG_CONFIG_HOME/niffler-edit/undo.json`，每次修改都整体重写——机器全局、无上限，也是 27 文件批量替换曾占用 edit 组件泵 53 秒的原因。删除这些文档只会丢失撤销历史和读取存根，绝不丢失文件内容 | 持久，store 支撑 |
 | **`var/`**（gitignored） | `bin/` 构建的二进制，`logs/` 总线 JSONL 和每组件 JSONL（`.1`…`.N` 轮转）加上子进程日志，`models/` 目录缓存，`nats-url`/`nats-pid` 总线认领，`processes/` 假脱机（每次启动的 `pN.out`/`pN.err`，启动时清空；id 从持久化计数器继续，而不是从 `p1` 重新开始），`repomap-tags/` 每文件标签缓存（以绝对路径的 sha1 为键的 `{mtime, tags}` JSON；空结果从不缓存），`fetch/`、`captures/`、`store.db`（SQLite 引擎的文件，也是唯一基于文件的引擎）加上其 `.lock`，同一时间只能有一个 `store` 进程持有 | 运行时，可重新生成 |
 | **Browser localStorage** | 仅显示：推理/工具卡详情级别、locale（`niffler-think`、`niffler-tools`） | 每浏览器 |
 | **Repo files** | `manifest.yaml`（随附的组件注册表）、`skills/`（内置 skills）、构建文件（`config.nims`、`*.nimble`、`Makefile`） | 版本化 |
@@ -447,11 +457,13 @@ cancel.<component>     cancellation side-channel: a runner publishes it when a
 `llm.cancel.compaction.<sessionId>.<attemptId>`——因此用户的回合停止
 既不能杀死摘要调用，也不会被摘要调用杀死。
 
-历史记录被逐字重放给 provider，这就是为什么适配器
-在输出时修复它：被中断的流（或有缺陷的写入器）留下的未终止的
+历史记录几乎逐字重放给 provider，这就是为什么适配器
+在输出时会处理它：它剥离除末尾仍在进行的助手轮次之外每条助手消息的
+`reasoning`（提供方本就会丢弃重放的 reasoning——在 DeepSeek 通道上实测；Anthropic 在服务端剥离过往轮次的思考——因此携带它只是无用的传输字节），
+然后修复 `tool_calls`：被中断的流（或有缺陷的写入器）留下的未终止的
 助手 `tool_calls` 载荷，其字符串和容器会被闭合，
 无法挽救的载荷变为 `{}`——否则严格的后端会拒绝整个
-请求。修复只读取文本，绝不执行任何内容。
+请求。剥离与修复只读取文本，绝不执行任何内容。
 
 在总线上挂载 `nats sub '>'` 可以实时看到 harness 的思考过程。
 或者更好：**console 组件**（`./var/bin/console`，不在
@@ -708,7 +720,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 - 每次聊天调用后，core 记录提示 token，并使用 `usage.total_tokens`（或提示 + 完成回退）作为当前最佳占用。提供方、模型、上下文、占用和覆盖也会镜像到对话头中，因此计量器在重启后无需加载整个记录即可存活。
 - Core 发出 `ev.session.<id>.status`，包含已解析的提供方/模型/上下文和当前 `usedTokens`；客户端直接渲染 `usedTokens / context`。当提供方报告缓存输入（`prompt_tokens_details.cached_tokens`）时，状态事件还会携带对话的累计缓存拆分作为 `cache {prompt, read, hitRate}`（提示和缓存 token 的总和，比率为百分比）；对话头保留相同的数字作为 `cachePrompt`、`cacheRead` 和 `cacheHitRate`。由于提示前缀被冻结，大多数提示 token 在第一次请求后应被缓存，因此低比率是一个值得注意的信号（Web UI 在每条消息上显示 `⚡ <cached>/<prompt> cached`，并在 `/info` 中显示累计拆分；TUI 在其头中显示 `cache NN%` 标记，并在 `/status` 中显示相同的拆分）。
 - 持久化消息携带永远不会到达 LLM 的审计元数据：每条消息上的 `createdAt`，所有地方的 `turnId`，以及 assistant、tool 和 error 记录上的 `startedAt` / `durationMs`（当 LLM 调用本身失败时会持久化一条 `error` 记录，重放会跳过 error 角色）。
-- 准入在**每一次**提供方请求之前运行，包括每个工具循环轮次。在存在报告的用量之前，它用保守的 chars/4 估算为整个请求（消息加上冻结的工具模式）定价。保留的余量是目录中模型声明的输出上限（`limit.output`，例如 DeepSeek 的 384000）——提供方在准入时会将请求的 `max_tokens` 计入其窗口，因此固定的 16K 保留量曾让一个 736,803 token 的提示溢出 1,048,576 的提供方限制，而仅提示本身就适合。`NIF_CTX_RESERVE` 覆盖推导出的保留量。Core 在到达有效线的 75% 处警告一次（`ev.session.<id>.context {reason: "warn:threshold"}`）；到达该线时——绝不晚于窗口的 90%——core 执行一个有界阶梯：确定性工具结果修剪 → 配置的压缩器 → 最旧完整轮次裁剪 → 显式 `context-recovery-required`。在传输线上，`llm` 组件还会将请求的输出限制为序列化提示（消息加上工具模式）所留下的余量，因此任一层中的估算漂移都无法将一个适合的提示推过提供方的限制。它绝不会在知情的情况下发送超窗口请求。
+- 准入在**每一次**提供方请求之前运行，包括每个工具循环轮次。在存在报告的用量之前，它用保守的 chars/4 估算为整个请求（消息加上冻结的工具模式）定价。保留的余量是目录中模型声明的输出上限（`limit.output`，例如 DeepSeek 的 384000）——提供方在准入时会将请求的 `max_tokens` 计入其窗口，因此固定的 16K 保留量曾让一个 736,803 token 的提示溢出 1,048,576 的提供方限制，而仅提示本身就适合。`NIF_CTX_RESERVE` 覆盖推导出的保留量。Core 在到达有效线的 75% 处警告一次（`ev.session.<id>.context {reason: "warn:threshold"}`）；到达该线时——绝不晚于窗口的 90%——core 执行一个有界阶梯：确定性修剪（工具结果与过往轮次的 reasoning）→ 配置的压缩器 → 最旧完整轮次裁剪 → 显式 `context-recovery-required`。在传输线上，`llm` 组件还会将请求的输出限制为序列化提示（消息加上工具模式）所留下的余量，因此任一层中的估算漂移都无法将一个适合的提示推过提供方的限制。它绝不会在知情的情况下发送超窗口请求。
 - 触发器以**提供方的尺度而非估算的尺度**衡量：每个成功响应都会重新测量一个校准偏移（报告的 `prompt_tokens` 减去同一请求的本地估算），准入、警告和修剪将候选定价为估算 + 偏移。原始的 chars/4 代理可能比更密集的分词器滞后数万个 token——在一个 524K 窗口的对话中观察到，"90%" 线在约 99% 时静默触发，而 core 称为 86% 的请求在 400 处被拒绝。该偏移是模型作用域的（在模型更改时清除，从下一个响应重新学习），在恢复时从存储的用量播种，限制在 `[0, window]`，并且从不持久化——它会在第一个响应时重新测量。
 - 随附的 `compaction_propose` 是可替换的：设置 `NIF_COMPACTION_TOOL=<tool>` 以选择另一个 contract-v1 实现，或将其设置为空以在保留确定性守卫的同时禁用摘要。该值是一个**工具名称**，而不是组件名称：运行器在目录中解析它，并分派到注册它的任何组件，因此替换项可以位于任何组件中。空值或未注册的值会跳过自动阶梯中的该级，并使 `/compact` 回答 `compacted: false`，并带有 `reason: "no compaction component available (NIF_COMPACTION_TOOL=<value>)"`。`NIF_COMPACTION_TIMEOUT_MS`、`NIF_COMPACTION_MAX_LLM_CALLS` 和 `NIF_COMPACTION_MAX_SUMMARY_TOKENS` 限制每次尝试。该接缝是一个版本化契约：候选工具以 `{version: 1, sessionId, attemptId, trigger, snapshot: {ref, generation, canonicalHigh, digest}, budget: {…}}` 被调用，并回答 `{version: 1, status: "declined", attemptId, reason}`（带有三个稳定原因之一：`no-useful-cut`、`input-budget-exceeded`、`indivisible`），或回答 `{version: 1, status: "candidate", attemptId, baseGeneration, snapshotDigest, cutBefore, covered, checkpoint, provenance: {model, llmCalls}}`，其中 `checkpoint` 恰好携带 `objective`、`constraints`、`decisions`、`completedWork`、`currentBlocker`、`nextSteps` 和可选的 `files`。任何其他内容都会作为无效被拒绝并落到修剪——`provenance.llmCalls` 高于授予的 `NIF_COMPACTION_MAX_LLM_CALLS` 也是如此，并且一个发现请求的 `attemptId`、`digest` 或 `generation` 与其读取的快照不一致的组件会以 `stale-snapshot` 拒绝该调用。运行器写入一个临时的分页 `compaction_input` 快照，验证候选的 generation/digest/cut/schema/size，针对快照重新哈希被覆盖的节点，并自行测量严格缩减（渲染后的检查点的估算 token 必须低于被覆盖跨度的估算 token），然后以乐观的 `expectRev` 提交一个 `context_projection` 文档。快照页为 512000 字节，因此一条巨大的消息不会使总线消息过大；检查点是有界的（objective 和列表项 ≤ 4000 字符，每个列表 ≤ 32 项，≤ 64 个文件，编码后 ≤ 65536 字节），并由运行器拥有的 `checkpoint-v1` 模板渲染，因此由一个压缩器存储的检查点在另一个压缩器下会以相同方式重新加载。该组件从不写入对话或投影记录。
 - 成功的投影发出 `reason: "reset:compact"`；无模型修剪发出 `reset:prune`；有损回退发出 `reset:trim`。`reset:tools` 仍然保留给实际的粘性工具模式提升。这些是唯一有意的提示前缀重建，并使缓存未命中可归因。压缩级会报告**每一个**非重置退出，绝不静默：`compact:unavailable`（未配置或未注册压缩器）、`compact:failed`（分派错误/超时、上一个投影无法读取、live context/node 账本不一致，或投影提交失败）、`compact:declined`（带 `detail` = 稳定拒绝原因，或运行器的 `no permitted cut exists yet` / `no committable cut exists yet`）、`compact:invalid`（schema、界限、声称的调用预算、严格缩减或边界解析失败）和 `compact:stale`（上一个投影缺失或过期、被覆盖跨度在尝试期间发生变化，或投影世代在提交前变动）。它们每一个都携带人类可读的 `detail`；它们都不重建提示前缀。成功的 `reset:compact` 事件携带 `generation`、`covered`、`beforeTokens` 和 `afterTokens`。阈值警告（`warn:threshold`）携带 `trimAt`——以 token 计的有效阈值线——因此 UI 可以显示与 core 打印的相同百分比，而不是自行编造。
@@ -718,7 +730,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 - 提供方报告的 `context-overflow` 恰好获得一次有回执支持的恢复尝试。相同的 prune → compactor → trim 顺序会被重新测量；第二次溢出是终局的，绝不是无界重试循环。当容量未知且拒绝不携带可解析的窗口时，该尝试会盲目缩减（无损修剪，然后裁剪到最新请求），并且只有在候选确实缩小时才会发出重试——不可缩减的候选会终局结束，而不是重新发送被拒绝的内容。适配器将提供方溢出措辞（包括某些主机返回的裸 `"Context limit exceeded"` 正文）规范化为稳定的 `context-overflow` 前缀；运行器的分类器将原始措辞作为回退携带。
 - 有损裁剪是**持久的**：它在对话头中记录其裁剪到的规范 seqNo（`trimThrough`），**每一条**恢复路径都会遵守它（普通路径与投影路径），因此重启会重建裁剪后的投影，而不是在计量器恢复裁剪后用量时重新膨胀完整的裁剪前上下文。这也覆盖在检查点提交**之后**才发生的裁剪：投影的 `retained` 列表只是提交时的尾部，因此恢复会丢弃水位线及以下的每个 retained 引用（规范历史仍为 `context_recall` 保留它们）并在原处重新插入省略通知。被丢弃的轮次保留在规范历史中供 `context_recall` 使用，并且省略通知是持久的：恢复的运行器重建裁剪后的投影并重新插入通知（范围诚实——它命名第一个保留 seq 以下的规范跨度，而不是实时运行的确切 `coveredFrom`/`coveredTo` 对），因此重启会保留一个指向投影所丢弃内容的可见指针。`mode: search` 是回到裁剪历史的方式——通知不携带 recall 引用，因为整轮丢弃覆盖许多消息。
 
-- 修剪步骤是字节精确且无模型的：超过 8192 字节的工具结果会被重写为其前 4096 字节、一个 `[tool result middle pruned: N bytes omitted — recall the original with context_recall {"ref": {"source": "spill", "id": "<convId>:<seq>"}}]` 标记，以及其最后 1024 字节——绝不两次，并且当结果不会缩小时绝不进行。标记的 `source` 恰好在结果由 spill 支持且提升的文档被重新验证时为 `spill`，否则为 `canonical`，并且其 `id` 是通知引用的规范 seqNo，因此可以直接传回 `context_recall`。这三个数字是常量，不是配置。`context_recall` 本身是按需的，不是隐藏的：`discover` 列出它，`invoke` 接受它，裸名称仍然会分派，但用 `tools` 允许列表冻结的对话会像拒绝该列表之外的任何工具一样拒绝它——这是修剪或 spill 通知的指令无法被遵循的唯一情况。
+- 修剪步骤是字节精确且无模型的：超过 8192 字节的工具结果会被重写为其前 4096 字节、一个 `[tool result middle pruned: N bytes omitted — recall the original with context_recall {"ref": {"source": "spill", "id": "<convId>:<seq>"}}]` 标记，以及其最后 1024 字节——绝不两次，并且当结果不会缩小时绝不进行。同一步骤会墓碑化过往轮次的 reasoning：除最后一条外，每条助手消息的 `reasoning` 都被替换为一行命名其规范 recall 引用的 `[thinking omitted — …]` 存根（`context_recall` 仍能取回原始内容），因为提供方会在重放时丢弃过往轮次的 reasoning，而计量器却将其计入；最后一条助手轮次保留其 reasoning 以供工具循环续接。标记的 `source` 恰好在结果由 spill 支持且提升的文档被重新验证时为 `spill`，否则为 `canonical`，并且其 `id` 是通知引用的规范 seqNo，因此可以直接传回 `context_recall`。这三个数字是常量，不是配置。`context_recall` 本身是按需的，不是隐藏的：`discover` 列出它，`invoke` 接受它，裸名称仍然会分派，但用 `tools` 允许列表冻结的对话会像拒绝该列表之外的任何工具一样拒绝它——这是修剪或 spill 通知的指令无法被遵循的唯一情况。
 
 ## Self-extension and component lifecycle
 
@@ -745,8 +757,8 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 |---|---|
 | `plugin_search {query?}` | GitHub 主题搜索；返回仓库、描述、星标，以及最终胜出的 `query` 和每次尝试的诊断信息——GitHub 对词做 AND 运算，所以零命中的查询会用更少的词重试 |
 | `plugin_installed` | 本 harness 上已安装的包 |
-| `plugin_install {repo, version?}` | 克隆到 `var/plugins/<pkg>@<ref>/`，通过构建器构建每个组件（v1 用 `build`，v2 用 `build_package`），然后 `spawn` 每个服务组件（需审批）。安装一个已有记录的包是错误，而不是重新安装——请用 `plugin_update`，或先 `plugin_remove`；克隆是浅克隆（`--depth 1`），v1 Go 包会带一个未跟踪的 `go.work` 供手动构建 |
-| `plugin_update {package}` | 更新到最新发布标签：移除，按新 ref 重新安装；没有发布（跟踪分支）的包就地拉取（对现有克隆执行 `git pull --ff-only`），当拉取移动了 HEAD 或已安装产物过期/缺失时重新构建 |
+| `plugin_install {repo, version?}` | 克隆到 `var/plugins/<pkg>@<ref>/`，通过构建器构建每个组件（v1 用 `build`，v2 用 `build_package`），然后 `spawn` 每个服务组件（需审批）。安装一个记录与克隆都存活的包是错误，而不是重新安装——请用 `plugin_update`，或先 `plugin_remove`；克隆已消失的记录（var/plugins 被手工删除、store 保留）属于过期记录，会由全新安装修复；克隆是浅克隆（`--depth 1`），v1 Go 包会带一个未跟踪的 `go.work` 供手动构建 |
+| `plugin_update {package}` | 更新到最新发布标签：移除，按新 ref 重新安装；没有发布（跟踪分支）的包就地拉取（对现有克隆执行 `git pull --ff-only`），当拉取移动了 HEAD 或已安装产物过期/缺失时重新构建；克隆已消失的记录会按记录的 ref 从头重新安装 |
 | `plugin_remove {package}` | 对每个受监督组件执行 `core.remove`，删除克隆，删除记录 |
 
 - 安装/更新/移除都带有 `x-harness.approval: "always"`——它们运行第三方代码，每一次单独的 spawn/remove 都会再次由 core 审批。除非你信任发布者，否则绝不要用 `NIF_AUTO_APPROVE=1` 运行它们。
@@ -914,7 +926,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 | `lsp_servers {}` | 列出已配置的服务器（只读，免审批）及其来源：`builtin` 默认或 `user` 注册表条目 |
 | `lsp_registry {action: add\|remove, name, command, extensions?, initializationOptions?, requires?, cheap?}` | 变更用户注册表（审批门控写入）。`add` 接受 `{name (lowercase letters/digits/hyphens), command, extensions: {".ext": "languageId"}}`，覆盖同名的内置项，并以 `E_LSP_CONFLICT` 拒绝已映射到另一个服务器的扩展名（先移除该映射）；`remove` 仅删除用户条目 |
 
-模型发送从 1 开始的 line/character（UTF-16，匹配 LSP 的代码单元约定）；`findReferences` 始终包含声明；结果有上限（100 个位置 / 约 16 000 个字符），并带有截断元数据；结构化的 `[E_LSP_*]` 错误（`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）让调用方根据代码而非文字进行路由 —— 超时和协议错误会附加服务器的最后一行 stderr，它命名了实际故障（缺少二进制文件、崩溃、索引）。
+模型发送从 1 开始的 line/character（UTF-16，匹配 LSP 的代码单元约定）；`findReferences` 始终包含声明；结果有上限（100 个位置 / 约 16 000 个字符），并带有截断元数据；结构化的 `[E_LSP_*]` 错误（`E_LSP_UNCONFIGURED`、`E_LSP_UNAVAILABLE`、`E_LSP_UNSUPPORTED`、`E_LSP_TIMEOUT`、`E_LSP_SCOPE`、`E_LSP_PROTOCOL`、`E_LSP_REGISTRY`、`E_LSP_CONFLICT`、`E_NOT_FOUND`、`E_NOT_TEXT`、`E_BAD_SHAPE`）让调用方根据代码而非文字进行路由 —— 超时和协议错误会附加服务器的最后一行 stderr，它命名了实际故障（缺少二进制文件、崩溃、索引）。
 
 **作用域是边界，不是相等。** 对话工作区内的文件在工作区根下索引（其预热的服务器被重用）；*外部*的文件 —— 同级检出、git worktree、agent 正在工作的任何其他目录 —— 在其自己的标记派生根下索引，回复携带命名它的 `workspaceRoot`，因为答案中的相对路径否则会有歧义。`E_LSP_SCOPE` 仅保留给两种会将无界树交给服务器的情况：路径中的 `..` 组件，以及标记遍历到达文件系统根或 `$HOME` 的文件（消息要求显式 `workspaceRoot`）。直接拒绝工作区外的文件曾被尝试过，并且实际上是有害的：编辑工具的诊断推送将拒绝吞没为“未配置服务器”，因此另一个检出中工作的 agent 既得不到诊断，也得不到它没有诊断的信号。
 
@@ -934,7 +946,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 当会话工作区被宣告时（`ev.workspace.opened`），Core 会自动触发一次 **warmup**：组件运行有界的扩展名普查（在 5 000 个文件或 2 秒预算时停止；隐藏文件和诸如 `node_modules`、`vendor`、`dist`、`build` 和 `target` 之类的垃圾目录会被跳过），并为最普遍的语言预启动服务器，这样第一次真正的查询就不必支付服务器启动开销。随后它发布 `ev.lsp.warm {workspace, warmed, skipped}`，以便 UI 可以显示哪些服务器已启动、哪些被跳过。`warmup` 操作会显式重新运行同一路径。
 
-未配置的语言会降级，而不会中断：没有服务器（或缺少二进制文件）的扩展名会返回 `E_LSP_UNAVAILABLE`，并在消息中给出修复方法 —— “add one with the lsp_registry tool (or edit <registry path>)”。模型会自行回退到 grep/read。
+未配置的语言会降级，而不会中断：没有服务器的扩展名返回 `E_LSP_UNCONFIGURED`（已配置但缺失或损坏的服务器返回 `E_LSP_UNAVAILABLE`），两者都在消息中给出修复方法 —— “add one with the lsp_registry tool (or edit <registry path>)”。模型会自行回退到 grep/read。edit 工具按错误码区分两者：未被声明的文件类型保持静默，注册表知道的类型总会得到一行说明。
 
 ### Registry: adding a language
 
@@ -984,6 +996,8 @@ git 工作流的只读部分，作为一等工具；写入部分（add/commit/pu
 **The git binary.** `git` 必须能在 `PATH` 上解析，并且命中组件自己的 `var/bin/git` 的 `PATH` 结果会被跳过（那会递归）；无法解析的 git 返回退出码 127 并附带安装提示。
 
 ## Background processes (`processes`)
+
+启动结果给出精确控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<返回 id>", waitMs: 25000}` 等待输出或退出，用 `process_kill {id: "<返回 id>"}` 停止。`filter` 仍排空所有新输出但只显示匹配行；`tail: "1"` 重读最近原始输出且不推进游标。仍运行进程的空非等待轮询，每个进程只提示一次使用等待。排空语义不变。
 
 状态：**已实现**（Nim 组件；`tests/t_processes.nim`）。
 
@@ -1146,6 +1160,8 @@ SDK 的冻结注册门控（`Announce` 在延迟注册时 panic；
 
 ## Progressive tool discovery
 
+默认直接工具仍为八个：`bash`、`read`、`edit`、`write`、`replace_across`、`grep`、`discover`、`invoke`。精简描述保留路由与可选/默认参数。精简 schema 和系统提示词只影响未来会话，不改写现有冻结快照。结果路由提示追加到工具历史，绝不注入易变前缀。
+
 状态：**已实现**。
 
 Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小而不可变的工具集。额外的 schema 通过 `discover` 进入仅追加的消息历史；对这些工具的调用则通过固定的 `invoke` 网关进行。这减少了提示词膨胀，同时不削弱核心的审批或超时策略。
@@ -1207,7 +1223,7 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
 
 `query` 是可选的，并以不区分大小写的方式匹配组件名、工具名和描述。多词查询是合取：每个以空白分隔的词都必须出现在组件名或工具名/描述中——像 "mechanical fan-out" 这样的关键词短语即使没有任何描述逐字包含它也会匹配。结果是确定性的：组件和工具按名称排序，描述是空白归一化的一行提示，上限为 200 个字符，并且排除 pid 和注册时间等易变字段。
 
-**空查询**返回组件登记表：每个组件一行，带有其名称、版本和工具计数（`tools`，拆分为 `direct` 和 `onDemand`），以及最多三句使用时机句子——`hints`，每项为 `{tool, hint}`，取自该组件的按需工具，并以 `more` 计数未列出的按需工具数。工具的声明式 `x-harness.hint` 句子优先于其描述的第一句。当登记表超过 6000 字节时，提示会被丢弃，答案会以名称加计数重建，并附带 `budget` 注记，因此病态的组件集合无法让一次发现调用变成数十 KB。
+**空查询**返回能力登记表，只包含至少一个可见工具的组件；按名称排序，保留版本、`tools`（拆为 `direct`/`onDemand`）和最多三个路由 `hints`，优先使用声明的 `x-harness.hint`。为满足包含游标元数据的 6000 编码字节上限，先从三个提示减至一个，再缩短提示，最后确定性分页，不会丢弃路由提示。部分页带 `hasMore`、`nextAfter`；仅用 `discover {after: "<nextAfter>"}` 继续。`limit` 已公布，限制每个暴露组的摘要（0 为全部，最大 200）。`tools: []` 等同省略。查询无匹配时会提示关键词采用 word-AND，可减少关键词或查看登记表。
 
 ```json
 {
@@ -1225,7 +1241,7 @@ Web Components 面板提供相同的 all/direct/discovered/undiscovered 过滤�
 }
 ```
 
-**非空查询**返回匹配的组件，并附上其匹配非隐藏工具的完整描述（`direct`/`onDemand` 数组，每项为 `{name, description}`）。`discover {component: "fetch"}` 以相同形状返回该单个组件，置于顶层 `component` 键下；`query` 在其中筛选，`limit` 为每个数组设限。`component` 和 `tools` 调用返回完整的描述和 schema。没有非隐藏工具的组件会被省略。
+**非空查询**返回匹配的组件，并附上其匹配非隐藏工具的完整描述（`direct`/`onDemand` 数组，每项为 `{name, description}`）。`discover {component: "fetch"}` 以相同形状返回该单个组件，置于顶层 `component` 键下；`query` 在其中筛选，`limit` 为每个数组设限。`component` 单独调用返回摘要；`tools` 请求返回完整 schema。没有非隐藏工具的组件会被省略。
 
 #### Schemas
 
@@ -1777,6 +1793,8 @@ Nim 的任意信封请求助手在等待时仅继续泵送原始 tap 订阅。�
 
 结构化日志在确切主题 `ev.log.<component>` 上发布事件，内容为 `{component, level, msg, ctx?, at}`。级别为 `debug`、`info`、`warn` 和 `error`。`NIF_LOG_LEVEL` 默认为 `info`，并在每个 SDK 中于发布前抑制更低级别。发出的无效级别会失败；无效阈值回退到 `info`。
 
+core 的 `--log=<level>` 标志（`debug`、`info`、`warn`、`error`）为 core 及其生成的所有组件设置 `NIF_LOG_LEVEL`，子进程继承 core 的环境。因此，`niffler --log=debug` 会启用解释一轮耗时的逐调用计时行：`llm` 组件的 `chat timing pre/setup/post/total`、core 的 `dispatch <tool> wait=` 和 runner 的 `session: llm call dur=`。`llm` 行写入 `var/logs/llm.jsonl`；dispatch 计时写入执行分派的进程的 `.log`，session 计时写入 `var/logs/session-<id>.log`（参见 `bench/README.md` 的“Model-call overhead”）。
+
 ### Monitoring
 
 当 core 生成 nats-server 时，它使用不同的回环客户端和 HTTP 端口，然后写入（二进制文件是存在时来自 `components/nats` 的已构建组件 `var/bin/nats-server`，否则是 PATH 中的 `nats-server`）：
@@ -2069,6 +2087,8 @@ make build
 | `spill` | `<convId>:<n>` | 从上下文窗口中提升出来的超大工具结果，可用 `context_recall {"ref": {"source": "spill", "id": "…"}}` 寻址。提升在追加时尽力而为（失败则保留临时文件指针且不添加引用）；缺失、为空或格式错误的 spill 文档会被大声拒绝，而不是作为空成功来回答，并且修剪门在修剪前会重新校验该文档，因此损坏的 spill 绝不会导致最后一份副本丢失 |
 | `mcp` | 服务器名 | `mcp` 组件的 MCP 服务器配置记录（见 [External MCP servers](#external-mcp-servers-mcp)） |
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建议式发现实验（`jev`）的每回合影子观测：候选快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。绝不向模型暴露，也绝不写入转录；后端缺席时**不**写任何记录（见[建议式发现](#advisory-discovery-jev-and-the-von-launcher)）。记录包含任务文本——按敏感数据处理 |
+| `edit-undo` | `<session>:<绝对路径>` | 文件的最后编辑前字节，供 `undo_last_edit` 使用（单级，按会话 + 文件）。在编辑*之前*写入；写入失败会拒绝编辑，而不是丢失撤销历史。作用域限于拥有它的会话——没有会话的调用方（cli 脚本）共享一个 `__standalone` 作用域。由 `conversation_delete` 清理 |
+| `edit-seen` | `<session>:<绝对路径>` | 会话最后观察到的文件状态（`digest`/`bytes`/`lines`/`full`），支撑未更改读取存根和 `E_STALE` 门控。仅确认记录已有内容的读取不写入；更正（或任何修改）才写入。store 不可达时读取结果为"从未查看"——这是安全的方向（见上文[存储](#the-store)）。由 `conversation_delete` 清理 |
 | `selftest` | store 自检探针 | 一次性——由 store 自身的自检往返写入并删除 |
 
 后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，或 DSN 共享的 TiDB 引擎（`NIF_STORE_BACKEND=tidb`，`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。
@@ -2077,15 +2097,18 @@ make build
 
 ## Testing
 
+基准适配器在私有总线上等待全部八个直接工具、`systemprompt.systemprompt` 和 manifest 中每个 required autostart 组件，并在创建会话前检查目录 root 与对象 schema。上下文排除项不变，包括 `AGENTS.md` 与 `AGENTS.local.md`；就绪检查不允许将 harness 贡献者上下文注入基准任务。
+
 ```bash
 make test           # the full gate: the bus-contract suite
-make test-server    # ... server side only: one test-owned NATS per test, no node
+make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test-bench     # ... Node adapter readiness and telemetry tests only
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`
 ```
 
-`make test-server` 通过 `scripts/run-tests.sh` 在有界池中运行约 60 个测试二进制（默认每个核心一个测试）：测试拥有私有的 NATS 服务器和临时 root，因此可以安全地重叠运行。每个测试的输出被捕获到 `var/test-logs/<name>.log`，完成时打印其墙钟时间，摘要会列出最慢的——可用 `TEST_JOBS=N`（或直接对脚本用 `NIF_TEST_JOBS=N`）覆盖；`TEST_JOBS=1` 是旧的顺序运行，无论哪种方式日志都按测试分开。`NIF_TEST_VERBOSE=1` 会在每个测试的行之后交错输出其捕获的输出。
+`make test-server` 通过 `scripts/run-tests.sh` 在有界池中运行约 60 个测试二进制（默认半数的核心——池中的每个作业不是单个进程：它启动自己的 core/store/llm 子进程，且若干测试会用 `nim c` 编译 fixture，因此每个核心一个作业会让机器过载）：测试拥有私有的 NATS 服务器和临时 root，因此可以安全地重叠运行。每个测试的输出被捕获到 `var/test-logs/<name>.log`，完成时打印其墙钟时间，摘要会列出最慢的——可用 `TEST_JOBS=N`（或直接对脚本用 `NIF_TEST_JOBS=N`）覆盖；`TEST_JOBS=1` 是旧的顺序运行，无论哪种方式日志都按测试分开。`NIF_TEST_VERBOSE=1` 会在每个测试的行之后交错输出其捕获的输出。
 
 每个测试都会启动真实的组件二进制（Nim、Go *和* TypeScript——信封就是产物，因此一个 harness 测试所有 SDK），并在每个测试自己启动的私有 nats-server 上驱动它们（`NIF_NATS_SPAWN` 式隔离）。
 此门是自包含的：不需要浏览器、Wails 或前端工具链。（实验性的桌面 UI 位于 [gokr/niffler-ui](https://github.com/gokr/niffler-ui)，在那里运行它自己的检查。）
