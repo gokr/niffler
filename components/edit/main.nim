@@ -1887,6 +1887,7 @@ discard comp.tool("edit", toolSchema(%*{
   "Apply contextual replacements in one existing file. Copy old_string from a read; each must match once unless replace_all. All edits match the original file."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "variables": true,
+     "writes": {"paths": ["path"]},
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("replace_across", toolSchema(%*{
@@ -1918,6 +1919,7 @@ discard comp.tool("replace_across", toolSchema(%*{
   "Apply identical literal replacements across files selected by paths and/or glob; no pre-read needed. Every occurrence; rules run in order. Unmatched files pass, a zero total refuses. Use edit for contextual changes."), hReplaceAcross,
   %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "variables": true,
+     "writes": {"paths": ["glob", "paths"]},
      "workspace": {"pathFields": ["glob"], "pathArrayFields": ["paths"]}})
 
 discard comp.tool("undo_last_edit", toolSchema(%*{
@@ -1950,6 +1952,7 @@ discard comp.tool("write", toolSchema(%*{
   $maxWriteBytes() & " bytes."), hWrite,
   %*{"approval": "always", "timeoutMs": 60000, "sessionId": true,
      "variables": true,
+     "writes": {"paths": ["path"]},
      "workspace": {"pathFields": ["path"]}})
 
 comp.run()

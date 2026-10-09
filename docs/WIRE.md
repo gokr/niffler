@@ -974,7 +974,25 @@ keys:
   dispatch — the key is core-owned private context, never caller data.
 - `effect`: `"read"` or `"write"` (default) — how the fabric batch host
   schedules items (reads fill the concurrency cap together, writes run
-  exclusively).
+  exclusively). Not to be confused with `writes` below: `effect` is
+  *scheduling*, `writes` is *ownership*.
+- `writes`: the tool mutates files, so the dispatch gate takes a write lease
+  over them from the `locks` component before the call runs
+  (docs/research/WRITE-ARBITRATION.md). Two shapes:
+  `{"paths": ["path", "glob", "paths"]}` names the argument fields
+  (single string or string array) that hold the files it will change — the
+  values are already workspace-resolved by `workspace.pathFields`; and
+  `{"root": true}` claims the conversation workspace root for a tool whose
+  reach is opaque (`bash`, `builder`, `plugins`, `mcp`, `fabric`), which
+  conflicts with any claim beneath it. **Declaring nothing means opaque**:
+  the conservative default, so a component that forgets the key still
+  cannot write unguarded. A conflicting lease refuses the call with a normal
+  tool error naming the holder — `[E_WRITE_BUSY] <path> is being modified by
+  conversation <id> (edit, 4s ago)` — which reaches the model as an ordinary
+  tool result (append-only history, no prefix change). The lease is released
+  when the call finishes and expires after `NIF_LOCK_TTL_MS` if the runner
+  dies. Read-only tools declare no `writes` and pay nothing: no lease is
+  taken, no round trip is made.
 - `workspace`: path-shaped arguments are resolved against the conversation
   workspace at dispatch. Such tools also receive core-owned private context
   `__workspace = {root, roots}` — the conversation's **workspace set**: the

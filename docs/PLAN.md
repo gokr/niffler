@@ -30,13 +30,16 @@ of this file.
 
 ## Current priorities
 
-- **Write arbitration between concurrent writers** — nothing arbitrates
-  filesystem writes today: `core/dispatch.nim`'s leases cover the nested-call
-  proxy only. Parallel dispatch, several conversations per workspace and
-  pre-created worktrees are all shipped, so two session runners can interleave
-  edits in one tree with no owner and no conflict signal. This is a correctness
-  hole, not a safety one. Design: [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md)
-  proposal A ([REASONIX.md](research/REASONIX.md) #7,
+- **Write arbitration between concurrent writers** — *phase 1 shipped* (the
+  `locks` component, the dispatch gate, `edit`/`write`/`replace_across` +
+  bash/builder/fabric as opaque writers). Phase 2 is wiring the remaining
+  opaque writers (`plugins`, `mcp`) and phase 3 is crash/TTL hardening plus
+  worktree claims. Nothing arbitrated filesystem writes before; parallel
+  dispatch, several conversations per workspace and pre-created worktrees are
+  all shipped, so two session runners could interleave edits in one tree with
+  no owner and no conflict signal. Design:
+  [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md) proposal A
+  ([REASONIX.md](research/REASONIX.md) #7,
   [CODEWHALE.md](research/CODEWHALE.md) D1).
 - **Evidence ledger + host-adjudicated completion claims** — a subagent settles
   with prose and nothing checks its citations against what the host actually

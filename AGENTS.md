@@ -121,6 +121,14 @@ working in every language.
   `x-harness.effect` (`"read"` | `"write"`, default write — how the fabric
   batch host schedules items: reads fill the concurrency cap together,
   writes run exclusively),
+  `x-harness.writes` (`{"paths": [...]}` names the argument fields holding the
+  files a tool will change; `{"root": true}` claims the whole conversation
+  workspace for an opaque writer like bash/builder/fabric; declaring nothing
+  also counts as opaque — the dispatch gate takes a `locks`-component lease
+  over the claim before the call runs, so two conversations cannot interleave
+  writes to one file; disjoint paths stay parallel. A conflict is a normal
+  tool error naming the holder, `[E_WRITE_BUSY] …`, and the lease expires
+  after `NIF_LOCK_TTL_MS` if the runner dies. docs/research/WRITE-ARBITRATION.md),
   `x-harness.sessionId` (runner injects `__session.session` as private
   context so the component can match `cancel.<component>` messages against
   its in-flight call — bash kills the command's process group; docs/WIRE.md
