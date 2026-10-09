@@ -8,6 +8,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The website lays out cleanly on phones.** The nav splits into links and
+  actions that wrap or scroll instead of overflowing; the hero install command
+  gains a copy button beside a primary Install button; the wide benchmark
+  tables and the architecture diagram scroll inside their own frames (with a
+  scroll hint on small screens) rather than pushing the whole page sideways;
+  and `prefers-reduced-motion` turns off the new smooth scrolling.
 - **The ranked `search` lane indexes message reasoning too.** The FTS lane
   indexed `value.content` only, while the recall component's grep fallback
   matches the whole message JSON — so "what did I consider and reject" was
@@ -36,6 +42,22 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The one-line installer builds release binaries.** `bootstrap.sh`'s build
+  step ran `make build`, which compiles debug (checks on, timing lanes
+  available) — right for a developer's clone, wrong for the binary an install
+  ships. It now runs `make release`, so a fresh install gets the optimized
+  harness.
+- **A subagent no longer inherits the provider's model echo.** A fresh
+  subagent with no explicit model pin inherited the parent conversation
+  header's `model` field — which is the provider's *echo* of what served
+  (DeepSeek reports `deepseek-flash` for a request for `deepseek-v4-flash`),
+  not the requested id. Pinning that echo manufactured a cross-catalog
+  mismatch on the child's first turn (the echo names a model some other
+  provider owns) while the parent kept working, and a DeepSWE cell burned
+  three rounds recovering by passing the model explicitly. A child now
+  inherits only an explicit `modelOverride` with its provider pin, and
+  otherwise resolves from the same defaults the parent's turns use. Covered
+  by `tests/t_agent.nim` and an echo-stamping scenario in `components/ctxtest`.
 - **Past turns' reasoning no longer counts toward context pressure or rides
   the wire.** Providers discard prior-turn reasoning on replay — measured on
   the DeepSeek lane: identical `prompt_tokens` with a 62-token reasoning
@@ -99,6 +121,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Benchmarks
 
+- **The DeepSWE lane runs each agent in its prepared container image.** The
+  port had run agents in a bare host checkout and forbidden validation in the
+  prompt; now `NIF_BASH_SANDBOX_MAP='<workspace>=<image>'` makes every `bash`
+  command — foreground and background alike — run as `docker run --rm
+  --network none` with only the workspace root bind-mounted, and
+  `prepare.mjs` overlays the image's `/app` on the checkout so dependencies
+  are exactly as the task ships them. The held-out upstream mirror moves to
+  `~/.cache/niffler-deepswe/upstream`, outside the repo tree, and
+  `bench/run.mjs --agent-env <file>` merges KEY=VALUE lines into the run's
+  environment.
+- **A fresh full31 sweep updates the website's benchmark table.** Pi upgraded
+  0.99.2 → 1.1.0, Opencode 1.18.35 joins as a row, and Niffler's row is now
+  the average of two fresh runs (15.4s / $0.0039 per task, 89% cache hit).
+  Rows stay sorted by cost per task, and the footnote records the
+  one-cell-at-a-time (jobs=1) methodology and the two-run average.
+- The opencode bench lane now reports turn and tool-call shape (one
+  `step_finish` per LLM step, one `tool_use` event per invocation), filling in
+  Turns/Tool-calls columns that were zeros. `bench/config.json`'s opencode
+  model follows DeepSeek's registry rename of `deepseek-v4-flash` to canonical
+  `deepseek-flash`, whose old alias opencode 1.18.35's refreshed metadata
+  rejects.
+- The DeepSWE pilot records a follow-up run on a release build of `main` @
+  `1daa3cc` — 5/10 versus the original pilot's 3/10 on the same ten tasks (yjs,
+  the hardest cell at 244 rounds / 56 min / 33M tokens, and tomlkit newly
+  pass). Failure shapes moved from 600–700 s drownings to 100–144-round
+  grinds, and prompt-cache reads held at 97% over the long horizon.
 - Full31 tool-diet run on `fdf2ae0`: 31/31 pass, all eight tools frozen for
   every task; first prompts −23.6% and total tokens −5.3% on the comparable
   t03–t31 subset. Model rounds increased, so this establishes prefix/result
@@ -134,6 +182,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`niffler --log=<level>`** sets the log level (`debug|info|warn|error`,
+  default `info`) for core and every component it spawns, distributing
+  `NIF_LOG_LEVEL` through the environment rather than asking each component to
+  grow a flag parser. `debug` turns on the per-call timing lines (the llm
+  component's `pre=/setup=/post=`, the dispatcher's `dispatch wait=`, and the
+  runner's `llm-call dur=`), which land in `var/logs/*.jsonl` like any other
+  log line.
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
   ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
   idempotent, per-tool non-fatal target (apt/brew; Debian's fdfind/batcat
