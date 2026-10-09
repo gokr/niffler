@@ -386,7 +386,8 @@ messages by content without downloading the whole kind; niffler-tui's
 `/session` uses it, and `context_recall mode: search` builds transcript
 retrieval on it, issue #51). Semantics are contract in every engine:
 per-kind indexed fields (conversation = id + title, message = id +
-content text capped at 16KB, others = id only), case-insensitive
+content and reasoning text, capped at 16KB per document in total, others = id
+only), case-insensitive
 **prefix** matching of every query word (AND), everything non-alphanumeric
 inert so user input needs no escaping, `idPrefix` narrowing to one id
 space (LIKE metacharacters escaped, never widened), and two documented
@@ -779,11 +780,16 @@ that separation — compaction cancels
 `llm.cancel.compaction.<sessionId>.<attemptId>` — so a user's turn stop can
 neither kill nor be killed by a summarization call.
 
-History is replayed to the provider verbatim, which is why the adapter
-repairs it on the way out: an assistant `tool_calls` payload left unterminated
+History is replayed to the provider almost verbatim, and that is why the
+adapter touches it on the way out: it strips `reasoning` from every assistant
+message but the trailing live turn (providers discard replayed reasoning
+anyway — measured on the DeepSeek lane; Anthropic strips prior turns'
+thinking server-side — so carrying it is dead wire bytes), then repairs
+`tool_calls`: an assistant `tool_calls` payload left unterminated
 by a dropped stream (or a buggy writer) has its strings and containers closed,
 and an unsalvageable payload becomes `{}` — a strict backend rejects the whole
-request otherwise. The repair reads text only and never executes anything.
+request otherwise. The strip and repair read text only and never execute
+anything.
 
 `nats sub '>'` attached to the bus shows the harness thinking in real time.
 Or better: **the console component** (`./var/bin/console`, not in the
@@ -1150,7 +1156,8 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   warns once at 75% of the way to the effective line
   (`ev.session.<id>.context {reason: "warn:threshold"}`); at it — never later
   than 90% of the window — core executes a bounded ladder: deterministic
-  tool-result prune → configured compactor → oldest complete-turn trim →
+  prune (tool results and past-turn reasoning) → configured compactor →
+  oldest complete-turn trim →
   explicit `context-recovery-required`. On the wire the `llm` component
   additionally clamps the requested output to the headroom the serialized
   prompt (messages plus tool schemas) leaves, so estimation drift in either
@@ -1288,7 +1295,13 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   rewritten as its first 4096 bytes, an `[tool result middle pruned: N bytes
   omitted — recall the original with context_recall {"ref": {"source": "spill",
   "id": "<convId>:<seq>"}}]` marker, and its last 1024 bytes — never twice,
-  and never when the result would not shrink. The marker's `source` is `spill`
+  and never when the result would not shrink. The same step tombstones past
+  turns' reasoning: every assistant message but the last has its `reasoning`
+  replaced by a one-line `[thinking omitted — …]` stub naming its canonical
+  recall ref (`context_recall` still reaches the original), since providers
+  discard prior-turn reasoning on replay while the meter counted it; the last
+  assistant turn keeps its reasoning for a tool-loop continuation. The
+  marker's `source` is `spill`
   exactly when the result was spill-backed and the promoted document
   re-verified, else `canonical`, and its `id` is the canonical seqNo the notice
   quotes, so it can be passed straight back to `context_recall`. Those three
