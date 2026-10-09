@@ -23,6 +23,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The one-line installer ships release binaries.** `scripts/bootstrap.sh`
+  now runs `make release` for its build step instead of `make build`, so a
+  fresh install runs the optimized (`-d:release`) binaries rather than the
+  debug build a developer clone wants; `make build` still swaps debug back.
 - **`plugin_install`/`plugin_update` repair a stale install record instead of
   refusing.** A record whose checkout (`var/plugins/<pkg>@<ref>`) is gone —
   e.g. that directory was wiped by hand while `var/store.db` survived — made
@@ -71,6 +75,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Benchmarks
 
+- **The DeepSWE lane now runs the agent in its task's prepared environment.**
+  `NIF_BASH_SANDBOX_MAP` makes every `bash` call run as
+  `docker run --rm --network none` of the task image with only the workspace
+  bind-mounted (`NIF_BASH_NET=off` is the netns variant), so the agent has the
+  image's dependencies and can validate — the upstream container's semantics —
+  while held-out material and the live network stay unreachable. `bench/run.mjs
+  --agent-env <file>` merges `KEY=VALUE` lines into a run's environment. On the
+  `clack` smoke task this moved f2p 73/82 → 82/82 and cut bash calls 54 → 8.
 - Full31 tool-diet run on `fdf2ae0`: 31/31 pass, all eight tools frozen for
   every task; first prompts −23.6% and total tokens −5.3% on the comparable
   t03–t31 subset. Model rounds increased, so this establishes prefix/result
@@ -96,6 +108,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`niffler --log=<level>`** — one flag (`debug`, `info`, `warn`, `error`)
+  sets `NIF_LOG_LEVEL` for core and every component it spawns (children
+  inherit core's environment). `--log=debug` turns on the per-call timing
+  lines — the `llm` component's `chat timing pre/setup/post/total`, core's
+  `dispatch <tool> wait=` and the runner's `session: llm call dur=`. The
+  `llm` line lands in `var/logs/llm.jsonl`; dispatch and session timing
+  lines go to the dispatching process's `.log` and
+  `var/logs/session-<id>.log`, respectively. This replaces the
+  ad-hoc `NIF_LLM_TIMING`/`NIF_TURN_TIMING` switches.
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
   ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
   idempotent, per-tool non-fatal target (apt/brew; Debian's fdfind/batcat
