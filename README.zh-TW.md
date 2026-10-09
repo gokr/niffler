@@ -18,7 +18,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 - **開放模型，所有供應商。** 任何 OpenAI 相容端點——本機、開放權重或代管——透過 `.env` 或由儲存支援的供應商登錄檔；ChatGPT/Claude 訂閱 OAuth 以及由 models.dev 支援的目錄。請參閱[供應商](docs/MANUAL.md#provider-registry-provider)與[模型目錄](docs/MANUAL.md#model-catalog-models)。
 - **漸進式工具揭露。** 一組小型、凍結的直接工具集；其他一切只需一次 `discover`/`invoke`，以歷史形式附加，而非提示詞膨脹。請參閱 [MANUAL](docs/MANUAL.md#progressive-tool-discovery)。
 - **人類保持在迴圈中。** 需核准的工具，附帶 manifest 摘要與每個會話的 `ask`/`auto` 模式；在無法觸及人類時，呼叫會被拒絕，絕不會默默允許。請參閱[核准](docs/MANUAL.md#approvals)。
-- **多語言。** 主要是 Nim 和 Go，但沒有元件被綁定到特定語言：Nim、Go 和 TypeScript 的 SDK，以及一個完全沒有 SDK 的隨附 bash 示範。請參閱 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- **多語言。** 主要是 Nim 和 Go，但沒有元件被綁定到特定語言：Nim、Go 和 TypeScript 的 SDK，以及一個完全沒有 SDK 的樹內 bash 示範（`examples/dialog`）。請參閱 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 - **匯流排就是 API。** `niffler-tui`、桌面 UI、`cli` 和 `console` 是平等的匯流排用戶端；數個可以同時連接，且各自獨立建置與安裝（TUI 是自己的外掛）。請參閱[啟動與停止](docs/MANUAL.md#starting-and-stopping)。
 - **為長時間執行而打造。** 凍結的提示詞/工具前綴讓提示詞快取保持溫熱；耐久的壓縮與有界的溢位復原讓會話保持存活；軟性 `/limit` 預算與硬性失控防護並存。請參閱[上下文視窗](docs/MANUAL.md#context-window)。
 - **本機優先，複製即實例。** 對話與元件狀態位於 `var/`（預設為 SQLite），且 harness 執行自己的 NATS 匯流排，沒有中央服務。請參閱[佈局](docs/MANUAL.md#layout-of-a-running-system)。
@@ -27,7 +27,11 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 
 ## Quick start
 
-需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 僅在 TypeScript 元件時需要。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
+需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 是選用的——它們用於 TypeScript 元件、`npx` 技能與以 npm 為基礎的 MCP 伺服器。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
+
+一行安裝：`scripts/bootstrap.sh` 會找到或建立複製、安裝先決條件，然後執行 `make setup`、`make release` 與 `make install-tui`：
+`curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`。
+以下步驟是手動開發設定（`make build` 產生除錯二進位檔；安裝程式使用最佳化的發行二進位檔）。
 
 ```bash
 git clone https://github.com/gokr/niffler.git

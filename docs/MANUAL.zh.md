@@ -39,7 +39,7 @@
 | 路径 | 它是什么 |
 |---|---|
 | `core/` | 控制平面：系统 harness（`niffler.nim`：总线引导、监督器、目录、分发）+ 会话运行器（`session.nim`）及其驱动的回合循环（`conversation.nim` —— 最大的模块 —— 外加 `compaction.nim`、`approval.nim`、`retry.nim`、`uireg.nim`、`tty.nim`） |
-| `components/` | 随附的组件源码 —— 每个组件一个目录（Nim、Go、TypeScript 和一个 bash 演示）；清单是下面的[随附组件](#shipped-components)表，这是必须保持最新的部分。有两个目录不是总线公民：`components/nats` 构建 `var/bin/nats-server`，当需要启动总线时由 core 生成；`components/ctxtest` 是嵌套调用测试（`t_fabric`、`t_agent`）为自己编译的夹具 |
+| `components/` | 随附的组件源码 —— 每个组件一个目录（Nim、Go 和 TypeScript）；清单是下面的[随附组件](#shipped-components)表，这是必须保持最新的部分。有两个目录不是总线公民：`components/nats` 构建 `var/bin/nats-server`，当需要启动总线时由 core 生成；`components/ctxtest` 是嵌套调用测试（`t_fabric`、`t_agent`）为自己编译的夹具 |
 | `sdk/` | Nim SDK（`sdk/niffler`）+ `sdk/go`（Go）+ `sdk/ts`（TypeScript/Node.js，npm 包 `niffler-sdk`）；`sdk/envelope.nim` 中的信封就是产物 |
 | `docs/` | 本手册、线协议规范（`WIRE.md`）、设置设计（`research/SETTINGS.md`）、核心边界理由（`ARCHITECTURE.md`）、fabric 用户指南（`FABRIC_GUIDE.md`）、待办工作（`PLAN.md`）以及 `research/`（设计历史） |
 | `manifest.yaml` | 引导清单：core 生成哪些组件、重启策略，以及可选的无状态 `replicas` 数量；`--minimal` 将其过滤为 `store`、`bash` 和 `llm` |
@@ -90,7 +90,8 @@
 | `hooks` | Nim | 默认关闭 | 当选定的总线事件触发时运行操作员 shell 命令（仅观察；stdin 上的 JSON，环境配置；见[钩子](#hooks)） |
 | `mcp` | Go | 可选 | 外部 MCP 服务器（Model Context Protocol）：存储支持的注册表（`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`），每个服务器一个受监督的桥（子进程是单独的 `mcp-bridge` 二进制 —— `var/bin/mcp-bridge`，由 `make build` 构建，路径可用 `NIF_MCP_BRIDGE_BIN` 覆盖；它没有清单条目，从不手动启动）；工具成为普通的目录工具，可通过 `discover` + `invoke` 到达（见[外部 MCP 服务器](#external-mcp-servers-mcp)） |
 | `nats-server` | Go | **不在清单中** | 总线本身作为一等组件：官方 `nats-server` main 的忠实重建（固定在 `components/nats/go.mod`），由 `make build` 构建到 `var/bin/nats-server`，core 优先于 PATH 安装使用它，因此不需要 NATS 先决条件。故意*不是*总线组件 —— core 在总线存在之前启动它，它不注册任何工具，`core.spawn` 无法启动它。Niffler 添加一个标志 `--max_payload <bytes>`（core 传递 8388608），在 Linux 上它设置 `PR_SET_PDEATHSIG`，使没有孤儿总线比其 harness 活得更久。无需为它安装任何东西 —— `make doctor` 报告 `nats-server: OK` 或解释它由 `make build` 从源码构建 |
-| `dialog` | bash | — | 完全用 bash 编写的演示组件 —— nats CLI + jq，无 SDK，无编译步骤：`dialog_show` 弹出桌面对话框（zenity、notify-send 或日志回退），`dialog_ask` 向用户询问是/否问题并返回答案（`dialog_show` → `{ok, shown: yes|no, via: zenity|notify|log, kind}` —— `shown` 是后端的真实结果：失败的对话框或日志回退是 `no`，绝不是假的 `yes`；`dialog_ask` → `{ok, answer: yes|no|timeout|no-display}` —— `timeout` 意味着有人看到了对话框并让它过期，`no-display` 意味着没有人能回答）。两个工具都不是审批门控或按需的，因此当 `dialog` 运行时启动的每个会话的直接工具集中都会包含它们，且在没有显示（`DISPLAY` 未设置或 zenity 缺失）时 `dialog_ask` 立即回答 `no-display` 而不询问任何人。随附在 `var/bin/dialog`（`make build`）中但**不自动启动**；用 `spawn {name: "dialog", binary: ".../var/bin/dialog"}`（core 的工具）生成它。先决条件：nats CLI 和 `jq` 是硬性的 —— 缺少任何一个组件根本无法回答；`zenity`（或 `notify-send`）仅用于可见部分，且仅在设置了 `DISPLAY` 时。`make setup` 安装全部三个，`make doctor` 检查它们 |
+
+`components/` 不再包含 bash 演示：无 SDK 的 `dialog` 组件已移至 `examples/dialog/dialog.sh`，并带有自己的 README，脱离随附构建和 `make setup` —— nats CLI 和 `zenity` 安装器随之退役（`jq` 作为通用 CLI 工具保留）。对照运行中的 harness 手动运行它（`bash examples/dialog/dialog.sh`）；它不在 `manifest.yaml` 中，没有任何东西将其构建到 `var/bin`，`make doctor` 仅指向它。
 
 `components/ctxtest/` 是“每个组件一个目录 = 一个随附组件”的例外：它是契约测试自己的夹具 —— 一个存根 `chat` LLM 加上嵌套调用探针 —— 测试自己将其编译为注册为 `ctxtest` 和 `ctxsink` 的二进制文件。它不在此表中，不在 `manifest.yaml` 中，且从不被 `make build` 构建。
 
@@ -235,7 +236,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 
 ## Environment variables
 
-所有组件加载 `.env`（从 harness 根目录和 cwd，已存在的 shell 环境始终优先——见下文）并继承 core 的环境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 和 `NIF_LSP_BIN` 是仅用于构建和脚本的旋钮（`NIF_NATS_CLI` 是例外——生成的 bash 组件 `dialog` 将其作为最后手段的 nats CLI 读取）：它们引导 `make` 和 `scripts/`，随附组件从不查询它们——仅测试用的 `ctxtest` 夹具读取 `NIF_REPO_ROOT` 以加载 fabric 示例——因此它们不属于下面运行时表的一部分。`NIF_LSP_BIN` 在那里仍有一行：它是 `make install-lsp` 的目标目录，其默认值（`~/.local/bin`）也是 `lsp` 组件搜索的位置。完整集合：
+所有组件加载 `.env`（从 harness 根目录和 cwd，已存在的 shell 环境始终优先——见下文）并继承 core 的环境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 和 `NIF_LSP_BIN` 是仅用于构建和脚本的旋钮（`NIF_NATS_CLI` 是例外——树内 bash 演示 `examples/dialog/dialog.sh` 将其作为最后手段的 nats CLI 读取）：它们引导 `make` 和 `scripts/`，随附组件从不查询它们——仅测试用的 `ctxtest` 夹具读取 `NIF_REPO_ROOT` 以加载 fabric 示例——因此它们不属于下面运行时表的一部分。`NIF_LSP_BIN` 在那里仍有一行：它是 `make install-lsp` 的目标目录，其默认值（`~/.local/bin`）也是 `lsp` 组件搜索的位置。完整集合：
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -341,7 +342,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | `NIF_LOG_RETENTION_DAYS` | core 在清扫前保留子进程日志的天数 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在新组件于目录中注册之前等待多久才使调用失败（钳制 250–120000）；当目录记录拒绝时等待提前结束，因此该旋钮仅约束静默组件 | `5000` |
 
-**构建和脚本旋钮**——由 harness 周围的脚本读取，组件从不读取：`NIF_BIN_DIR`（`scripts/install.sh` 将 PATH 条目链接到的 bin 目录）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 加 flock 的锁文件——构建时排他，测试运行时共享）、`NIF_NATS_CLI`（`components/dialog/dialog.sh` 驱动的 nats CLI——此处唯一一个组件确实读取的条目：仅当 `nats` 既不在 `PATH` 上也不在 `$HOME/go/bin` 中时才查询它）、`NIF_CONF_KEEP`，加上测试辅助 `NIF_STORE_BIN` 和 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 和 `NIF_LSP_BIN_DIRS` 是运行时变量，留在上表中。锁仅覆盖 `make`：`builder.build` 在其之外运行，因此运行时组件构建可能与 `make build` 竞争——而 `make clean` 在其下删除 `var/bin` 和 `var/build`。当 agent 正在构建组件时停止 harness。
+**构建和脚本旋钮**——由 harness 周围的脚本读取，组件从不读取：`NIF_BIN_DIR`（`scripts/install.sh` 将 PATH 条目链接到的 bin 目录）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 加 flock 的锁文件——构建时排他，测试运行时共享）、`NIF_NATS_CLI`（`examples/dialog/dialog.sh` 驱动的 nats CLI——此处唯一一个组件确实读取的条目：仅当 `nats` 既不在 `PATH` 上也不在 `$HOME/go/bin` 中时才查询它）、`NIF_CONF_KEEP`，加上测试辅助 `NIF_STORE_BIN` 和 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 和 `NIF_LSP_BIN_DIRS` 是运行时变量，留在上表中。锁仅覆盖 `make`：`builder.build` 在其之外运行，因此运行时组件构建可能与 `make build` 竞争——而 `make clean` 在其下删除 `var/bin` 和 `var/build`。当 agent 正在构建组件时停止 harness。
 
 每个 Niffler 变量都带有 `NIF_` 前缀，因此 harness 从不与使用裸约定的工具（`NATS_URL`、`OPENAI_API_KEY`）冲突。
 
@@ -770,7 +771,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 - GitHub API 以未认证方式使用（60 req/h/IP）。
 - 发布：添加 `niffler-component` 主题并打发布标签（`v1.0.0`）。[`gokr/niffler-weather`](https://github.com/gokr/niffler-weather) 示例中的发布工作流会自食其果：它启动一个 harness 并通过 `plugin_install` 安装该包，因此每个标签都证明该包能干净安装。
 - 包可以通过注册一个带 `x-models-source: {version: 1, priority: ...}` 的隐藏工具来扩展或修正模型元数据。`models` 组件会自动发现它，并在该组件存在期间应用其 JSON Merge Patch。参见 [Source plugins](#source-plugins)。
-- 树内有三种参考形态：`gokr/niffler-weather` 包（Nim）、MCP 桥（一个被 spawn 的 Go 组件），以及 `components/dialog/dialog.sh`——一个完全没有 SDK 的纯 bash 组件。
+- 树内有三种参考形态：`gokr/niffler-weather` 包（Nim）、MCP 桥（一个被 spawn 的 Go 组件），以及 `examples/dialog/dialog.sh`——一个完全没有 SDK 的纯 bash 组件。
 
 ## Skills
 
