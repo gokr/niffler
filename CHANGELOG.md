@@ -8,6 +8,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The website lays out cleanly on phones.** The nav splits into links and
+  actions that wrap or scroll instead of overflowing; the hero install command
+  gains a copy button beside a primary Install button; the wide benchmark
+  tables and the architecture diagram scroll inside their own frames (with a
+  scroll hint on small screens) rather than pushing the whole page sideways;
+  and `prefers-reduced-motion` turns off the new smooth scrolling.
+- **The ranked `search` lane indexes message reasoning too.** The FTS lane
+  indexed `value.content` only, while the recall component's grep fallback
+  matches the whole message JSON — so "what did I consider and reject" was
+  findable on one lane and not the other. `value.reasoning` is now indexed
+  beside content under the same 16KB per-document cap; `docs/WIRE.md`'s
+  store contract is updated to match.
+- **The test suite defaults to half the cores.** A pool job is not one
+  process — each boots its own core/store/llm children and several tests
+  compile a fixture with `nim c` — so one job per core oversubscribed the
+  box, showing up as load-dependent failures (drain races in `t_processes`,
+  fixture compiles timing out) rather than as useful speed. The full suite
+  ran green at `jobs=7`; `CORES` overrides the machine reading and
+  `TEST_JOBS` the pool depth.
 - Slimmed the base prompt and all eight direct tool descriptions without
   removing capabilities. Optional pipelines keep literal `$` by default;
   file selection and exact-edit routing are explicit, and models are asked
@@ -27,6 +46,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now runs `make release` for its build step instead of `make build`, so a
   fresh install runs the optimized (`-d:release`) binaries rather than the
   debug build a developer clone wants; `make build` still swaps debug back.
+- **A subagent no longer inherits the provider's model echo.** A fresh
+  subagent with no explicit model pin inherited the parent conversation
+  header's `model` field — which is the provider's *echo* of what served
+  (DeepSeek reports `deepseek-flash` for a request for `deepseek-v4-flash`),
+  not the requested id. Pinning that echo manufactured a cross-catalog
+  mismatch on the child's first turn (the echo names a model some other
+  provider owns) while the parent kept working, and a DeepSWE cell burned
+  three rounds recovering by passing the model explicitly. A child now
+  inherits only an explicit `modelOverride` with its provider pin, and
+  otherwise resolves from the same defaults the parent's turns use. Covered
+  by `tests/t_agent.nim` and an echo-stamping scenario in `components/ctxtest`.
+- **Past turns' reasoning no longer counts toward context pressure or rides
+  the wire.** Providers discard prior-turn reasoning on replay — measured on
+  the DeepSeek lane: identical `prompt_tokens` with a 62-token reasoning
+  block replayed; Anthropic strips prior turns' thinking server-side and
+  needs only the live turn's blocks for tool loops — but the meter counted
+  it, so the 90% whole-turn trim fired ahead of the provider's real window. A
+  thinking-heavy conversation carried ~129k phantom tokens of pressure in
+  this repo's own transcript. `pruneContext` now replaces every assistant
+  message's reasoning but the last with a one-line stub naming the canonical
+  recall ref (re-derived from position on every projection rebuild, so no
+  records are kept; idempotent; canonical docs untouched, so recall still
+  reads the original thinking), and the llm component's `sanitizeMessages`
+  strips prior-turn reasoning at the request boundary so the stub never
+  reaches the network. Covered by `tests/t_ctxcompact.nim` and
+  `components/llm/main_test.go`.
 - **`plugin_install`/`plugin_update` repair a stale install record instead of
   refusing.** A record whose checkout (`var/plugins/<pkg>@<ref>`) is gone —
   e.g. that directory was wiped by hand while `var/store.db` survived — made
@@ -83,6 +128,22 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   while held-out material and the live network stay unreachable. `bench/run.mjs
   --agent-env <file>` merges `KEY=VALUE` lines into a run's environment. On the
   `clack` smoke task this moved f2p 73/82 → 82/82 and cut bash calls 54 → 8.
+- **A fresh full31 sweep updates the website's benchmark table.** Pi upgraded
+  0.99.2 → 1.1.0, Opencode 1.18.35 joins as a row, and Niffler's row is now
+  the average of two fresh runs (15.4s / $0.0039 per task, 89% cache hit).
+  Rows stay sorted by cost per task, and the footnote records the
+  one-cell-at-a-time (jobs=1) methodology and the two-run average.
+- The opencode bench lane now reports turn and tool-call shape (one
+  `step_finish` per LLM step, one `tool_use` event per invocation), filling in
+  Turns/Tool-calls columns that were zeros. `bench/config.json`'s opencode
+  model follows DeepSeek's registry rename of `deepseek-v4-flash` to canonical
+  `deepseek-flash`, whose old alias opencode 1.18.35's refreshed metadata
+  rejects.
+- The DeepSWE pilot records a follow-up run on a release build of `main` @
+  `1daa3cc` — 5/10 versus the original pilot's 3/10 on the same ten tasks (yjs,
+  the hardest cell at 244 rounds / 56 min / 33M tokens, and tomlkit newly
+  pass). Failure shapes moved from 600–700 s drownings to 100–144-round
+  grinds, and prompt-cache reads held at 97% over the long horizon.
 - Full31 tool-diet run on `fdf2ae0`: 31/31 pass, all eight tools frozen for
   every task; first prompts −23.6% and total tokens −5.3% on the comparable
   t03–t31 subset. Model rounds increased, so this establishes prefix/result
@@ -105,6 +166,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   footprint table by base prompt + tools, and correct Maki's footprint to
   ≈7.4k with its tool count fixed at 19. Each table highlights its compared
   column.
+- **The model-call timing seams share one flag.** The llm component's
+  `chat timing pre/setup/post/total` line, the dispatching process's
+  `dispatch <tool> wait=` line, and the runner's `session: llm call dur=`
+  all gate on `NIF_LOG_LEVEL=debug` — the
+  log level `niffler --log=debug` distributes to every component's
+  environment at boot — not on per-seam env vars, so `NIF_LOG_LEVEL=debug`
+  in front of `bench/run.mjs` collects every line. `bench/README.md` writes
+  down the per-call budget they established: the harness's own cost per model
+  call is ~48ms (43 handler + 5 bus), while the ~450ms that looked like
+  harness overhead is provider-side setup — neither the token fan-out,
+  contention, nor the runner's bookkeeping (6ms).
 
 ### Added
 
