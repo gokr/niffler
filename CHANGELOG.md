@@ -113,14 +113,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   can wait, narrow, or ask; the refusal is append-only history, never a prefix
   change. Leases are released when the call finishes and expire after
   `NIF_LOCK_TTL_MS` (default 600000), so a runner that dies mid-call cannot
-  wedge a workspace. Absence of the component is fail-open (one `core: locks
+  wedge a workspace; a stale lease is swept on the component's idle tick. The
+  lease table is held in memory with one durable document per lease (a restart
+  rebuilds it) — a shape that came from measuring, not assuming: keeping every
+  lease in one document made an acquire ~50us per live lease (~54ms at 1000),
+  and reading the whole table over the bus cost ~49ms at the same size, against
+  ~1.5ms flat now. Absence of the component is fail-open (one `core: locks
   component absent — writes are unarbitrated` warning, in the spirit of repomap
   absent) while present-but-unreachable is fail-closed — a lock table existed a
   moment ago, so the write is refused rather than silently unguarded. Read-only
-  tools declare nothing and pay nothing: no lease, no round trip. Design,
-  limits and the phase plan: [WRITE-ARBITRATION.md](docs/research/WRITE-ARBITRATION.md);
-  the two contract tests are `make test-locks` (the table's own contract) and
-  `make test-arbitration` (the gate refusing a real turn's edit end to end).
+  tools declare nothing and pay nothing: no lease, no round trip. Two things the
+  implementation must not change: the table's shape (its cost is the thing that
+  regressed once already) and `replicas` (unset — two instances would hold
+  partial views). Design, cost table and the phase plan:
+  [WRITE-ARBITRATION.md](docs/research/WRITE-ARBITRATION.md); the two contract
+  tests are `make test-locks` (the table's own contract, with a latency
+  regression guard) and `make test-arbitration` (the gate refusing a real turn's
+  edit end to end).
 
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
   ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
