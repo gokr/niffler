@@ -1,11 +1,39 @@
 # Write arbitration and the evidence ledger — two proposals
 
-> Design proposals. **Nothing implemented.** Two related holes, one ordering:
+> Status: **A implemented on `feat/write-arbitration`, not merged; B remains a proposal.** Two related holes, one ordering:
 > A is a correctness fix, B is what makes A's receipts useful, and the eval
 > harness (PLAN.md "Current priorities") is what stops either being asserted
 > rather than measured. Open work has one home — [../PLAN.md](../PLAN.md).
 
 Baseline: `main` at `e3fb00c` (2026-10-09).
+
+## Correctness review before merge
+
+The first implementation overstated its guarantees. The review corrected:
+
+- Startup loads publish an index only after every store page succeeds; a failed
+  load refuses the request and remains retryable, never an empty-table success.
+- Release deletes the durable record before removing the runtime claim. A store
+  failure retains the claim and reports failure instead of resurrecting it later.
+- Claims are acquired after human approval, with a lifetime at least the tool's
+  transport timeout plus 60 seconds (minimum 10 minutes). Unacknowledged
+  timeout/cancellation retains the claim until expiry, not immediate release.
+- Session-context orchestrators (Fabric/agent) do not take an outer root claim:
+  their nested calls re-enter dispatch and acquire their own claims. Read-effect
+  tools and hidden runner machinery also take no claim.
+- The original latency regression mistakenly measured denials on one file.
+  It now requires 120 successful, distinct claims and successful probe acquires.
+  Historical benchmark numbers are exploratory, not throughput guarantees.
+
+Verified: restart reconstructs a durable holder, recovered leases release, and
+an actual Fabric guest writes through nested dispatch without self-conflicting.
+The full server gate passed 72 tests. Store-outage fault injection and a
+long-running writer/expiry regression remain open before merge. Expiry alone
+cannot establish that an uncooperative process stopped; without fencing or
+backend-enforced termination this remains cooperative coordination, not strict
+filesystem exclusion. Direct bus calls, autonomous background jobs, native guest
+I/O outside nested tools, and other harness instances are not covered. Claims
+are declared reach, **not receipts proving a file was actually written**.
 
 ## The one-paragraph statement of both
 

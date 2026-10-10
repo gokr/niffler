@@ -30,9 +30,12 @@ of this file.
 
 ## Current priorities
 
-- **Write arbitration between concurrent writers** — *phase 1 shipped* (the
+- **Write arbitration between concurrent writers** — *phase 1 implemented on
+  `feat/write-arbitration`, not merged* (the
   `locks` component, the dispatch gate, `edit`/`write`/`replace_across` +
-  bash/builder/fabric as opaque writers) and the table's cost now measured and
+  bash/builder as opaque writers; Fabric guards nested calls individually).
+  Restart recovery and nested-Fabric regressions pass; store-outage fault
+  injection and long-writer/expiry coverage remain before merge. The cost was measured and
   flat (in-memory index, one durable doc per lease; ~1.5 ms per mutating call,
   independent of how many leases are live — see WRITE-ARBITRATION.md §A.2.3).
   Phase 2 is wiring the remaining opaque writers (`plugins`, `mcp`) and phase 3
