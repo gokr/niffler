@@ -126,7 +126,8 @@ window"; [WIRE.md](WIRE.md) "Subjects", "Approvals", "Attachments".
 - Workspace pinning (`cwd`), immutable per conversation, with a workspace set
   that includes linked git worktrees and sibling checkouts of the same origin.
 - Mid-turn steering, turn-bound advisory delivery, repo-map appends and
-  asynchronous LSP diagnostics — all folded as append-only history.
+  asynchronous LSP diagnostics — folded as append-only history (clean
+  diagnostics are display/storage-only and never enter model history).
 - Image attachments: validation (MIME allowlist, magic bytes, per-image and
   per-turn caps), metadata/pixel store split, deterministic greedy-newest
   projection, caption placeholder, delete sweep.
@@ -361,8 +362,8 @@ See [WIRE.md](WIRE.md) (the single contract).
   `bad-envelope` replies, streaming frames with a terminal `done`.
 - Registration and discovery subjects, queue-grouped service calls, the
   session-runner call surface, and the full per-conversation event namespace
-  (turn, assistant, status, context, retry, token, toolcall, steer, advice,
-  notice, map, diagnostics, done).
+  (turn, assistant, status, context, retry, token, toolcall, steer, steer_sent,
+  advice, notice, map, diagnostics, done).
 - Component and system events: catalog updates, model-catalog updates,
   provider switch/change, workspace opened, SDK logs, LSP warmup, agent and
   fabric lifecycle events.

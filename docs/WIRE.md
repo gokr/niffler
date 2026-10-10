@@ -108,11 +108,13 @@ svc.session.<id>.map    # fire-and-forget event envelope {workspace, conversatio
                         #   (NIF_REPOMAP_AUTOAPPEND=0 opts out;
                         #   research/REPOMAP-GATES.md); a map that never arrives
                         #   never fails a conversation
-svc.session.<id>.diag   # fire-and-forget event envelope {conversationId, path, text}
-                        #   from the lsp component: rendered diagnostics for a file
-                        #   you just edited, delivered when the server answered
-                        #   (instead of making the edit wait) and appended to history
-                        #   once. A cold or absent server yields a one-line note
+svc.session.<id>.diag   # fire-and-forget event envelope {conversationId, path, text,
+                        #   clean} from the lsp component: rendered diagnostics for a
+                        #   file you just edited, delivered when the server answered
+                        #   (instead of making the edit wait). Non-clean verdicts append
+                        #   to history once; a clean:true whole-file verdict is
+                        #   display/storage-only (kind diagnostic) and never enters
+                        #   model history. A cold or absent server yields a one-line note
 cancel.<component>     # turn-cancel side-channel (see "Cancellation"): a runner
                         #   publishes an event envelope {sessionId, tool, ts} when
                         #   it abandons an in-flight dispatch; components opt in
