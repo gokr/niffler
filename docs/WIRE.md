@@ -983,7 +983,7 @@ keys:
   (single string or string array) that hold the files it will change — the
   values are already workspace-resolved by `workspace.pathFields`; and
   `{"root": true}` claims the conversation workspace root for a tool whose
-  reach is opaque (`bash`, `builder`, `plugins`, `mcp`, `fabric`), which
+  reach is opaque (`bash`, `builder`, `plugins`, `mcp`), which
   conflicts with any claim beneath it. A declared value carrying a wildcard
   (`*` or `?` — a `replace_across` glob) is claimed as the **base directory
   before the first wildcard**, not as the pattern text: the pattern
@@ -997,9 +997,13 @@ keys:
   tool error naming the holder — `[E_WRITE_BUSY] <path> is being modified by
   conversation <id> (edit, 4s ago)` — which reaches the model as an ordinary
   tool result (append-only history, no prefix change). The lease is released
-  when the call finishes and expires after `NIF_LOCK_TTL_MS` if the runner
-  dies. Read-only tools declare no `writes` and pay nothing: no lease is
-  taken, no round trip is made.
+  after an acknowledged successful reply; an unacknowledged timeout/cancel
+  retains it until expiry. Session dispatch requests a lifetime at least the
+  tool timeout plus 60 seconds (minimum 10 minutes), after approval. Expiry is
+  cooperative recovery, not proof a remote process stopped. `effect: "read"`,
+  hidden runner machinery, and `sessionContext` orchestration take no outer
+  claim; nested calls acquire independently at the same gate. Direct bus calls
+  and autonomous background execution are outside this dispatch guarantee.
 - `workspace`: path-shaped arguments are resolved against the conversation
   workspace at dispatch. Such tools also receive core-owned private context
   `__workspace = {root, roots}` — the conversation's **workspace set**: the

@@ -1778,6 +1778,15 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string): seq[string] =
   ## directory (globClaim) — otherwise the stripe would be the pattern text,
   ## which prefix-matches no real file and would guard nothing.
   if workspace.len == 0: return @[]
+  let policy = if schema != nil: schema{"x-harness"} else: nil
+  # Orchestrators re-enter this gate for each nested call. An outer root claim
+  # would block those calls (and child conversations) against their own parent.
+  # Read-effect tools do not mutate files; internal runner machinery such as
+  # chat must never hold a filesystem claim across a whole model round.
+  if policy != nil and (policy{"sessionContext"}.getBool(false) or
+      policy{"effect"}.getStr("") == "read" or
+      (policy{"hidden"}.getBool(false) and policy{"runner"}.getBool(false))):
+    return @[]
   let w = if schema != nil: schema{"x-harness"}{"writes"} else: nil
   if w == nil or w.kind != JObject: return @[workspace]
   if w{"root"}.getBool(false): return @[workspace]
@@ -1805,7 +1814,7 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string): seq[string] =
   return claimed
 
 proc acquireWriteLease(ct: CoreTools, tool, callId: string,
-                       paths: seq[string]): bool =
+                       paths: seq[string], timeoutMs: int): bool =
   ## Ask the locks component for a write lease before dispatching. Returns
   ## true when the call may proceed.
   ##
@@ -1829,7 +1838,8 @@ proc acquireWriteLease(ct: CoreTools, tool, callId: string,
   try:
     r = dispatchSubjectCall(ct, "svc.locks.call", "lock_acquire", %*{
       "root": paths[0], "roots": roots, "paths": arr,
-      "sessionId": sessionId, "tool": tool, "callId": callId}, 10_000)
+      "sessionId": sessionId, "tool": tool, "callId": callId,
+      "ttlMs": max(timeoutMs + 60000, 600000)}, 10_000)
   except CatchableError as e:
     raise newException(ValueError,
       "[E_WRITE_BUSY] locks component unreachable: " & e.msg &
@@ -1898,14 +1908,6 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # interleave writes to one path. Read-only tools declare nothing and pay
   # nothing; the lease is released on every exit below and its TTL is the
   # backstop for a runner that dies mid-call.
-  let writePaths =
-    if ct.nested != nil: writePathsFor(schema, callArgs, ct.nested.workspace)
-    else: @[]
-  let lockCallId = if writePaths.len > 0: newId() else: ""
-  if writePaths.len > 0:
-    discard acquireWriteLease(ct, tool, lockCallId, writePaths)
-  defer:
-    if lockCallId.len > 0: releaseWriteLease(ct, lockCallId)
   let hasDeadline = deadlineMs > 0
   let deadline = if hasDeadline:
                    getMonoTime() + initDuration(milliseconds = deadlineMs)
@@ -1936,6 +1938,22 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       (deadline - getMonoTime()).inMilliseconds.int)
     if timeoutMs <= 0:
       raise newException(IOError, "tool '" & tool & "' deadline expired")
+
+  # Acquire only after approval and timeout resolution: waiting for a human
+  # must not consume the lease lifetime or prevent unrelated writers.
+  let writePaths =
+    if ct.nested != nil: writePathsFor(schema, callArgs, ct.nested.workspace)
+    else: @[]
+  let lockCallId = if writePaths.len > 0: newId() else: ""
+  if writePaths.len > 0:
+    discard acquireWriteLease(ct, tool, lockCallId, writePaths, timeoutMs)
+  var writeCompleted = false
+  defer:
+    # A timeout/cancel is not proof the remote writer stopped. Keep its claim
+    # until expiry rather than allowing another write immediately. Successful
+    # replies (including cooperative partial replies) acknowledge completion.
+    if lockCallId.len > 0 and writeCompleted:
+      releaseWriteLease(ct, lockCallId)
 
   # Cancel-aware tools (x-harness.sessionId): inject the live session id
   # as private context so the component can match cancel.<component>
@@ -1995,7 +2013,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     return dispatchSubjectCall(ct, "svc." & comp & ".call", tool,
                                callArgs, timeoutMs)
 
-  dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
+  result = dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
+  writeCompleted = true
 
 # ---------------------------------------------------------------------------
 # Parallel dispatch — fan out a wave of tool calls over the bus

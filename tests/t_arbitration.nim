@@ -39,7 +39,9 @@ proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
     getEnv("NIF_ROOT", getAppDir().parentDir()))
 
-  let sandbox = newCoreSandbox("arbitration", ["store", "edit", "locks", "llm"])
+  let sandbox = newCoreSandbox("arbitration", ["store", "edit", "locks", "llm", "fabric"])
+  copyFileWithPermissions(repoRoot / "var" / "bin" / "fabric-exec",
+                          sandbox.sandboxBin("fabric-exec"))
   let root = sandbox.root
   defer: removeDir(root)
 
@@ -52,10 +54,14 @@ proc main() =
   # One scripted round: an exact-match edit of the held file. The mock returns
   # this tool call, the gate judges it, and the second round's final answer
   # lets the turn close so the transcript exists to read.
-  putEnv("NIF_MOCK_ROUNDS", "1")
+  putEnv("NIF_MOCK_ROUNDS", "2")
   putEnv("NIF_MOCK_TOOLJSON", $(%*[{"name": "edit", "arguments": {
     "path": root / "ws" / "held.txt",
-    "edits": [{"old_string": "two", "new_string": "TWO"}]}}]))
+    "edits": [{"old_string": "two", "new_string": "TWO"}]}},
+    {"name": "fabric", "arguments": {
+      "tools": ["write"],
+      "code": "import fabricguest\nfinish(callTool(\"write\", " &
+        "\"{\\\"path\\\":\\\"nested.txt\\\",\\\"content\\\":\\\"nested-ok\\\"}\"))"}}]))
 
   # A lease that outlives the turn, so the refusal is deterministic rather than
   # a race with turn timing.
@@ -144,6 +150,16 @@ proc main() =
                       "paths": [root / "ws"], "sessionId": "conv-after",
                       "tool": "edit", "callId": "after-call"}, 10000)
   check("released workspace is claimable again", after{"ok"}.getBool(false), $after)
+
+  discard call(nc, "locks", "lock_release", %*{"leaseId": "conv-after:after-call"})
+  let nestedTurn = call(nc, "core", "session", %*{
+    "sessionId": "conv-nested", "content": "exercise nested writer",
+    "cwd": root / "ws"}, 120000)
+  check("nested Fabric write succeeds without self-conflict",
+    fileExists(root / "ws" / "nested.txt"), $nestedTurn)
+  if fileExists(root / "ws" / "nested.txt"):
+    check("nested write produced expected bytes",
+      readFile(root / "ws" / "nested.txt") == "nested-ok")
 
   report("ARBITRATION TEST")
 

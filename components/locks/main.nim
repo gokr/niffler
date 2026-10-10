@@ -155,13 +155,17 @@ proc loadIndex(c: Component) =
   ## One-time boot load: rebuild the in-memory table from the durable documents
   ## a previous incarnation of this component wrote.
   if gLoaded: return
+  # Build a candidate off to the side: a failed page must never publish a
+  # partial/empty table or latch the loaded flag. Retry on the next request.
+  var recovered: seq[Lease]
+  for item in c.storeListAll(storeKind, "", 1000, 10_000):
+    if item.value == nil: continue
+    if item.id == "table":
+      raise newException(IOError,
+        "legacy aggregate lock table requires operator migration; refusing writes")
+    recovered.add(leaseFromJson(item.value))
+  gLeases = recovered
   gLoaded = true
-  try:
-    for item in c.storeListAll(storeKind, "", 10_000, 10_000):
-      if item.value != nil:
-        gLeases.add(leaseFromJson(item.value))
-  except CatchableError:
-    discard  # an unreachable store leaves an empty index; acquire persists below
 
 proc loadTable(c: Component): seq[Lease] =
   ## The lease table. In memory, loaded once from the store at boot and
@@ -195,12 +199,13 @@ proc forgetLease(c: Component, leaseId: string): bool =
     if l.leaseId == leaseId: found = true
     else: kept.add(l)
   if not found: return false
+  # Persist deletion before removing the runtime claim. On failure retain it:
+  # otherwise a restart would resurrect a lease we had reported as released.
+  let response = c.request("store", "del",
+    %*{"kind": storeKind, "id": leaseId}, 5_000)
+  if not response{"ok"}.getBool(false):
+    raise newException(IOError, "lock deletion refused by store")
   gLeases = kept
-  try:
-    discard c.request("store", "del", %*{"kind": storeKind, "id": leaseId},
-                      5_000)
-  except CatchableError:
-    discard  # the index is authoritative at runtime; a stale doc is swept later
   result = true
 
 proc dropLease(c: Component, leaseId: string): bool =
@@ -337,6 +342,7 @@ proc hLockRelease(c: Component, args: JsonNode): JsonNode =
   let callId = args{"callId"}.getStr("")
   let leaseId = args{"leaseId"}.getStr("")
   let key = if leaseId.len > 0: leaseId else: leaseIdFor(sessionId, callId)
+  loadIndex(c)
   let removed = if dropLease(c, key): 1 else: 0
   %*{"ok": true, "released": removed}
 
@@ -380,6 +386,10 @@ discard comp.tool("lock_status", toolSchema(%*{
 # here, rather than inside lock_acquire, keeps the acquire path free of the
 # table scan — the measured reason the per-lease table exists at all.
 discard comp.onIdle(30_000) do (c: Component):
-  sweepStale(c, epochTime())
+  try:
+    loadIndex(c)
+    sweepStale(c, epochTime())
+  except CatchableError:
+    discard # No caller to answer; retain claims and retry on the next tick.
 
 comp.run()

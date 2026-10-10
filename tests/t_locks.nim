@@ -58,6 +58,14 @@ proc checkPure() =
           @["/ws"], "")
   check("an undeclared tool is treated as opaque",
         writePathsFor(%*{}, %*{}, "/ws") == @["/ws"], "")
+  check("read tools take no claim",
+        writePathsFor(%*{"x-harness": {"effect": "read"}}, %*{}, "/ws").len == 0)
+  check("orchestrators defer claims to nested dispatch",
+        writePathsFor(%*{"x-harness": {"sessionContext": true,
+          "writes": {"root": true}}}, %*{}, "/ws").len == 0)
+  check("internal model machinery takes no claim",
+        writePathsFor(%*{"x-harness": {"hidden": true, "runner": true}},
+          %*{}, "/ws").len == 0)
 
 proc main() =
   checkPure()
@@ -91,7 +99,7 @@ proc main() =
     if coreProc.running(): coreProc.terminate()
     discard coreProc.waitForExit(2000)
 
-  let locksProc = startComponent(repoRoot / "var" / "bin" / "locks", url,
+  var locksProc = startComponent(repoRoot / "var" / "bin" / "locks", url,
                                  root = root, logFile = root / "locks.log")
   defer:
     if locksProc.running(): locksProc.terminate()
@@ -178,7 +186,7 @@ proc main() =
   check("lock_status ok", st{"ok"}.getBool(false), $st)
   check("lock_status shows live leases", st{"count"}.getInt(0) >= 1, $st)
 
-  # ── acquire cost does not grow with the number of LIVE leases ──
+  # ── distinct load claims must succeed (not repeated denials on one file) ──
   # This is the regression guard for the shape of the table. The first
   # implementation kept every lease in one store document and rewrote the whole
   # list per call (~50us per live lease: 54ms at 1000); a per-document version
@@ -186,13 +194,20 @@ proc main() =
   # index made acquire ~flat. A released/replaced table would still get these
   # checks right — the assertion below is the one that catches the cost.
   for i in 0 ..< 120:
-    discard acquire("conv-load", "load" & $i, @[ws / "sub" / "c.txt"])
+    let loadedClaim = call(nc, "locks", "lock_acquire", %*{
+      "root": ws, "roots": [ws], "paths": [ws / ("load-" & $i)],
+      "sessionId": "conv-load", "tool": "edit", "callId": "load" & $i,
+      "ttlMs": 60000})
+    check("distinct load claim " & $i, loadedClaim{"ok"}.getBool(false), $loadedClaim)
   let loaded = call(nc, "locks", "lock_status", %*{}, 20000)
-  check("table holds the load leases", loaded{"count"}.getInt(0) >= 1, $loaded)
+  check("table holds all 120 load leases", loaded{"count"}.getInt(0) >= 120, $loaded)
   var samples: seq[float] = @[]
   for i in 0 ..< 12:
     let t0 = getMonoTime()
-    discard acquire("conv-load", "probe" & $i, @[ws / "sub" / "c.txt"])
+    let probe = acquire("conv-load", "probe" & $i, @[ws / ("probe-" & $i)])
+    check("probe acquires, not denies", probe{"ok"}.getBool(false), $probe)
+    discard call(nc, "locks", "lock_release",
+                 %*{"leaseId": "conv-load:probe" & $i})
     samples.add((getMonoTime() - t0).inMicroseconds.float / 1000.0)
   samples.sort()
   let medMs = samples[samples.len div 2]
@@ -249,6 +264,31 @@ proc main() =
   let sibling = acquire("conv-sib", "call-13", @[ws / "other" / "s.txt"])
   check("a sibling directory is not blocked by an anchored glob",
         sibling{"ok"}.getBool(false), $sibling)
+
+  # A restart must reconstruct durable claims before its first release/acquire.
+  let durable = call(nc, "locks", "lock_acquire", %*{
+    "root": ws, "roots": [ws], "paths": [ws / "restart-file"],
+    "sessionId": "conv-durable", "tool": "edit", "callId": "restart",
+    "ttlMs": 60000})
+  check("durable claim accepted", durable{"ok"}.getBool(false), $durable)
+  locksProc.terminate()
+  discard locksProc.waitForExit(2000)
+  locksProc.close()
+  locksProc = startComponent(repoRoot / "var" / "bin" / "locks", url,
+                            root = root, logFile = root / "locks-restart.log")
+  var recovered: JsonNode
+  for attempt in 0 ..< 30:
+    recovered = call(nc, "locks", "lock_status", %*{}, 1000)
+    if recovered{"ok"}.getBool(false): break
+    sleep(100)
+  let restartConflict = acquire("conv-restart-rival", "restart-rival",
+                                @[ws / "restart-file"])
+  check("restart preserves conflicting holder",
+    restartConflict{"holder"}.getStr("") == "conv-durable", $restartConflict)
+  let releaseRecovered = call(nc, "locks", "lock_release",
+    %*{"leaseId": "conv-durable:restart"})
+  check("recovered claim releases", releaseRecovered{"released"}.getInt(0) == 1,
+        $releaseRecovered)
 
   report("LOCKS TEST")
 
