@@ -40,7 +40,7 @@ A one-file index of every shipped capability (not a reference) is
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + the session runner (`session.nim`) and the turn loop it drives (`conversation.nim` — the largest module — plus `compaction.nim`, `approval.nim`, `retry.nim`, `uireg.nim`, `tty.nim`) |
-| `components/` | shipped component sources — one directory per component (Nim, Go, TypeScript and one bash demo); the inventory is the [Shipped components](#shipped-components) table below, which is the part that has to stay current. Two directories are not bus citizens: `components/nats` builds the `var/bin/nats-server` core spawns when a bus has to be started, and `components/ctxtest` is a fixture the nested-call tests (`t_fabric`, `t_agent`) compile for themselves |
+| `components/` | shipped component sources — one directory per component (Nim, Go and TypeScript); the inventory is the [Shipped components](#shipped-components) table below, which is the part that has to stay current. Two directories are not bus citizens: `components/nats` builds the `var/bin/nats-server` core spawns when a bus has to be started, and `components/ctxtest` is a fixture the nested-call tests (`t_fabric`, `t_agent`) compile for themselves |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual, the wire spec (`WIRE.md`), the settings design (`research/SETTINGS.md`), the core-boundary rationale (`ARCHITECTURE.md`), the fabric user guide (`FABRIC_GUIDE.md`), open work (`PLAN.md`) and `research/` (design history) |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, `llm`, and `systemprompt` |
@@ -92,7 +92,13 @@ A one-file index of every shipped capability (not a reference) is
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server (the child is the separate `mcp-bridge` binary — `var/bin/mcp-bridge`, built by `make build`, path overridable with `NIF_MCP_BRIDGE_BIN`; it has no manifest entry and is never started by hand); tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
 | `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and preferred by core over a PATH install, so no NATS prerequisite is needed. Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it — `make doctor` reports `nats-server: OK` or explains that it is built from source by `make build` |
-| `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer (`dialog_show` → `{ok, shown: yes|no, via: zenity|notify|log, kind}` — `shown` is the backend's real outcome: a failed dialog or the log fallback is `no`, never a fake `yes`; `dialog_ask` → `{ok, answer: yes|no|timeout|no-display}` — `timeout` means a human had the dialog and let it lapse, `no-display` means nobody could answer). Neither tool is approval-gated or on demand, so both land in the direct toolset of every conversation started while `dialog` is up, and without a display (`DISPLAY` unset or zenity missing) `dialog_ask` answers `no-display` immediately without asking anyone. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `spawn {name: "dialog", binary: ".../var/bin/dialog"}` (core's tool). Prereqs: the nats CLI and `jq` are hard — without either the component cannot answer at all; `zenity` (or `notify-send`) only for the visible part, and only with `DISPLAY` set. `make setup` installs all three, `make doctor` checks them |
+
+`components/` no longer holds a bash demo: the SDK-free `dialog` component
+moved to `examples/dialog/dialog.sh`, with a README of its own, out of the
+shipped build and out of `make setup` — the nats CLI and `zenity` installers
+retired with it (`jq` stays as a general CLI tool). Run it by hand against a
+live harness (`bash examples/dialog/dialog.sh`); it is not in `manifest.yaml`,
+nothing builds it into `var/bin`, and `make doctor` only points at it.
 
 `components/ctxtest/` is the exception to one directory per component = one
 shipped component: it is the contract tests' own fixture — a stub `chat` LLM
@@ -157,13 +163,26 @@ fresh shell per call means `cd` does not persist; `cwd` (the conversation
 workspace) is realized as `cd -- <cwd> || exit $?`, so a missing workspace
 directory fails the call instead of running somewhere else.
 
+Commands optionally run inside a sandbox (the SDK's `netScoped` wrapper,
+`sdk/niffler/procutil.nim`). With `NIF_BASH_SANDBOX_MAP` set, every command —
+`run_in_background` included — runs as a fresh `docker run --rm --network none`
+of the image whose entry is the longest matching prefix of the command's `cwd`,
+with only that workspace root bind-mounted at the same path: the image's
+toolchains, the workspace, and nothing else on the host, so held-out material
+and other checkouts are unreachable by construction, and container state beyond
+the workspace does not persist between calls. `NIF_BASH_NET=off` is the
+lightweight variant — a host `unshare` netns (loopback only). A `cwd` with no
+map entry, and the netns variant on a host that forbids unprivileged user
+namespaces, fail the call loudly (exit 125) rather than run unsandboxed.
+
 Two timeouts are distinct: `timeoutMs` bounds the command (default 120 s,
 maximum 570 s), while `x-harness.timeoutMs` lets core wait 600 s for the reply.
 The inner clock stays below the outer one, so a command timeout kills the
 process group and returns exit 124 with captured output.
 
 Output is bounded by two compile-time constants with **no env knob** — the
-only `getEnv` in the component is `NIF_ROOT`, so a bigger transcript budget
+component reads no environment for its own output handling (besides
+`NIF_ROOT` and the two sandbox variables above), so a bigger transcript budget
 means rebuilding it: at most 2,000,000 bytes are captured and at most 12,000
 bytes of transcript reach the model, keeping head and tail and replacing the
 middle with
@@ -374,7 +393,8 @@ messages by content without downloading the whole kind; niffler-tui's
 `/session` uses it, and `context_recall mode: search` builds transcript
 retrieval on it, issue #51). Semantics are contract in every engine:
 per-kind indexed fields (conversation = id + title, message = id +
-content text capped at 16KB, others = id only), case-insensitive
+content and reasoning text, capped at 16KB per document in total, others = id
+only), case-insensitive
 **prefix** matching of every query word (AND), everything non-alphanumeric
 inert so user input needs no escaping, `idPrefix` narrowing to one id
 space (LIKE metacharacters escaped, never widened), and two documented
@@ -515,11 +535,13 @@ in phase 1, which stay env forever) is `research/SETTINGS.md`.
 ## Environment variables
 
 All components load `.env` (from the harness root and cwd, existing shell
-env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the spawned bash component `dialog` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
+env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
 
 | Variable | Meaning | Default |
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
+| `NIF_BASH_SANDBOX_MAP` | `<absolute-dir>=<image>` lines (longest matching prefix of the command's `cwd` wins) that make the `bash` tool run every command — foreground and `run_in_background` alike — as `docker run --rm --network none` with only that workspace root bind-mounted at the same path (the image's toolchains and caches, the workspace, and nothing else). Written by hosted-benchmark lanes (the DeepSWE port); a `cwd` that matches no entry fails the call loudly (exit 125) rather than running unsandboxed. Takes precedence over `NIF_BASH_NET` | unset |
+| `NIF_BASH_NET` | `off` runs `bash` commands in a host `unshare` network namespace (loopback up, no routes) — the lightweight variant, used only when `NIF_BASH_SANDBOX_MAP` is unset; needs unprivileged user namespaces (Ubuntu's AppArmor refuses them without root). Off Linux, or with no `unshare`, the call fails (exit 125) | unset |
 | `NIF_NATS_URL` | bus address. In the **environment** (tests, bench, scripts): attach-only — core uses exactly that bus. Declared in **`.env`** (or the well-known `nats://127.0.0.1:4222`): the clone's **home bus** — claimed when free, attached to only when the answering core serves this root (identity via the catalog's `root` field), yielded loudly to a foreign core or bare nats-server (isolated random bus instead; a recorded leftover `var/nats-pid` is reclaimed first), and written to `var/nats-url` | auto |
 | `NIF_NATS_SPAWN` | `1` forces an isolated core-owned bus on a random port — never 4222, never attaches (dev clones and tests). With an explicit `NIF_NATS_URL` the URL wins | unset |
 | `NIF_AUTOSTART` | set by an SDK's `ensureHarness` when a UI had to spawn core: that core exits when the last interactive client departs (see Starting and stopping) | unset |
@@ -561,7 +583,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_LSP_BIN` | install directory used by `make install-lsp` (server wrappers and the user-local JDK); also resolved as a default fallback bin dir | `~/.local/bin` |
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (colon-separated; a leading `~` means your home directory) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
-| `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
+| `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`). Core's `--log=<level>` flag sets it for core and every component it spawns | `info` |
 | `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.<id>.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | additional attempts when a streamed response drops mid-flight — budgeted separately from the general case because a dropped stream may already have billed output | `2` |
@@ -626,7 +648,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 components: `NIF_BIN_DIR` (bin directory `scripts/install.sh` links the PATH
 entries into), `NIF_BUILD_LOCK` (lock file `scripts/with-build-lock.sh` flocks —
 exclusive for builds, shared for test runs), `NIF_NATS_CLI` (the nats CLI
-`components/dialog/dialog.sh` drives — the one entry here a component does
+`examples/dialog/dialog.sh` drives — the one entry here a component does
 read: it is consulted only when `nats` is neither on `PATH` nor in
 `$HOME/go/bin`), `NIF_CONF_KEEP`, plus the test helpers `NIF_STORE_BIN` and
 `NIF_REPO_ROOT`. `NIF_LSP_BIN` and `NIF_LSP_BIN_DIRS` are runtime variables and
@@ -766,11 +788,16 @@ that separation — compaction cancels
 `llm.cancel.compaction.<sessionId>.<attemptId>` — so a user's turn stop can
 neither kill nor be killed by a summarization call.
 
-History is replayed to the provider verbatim, which is why the adapter
-repairs it on the way out: an assistant `tool_calls` payload left unterminated
+History is replayed to the provider almost verbatim, and that is why the
+adapter touches it on the way out: it strips `reasoning` from every assistant
+message but the trailing live turn (providers discard replayed reasoning
+anyway — measured on the DeepSeek lane; Anthropic strips prior turns'
+thinking server-side — so carrying it is dead wire bytes), then repairs
+`tool_calls`: an assistant `tool_calls` payload left unterminated
 by a dropped stream (or a buggy writer) has its strings and containers closed,
 and an unsalvageable payload becomes `{}` — a strict backend rejects the whole
-request otherwise. The repair reads text only and never executes anything.
+request otherwise. The strip and repair read text only and never execute
+anything.
 
 `nats sub '>'` attached to the bus shows the harness thinking in real time.
 Or better: **the console component** (`./var/bin/console`, not in the
@@ -1137,7 +1164,8 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   warns once at 75% of the way to the effective line
   (`ev.session.<id>.context {reason: "warn:threshold"}`); at it — never later
   than 90% of the window — core executes a bounded ladder: deterministic
-  tool-result prune → configured compactor → oldest complete-turn trim →
+  prune (tool results and past-turn reasoning) → configured compactor →
+  oldest complete-turn trim →
   explicit `context-recovery-required`. On the wire the `llm` component
   additionally clamps the requested output to the headroom the serialized
   prompt (messages plus tool schemas) leaves, so estimation drift in either
@@ -1275,7 +1303,13 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   rewritten as its first 4096 bytes, an `[tool result middle pruned: N bytes
   omitted — recall the original with context_recall {"ref": {"source": "spill",
   "id": "<convId>:<seq>"}}]` marker, and its last 1024 bytes — never twice,
-  and never when the result would not shrink. The marker's `source` is `spill`
+  and never when the result would not shrink. The same step tombstones past
+  turns' reasoning: every assistant message but the last has its `reasoning`
+  replaced by a one-line `[thinking omitted — …]` stub naming its canonical
+  recall ref (`context_recall` still reaches the original), since providers
+  discard prior-turn reasoning on replay while the meter counted it; the last
+  assistant turn keeps its reasoning for a tool-loop continuation. The
+  marker's `source` is `spill`
   exactly when the result was spill-backed and the promoted document
   re-verified, else `canonical`, and its `id` is the canonical seqNo the notice
   quotes, so it can be passed straight back to `context_recall`. Those three
@@ -1446,7 +1480,7 @@ topic `niffler-component` are discoverable without any registry:
   component is present. See [Source plugins](#source-plugins).
 - Three reference shapes exist in-tree: the `gokr/niffler-weather` package
   (Nim), the MCP bridge (a spawned Go component), and
-  `components/dialog/dialog.sh` — a whole bash component with no SDK at all.
+  `examples/dialog/dialog.sh` — a whole bash component with no SDK at all.
 
 ## Skills
 
@@ -1886,7 +1920,11 @@ another checkout got no diagnostics and no signal that it had none.
 After every successful edit it queues diagnostics asynchronously — the check
 runs in the lsp component's idle seam and the verdict is delivered on the
 conversation's `.diag` lane — and the edit result names that lane, so
-"checked and clean" can never look like "nothing happened". When the check
+"checked and clean" can never look like "nothing happened" in the UI.
+Clean verdicts are display/storage-only (`diagnostic` records), not LLM
+messages; failures and actionable diagnostics still append to model history.
+Late clean checks deliver while the runner is idle without waking the model.
+When the check
 cannot be queued (a file outside the conversation workspace, or a failure to
 reach the lsp component) the edit result says so instead, with the reason.
 Silence is reserved for files whose extension no registry entry claims: a
@@ -3247,6 +3285,16 @@ Structured logs publish an event on the exact subject `ev.log.<component>` with
 publication in every SDK. Invalid emitted levels fail; an invalid threshold
 falls back to `info`.
 
+Core's `--log=<level>` flag (`debug`, `info`, `warn`, `error`) sets
+`NIF_LOG_LEVEL` for core and every component it spawns — children inherit
+core's environment — so `niffler --log=debug` turns on the per-call timing
+lines that explain a turn's wall time: the `llm` component's
+`chat timing pre/setup/post/total`, core's `dispatch <tool> wait=` and the
+runner's `session: llm call dur=`. The `llm` line lands in
+`var/logs/llm.jsonl`; dispatch timing goes to the dispatching process's
+`.log`, and session timing goes to `var/logs/session-<id>.log`
+(see `bench/README.md`, "Model-call overhead").
+
 ### Monitoring
 
 When core spawns nats-server it uses distinct loopback client and HTTP ports,
@@ -3814,8 +3862,10 @@ There is no launcher script — the binaries own the lifecycle:
   127.0.0.1:4222 and never the cwd, while the bash `dialog` uses
   `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222. Start the harness first —
   `niffler-tui` or `./var/bin/niffler`.
-- **Terminal admin shell** — `./var/bin/niffler` directly, or
-  `./var/bin/niffler --minimal` for the four-component boot profile. A
+- **Terminal admin shell** — `./var/bin/niffler` directly,
+  `./var/bin/niffler --minimal` for the four-component boot profile, or
+  `./var/bin/niffler --log=debug` to run core and every spawned component at
+  the debug log level. A
   manually started core never self-terminates; stop it with Ctrl-C / SIGTERM.
   `NIF_AUTOSTART=1` in the environment overrides the shell — that core is
   service mode even on a tty — and while it sits at the prompt it keeps

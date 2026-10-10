@@ -37,6 +37,9 @@ scratch/
 .mcp.json
 .opencode/
 .pi/
+.claude/
+.cache/
+.chetter-*
 
 # worktrees (using-git-worktrees skill)
 .worktrees/

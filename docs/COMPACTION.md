@@ -65,7 +65,7 @@ round. The rungs, cheapest and least lossy first:
 | # | Rung | When | Mutates | Reversible by |
 |---|---|---|---|---|
 | 0 | **Spill** | append time, at a size cap | the conversation record only — full body promoted to a `spill` document, transcript keeps a bounded head+tail + pointer | resolving the pointer (`read`, `context_recall`) |
-| 1 | **Prune** | pressure, and first rung of the fallback ladder | the **projection**: a tool result over 8 KB becomes 4 KB head + marker + 1 KB tail, at a whole-result boundary, keeping `role`, `tool_call_id`, `name` and all machine fields | `context_recall` (the marker carries the ref verbatim) |
+| 1 | **Prune** | pressure, and first rung of the fallback ladder | the **projection**: a tool result over 8 KB becomes 4 KB head + marker + 1 KB tail, at a whole-result boundary, keeping `role`, `tool_call_id`, `name` and all machine fields; every assistant turn but the last loses its `reasoning` to a one-line stub naming its canonical ref | `context_recall` (the marker and the stub carry the ref verbatim) |
 | 2 | **Compaction** | pressure, when a compactor is configured and registered | the **projection**: a covered canonical span is replaced by a structured checkpoint; one `context_projection` doc committed with `expectRev` | reading the `checkpoint` ref; `mode: search` for the covered messages |
 | 3 | **Trim** | last lossy rung, when compaction declines or is absent | the **projection**: oldest complete turns dropped, an explicit "history omitted without summary" notice put in their place; `trimThrough` recorded durably in the header | `mode: search` over canonical history |
 | — | **`context-recovery-required`** | when even the frozen prefix or the newest indivisible tool group cannot fit | nothing | enlarging the window, a different compactor, or continuing from selected history |
@@ -134,10 +134,11 @@ writes conversation or projection records. A candidate's claim that it used
 more auxiliary LLM calls than it was granted is rejected as invalid, because
 the runner cannot observe those calls directly.
 
-Deliberately out of scope, and why: **reasoning blocks are never rewritten**
-(providers reject modified reasoning on replay — rewriting it would corrupt the
-request), the latest user request is never replaced, and tool results are not
-rewritten beyond the prune contract.
+Deliberately out of scope, and why: **canonical reasoning blocks are never
+rewritten** — the projection tombstones past turns' thinking and the `llm`
+adapter strips it from the request (providers discard replayed reasoning
+anyway), but the stored bytes are untouched; the latest user request is never
+replaced, and tool results are not rewritten beyond the prune contract.
 
 ## 6. Compared with other harnesses
 

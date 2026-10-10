@@ -39,7 +39,7 @@
 | 路徑 | 內容 |
 |---|---|
 | `core/` | 控制平面：系統載具（`niffler.nim`：匯流排啟動、監督器、目錄、派送）＋會話執行器（`session.nim`）及其驅動的回合迴圈（`conversation.nim` — 最大的模組 — 加上 `compaction.nim`、`approval.nim`、`retry.nim`、`uireg.nim`、`tty.nim`） |
-| `components/` | 隨附的元件原始碼 — 每個元件一個目錄（Nim、Go、TypeScript 及一個 bash 示範）；清單即下方的[隨附元件](#shipped-components)表，這是必須保持最新的部分。有兩個目錄不是匯流排公民：`components/nats` 建置 `var/bin/nats-server`，當匯流排必須啟動時由 core 生成；`components/ctxtest` 是巢狀呼叫測試（`t_fabric`、`t_agent`）為自己編譯的測試夾具 |
+| `components/` | 隨附的元件原始碼 — 每個元件一個目錄（Nim、Go 和 TypeScript）；清單即下方的[隨附元件](#shipped-components)表，這是必須保持最新的部分。有兩個目錄不是匯流排公民：`components/nats` 建置 `var/bin/nats-server`，當匯流排必須啟動時由 core 生成；`components/ctxtest` 是巢狀呼叫測試（`t_fabric`、`t_agent`）為自己編譯的測試夾具 |
 | `sdk/` | Nim SDK（`sdk/niffler`）＋`sdk/go`（Go）＋`sdk/ts`（TypeScript/Node.js，npm 套件 `niffler-sdk`）；`sdk/envelope.nim` 中的信封是產物 |
 | `docs/` | 本手冊、線路規格（`WIRE.md`）、設定設計（`research/SETTINGS.md`）、core 邊界理由（`ARCHITECTURE.md`）、fabric 使用者指南（`FABRIC_GUIDE.md`）、待辦工作（`PLAN.md`）及 `research/`（設計歷史） |
 | `manifest.yaml` | 啟動 manifest：core 生成哪些元件、重啟原則，以及選用的無狀態 `replicas` 數量；`--minimal` 將其篩選為 `store`、`bash` 和 `llm` |
@@ -90,7 +90,8 @@
 | `hooks` | Nim | off by default | 當選定的匯流排事件觸發時執行操作者 shell 命令（僅觀察；stdin 上的 JSON，環境配置；見[掛鉤](#hooks)） |
 | `mcp` | Go | optional | 外部 MCP 伺服器（Model Context Protocol）：儲存後端的註冊表（`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`），每個伺服器一個受監督的橋接（子項是單獨的 `mcp-bridge` 二進位檔 — `var/bin/mcp-bridge`，由 `make build` 建置，路徑可用 `NIF_MCP_BRIDGE_BIN` 覆寫；它沒有 manifest 條目，且絕不手動啟動）；工具成為可透過 `discover` ＋ `invoke` 到達的普通目錄工具（見[外部 MCP 伺服器](#external-mcp-servers-mcp)） |
 | `nats-server` | Go | **not in the manifest** | 匯流排本身作為一等元件：官方 `nats-server` main 的忠實重建（固定在 `components/nats/go.mod`），由 `make build` 建置到 `var/bin/nats-server`，core 優先於 PATH 安裝，因此不需要 NATS 先決條件。刻意*不是*匯流排元件 — core 在匯流排存在之前啟動它，它不註冊任何工具，且 `core.spawn` 無法啟動它。Niffler 新增一個旗標 `--max_payload <bytes>`（core 傳遞 8388608），並在 Linux 上設定 `PR_SET_PDEATHSIG` 使沒有孤兒匯流排比其載具活得更久。沒有什麼需要為它安裝 —— `make doctor` 報告 `nats-server: OK` 或解釋它由 `make build` 從原始碼建置 |
-| `dialog` | bash | — | 完全以 bash 撰寫的示範元件 — nats CLI ＋ jq，無 SDK，無編譯步驟：`dialog_show` 彈出桌面對話框（zenity、notify-send 或日誌後備），`dialog_ask` 向使用者詢問是/否問題並返回答案（`dialog_show` → `{ok, shown: yes|no, via: zenity|notify|log, kind}` — `shown` 是後端的真實結果：失敗的對話框或日誌後備是 `no`，絕不是假的 `yes`；`dialog_ask` → `{ok, answer: yes|no|timeout|no-display}` — `timeout` 意味著有人有對話框並讓它失效，`no-display` 意味著沒有人能回答）。兩個工具都不受核准閘控或隨需，因此兩者都落入 `dialog` 啟動時開始的每個會話的直接工具集中，且沒有顯示器（`DISPLAY` 未設定或 zenity 缺失）時 `dialog_ask` 立即回答 `no-display` 而不詢問任何人。隨附於 `var/bin/dialog`（`make build`）但**不會自動啟動**；用 `spawn {name: "dialog", binary: ".../var/bin/dialog"}`（core 的工具）生成它。先決條件：nats CLI 和 `jq` 是硬性的 — 沒有任一者元件完全無法回答；`zenity`（或 `notify-send`）僅用於可見部分，且僅在 `DISPLAY` 已設定時。`make setup` 安裝全部三個，`make doctor` 檢查它們 |
+
+`components/` 不再包含 bash 示範：無 SDK 的 `dialog` 元件已移至 `examples/dialog/dialog.sh`，附有自己的 README，脫離隨附建置與 `make setup` — nats CLI 與 `zenity` 安裝器隨之退役（`jq` 作為一般 CLI 工具保留）。對照執行中的 harness 手動執行它（`bash examples/dialog/dialog.sh`）；它不在 `manifest.yaml` 中，沒有任何東西將它建置到 `var/bin`，`make doctor` 只是指向它。
 
 `components/ctxtest/` 是每個元件一個目錄 = 一個隨附元件的例外：它是契約測試自己的夾具 — 一個 stub `chat` LLM 加上巢狀呼叫探針 — 測試自己編譯成註冊為 `ctxtest` 和 `ctxsink` 的二進位檔。它不在此表中，不在 `manifest.yaml` 中，且絕不由 `make build` 建置。
 
@@ -192,7 +193,7 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 儲存的**匯流排契約就是產物本身**：`put/get/list/search/del`、`expectRev` 樂觀並行控制、依 id 排序的清單（docs/WIRE.md）。兩個引擎實作該契約，並以元件 `store` 註冊，提供完全相同的工具——消費者永遠不會知道目前執行的是哪個引擎。選擇是啟動時的一次決定：`NIF_STORE_BACKEND=sqlite|tidb`（預設 `sqlite`）；core 據此解析清單條目中的二進位，遇到未知值則拒絕啟動。從未建置的二進位只會發出警告（store 是 `required`，core 就此停下），絕不會被靜默替換為另一個引擎的資料庫。
 
-**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個 kind，即可依 id/標題尋找工作階段、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語意在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的大小寫不敏感**前綴**匹配（AND），非字母數字字元一律無作用，因此使用者輸入無需轉義；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 衍生狀態，可安全丟棄），而 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的匹配器（結果等價，每次呼叫 O(kind 中的文件數)）。
+**`search`** 是伺服器端過濾器（`{kind, query, limit?, after?}` —— 不下載整個 kind，即可依 id/標題尋找工作階段、依內容尋找訊息；niffler-tui 的 `/session` 使用它）。語意在每個引擎中都是契約：依 kind 劃分的索引欄位（conversation = id + title，message = id + content 與 reasoning 文字（單文件上限 16KB），其他 kind 僅 id）、每個查詢詞的大小寫不敏感**前綴**匹配（AND），非字母數字字元一律無作用，因此使用者輸入無需轉義；排序/游標/上限沿用 `list` 的規則。引擎只在應答方式上不同：**sqlite** 維護一個 FTS5 索引（`docs_fts`，rowid 與 `docs` 共享，與文件在同一交易中維護；啟動時兩者不一致就從 `docs` 重建 —— 衍生狀態，可安全丟棄），而 **tidb** 沒有索引，依 id 順序掃描該 kind 並套用相同的匹配器（結果等價，每次呼叫 O(kind 中的文件數)）。
 
 - **sqlite**（預設，`var/bin/store-sqlite`，Go）：在 SQLite 上實作同一份文件契約。文件以 JSON TEXT 原樣存放；`put` 是單一原子陳述式（doc 與 rev 一起移動——KV 引擎的雙鍵崩潰窗口不復存在）；schema 透過內嵌的 goose migration 管理；純 Go 驅動程式（`modernc.org/sqlite`，無 cgo）。資料檔 `var/store.db`（WAL），可用任何 SQLite 工具檢視（`sqlite3 var/store.db 'select kind, count(*) from docs group by kind'`），也可從 DuckDB 以唯讀方式掛載以進行離線分析。自 context compaction 落地後即為預設：context projection 需要原子寫入與可範圍讀取的清單（docs/research/COMPACTION.md §2）。SQLite pragma 是程式碼內建、不可配置（`_txlock=immediate`、WAL、`synchronous(NORMAL)`、10 秒 `busy_timeout`、單一連線池），且 goose migration 會在啟動時自動套用。
 - **tidb**（`var/bin/store-tidb`，Go）：透過 MySQL 協定（go-sql-driver）實作同一份 schema——一個網路共享的儲存，任何數量的 harness 都能從中提供服務。`NIF_STORE_TIDB_DSN` 指向叢集（`root@tcp(host:4000)/niffler`；單節點 docker：`docker run -p 4000:4000 pingcap/tidb`）。`value` 維持 MEDIUMTEXT，而非原生 JSON 型別——二進位 JSON 會正規化鍵順序與數字精度，破壞原樣文件契約；索引查詢日後會以 TEXT 上的生成欄位形式到來（一個 goose migration）。`kind`/`id` 為 utf8mb4_bin：位元組精確相等、位元組序清單排序，以及大小寫敏感的 LIKE 前綴（與其他引擎的契約對等）。無 flock——叢集依設計即為共享狀態；資料列鎖（`SELECT … FOR UPDATE`、悲觀式交易）仲裁寫入者，而 rev 計數器仍是樂觀並行控制的檢查。也可對純 MySQL 8 運作。DSN 使用者需要 goose 建立其版本表並套用 migration 所需的權限；連線/讀取/寫入逾時為硬編碼（5 秒 / 60 秒 / 30 秒），且引擎持有單一連線池連線（單一會話，因此 `FOR UPDATE` 交易的陳述式會保持在一起）——同一叢集上的 N 個 harness 持有 N 條連線，不共享連線池。
@@ -241,7 +242,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 
 ## Environment variables
 
-所有元件都會載入 `.env`（從 harness root 與 cwd，既有的 shell 環境永遠優先——見下文）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——被啟動的 bash 元件 `dialog` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
+所有元件都會載入 `.env`（從 harness root 與 cwd，既有的 shell 環境永遠優先——見下文）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——樹內 bash 示範 `examples/dialog/dialog.sh` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -347,7 +348,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | `NIF_LOG_RETENTION_DAYS` | core 掃掠前保留子行程日誌的天數 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在使呼叫失敗前，等待新元件在目錄中註冊的時間（限制 250–120000）；當目錄記錄到拒絕時等待會提早結束，因此此旋鈕只約束沉默的元件 | `5000` |
 
-**建置與腳本旋鈕**——由 harness 周圍的腳本讀取，絕不由元件讀取：`NIF_BIN_DIR`（`scripts/install.sh` 將 PATH 項目連結進去的 bin 目錄）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 以 flock 鎖定的鎖檔——建置時排他，測試執行時共享）、`NIF_NATS_CLI`（`components/dialog/dialog.sh` 驅動的 nats CLI——此處唯一一個元件確實會讀取的項目：僅在 `nats` 既不在 `PATH` 也不在 `$HOME/go/bin` 時才會查詢它）、`NIF_CONF_KEEP`，加上測試輔助 `NIF_STORE_BIN` 與 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 與 `NIF_LSP_BIN_DIRS` 是執行時變數，留在上表。鎖只涵蓋 `make`：`builder.build` 在其外執行，因此執行時元件建置可能與 `make build` 競爭——而 `make clean` 會在其下刪除 `var/bin` 與 `var/build`。當 agent 正在建置元件時，請停止 harness。
+**建置與腳本旋鈕**——由 harness 周圍的腳本讀取，絕不由元件讀取：`NIF_BIN_DIR`（`scripts/install.sh` 將 PATH 項目連結進去的 bin 目錄）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 以 flock 鎖定的鎖檔——建置時排他，測試執行時共享）、`NIF_NATS_CLI`（`examples/dialog/dialog.sh` 驅動的 nats CLI——此處唯一一個元件確實會讀取的項目：僅在 `nats` 既不在 `PATH` 也不在 `$HOME/go/bin` 時才會查詢它）、`NIF_CONF_KEEP`，加上測試輔助 `NIF_STORE_BIN` 與 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 與 `NIF_LSP_BIN_DIRS` 是執行時變數，留在上表。鎖只涵蓋 `make`：`builder.build` 在其外執行，因此執行時元件建置可能與 `make build` 競爭——而 `make clean` 會在其下刪除 `var/bin` 與 `var/build`。當 agent 正在建置元件時，請停止 harness。
 
 每個 Niffler 變數都帶有 `NIF_` 前綴，因此 harness 絕不會與使用裸慣例（`NATS_URL`、`OPENAI_API_KEY`）的工具衝突。
 
@@ -457,9 +458,9 @@ cancel.<component>     cancellation side-channel: a runner publishes it when a
 這種分離——壓縮會取消 `llm.cancel.compaction.<sessionId>.<attemptId>`——因此
 使用者的回合停止既不能終止摘要呼叫，也不會被其終止。
 
-歷史會逐字重播給 provider，這就是為什麼轉接器在輸出時會修復它：被中斷的串流
+歷史幾乎逐字重播給 provider，這就是為什麼轉接器在輸出時會處理它：它會剝除除末尾仍在進行的助理輪次之外每條助理訊息的 `reasoning`（提供方本就會丟棄重播的 reasoning——在 DeepSeek 通道上實測；Anthropic 在伺服器端剝除過往輪次的思考——因此攜帶它只是無用的傳輸位元組），然後修復 `tool_calls`：被中斷的串流
 （或有缺陷的寫入者）留下未終止的助理 `tool_calls` 承載，其字串和容器會被關閉，
-而無法挽救的承載會變成 `{}`——否則嚴格的後端會拒絕整個請求。修復只讀取文字，
+而無法挽救的承載會變成 `{}`——否則嚴格的後端會拒絕整個請求。剝除與修復只讀取文字，
 絕不執行任何內容。
 
 附加到匯流排的 `nats sub '>'` 會即時顯示 harness 的思考過程。或者更好：**console
@@ -753,7 +754,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   被改寫為其前 4096 位元組、一個 `[tool result middle pruned: N bytes
   omitted — recall the original with context_recall {"ref": {"source": "spill",
   "id": "<convId>:<seq>"}}]` 標記，以及其最後 1024 位元組——絕不兩次，
-  且絕不在結果不會縮小時。該標記的 `source` 恰好在結果為 spill 背書且晉升的文件重新驗證時為 `spill`，否則為 `canonical`，而其 `id` 是該通知所引用的標準 seqNo，因此它可以直接傳回 `context_recall`。這三個
+  且絕不在結果不會縮小時。同一步驟會墓碑化過往輪次的 reasoning：除最後一條外，每條助理訊息的 `reasoning` 都會被替換為一行命名其標準 recall 引用的 `[thinking omitted — …]` 存根（`context_recall` 仍能取回原始內容），因為提供方會在重播時丟棄過往輪次的 reasoning，而計量器卻將其計入；最後一條助理輪次保留其 reasoning 以供工具循環續接。該標記的 `source` 恰好在結果為 spill 背書且晉升的文件重新驗證時為 `spill`，否則為 `canonical`，而其 `id` 是該通知所引用的標準 seqNo，因此它可以直接傳回 `context_recall`。這三個
   數字是常數，不是設定。`context_recall` 本身是隨選的，並非隱藏：`discover` 會列出它，`invoke` 接受它，且裸名稱
   仍會分派，但一個以 `tools` 允許清單凍結的會話會像任何清單外的工具一樣拒絕它——這是剪除或 spill
   通知的指示無法被遵循的唯一情況。
@@ -897,7 +898,7 @@ project, build: {steps: [[argv...]], artifact: {path, runner}}}]}`：套件自�
   會自動探索它，並在該元件存在期間套用其 JSON Merge Patch。參見 [Source plugins](#source-plugins)。
 - 樹內有三種參考形態：`gokr/niffler-weather` 套件
   （Nim）、MCP 橋接（一個被 spawn 的 Go 元件），以及
-  `components/dialog/dialog.sh`——一個完全沒有 SDK 的純 bash 元件。
+  `examples/dialog/dialog.sh`——一個完全沒有 SDK 的純 bash 元件。
 
 ## Skills
 
@@ -1162,7 +1163,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 **範圍是界限，不是相等。** 對話工作區內的檔案會在工作區根目錄下被索引（其已暖機的伺服器會被重用）；在其*之外*的檔案 —— 同層 checkout、git worktree、代理正在工作的任何其他目錄 —— 會在其自身由標記衍生的根目錄下被索引，且回覆會帶有命名它的 `workspaceRoot`，因為否則答案中的相對路徑會有歧義。`E_LSP_SCOPE` 僅保留給兩種會把無界樹交給伺服器的情況：路徑中含有 `..` 元件，以及檔案的標記走訪到達檔案系統根目錄或 `$HOME`（訊息會要求明確的 `workspaceRoot`）。直接拒絕工作區外的檔案曾被嘗試過，且實際上是有害的：edit 工具的診斷推送會將該拒絕吞掉為「未設定伺服器」，因此代理在另一個 checkout 中工作時既得不到診斷，也得不到它沒有的訊號。
 
-**edit 工具對已知語言的自動推送絕不靜默。** 每次成功編輯後，它會非同步地排入診斷 —— 該檢查在 lsp 元件的閒置接縫中執行，而判定會經由對話的 `.diag` 通道傳遞 —— 且編輯結果會命名該通道，因此「已檢查且乾淨」永遠不會看起來像「什麼都沒發生」。當檢查無法被排入時（檔案在對話工作區之外，或無法觸及 lsp 元件），編輯結果會改為如此說明，並附上原因。靜默僅保留給其副檔名沒有任何登錄項目聲稱的檔案：`.md` 檔案不干任何語言伺服器的事。
+**edit 工具對已知語言的自動推送絕不靜默。** 每次成功編輯後，它會非同步地排入診斷 —— 該檢查在 lsp 元件的閒置接縫中執行，而判定會經由對話的 `.diag` 通道傳遞 —— 且編輯結果會命名該通道，因此介面中的「已檢查且乾淨」永遠不會看起來像「什麼都沒發生」。乾淨的結果僅用於顯示和儲存（`diagnostic` 記錄），不進入 LLM 訊息；失敗和需要處理的診斷仍追加到模型歷史。遲到的乾淨結果在執行器閒置時也會傳遞，不喚醒模型。當檢查無法被排入時（檔案在對話工作區之外，或無法觸及 lsp 元件），編輯結果會改為如此說明，並附上原因。靜默僅保留給其副檔名沒有任何登錄項目聲稱的檔案：`.md` 檔案不干任何語言伺服器的事。
 
 這三個工具都是**隨需**（`discover`/`invoke` —— 見 [Progressive tool discovery](#progressive-tool-discovery)），讓凍結的工具集保持精簡；工具描述是模型的使用時機指南。`lsp` 工具是唯讀且免核准；`lsp_registry` 會寫入登錄檔並受核准閘門管制。
 
@@ -1944,6 +1945,8 @@ API 是對映的；*執行模型* 是各執行時自身的，因此契約依 SDK
 Nim 的任意信封請求輔助程式在等待時只會繼續泵送原始 tap 訂閱。工具與事件處理常式保持非巢狀，而觀察者可以在 `observe_request` 期間為目標請求與回覆加上時間戳。追蹤持續時間與過期使用單調時鐘；顯示的 `at` 值仍為牆鐘 epoch 秒。
 
 結構化日誌會以 `{component, level, msg, ctx?, at}` 在確切主體 `ev.log.<component>` 上發佈事件。等級為 `debug`、`info`、`warn` 與 `error`。`NIF_LOG_LEVEL` 預設為 `info`，並在每個 SDK 中於發佈前抑制較低等級。無效的發出等級會失敗；無效的閾值會退回 `info`。
+
+核心的 `--log=<level>` 旗標（`debug`、`info`、`warn`、`error`）為核心及其產生的所有元件設定 `NIF_LOG_LEVEL`，子程序繼承核心的環境。因此，`niffler --log=debug` 會啟用解釋一輪耗時的逐呼叫計時行：`llm` 元件的 `chat timing pre/setup/post/total`、核心的 `dispatch <tool> wait=` 與 runner 的 `session: llm call dur=`。`llm` 行寫入 `var/logs/llm.jsonl`；dispatch 計時寫入執行分派的程序的 `.log`，session 計時寫入 `var/logs/session-<id>.log`（參見 `bench/README.md` 的「Model-call overhead」）。
 
 ### Monitoring
 

@@ -650,7 +650,8 @@ proc opDiagnostics(h: Instance, uri, rel: string,
          h.stderrHint())
   let diags = latest{"diagnostics"}
   if diags == nil or diags.kind != JArray or diags.len == 0:
-    return %*{"ok": true, "text": rel & ": no diagnostics — clean.", "count": 0}
+    return %*{"ok": true, "text": rel & ": no diagnostics — clean.",
+              "count": 0, "clean": true}
   let sev = {1: "error", 2: "warning", 3: "info", 4: "hint"}.toTable
   var lines: seq[string]
   var inRange: seq[string]
@@ -1679,7 +1680,7 @@ proc hLspSelfTest(c: Component, args: JsonNode): JsonNode =
               (if allOk: " — all green" else: " — failures above"),
             "checks": checks}
 
-proc publishDiag(c: Component, job: DiagJob, text: string) =
+proc publishDiag(c: Component, job: DiagJob, text: string, clean = false) =
   ## Hand a finished check back to the conversation that asked for it.
   ## Fire-and-forget: a conversation that has since ended has no subscriber,
   ## and a diagnostic nobody reads must never fail anything.
@@ -1687,7 +1688,7 @@ proc publishDiag(c: Component, job: DiagJob, text: string) =
   try:
     publish(c.nc, subject, Envelope(v: 1, id: newId(), kind: ekEvent,
       payload: %*{"conversationId": job.session, "path": job.rel,
-                  "text": text}).encode())
+                  "text": text, "clean": clean}).encode())
   except CatchableError:
     discard
 
@@ -1702,6 +1703,7 @@ discard comp.onIdle(DIAG_IDLE_MS) do (c: Component):
   if job.gen != gDiagGen.getOrDefault(diagKey(job.session, job.path), 0):
     return                       # superseded: a newer edit re-queued this file
   var text: string
+  var clean = false
   let k = instKey(job.conf.name, job.root)
   try:
     let h = getInstance(job.conf, job.root)   # normally already warm (warmup)
@@ -1717,16 +1719,21 @@ discard comp.onIdle(DIAG_IDLE_MS) do (c: Component):
       let r = opDiagnostics(h, job.uri, job.rel, DIAG_ASYNC_BUDGET_MS,
                             job.first, job.last)
       text = r{"text"}.getStr("")
+      # Only an empty whole-file verdict is clean; out-of-range diagnostics
+      # and failed checks remain actionable context.
+      clean = r{"clean"}.getBool(false)
       h.notify("textDocument/didClose", %*{"textDocument": {"uri": job.uri}})
   except LspFailure as e:
+    clean = false
     if gInstances.hasKey(k):   # poisoned frame buffer: never reuse the instance
       gInstances[k].dispose()
       gInstances.del(k)
     text = job.rel & ": " & e.msg &
            " — the lsp tool can retry once the server has finished indexing."
   except CatchableError as e:
+    clean = false
     text = job.rel & ": " & e.msg
-  if text.len > 0: publishDiag(c, job, text)
+  if text.len > 0: publishDiag(c, job, text, clean)
 
 discard comp.selfTest(hLspSelfTest)
 

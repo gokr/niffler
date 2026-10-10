@@ -277,7 +277,8 @@ proc main() =
   writeFile(tmp / "clean.nx", "all good\n")
   let diag2 = lspCall(%*{"operation": "diagnostics", "path": "clean.nx"})
   check("clean file reported clean", diag2{"ok"}.getBool(false) and
-        diag2{"text"}.getStr("").contains("no diagnostics — clean"), $diag2)
+        diag2{"text"}.getStr("").contains("no diagnostics — clean") and
+        diag2{"clean"}.getBool(false), $diag2)
 
   # --- workspace resolution: absolute path inside the root -----------------
   let abs = lspCall(%*{"operation": "hover", "path": tmp / "main.nx",
@@ -496,6 +497,18 @@ proc main() =
         delivered != nil and "async.nx" in delivered{"text"}.getStr(""),
         $delivered)
 
+  discard lspCall(%*{"operation": "diagnostics", "path": "clean.nx",
+                     "async": true, "session": asyncSession})
+  var cleanDelivered = false
+  for _ in 0 ..< 20:
+    var msg: ptr natsMsg
+    if natsSubscription_NextMsg(addr msg, diagSub, 1000) != NATS_OK: continue
+    let env = decode($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if env.payload{"path"}.getStr("") == "clean.nx":
+      cleanDelivered = env.payload{"clean"}.getBool(false)
+      break
+  check("async clean verdict carries explicit display-only classification", cleanDelivered)
   report("LSP TEST")
 
 main()

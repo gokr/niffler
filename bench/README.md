@@ -385,7 +385,7 @@ per call:
 | seam | logs | where |
 |---|---|---|
 | `NIF_LOG_LEVEL=debug` (what `niffler --log=debug` distributes at boot) | all three below | — |
-| ↳ llm | `chat timing pre=` / `setup=` / `post=` / `total=` | `components/llm/main.go`, `var/logs/llm.log` |
+| ↳ llm | `chat timing pre=` / `setup=` / `post=` / `total=` | `components/llm/main.go`, `var/logs/llm.jsonl` |
 | ↳ core dispatch | `dispatch <tool> wait=` | `core/dispatch.nim`, in the dispatching process's log |
 | ↳ runner | `session: llm call dur=` | `core/conversation.nim`, `var/logs/session-*.log` |
 

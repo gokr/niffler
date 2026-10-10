@@ -38,8 +38,8 @@ home.
   and a per-conversation `ask`/`auto` mode; with no human reachable the call
   is denied, never silently allowed. See [approvals](docs/MANUAL.md#approvals).
 - **Polyglot.** Mostly Nim and Go, but no component is bound to a language:
-  SDKs for Nim, Go and TypeScript, and a shipped bash demo with no SDK at
-  all. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+  SDKs for Nim, Go and TypeScript, and an in-tree bash demo (`examples/dialog`)
+  with no SDK at all. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The bus is the API.** `niffler-tui`, `cli` and `console`
   are equal bus clients; several can attach at once and each builds and
   installs independently (the TUI is its own plugin). See
@@ -59,9 +59,17 @@ See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 
 Requirements: Nim 2.2.12+ and Go. `make setup` installs those and the other
 platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies. Node.js 20+
-and npm are needed only for TypeScript components. Niffler uses the pure-Nim
+and npm are optional — they serve TypeScript components, `npx` skills and
+npm-based MCP servers. Niffler uses the pure-Nim
 [natsnim](https://github.com/gokr/natsnim) client; no `libnats` or `cnats`
 installation is needed.
+
+For a one-line install, `scripts/bootstrap.sh` finds or creates the clone,
+installs the prerequisites, then runs `make setup`, `make release` and
+`make install-tui`:
+`curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`.
+The steps below are the manual development setup (`make build` produces
+debug binaries; the installer uses optimized release binaries).
 
 ```bash
 git clone https://github.com/gokr/niffler.git
@@ -82,6 +90,8 @@ asks about the plugin on a terminal instead.
 `niffler-tui` is the conversation client; `niffler` (or `./var/bin/niffler`) is
 the terminal admin shell — status, catalog, sessions, not a chat UI — and
 `niffler --minimal` boots only the minimal store/bash/LLM/systemprompt profile.
+`niffler --log=debug` runs core and every spawned component at the debug log
+level, adding the per-call timing lines that explain a turn's wall time.
 
 A Wails-based desktop UI does exist, but it is an **experimental side project**
 in its own repository — [gokr/niffler-ui](https://github.com/gokr/niffler-ui).

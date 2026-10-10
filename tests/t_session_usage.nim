@@ -96,7 +96,7 @@ proc callerOf(env: Envelope): JsonNode =
 
 proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
                cancelAfterToolcalls = -1,
-               timeoutMs = 120_000): JsonNode =
+               timeoutMs = 120_000, steerContent = ""): JsonNode =
   ## Run one session call while watching the conversation's frames. With
   ## cancelAfterToolcalls >= 0 the __cancel control is published to the steer
   ## channel once that many toolcall-start frames have been seen (the scripted
@@ -107,11 +107,13 @@ proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
   let turns = openSub(nc, "ev.session." & sid & ".turn")
   let toolcalls = openSub(nc, "ev.session." & sid & ".toolcall")
   let dones = openSub(nc, "ev.session." & sid & ".done")
+  let sentSteers = openSub(nc, "ev.session." & sid & ".steer_sent")
   defer:
     natsSubscription_Destroy(replies)
     natsSubscription_Destroy(turns)
     natsSubscription_Destroy(toolcalls)
     natsSubscription_Destroy(dones)
+    natsSubscription_Destroy(sentSteers)
   let data = callEnvelope("session", args, "probe").encode()
   if not checkStatus(natsConnection_PublishRequest(nc.conn, "svc.core.call".cstring,
                                                    inbox.cstring, data.cstring,
@@ -119,6 +121,7 @@ proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
     fail("publish session call")
   var startedToolcalls = 0
   var cancelled = false
+  var steered = false
   var reply: JsonNode = nil
   let deadline = epochTime() + timeoutMs.float / 1000.0
   while reply == nil and epochTime() < deadline:
@@ -129,6 +132,12 @@ proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
     polled = pollEnv(toolcalls, 0)
     while polled.found:
       frames.add(("toolcall", polled.env.payload))
+      if polled.env.payload{"phase"}.getStr("") == "start" and
+          steerContent.len > 0 and not steered:
+        steered = true
+        nc.publish("svc.session." & sid & ".steer",
+          Envelope(v: 1, id: newId(), kind: ekEvent,
+                   payload: %*{"content": steerContent}).encode())
       if polled.env.payload{"phase"}.getStr("") == "start" and
           cancelAfterToolcalls >= 0 and not cancelled:
         inc startedToolcalls
@@ -142,17 +151,22 @@ proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
     while polled.found:
       frames.add(("done", polled.env.payload))
       polled = pollEnv(dones, 0)
+    polled = pollEnv(sentSteers, 0)
+    while polled.found:
+      frames.add(("steer_sent", polled.env.payload))
+      polled = pollEnv(sentSteers, 0)
     let r = pollEnv(replies, 20)
     if r.found: reply = callerOf(r.env)
   if reply == nil:
     return %*{"error": "timeout driving session call"}
   # Drain any frame that landed after the reply was published (the terminal
   # `turn` frame goes out before the runner answers, but be generous).
-  for sub in [turns, toolcalls, dones]:
+  for sub in [turns, toolcalls, dones, sentSteers]:
     var polled = pollEnv(sub, 0)
     while polled.found:
       let kind = if sub == turns: "turn"
-                 elif sub == toolcalls: "toolcall" else: "done"
+                 elif sub == toolcalls: "toolcall"
+                 elif sub == sentSteers: "steer_sent" else: "done"
       frames.add((kind, polled.env.payload))
       polled = pollEnv(sub, 0)
   reply
@@ -194,6 +208,27 @@ proc main() =
     let turn1 = p.driveTurn(sid, %*{"sessionId": sid, "content": "count me"}, frames)
     check("turn 1 completes", turn1{"error"} == nil and
           turn1{"turnError"}.getStr("") == "", $turn1)
+    # Late clean diagnostics must be stored/displayed while idle without a
+    # model activation or message record. This is a real runner/bus probe.
+    let diagnostics = openSub(nc, "ev.session." & sid & ".diagnostics")
+    nc.publish("svc.session." & sid & ".diag",
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+        payload: %*{"path": "clean.go", "text": "clean.go: no diagnostics — clean.",
+                    "clean": true}).encode())
+    let cleanFrame = pollEnv(diagnostics, 5000)
+    natsSubscription_Destroy(diagnostics)
+    check("idle clean check emits UI event", cleanFrame.found and
+          cleanFrame.env.payload{"clean"}.getBool(false))
+    let verdicts = call(nc, "store", "list",
+      %*{"kind": "diagnostic", "idPrefix": sid & ":"})
+    check("idle clean check persists separately", verdicts{"items"}.len == 1)
+    let transcript = call(nc, "store", "list",
+      %*{"kind": "message", "idPrefix": sid & ":"})
+    var leaked = false
+    for item in transcript{"items"}:
+      if item{"value"}{"content"}.getStr("").contains("no diagnostics — clean"):
+        leaked = true
+    check("idle clean check never enters model history", not leaked)
     check("turn 1 outcome is success",
           turn1{"outcome"}.getStr("") == "success", $turn1)
     check("turn 1 has a turnId", turn1{"turnId"}.getStr("").len > 0, $turn1)
@@ -340,6 +375,21 @@ proc main() =
           cut{"usage"}{"reasoningTokens"} == nil,
           $cut{"usage"})
 
+  block steerDispatch:
+    var p = startProbe("steer-dispatch", @[("NIF_MOCK_ROUNDS", "1"),
+                                         ("NIF_MOCK_TOOLCMD", "sleep 0.2")])
+    defer: p.stopProbe()
+    let sid = "steer-dispatch-" & $int(epochTime())
+    var frames: seq[Frame]
+    let reply = p.driveTurn(sid, %*{"sessionId": sid, "content": "work"}, frames,
+                            steerContent = "check the edge case")
+    var sent = 0
+    for frame in frames:
+      if frame.kind == "steer_sent" and
+          frame.payload{"contents"} == %*["check the edge case"]:
+        inc sent
+    check("folded steer acknowledged once at next model dispatch",
+          reply{"error"} == nil and sent == 1, $frames.len & " frames, sent=" & $sent)
   report("SESSION-USAGE")
 
 main()

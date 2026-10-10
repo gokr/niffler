@@ -102,7 +102,7 @@
       "ed.controls.h": "Per-conversation controls",
       "ed.controls.p": "tool allowlists, budgets, workspace pin, provider/model/effort pins",
       "ed.introspect.h": "Introspection",
-      "ed.introspect.p": "<code>/export</code> the exact provider request, <code>prompt_preview</code>, per-role counts, <code>/compact</code> now",
+      "ed.introspect.p": "<code>/export</code> the exact provider request, <code>prompt_preview</code>, per-role counts, <code>/compact</code> now — <code>--log=debug</code> logs per-model-call timing to <code>var/logs</code>",
       "ed.slash.h": "Slash commands",
       "ed.slash.p": "built in — plus ones contributed by installed plugins and MCP servers",
 
@@ -255,7 +255,7 @@
       "ed.controls.h": "按对话控制",
       "ed.controls.p": "工具白名单、预算、工作区固定、供应商/模型/思考力度固定",
       "ed.introspect.h": "自我观察",
-      "ed.introspect.p": "<code>/export</code> 导出发送给供应商的确切请求、<code>prompt_preview</code>、按角色统计、随时 <code>/compact</code>",
+      "ed.introspect.p": "<code>/export</code> 导出发送给供应商的确切请求、<code>prompt_preview</code>、按角色统计、随时 <code>/compact</code>——<code>--log=debug</code> 将每次模型调用的耗时写入 <code>var/logs</code>",
       "ed.slash.h": "斜杠命令",
       "ed.slash.p": "内置一批——已安装的插件与 MCP 服务器还可以贡献更多",
 
@@ -408,7 +408,7 @@
       "ed.controls.h": "按對話控制",
       "ed.controls.p": "工具白名單、預算、工作區固定、供應商/模型/思考力度固定",
       "ed.introspect.h": "自我觀察",
-      "ed.introspect.p": "<code>/export</code> 匯出發送給供應商的確切請求、<code>prompt_preview</code>、按角色統計、隨時 <code>/compact</code>",
+      "ed.introspect.p": "<code>/export</code> 匯出發送給供應商的確切請求、<code>prompt_preview</code>、按角色統計、隨時 <code>/compact</code>——<code>--log=debug</code> 將每次模型呼叫的耗時寫入 <code>var/logs</code>",
       "ed.slash.h": "斜線指令",
       "ed.slash.p": "內建一批——已安裝的外掛與 MCP 伺服器還可以貢獻更多",
 
