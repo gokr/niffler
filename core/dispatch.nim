@@ -2055,7 +2055,8 @@ proc isParallelSafeTool*(ct: CoreTools, tool: string): bool =
   if x{"sessionContext"}.getBool(false): return false
   # Writers must traverse the serial dispatch gate where claims are acquired.
   # The wave publisher does not own write leases. Unknown effects are writes.
-  if x{"effect"}.getStr("write") != "read": return false
+  if ct.cat.toolIndex.getOrDefault("lock_acquire").len > 0 and
+      x{"effect"}.getStr("write") != "read": return false
   x{"parallel"}.getBool(false)
 
 proc dispatchToolCalls*(ct: CoreTools,
