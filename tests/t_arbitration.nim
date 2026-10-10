@@ -10,7 +10,7 @@
 ## mock LLM then asks for one real `edit` in that tree, so the refusal travels
 ## the whole path: runner -> dispatch gate -> locks -> tool result -> transcript.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, strutils, times]
 import natsnim
 import helpers
 
@@ -39,7 +39,7 @@ proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
     getEnv("NIF_ROOT", getAppDir().parentDir()))
 
-  let sandbox = newCoreSandbox("arbitration", ["store", "edit", "locks", "llm", "fabric"])
+  let sandbox = newCoreSandbox("arbitration", ["store", "edit", "locks", "llm", "fabric", "bash"])
   copyFileWithPermissions(repoRoot / "var" / "bin" / "fabric-exec",
                           sandbox.sandboxBin("fabric-exec"))
   let root = sandbox.root
@@ -54,24 +54,27 @@ proc main() =
   # One scripted round: an exact-match edit of the held file. The mock returns
   # this tool call, the gate judges it, and the second round's final answer
   # lets the turn close so the transcript exists to read.
-  putEnv("NIF_MOCK_ROUNDS", "2")
+  putEnv("NIF_MOCK_ROUNDS", "3")
   putEnv("NIF_MOCK_TOOLJSON", $(%*[{"name": "edit", "arguments": {
     "path": root / "ws" / "held.txt",
     "edits": [{"old_string": "two", "new_string": "TWO"}]}},
     {"name": "fabric", "arguments": {
       "tools": ["write"],
       "code": "import fabricguest\nfinish(callTool(\"write\", " &
-        "\"{\\\"path\\\":\\\"nested.txt\\\",\\\"content\\\":\\\"nested-ok\\\"}\"))"}}]))
+        "\"{\\\"path\\\":\\\"nested.txt\\\",\\\"content\\\":\\\"nested-ok\\\"}\"))"}},
+    {"name": "bash", "arguments": {"command": "sleep 4; printf writer-finished",
+                                    "timeoutMs": 10000}}]))
 
   # A lease that outlives the turn, so the refusal is deterministic rather than
   # a race with turn timing.
-  putEnv("NIF_LOCK_TTL_MS", "120000")
+  putEnv("NIF_LOCK_TTL_MS", "500")
 
   let (server, url) = startNats()
   defer: stopServer(server)
 
   let coreProc = startComponent(sandbox.sandboxBin("niffler"), url, root = root,
-                                extra = @[("NIF_AUTO_APPROVE", "1")],
+                                extra = @[("NIF_AUTO_APPROVE", "1"), ("NIF_BASH_SANDBOX_MAP", ""),
+                                          ("NIF_BASH_NET", "")],
                                 logFile = root / "core.log")
   defer:
     if coreProc.running(): coreProc.terminate()
@@ -107,7 +110,7 @@ proc main() =
   let held = call(nc, "locks", "lock_acquire",
                   %*{"root": root / "ws", "roots": [root / "ws"],
                      "paths": [root / "ws"], "sessionId": "conv-holder",
-                     "tool": "bash", "callId": "holder-call"}, 10000)
+                     "tool": "bash", "callId": "holder-call", "ttlMs": 120000}, 10000)
   check("foreign conversation holds the workspace", held{"ok"}.getBool(false), $held)
 
   # Run a real turn in a different conversation; its edit must be refused.
@@ -160,6 +163,46 @@ proc main() =
   if fileExists(root / "ws" / "nested.txt"):
     check("nested write produced expected bytes",
       readFile(root / "ws" / "nested.txt") == "nested-ok")
+
+  # Start a real slow writer via another client. A short operator TTL must not
+  # expire its claim while the command is still executing.
+  let slow = startComponent(sandbox.sandboxBin("cli"), url, root = root,
+    args = ["--timeout=120", "call", "session", $(%*{
+      "sessionId": "conv-long", "content": "long writer",
+      "cwd": root / "ws"})], logFile = root / "slow-client.log")
+  defer:
+    if slow.running(): slow.terminate()
+    discard slow.waitForExit(2000)
+    slow.close()
+  var writerLease: JsonNode
+  let until = epochTime() + 60.0
+  while epochTime() < until:
+    let status = call(nc, "locks", "lock_status", %*{"sessionId": "conv-long"})
+    let leases = status{"leases"}
+    if leases != nil and leases.kind == JArray:
+      for lease in leases:
+        if lease{"tool"}.getStr("") == "bash": writerLease = lease
+    if writerLease != nil: break
+    sleep(50)
+  if writerLease == nil:
+    echo readFile(root / "slow-client.log")
+    echo $(call(nc, "store", "list", %*{
+      "kind": "message", "idPrefix": "conv-long:", "limit": 30}))
+  check("long writer acquired a real dispatch claim", writerLease != nil)
+  if writerLease != nil:
+    check("dispatch lease outlives transport timeout",
+      writerLease{"ttlMs"}.getInt(0) >= 600000, $writerLease)
+    sleep(1000) # twice the operator TTL, still within the running command
+    check("slow client still executing", slow.running())
+    let contender = call(nc, "locks", "lock_acquire", %*{
+      "root": root / "ws", "paths": [root / "ws" / "held.txt"],
+      "sessionId": "conv-contender", "tool": "edit", "callId": "contender"})
+    check("live writer remains exclusive past configured TTL",
+      contender{"holder"}.getStr("") == "conv-long", $contender)
+  discard slow.waitForExit(15000)
+  let afterLong = call(nc, "locks", "lock_status", %*{"sessionId": "conv-long"})
+  check("completed writer releases its dispatch claims",
+    afterLong{"count"}.getInt(-1) == 0, $afterLong)
 
   report("ARBITRATION TEST")
 
