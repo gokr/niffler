@@ -877,10 +877,15 @@ chosen from:
   resolved provider, the call fails naming the model, its real provider(s),
   the resolved provider and its catalog — the last line of defense against a
   pairing created before the pin invariant (a UI that pinned a model without
-  its provider), instead of a raw provider 400. The check is deliberately
-  narrow: it fires only on a positive catalog answer, so an unknown or
-  self-hosted model, a missing `models` component and an implicit model (the
-  provider default) pass through untouched.
+  its provider), instead of a raw provider 400. Ownership is read from
+  `models_resolve` (the exact id), never from a `models_list` substring page:
+  a popular id is shared by many providers and buries its own entry, so a
+  clipped page used to read as "no provider serves this" and refuse a model the
+  resolved provider does serve. The check is deliberately narrow: it fires
+  only on a positive catalog answer, and it exempts the provider's own
+  configured model — the pin-less conversation shape, which core then sends as
+  an explicit model override — so an unknown or self-hosted model, a missing
+  `models` component and the provider default all pass through untouched.
 
 Agents inherit the whole EXPLICIT pin: a fresh subagent gets the parent's
 `modelOverride` with the provider pinned beside it, so the child cannot

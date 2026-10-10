@@ -199,7 +199,7 @@ func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverrid
 		if catalogProvider == "" {
 			catalogProvider = inferCatalogProvider(providerName, p.BaseURL, model)
 		}
-		if msg, mismatch := crossCatalogMismatch(ctx, c, model, catalogProvider, providerName); mismatch {
+		if msg, mismatch := crossCatalogMismatch(ctx, c, model, catalogProvider, providerName, p.Model); mismatch {
 			log.Printf("ERROR chat status=model-provider-mismatch provider=%s model=%s error=%s",
 				providerName, model, msg)
 			return resolvedConfig{}, fmt.Errorf("%s", msg)
@@ -242,63 +242,112 @@ func inferCatalogProvider(providerName, baseURL, model string) string {
 // whatever provider the environment defaults to, and the provider answers with
 // a raw 400 naming its own models ("The supported API model names are …").
 //
-// It fires only on a positive answer — the model id exists in the catalog and
-// no entry with that exact id names the resolved provider (by catalog id or by
-// provider nickname). An unknown model (self-hosted, or newer than the
-// catalog), an unavailable models component and an implicit model (the
-// provider's own default is right by construction) all pass through untouched.
-func crossCatalogMismatch(ctx context.Context, c *sdk.Component, model, catalogProvider, providerName string) (string, bool) {
+// It fires only on a positive answer — the catalog places that exact model id
+// somewhere and no owner is the resolved provider (by catalog id or by provider
+// nickname). An unknown model (self-hosted, or newer than the catalog), an
+// unavailable models component and the provider's own configured model all pass
+// through untouched.
+func crossCatalogMismatch(ctx context.Context, c *sdk.Component, model, catalogProvider, providerName, providerModel string) (string, bool) {
 	if c == nil || model == "" || catalogProvider == "" {
 		return "", false
 	}
+	// The provider's own configured model needs no catalog answer: refusing it
+	// would refuse the pin-less conversation shape, so skip the lookup too.
+	if sameModel(model, providerModel) {
+		return "", false
+	}
+	return decideCatalogMismatch(catalogOwners(ctx, c, model), model, catalogProvider, providerName, providerModel)
+}
+
+// catalogOwners is every provider the catalog places this exact model id under.
+//
+// models_resolve answers it; models_list cannot. models_list filters on a
+// substring over id/name/family/description, so a popular id buries the entry
+// that matters under near-misses — 245 catalog entries mention
+// "deepseek-flash", and deepseek/deepseek-flash sorted 56th — and a page that
+// clips the real owner reads as "no provider serves this". That clipped answer
+// refused a model the resolved provider does serve, on every turn of every
+// pin-less conversation (core sends the resolved model explicitly, so the guard
+// never saw it as implicit).
+//
+// A nil result means the catalog had no answer (unknown model, or no models
+// component): absence of evidence, never a mismatch.
+func catalogOwners(ctx context.Context, c *sdk.Component, model string) []string {
 	rpcCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	raw, err := c.RequestContext(rpcCtx, "models", "models_list",
-		map[string]any{"query": model, "limit": 50})
+	raw, err := c.RequestContext(rpcCtx, "models", "models_resolve",
+		map[string]any{"reference": model})
 	if err != nil {
-		return "", false
+		return nil
 	}
-	var resp struct {
-		Models []catalogEntry `json:"models"`
+	var answer modelsResolveAnswer
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return nil
 	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", false
-	}
-	return decideCatalogMismatch(resp.Models, model, catalogProvider, providerName)
+	return ownersFromAnswer(answer)
 }
 
-// catalogEntry is the shape models_list returns per model: the descriptor's own
-// fields plus the provider id it belongs to.
-type catalogEntry struct {
-	ID       string `json:"id"`
-	Provider string `json:"provider"`
+// modelsResolveAnswer is the models_resolve result the guard reads: a unique
+// owner arrives as the resolved descriptor, an ambiguous bare id as its matches.
+type modelsResolveAnswer struct {
+	Found   bool     `json:"found"`
+	Matches []string `json:"matches"`
+	Provider struct {
+		ID string `json:"id"`
+	} `json:"provider"`
 }
 
-// decideCatalogMismatch is the pure decision behind crossCatalogMismatch: the
-// model exists, and no entry for it names the resolved provider.
-func decideCatalogMismatch(entries []catalogEntry, model, catalogProvider, providerName string) (string, bool) {
-	// Nothing to judge when the model is implicit or the provider names no
-	// catalog: an unknown provider must not block its own models.
-	if strings.TrimSpace(model) == "" || strings.TrimSpace(catalogProvider) == "" {
-		return "", false
-	}
-	owners := []string{}
-	exact := 0
-	for _, e := range entries {
-		if !strings.EqualFold(strings.TrimSpace(e.ID), model) {
-			continue
+// ownersFromAnswer reads the provider ids out of either shape of a positive
+// answer. Both spell providers as catalog ids; an ambiguous match is a
+// provider/model reference, so only the first path segment is the provider (the
+// model id itself may contain slashes).
+func ownersFromAnswer(answer modelsResolveAnswer) []string {
+	if answer.Found {
+		if id := strings.TrimSpace(answer.Provider.ID); id != "" {
+			return []string{id}
 		}
-		exact++
-		if strings.EqualFold(e.Provider, catalogProvider) || strings.EqualFold(e.Provider, providerName) {
+		return nil
+	}
+	owners := make([]string, 0, len(answer.Matches))
+	for _, match := range answer.Matches {
+		if slash := strings.IndexByte(match, '/'); slash > 0 {
+			owners = append(owners, match[:slash])
+		}
+	}
+	return owners
+}
+
+func sameModel(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// decideCatalogMismatch is the pure decision behind crossCatalogMismatch:
+// owners is the exact provider set for this model id (nil when the catalog has
+// no answer at all), and providerModel is the resolved provider's own
+// configured model.
+func decideCatalogMismatch(owners []string, model, catalogProvider, providerName, providerModel string) (string, bool) {
+	// Nothing to judge when the provider names no catalog (an unknown provider
+	// must not block its own models) or when the catalog places the model
+	// nowhere (unknown, or newer than the catalog).
+	if strings.TrimSpace(model) == "" || strings.TrimSpace(catalogProvider) == "" || len(owners) == 0 {
+		return "", false
+	}
+	// The provider's own configured model is right by construction — it is what
+	// a pin-less conversation resolves to, and core then sends it as an explicit
+	// model override.
+	if sameModel(model, providerModel) {
+		return "", false
+	}
+	named := make([]string, 0, len(owners))
+	for _, owner := range owners {
+		if sameModel(owner, catalogProvider) || sameModel(owner, providerName) {
 			return "", false
 		}
-		owners = append(owners, e.Provider)
+		named = append(named, owner)
 	}
-	if exact == 0 {
-		return "", false
-	}
+	sort.Strings(named)
 	return fmt.Sprintf("model %q is served by provider %s, but this call resolved provider %q (catalog %q): pin the provider together with the model, or choose a model that provider serves",
-		model, strings.Join(owners, ", "), providerName, catalogProvider), true
+		model, strings.Join(named, ", "), providerName, catalogProvider), true
 }
 
 func loadProviders() (map[string]provider, error) {
@@ -493,8 +542,40 @@ func openAIMessages(messages []chatMessage) []openai.ChatCompletionMessage {
 	result := make([]openai.ChatCompletionMessage, len(messages))
 	for i := range messages {
 		result[i] = openai.ChatCompletionMessage(messages[i])
+		ensureContentKey(&result[i], messages[i])
 	}
 	return result
+}
+
+// ensureContentKey guarantees the `content` key is PRESENT on the wire for
+// messages that carry none. go-openai's ChatCompletionMessage marks Content
+// `json:"content,omitempty"`, so an empty string is omitted entirely — and a
+// strict provider rejects the request outright with an opaque 400 that only
+// says `.messages[N].content is missing` for every schema option (deepswe
+// pilot10 on Synthetic, and DeepSeek answers 422). It is not only the
+// literally empty case: a tool whose result was the empty string (a `read`
+// with no output) and a turn whose final assistant message had no text both
+// produced it. Verified against both providers: a tool message accepts the
+// empty string or a single empty text part, `content: null` is REJECTED, and
+// an assistant message with no content key and no tool_calls is rejected by
+// DeepSeek ("content or tool_calls must be set") — so the fallback is the
+// text-part shape, the only spelling go-openai will emit for a set field.
+func ensureContentKey(out *openai.ChatCompletionMessage, in chatMessage) {
+	if out.Content != "" || len(out.MultiContent) > 0 {
+		return
+	}
+	if out.Role == openai.ChatMessageRoleAssistant && len(out.ToolCalls) > 0 {
+		// An assistant tool-call turn: omitting content (null) is the
+		// canonical spelling and what both providers accept.
+		return
+	}
+	if len(in.MultiContent) > 0 {
+		return
+	}
+	out.MultiContent = []openai.ChatMessagePart{{
+		Type: openai.ChatMessagePartTypeText,
+		Text: "",
+	}}
 }
 
 type chatArgs struct {
