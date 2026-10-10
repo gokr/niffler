@@ -123,12 +123,17 @@ working in every language.
   writes run exclusively),
   `x-harness.writes` (`{"paths": [...]}` names the argument fields holding the
   files a tool will change; `{"root": true}` claims the whole conversation
-  workspace for an opaque writer like bash/builder/fabric; declaring nothing
+  workspace for an opaque writer like bash/builder; declaring nothing
   also counts as opaque — the dispatch gate takes a `locks`-component lease
   over the claim before the call runs, so two conversations cannot interleave
   writes to one file; disjoint paths stay parallel. A conflict is a normal
   tool error naming the holder, `[E_WRITE_BUSY] …`, and the lease expires
-  after `NIF_LOCK_TTL_MS` if the runner dies. docs/research/WRITE-ARBITRATION.md),
+  after a bounded lifetime if the runner dies. Session dispatch uses at least
+  its transport timeout + 60s (minimum 10 minutes); acknowledged terminal
+  replies release, unknown transport outcomes retain the claim. Read-effect
+  tools and session-context orchestrators take no outer claim (nested tool
+  calls acquire independently). Cooperative coordination only, not OS fencing.
+  docs/research/WRITE-ARBITRATION.md),
   `x-harness.sessionId` (runner injects `__session.session` as private
   context so the component can match `cancel.<component>` messages against
   its in-flight call — bash kills the command's process group; docs/WIRE.md

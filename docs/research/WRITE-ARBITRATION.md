@@ -1,6 +1,6 @@
 # Write arbitration and the evidence ledger — two proposals
 
-> Status: **A implemented on `feat/write-arbitration`, not merged; B remains a proposal.** Two related holes, one ordering:
+> Status: **A phase 1 complete; B remains a proposal.** Two related holes, one ordering:
 > A is a correctness fix, B is what makes A's receipts useful, and the eval
 > harness (PLAN.md "Current priorities") is what stops either being asserted
 > rather than measured. Open work has one home — [../PLAN.md](../PLAN.md).
@@ -27,8 +27,11 @@ The first implementation overstated its guarantees. The review corrected:
 
 Verified: restart reconstructs a durable holder, recovered leases release, and
 an actual Fabric guest writes through nested dispatch without self-conflicting.
-The full server gate passed 72 tests. Store-outage fault injection and a
-long-running writer/expiry regression remain open before merge. Expiry alone
+Store-outage fault injection proves failed startup remains retryable and failed
+durable release retains the holder. A real running bash call remains exclusive
+past a deliberately short operator TTL and releases on completion. Terminal
+component error replies also release; transport failures do not. Write-effect
+tools cannot bypass the claim gate through the parallel-wave publisher. Expiry alone
 cannot establish that an uncooperative process stopped; without fencing or
 backend-enforced termination this remains cooperative coordination, not strict
 filesystem exclusion. Direct bus calls, autonomous background jobs, native guest
