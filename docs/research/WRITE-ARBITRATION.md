@@ -59,7 +59,15 @@ A new extension, sibling to `x-harness.effect`:
 
 - **path-bound** — `edit`, `write`, `replace_across`: the named args hold file
   paths, resolved the same way `x-harness.workspace.pathFields` already resolves
-  them.
+  them. A value carrying a wildcard is claimed as its **base directory before the
+  first wildcard**: `replace_across {glob: "**/*.go"}` claims `/ws`, and
+  `{glob: "src/*.go"}` claims `/ws/src`. The gate deliberately does **not**
+  expand the pattern — that would be a filesystem walk in the dispatch path, a
+  second implementation of the component's matcher, and a race with the
+  component's own expansion — so it claims the one directory the pattern cannot
+  escape. That can only over-claim (a `src/*.go` call also excludes `src/sub/`,
+  which a non-recursive match would not have touched), and over-claiming is the
+  safe direction: a refusal, never a lost update.
 - **opaque** — `bash`, `builder`, `plugins`, `mcp`, `fabric`, `hooks`: the call
   can touch anything under the workspace, so it claims the whole subtree.
 
@@ -160,6 +168,16 @@ still run concurrently: their stripes do not overlap.
 
 Effort: phase 1 ≈ 2–3 days (component ≈ 1, gate + schema ≈ 1, tests ≈ ½),
 phase 2 ≈ 1 day of declarations plus tests.
+
+Phase 1 has shipped. Two gaps remain inside it, and they are the first things
+phase 2 should pick up:
+
+- **`plugins` and `mcp` are not yet declared**, so they fall back to the opaque
+  default — safe (the root is claimed) but coarser than intended.
+- **Arbitration covers the dispatch gate only.** A mutation that does not pass
+  through a tool call is invisible to it — the same boundary
+  `x-harness.effect` and `x-harness.approval` already live behind. A scope
+  statement, not a defect to fix here.
 
 **Interaction with a container sandbox** (the `NIF_BASH_SANDBOX_MAP` /
 `NIF_BASH_NET` work landing alongside this): a `docker run … -v workspace`

@@ -976,7 +976,14 @@ keys:
   values are already workspace-resolved by `workspace.pathFields`; and
   `{"root": true}` claims the conversation workspace root for a tool whose
   reach is opaque (`bash`, `builder`, `plugins`, `mcp`, `fabric`), which
-  conflicts with any claim beneath it. **Declaring nothing means opaque**:
+  conflicts with any claim beneath it. A declared value carrying a wildcard
+  (`*` or `?` — a `replace_across` glob) is claimed as the **base directory
+  before the first wildcard**, not as the pattern text: the pattern
+  `/ws/**/*.go` claims `/ws`, and `/ws/src/*.go` claims `/ws/src`. The gate does
+  not expand globs (that would mean a filesystem walk in the dispatch path,
+  duplicating the component's matcher, and racing its own expansion); it claims
+  the one directory the pattern cannot escape, which can only ever over-claim —
+  the safe direction. **Declaring nothing means opaque**:
   the conservative default, so a component that forgets the key still
   cannot write unguarded. A conflicting lease refuses the call with a normal
   tool error naming the holder — `[E_WRITE_BUSY] <path> is being modified by
