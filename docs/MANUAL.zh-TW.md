@@ -2250,6 +2250,7 @@ core 及其元件使用中的種類（store 工具自身的 docstring 只列出
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建議式探索實驗（`jev`）的每回合影子觀測：候選快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。絕不向模型暴露，也絕不寫入轉錄；後端缺席時**不**寫任何記錄（見[建議式探索](#advisory-discovery-jev-and-the-von-launcher)）。記錄包含任務文字 — 按敏感資料處理 |
 | `edit-undo` | `<session>:<絕對路徑>` | 檔案的最後編輯前位元組，供 `undo_last_edit` 使用（單層，按會話 + 檔案）。在編輯*之前*寫入；寫入失敗會拒絕編輯，而不是失去撤銷歷史。作用域限於擁有它的會話——沒有會話的呼叫方（cli 指令碼）共用一個 `__standalone` 作用域。由 `conversation_delete` 清理 |
 | `edit-seen` | `<session>:<絕對路徑>` | 會話最後觀察到的檔案狀態（`digest`/`bytes`/`lines`/`full`），支撐未變更讀取 stub 與 `E_STALE` 閘門。僅確認記錄已有內容的讀取不寫入；更正（或任何修改）才寫入。store 不可達時讀取結果為「從未查看」——這是安全的方向（見上文[儲存](#the-store)）。由 `conversation_delete` 清理 |
+| `diagnostic` | `<session>:<id>` | 為顯示/儲存而持久化的非同步 LSP 判定（`{sessionId, path, bytes, text, clean, createdAt}`）。`clean: true` 的整檔判定僅供介面/儲存使用，絕不進入模型歷史——它在執行器閒置時仍會遲到傳遞；其他判定還會追加到轉錄。由 `conversation_delete` 清理 |
 | `selftest` | store 自我測試探針 | 用後即丟——由 store 自身的自我測試往返寫入並刪除 |
 
 後端是所選的引擎——預設為位於 `var/store.db` 的 SQLite，或

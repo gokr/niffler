@@ -2089,6 +2089,7 @@ make build
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建议式发现实验（`jev`）的每回合影子观测：候选快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。绝不向模型暴露，也绝不写入转录；后端缺席时**不**写任何记录（见[建议式发现](#advisory-discovery-jev-and-the-von-launcher)）。记录包含任务文本——按敏感数据处理 |
 | `edit-undo` | `<session>:<绝对路径>` | 文件的最后编辑前字节，供 `undo_last_edit` 使用（单级，按会话 + 文件）。在编辑*之前*写入；写入失败会拒绝编辑，而不是丢失撤销历史。作用域限于拥有它的会话——没有会话的调用方（cli 脚本）共享一个 `__standalone` 作用域。由 `conversation_delete` 清理 |
 | `edit-seen` | `<session>:<绝对路径>` | 会话最后观察到的文件状态（`digest`/`bytes`/`lines`/`full`），支撑未更改读取存根和 `E_STALE` 门控。仅确认记录已有内容的读取不写入；更正（或任何修改）才写入。store 不可达时读取结果为"从未查看"——这是安全的方向（见上文[存储](#the-store)）。由 `conversation_delete` 清理 |
+| `diagnostic` | `<session>:<id>` | 为显示/存储而持久化的异步 LSP 判定（`{sessionId, path, bytes, text, clean, createdAt}`）。`clean: true` 的整文件判定仅供界面/存储使用，绝不进入模型历史——它在运行器空闲时仍会迟到传递；其他判定还会追加到转录。由 `conversation_delete` 清理 |
 | `selftest` | store 自检探针 | 一次性——由 store 自身的自检往返写入并删除 |
 
 后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，或 DSN 共享的 TiDB 引擎（`NIF_STORE_BACKEND=tidb`，`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。
