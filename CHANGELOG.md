@@ -220,10 +220,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   component absent — writes are unarbitrated` warning, in the spirit of repomap
   absent) while present-but-unreachable is fail-closed — a lock table existed a
   moment ago, so the write is refused rather than silently unguarded. Read-only
-  tools declare nothing and pay nothing: no lease, no round trip. Two things the
-  implementation must not change: the table's shape (its cost is the thing that
-  regressed once already) and `replicas` (unset — two instances would hold
-  partial views). Design, cost table and the phase plan:
+  tools declare nothing and pay nothing: no lease, no round trip. A declared
+  value carrying a wildcard — a `replace_across` glob — is claimed as its **base
+  directory before the first wildcard** (`**/*.go` claims the workspace,
+  `src/*.go` claims `src`), because the gate does not expand patterns: expanding
+  would mean a filesystem walk in the dispatch path, a second implementation of
+  the component's matcher, and a race with the component's own expansion. Claiming
+  the literal base can only over-claim, which is the safe direction (a refusal,
+  never a lost update). Two things the implementation must not change: the table's
+  shape (its cost is the thing that regressed once already) and `replicas` (unset
+  — two instances would hold partial views). Design, cost table and the phase plan:
   [WRITE-ARBITRATION.md](docs/research/WRITE-ARBITRATION.md); the two contract
   tests are `make test-locks` (the table's own contract, with a latency
   regression guard) and `make test-arbitration` (the gate refusing a real turn's

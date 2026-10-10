@@ -17,8 +17,51 @@
 import std/[algorithm, json, monotimes, os, osproc, strutils, times]
 import natsnim
 import helpers
+import ../core/dispatch
+
+proc checkPure() =
+  ## The claim computation for a declared value that may be a glob — verified
+  ## directly because it is a pure function and the end-to-end case below can
+  ## only show one shape of it. The rule: claim the last directory separator
+  ## BEFORE the first wildcard, so every file the pattern can match is
+  ## necessarily underneath the claim. Over-claiming is the safe direction.
+  check("glob: recursive pattern claims the workspace",
+        globClaim("/ws/**/*.go") == "/ws", globClaim("/ws/**/*.go"))
+  check("glob: anchored pattern claims its directory",
+        globClaim("/ws/src/*.go") == "/ws/src", globClaim("/ws/src/*.go"))
+  check("glob: wildcard before a separator cuts higher",
+        globClaim("/ws/a*b/c.go") == "/ws", globClaim("/ws/a*b/c.go"))
+  check("glob: '?' is a wildcard too",
+        globClaim("/ws/a?b.go") == "/ws", globClaim("/ws/a?b.go"))
+  check("no wildcard: the path is claimed verbatim",
+        globClaim("/ws/plain.go") == "/ws/plain.go", globClaim("/ws/plain.go"))
+  check("wildcard with no directory prefix falls back to the workspace",
+        globClaim("*.go") == "", globClaim("*.go"))
+
+  # writePathsFor is the gate's whole view of a declaration: a path-bound tool
+  # claims its named fields, an opaque one the root, and a missing declaration
+  # nothing at all (opaque by default).
+  let editSchema = %*{"x-harness": {"writes": {"paths": ["path"]}}}
+  check("declared path is claimed",
+        writePathsFor(editSchema, %*{"path": "/ws/a.go"}, "/ws") == @["/ws/a.go"],
+        $writePathsFor(editSchema, %*{"path": "/ws/a.go"}, "/ws"))
+  let globSchema = %*{"x-harness": {"writes": {"paths": ["glob", "paths"]}}}
+  check("a glob argument claims its base directory",
+        writePathsFor(globSchema, %*{"glob": "/ws/**/*.go"}, "/ws") == @["/ws"],
+        $writePathsFor(globSchema, %*{"glob": "/ws/**/*.go"}, "/ws"))
+  check("a concrete paths array is claimed file by file",
+        writePathsFor(globSchema, %*{"paths": ["/ws/a.go", "/ws/b.go"]}, "/ws") ==
+          @["/ws/a.go", "/ws/b.go"],
+        $writePathsFor(globSchema, %*{"paths": ["/ws/a.go", "/ws/b.go"]}, "/ws"))
+  check("an opaque declaration claims the workspace",
+        writePathsFor(%*{"x-harness": {"writes": {"root": true}}}, %*{}, "/ws") ==
+          @["/ws"], "")
+  check("an undeclared tool is treated as opaque",
+        writePathsFor(%*{}, %*{}, "/ws") == @["/ws"], "")
 
 proc main() =
+  checkPure()
+
   let repoRoot = getEnv("NIF_REPO_ROOT",
     getEnv("NIF_ROOT", getAppDir().parentDir()))
 
@@ -174,6 +217,38 @@ proc main() =
   sleep(1800)  # past NIF_LOCK_TTL_MS
   let afterTtl = acquire("conv-f", "call-9", @[ws / "sub" / "c.txt"])
   check("expired lease no longer blocks", afterTtl{"ok"}.getBool(false), $afterTtl)
+
+  # ── a glob claim is a real directory claim, not the pattern text ──
+  # Leftovers from the cases above hold paths in this tree; clear them so the
+  # glob section measures only what it means to.
+  for id in ["conv-f:call-9", "conv-b:call-6", "conv-c:call-4",
+             "conv-anch:call-12"]:
+    discard call(nc, "locks", "lock_release", %*{"leaseId": id}, 10000)
+  # This is the bug the fix addresses: a glob declared as a path used to arrive
+  # as its literal pattern ("/ws/**/*.go"), which prefix-matches no real file,
+  # so a glob-based replace_across guarded nothing. The gate now claims the base
+  # directory, so a claim out of the same tree conflicts — here simulated by
+  # claiming what the gate would: the base directory of a recursive pattern.
+  let globStripe = globClaim(ws / "**/*.txt")
+  check("a recursive glob claims the workspace directory",
+        globStripe == ws, globStripe)
+  let globHold = acquire("conv-glob", "call-10", @[globStripe], tool = "replace_across")
+  check("glob-base claim ok", globHold{"ok"}.getBool(false), $globHold)
+  let underGlob = acquire("conv-rival", "call-11", @[ws / "deep" / "d.txt"])
+  check("a file under a glob claim is refused",
+        not underGlob{"ok"}.getBool(true), $underGlob)
+  check("it names the glob holder", underGlob{"holder"}.getStr("") == "conv-glob",
+        $underGlob)
+  discard call(nc, "locks", "lock_release", %*{"leaseId": "conv-glob:call-10"})
+
+  # An anchored glob must NOT block a sibling directory outside it.
+  createDir(ws / "other")
+  let anchored = acquire("conv-anch", "call-12", @[globClaim(ws / "sub" / "*.txt")])
+  check("anchored glob claims only its directory",
+        anchored{"ok"}.getBool(false), $anchored)
+  let sibling = acquire("conv-sib", "call-13", @[ws / "other" / "s.txt"])
+  check("a sibling directory is not blocked by an anchored glob",
+        sibling{"ok"}.getBool(false), $sibling)
 
   report("LOCKS TEST")
 

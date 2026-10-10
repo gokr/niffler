@@ -1736,18 +1736,57 @@ proc leaseIdFor(sessionId, callId: string): string =
   else:
     sessionId & ":" & $epochTime()
 
-proc writePathsFor(schema, args: JsonNode, workspace: string): seq[string] =
+proc globClaim*(p: string): string =
+  ## The stripe to claim for one declared path that may be a glob pattern.
+  ##
+  ## A resolved glob reaches the gate as a literal string (`/ws/**/*.go`), and
+  ## the gate must not expand it: that would mean a filesystem walk in the
+  ## dispatch path, duplicating the component's matcher, and it would race the
+  ## component's own expansion. Instead claim the one directory the pattern
+  ## cannot escape — the last separator BEFORE the first wildcard.
+  ##
+  ##   /ws/**/*.go      → /ws      (every match is under /ws)
+  ##   /ws/src/*.go     → /ws/src
+  ##   /ws/a*b/c.go     → /ws      (cut at the separator before `a*b`)
+  ##   /ws/plain.go     → /ws/plain.go  (no wildcard: the file itself)
+  ##
+  ## Over-claiming is the safe direction: it can refuse a write that would have
+  ## been fine, never allow one that conflicts. `*` and `?` are the only
+  ## metacharacters the component's matcher understands, so finding one is the
+  ## whole test.
+  var wild = -1
+  for i in 0 ..< p.len:
+    if p[i] == '*' or p[i] == '?':
+      wild = i
+      break
+  if wild < 0: return p
+  var cut = -1
+  for i in 0 ..< wild:
+    if p[i] == '/': cut = i
+  if cut <= 0: return ""   # no directory prefix: the caller uses the workspace
+  p[0 ..< cut]
+
+proc writePathsFor*(schema, args: JsonNode, workspace: string): seq[string] =
   ## The paths a call will write, from its `x-harness.writes` declaration
   ## (docs/research/WRITE-ARBITRATION.md). Path-bound writers name their file
   ## arguments — already workspace-resolved by applyWorkspace — and an opaque
   ## writer (`bash`, `builder`) claims the workspace root itself. Core knows no
   ## component names; a component that declares nothing is treated as opaque,
   ## the conservative default, so forgetting to declare loses no protection.
+  ##
+  ## A declared value carrying a wildcard is claimed as its literal base
+  ## directory (globClaim) — otherwise the stripe would be the pattern text,
+  ## which prefix-matches no real file and would guard nothing.
   if workspace.len == 0: return @[]
   let w = if schema != nil: schema{"x-harness"}{"writes"} else: nil
   if w == nil or w.kind != JObject: return @[workspace]
   if w{"root"}.getBool(false): return @[workspace]
   result = @[]
+  var claimed: seq[string] = @[]
+  proc add(raw: string) =
+    if raw.len == 0: return
+    let c = globClaim(raw)
+    if c.len > 0: claimed.add(c) else: claimed.add(workspace)
   let fields = w{"paths"}
   if fields != nil and fields.kind == JArray:
     for f in fields:
@@ -1755,16 +1794,15 @@ proc writePathsFor(schema, args: JsonNode, workspace: string): seq[string] =
       if name.len == 0 or args == nil: continue
       let v = args{name}
       if v == nil: continue
-      if v.kind == JString and v.getStr("").len > 0:
-        result.add(v.getStr(""))
+      if v.kind == JString:
+        add(v.getStr(""))
       elif v.kind == JArray:
         for it in v:
-          if it.kind == JString and it.getStr("").len > 0:
-            result.add(it.getStr(""))
+          if it.kind == JString: add(it.getStr(""))
   # A path-bound declaration that matched nothing is still a write somewhere
   # in the workspace: fall back to the root rather than guard nothing.
-  if result.len == 0: result.add(workspace)
-  return result
+  if claimed.len == 0: claimed.add(workspace)
+  return claimed
 
 proc acquireWriteLease(ct: CoreTools, tool, callId: string,
                        paths: seq[string]): bool =
