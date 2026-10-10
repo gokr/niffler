@@ -117,6 +117,8 @@ type
   # cancel semantics — its own timeout bounds it); the turn ends now
   # instead of after the tool finishes.
   TurnCancelled* = object of CatchableError
+  ComponentCallError = object of ValueError
+    ## An acknowledged terminal component error, not a transport timeout.
   # Turn-bound advisory channel (svc.session.<id>.advise): the expert peer's
   # request/reply surface. pumpAdvise answers each request immediately —
   # accepted only while the named turn is still live — and queues accepted
@@ -1522,7 +1524,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
         echo "dispatch " & tool & " wait=" &
           $int((getMonoTime() - dispAt).inMilliseconds) & "ms"
       if resp.kind == ekError:
-        raise newException(ValueError,
+        raise newException(ComponentCallError,
           resp.error{"message"}.getStr("component error"))
       return resp.args
     # idle slot: keep core responsive to its own tools, the catalog, and the
@@ -2013,8 +2015,14 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     return dispatchSubjectCall(ct, "svc." & comp & ".call", tool,
                                callArgs, timeoutMs)
 
-  result = dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
-  writeCompleted = true
+  try:
+    result = dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
+    writeCompleted = true
+  except ComponentCallError:
+    # A terminal error reply also acknowledges the handler finished. Keeping
+    # this claim would make a failed edit block its own next attempt.
+    writeCompleted = true
+    raise
 
 # ---------------------------------------------------------------------------
 # Parallel dispatch — fan out a wave of tool calls over the bus
@@ -2045,6 +2053,9 @@ proc isParallelSafeTool*(ct: CoreTools, tool: string): bool =
   if x == nil or x.kind != JObject: return false
   if x{"approval"}.getStr("") == "always": return false
   if x{"sessionContext"}.getBool(false): return false
+  # Writers must traverse the serial dispatch gate where claims are acquired.
+  # The wave publisher does not own write leases. Unknown effects are writes.
+  if x{"effect"}.getStr("write") != "read": return false
   x{"parallel"}.getBool(false)
 
 proc dispatchToolCalls*(ct: CoreTools,
