@@ -774,7 +774,7 @@ func TestFitOutputClampsToWindowHeadroom(t *testing.T) {
 }
 
 // TestDecideCatalogMismatch pins the guard that catches a model pinned without
-// its provider: the model id exists in the catalog under other providers only,
+// its provider: the catalog places the model id under other providers only,
 // which is how a UI can send Synthetic's model id to the environment's default
 // provider and get a raw 400 back. Everything short of that positive answer
 // must pass: an unknown model, an empty catalog answer, and a match by either
@@ -786,11 +786,7 @@ func TestFitOutputClampsToWindowHeadroom(t *testing.T) {
 // "The supported API model names are deepseek-flash, deepseek-v4-pro, but you
 // passed hf:deepseek-ai/DeepSeek-V4.1-Flash".
 func TestDecideCatalogMismatchCatchesForeignModel(t *testing.T) {
-	entries := []catalogEntry{
-		{ID: "hf:deepseek-ai/DeepSeek-V4.1-Flash", Provider: "synthetic"},
-		{ID: "deepseek-v4-flash", Provider: "deepseek"},
-	}
-	msg, mismatch := decideCatalogMismatch(entries, "hf:deepseek-ai/DeepSeek-V4.1-Flash", "deepseek", "default")
+	msg, mismatch := decideCatalogMismatch([]string{"synthetic"}, "hf:deepseek-ai/DeepSeek-V4.1-Flash", "deepseek", "default", "deepseek-flash")
 	if !mismatch {
 		t.Fatal("expected a mismatch for a Synthetic model id resolved to the deepseek catalog")
 	}
@@ -801,28 +797,90 @@ func TestDecideCatalogMismatchCatchesForeignModel(t *testing.T) {
 	}
 }
 
+// The regression that made every pin-less conversation unusable: 302ai and
+// deepseek both list "deepseek-flash", and the guard read only the first page
+// of a substring search (which clipped deepseek's own entry), so the resolved
+// provider was refused its own model. An owner list drawn from the catalog must
+// be judged whole — a model several providers serve is not a mismatch for any
+// of them.
+func TestDecideCatalogMismatchWithMultipleOwners(t *testing.T) {
+	owners := []string{"302ai", "deepseek"}
+	msg, mismatch := decideCatalogMismatch(owners, "deepseek-flash", "deepseek", "deepseek", "deepseek-flash")
+	if mismatch {
+		t.Fatalf("unexpected mismatch for a model the resolved provider serves: %s", msg)
+	}
+	// The same id on a provider that does not serve it is still caught, and the
+	// message names every owner (sorted, so the text is stable).
+	msg, mismatch = decideCatalogMismatch(owners, "deepseek-flash", "elsewhere", "default", "deepseek-chat")
+	if !mismatch {
+		t.Fatal("expected a mismatch for a model owned by 302ai and deepseek, resolved to another catalog")
+	}
+	if !strings.Contains(msg, "302ai, deepseek") {
+		t.Fatalf("message %q does not name both owners in order", msg)
+	}
+}
+
 func TestDecideCatalogMismatchAllowsLegitimatePairings(t *testing.T) {
 	cases := []struct {
 		name            string
-		entries         []catalogEntry
+		owners          []string
 		model           string
 		catalogProvider string
 		providerName    string
+		providerModel   string
 	}{
-		{"same catalog", []catalogEntry{{ID: "glm-5.3-flash", Provider: "synthetic"}}, "glm-5.3-flash", "synthetic", "synthetic"},
-		{"stored nickname differs from catalog id", []catalogEntry{{ID: "deepseek-chat", Provider: "deepseek"}}, "deepseek-chat", "deepseek", "work"},
-		{"match by provider nickname", []catalogEntry{{ID: "mimo-v2.6-flash", Provider: "xiaomi"}}, "mimo-v2.6-flash", "xiaomi", "xiaomi"},
-		{"model the catalog does not know (self-hosted)", []catalogEntry{{ID: "other-model", Provider: "elsewhere"}}, "internal-ft-7b", "deepseek", "default"},
-		{"empty catalog answer", nil, "any-model", "deepseek", "default"},
-		{"no catalog id to judge against", []catalogEntry{{ID: "m", Provider: "other"}}, "m", "", "default"},
-		{"model id differs only in case", []catalogEntry{{ID: "GLM-5.3-Flash", Provider: "Synthetic"}}, "glm-5.3-flash", "synthetic", "default"},
+		{"same catalog", []string{"synthetic"}, "glm-5.3-flash", "synthetic", "synthetic", ""},
+		{"stored nickname differs from catalog id", []string{"deepseek"}, "deepseek-chat", "deepseek", "work", ""},
+		{"match by provider nickname", []string{"xiaomi"}, "mimo-v2.6-flash", "xiaomi", "xiaomi", ""},
+		{"the provider's own configured model", []string{"302ai"}, "deepseek-flash", "deepseek", "default", "deepseek-flash"},
+		{"model the catalog does not know (self-hosted)", nil, "internal-ft-7b", "deepseek", "default", ""},
+		{"no catalog id to judge against", []string{"other"}, "m", "", "default", ""},
+		{"model id differs only in case", []string{"Synthetic"}, "glm-5.3-flash", "synthetic", "default", ""},
+		{"provider id differs only in case", []string{"deepseek"}, "deepseek-chat", "DeepSeek", "default", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if msg, mismatch := decideCatalogMismatch(tc.entries, tc.model, tc.catalogProvider, tc.providerName); mismatch {
+			if msg, mismatch := decideCatalogMismatch(tc.owners, tc.model, tc.catalogProvider, tc.providerName, tc.providerModel); mismatch {
 				t.Fatalf("unexpected mismatch: %s", msg)
 			}
 		})
+	}
+}
+
+// The two positive shapes models_resolve returns: one owner as the resolved
+// descriptor, several as provider/model matches. Bare provider/model splitting
+// takes the first path segment only — a model id may itself contain slashes.
+func TestOwnersFromResolveAnswer(t *testing.T) {
+	resolved := modelsResolveAnswer{Found: true}
+	resolved.Provider.ID = "deepseek"
+	if got := ownersFromAnswer(resolved); len(got) != 1 || got[0] != "deepseek" {
+		t.Fatalf("resolved answer owners = %v, want [deepseek]", got)
+	}
+
+	ambiguous := modelsResolveAnswer{Matches: []string{
+		"deepseek/deepseek-flash",
+		"302ai/deepseek-flash",
+		"openrouter/deepseek/deepseek-v4-flash",
+		"malformed",
+	}}
+	got := ownersFromAnswer(ambiguous)
+	want := []string{"deepseek", "302ai", "openrouter"}
+	if len(got) != len(want) {
+		t.Fatalf("ambiguous answer owners = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ambiguous answer owners = %v, want %v", got, want)
+		}
+	}
+
+	// A negative answer is no evidence at all, in either shape: the guard tests
+	// emptiness, never the difference between an absent and an empty list.
+	if got := ownersFromAnswer(modelsResolveAnswer{}); len(got) != 0 {
+		t.Fatalf("empty answer owners = %v, want none", got)
+	}
+	if got := ownersFromAnswer(modelsResolveAnswer{Found: true}); len(got) != 0 {
+		t.Fatalf("ownerless resolved answer = %v, want none", got)
 	}
 }
 
@@ -830,7 +888,95 @@ func TestCrossCatalogMismatchSkipsWithoutComponent(t *testing.T) {
 	// No component (a bare unit context) must never block a call: the guard is
 	// best-effort by design, because a missing models component is a valid
 	// harness shape (--minimal boots store/bash/llm only).
-	if _, mismatch := crossCatalogMismatch(context.Background(), nil, "some-model", "deepseek", "default"); mismatch {
+	if _, mismatch := crossCatalogMismatch(context.Background(), nil, "some-model", "deepseek", "default", ""); mismatch {
 		t.Fatal("guard fired without a component")
+	}
+}
+
+// A message that carries no text must still put a `content` key on the wire.
+// go-openai marks Content `omitempty`, so without this every schema-strict
+// provider rejects the whole request (deepswe pilot10 on Synthetic: an
+// otherwise healthy session died at the first empty `read` result).
+func TestOpenAIMessagesAlwaysCarryContentKey(t *testing.T) {
+	build := func(role string, content string, toolCalls []openai.ToolCall) openai.ChatCompletionMessage {
+		m := openai.ChatCompletionMessage{Role: role, Content: content, ToolCalls: toolCalls}
+		ensureContentKey(&m, chatMessage{Role: role, Content: content})
+		return m
+	}
+	raw := func(t *testing.T, m openai.ChatCompletionMessage) map[string]any {
+		t.Helper()
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(b, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return out
+	}
+	calls := []openai.ToolCall{{ID: "c1", Type: "function",
+		Function: openai.FunctionCall{Name: "bash", Arguments: "{}"}}}
+
+	t.Run("empty tool result", func(t *testing.T) {
+		got := raw(t, build("tool", "", nil))
+		if _, ok := got["content"]; !ok {
+			t.Fatalf("content key missing: %v", got)
+		}
+	})
+
+	t.Run("assistant turn with no text", func(t *testing.T) {
+		got := raw(t, build("assistant", "", nil))
+		if _, ok := got["content"]; !ok {
+			t.Fatalf("content key missing: %v", got)
+		}
+	})
+
+	t.Run("assistant tool-call turn may omit content", func(t *testing.T) {
+		// Both providers accept the omission here, and it is the canonical
+		// spelling (content: null) — so no text part is injected.
+		got := raw(t, build("assistant", "", calls))
+		if v, ok := got["content"]; ok && v == nil {
+			t.Fatalf("content must not be an explicit null: %v", got)
+		}
+	})
+
+	t.Run("a real body is passed through untouched", func(t *testing.T) {
+		got := raw(t, build("tool", "exit 0", nil))
+		if got["content"] != "exit 0" {
+			t.Fatalf("content = %v, want %q", got["content"], "exit 0")
+		}
+	})
+}
+
+// The pinned envelope: a `tool` message with an empty result must survive a
+// round trip through the same marshal path the component uses.
+func TestOpenAIMessagesShapeForStrictProviders(t *testing.T) {
+	msgs := []chatMessage{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", ToolCalls: []openai.ToolCall{{ID: "c1", Type: "function",
+			Function: openai.FunctionCall{Name: "read", Arguments: "{}"}}}},
+		{Role: "tool", ToolCallID: "c1", Name: "read", Content: ""},
+		{Role: "user", Content: "go"},
+	}
+	out := openAIMessages(msgs)
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded []map[string]any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded) != 4 {
+		t.Fatalf("got %d messages, want 4", len(decoded))
+	}
+	for i, m := range decoded {
+		if m["role"] == "assistant" && m["tool_calls"] != nil {
+			continue
+		}
+		if _, ok := m["content"]; !ok {
+			t.Fatalf("messages[%d] (%v) lost its content key: %v", i, m["role"], m)
+		}
 	}
 }

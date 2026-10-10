@@ -2895,7 +2895,12 @@ installed as plugins independently of this catalog.
 
 `make test-models` boots a private harness with a local fixture catalog and
 proves registration, strict resolution, and that a built source plugin's patch
-appears on spawn and disappears on removal. Against a live harness,
+appears on spawn and disappears on removal. `make test-llm-modelpin` covers the
+other direction — how the catalog is read back: it generates a catalog where a
+model id is shared by several providers and buried past one `models_list` page,
+then proves the `llm` component accepts the model from a provider that serves it
+(including a real session turn against a fake OpenAI-compatible endpoint) and
+still refuses one it does not. Against a live harness,
 `./var/bin/cli call models_sources '{}'` prints provenance and
 `./var/bin/cli call models_get '{"provider":"deepseek","model":"deepseek-chat"}'`
 one descriptor.
