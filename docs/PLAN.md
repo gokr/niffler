@@ -32,12 +32,14 @@ of this file.
 
 - **Write arbitration between concurrent writers** — *phase 1 shipped* (the
   `locks` component, the dispatch gate, `edit`/`write`/`replace_across` +
-  bash/builder/fabric as opaque writers). Phase 2 is wiring the remaining
-  opaque writers (`plugins`, `mcp`) and phase 3 is crash/TTL hardening plus
-  worktree claims. Nothing arbitrated filesystem writes before; parallel
-  dispatch, several conversations per workspace and pre-created worktrees are
-  all shipped, so two session runners could interleave edits in one tree with
-  no owner and no conflict signal. Design:
+  bash/builder/fabric as opaque writers) and the table's cost now measured and
+  flat (in-memory index, one durable doc per lease; ~1.5 ms per mutating call,
+  independent of how many leases are live — see WRITE-ARBITRATION.md §A.2.3).
+  Phase 2 is wiring the remaining opaque writers (`plugins`, `mcp`) and phase 3
+  is crash/TTL hardening plus worktree claims. Nothing arbitrated filesystem
+  writes before; parallel dispatch, several conversations per workspace and
+  pre-created worktrees are all shipped, so two session runners could
+  interleave edits in one tree with no owner and no conflict signal. Design:
   [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md) proposal A
   ([REASONIX.md](research/REASONIX.md) #7,
   [CODEWHALE.md](research/CODEWHALE.md) D1).

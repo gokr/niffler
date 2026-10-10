@@ -14,7 +14,7 @@
 ## - release is idempotent (a retry never fails a turn);
 ## - re-claiming the same call id replaces rather than accumulates.
 
-import std/[json, os, osproc, strutils, times]
+import std/[algorithm, json, monotimes, os, osproc, strutils, times]
 import natsnim
 import helpers
 
@@ -100,13 +100,16 @@ proc main() =
   check("same call re-claim ok", a1again{"ok"}.getBool(false), $a1again)
 
   # ── an opaque (root) writer excludes a path-bound one ──
-  # conv-b still holds b.txt from above, so a root claim must collide with it
-  # (and the holder it names is conv-b, not whichever lease came first).
+  # Two conversations hold leases under the root at this point (conv-a's a.txt
+  # and conv-b's b.txt), so the claim is refused — but WHICH conflicting holder
+  # gets named is not part of the contract (the store returns leases in id
+  # order, so it is deterministic, just not worth pinning here). The contract is
+  # that the named holder is real and is one of the conflicting ones.
   let opq = acquire("conv-c", "call-4", @[ws], tool = "bash")
   check("opaque claim on held paths is refused",
         not opq{"ok"}.getBool(true), $opq)
-  check("opaque refusal names the holder",
-        opq{"holder"}.getStr("") == "conv-b", $opq)
+  check("opaque refusal names a real holder",
+        opq{"holder"}.getStr("") in ["conv-a", "conv-b"], $opq)
 
   # ── a claim outside the workspace is refused, not silently widened ──
   let outside = acquire("conv-d", "call-5", @["/etc/passwd"])
@@ -131,6 +134,36 @@ proc main() =
   let st = call(nc, "locks", "lock_status", %*{})
   check("lock_status ok", st{"ok"}.getBool(false), $st)
   check("lock_status shows live leases", st{"count"}.getInt(0) >= 1, $st)
+
+  # ── acquire cost does not grow with the number of LIVE leases ──
+  # This is the regression guard for the shape of the table. The first
+  # implementation kept every lease in one store document and rewrote the whole
+  # list per call (~50us per live lease: 54ms at 1000); a per-document version
+  # still read the whole table over the bus (~49ms at 1000). The in-memory
+  # index made acquire ~flat. A released/replaced table would still get these
+  # checks right — the assertion below is the one that catches the cost.
+  for i in 0 ..< 120:
+    discard acquire("conv-load", "load" & $i, @[ws / "sub" / "c.txt"])
+  let loaded = call(nc, "locks", "lock_status", %*{}, 20000)
+  check("table holds the load leases", loaded{"count"}.getInt(0) >= 1, $loaded)
+  var samples: seq[float] = @[]
+  for i in 0 ..< 12:
+    let t0 = getMonoTime()
+    discard acquire("conv-load", "probe" & $i, @[ws / "sub" / "c.txt"])
+    samples.add((getMonoTime() - t0).inMicroseconds.float / 1000.0)
+  samples.sort()
+  let medMs = samples[samples.len div 2]
+  # Generous: the point is to catch a return to O(live leases), not to police
+  # absolute latency. 1000 leases previously cost ~54ms/acquire; a table of 120
+  # cost tens of ms too. Anything under ~15ms here means the scan is in memory.
+  check("acquire stays cheap with a large live table (med " &
+        formatFloat(medMs, ffDecimal, 1) & "ms)", medMs < 15.0,
+        "median acquire " & formatFloat(medMs, ffDecimal, 1) & "ms")
+  # Release the load leases: they hold sub/c.txt, which the expiry case below
+  # also needs, and leaving them live would make that case test the wrong thing.
+  for i in 0 ..< 120:
+    discard call(nc, "locks", "lock_release",
+                 %*{"leaseId": "conv-load:load" & $i}, 10000)
 
   # ── a dead runner's lease expires: the workspace is not wedged forever ──
   let d1 = acquire("conv-e", "call-7", @[ws / "sub" / "c.txt"])

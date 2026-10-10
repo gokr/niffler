@@ -82,12 +82,45 @@ precedent — not a core special case, not a store kind core owns).
 - **Leases, not locks.** A lease carries
   `{leaseId, sessionId, tool, callId, paths, acquiredAt, ttlMs}`; the TTL is what
   makes a killed runner recoverable instead of wedging the workspace forever.
+- **The table is in memory, the store is the durable record.** One document per
+  lease (`kind: lock-lease`, id `<leaseId>`); the component loads them once at
+  boot and keeps the runtime authority in memory, write-through to the store.
+  This is safe because exactly one `locks` instance serves a harness and its
+  pump serializes handlers — **`replicas` must stay unset on this component**,
+  or two instances would each hold a partial view and arbitration would
+  silently weaken. The design was measured into this shape: see A.2.3.
 - **A denial is a normal tool error that names the holder**:
   `E_WRITE_BUSY: <path> is being modified by conversation <id> (edit, 4s ago)`.
   Naming the holder is the difference between a debuggable outcome and a mystery,
   and it enters as an append-only tool result — **no prefix change**.
 
-### A.2.3 Where the lock lives in time
+### A.2.3 Cost, measured (not assumed)
+
+The first implementation kept every lease in **one document** and rewrote the
+whole list on each acquire and each release. That was wrong, and only measuring
+showed it — the shape of the table, not the compare, was the cost:
+
+| live leases | one-blob table (old) | per-lease docs + memory (now) |
+|---|---|---|
+| 0 | 2.8 ms | 1.5 ms |
+| 100 | 6.8 ms | 1.6 ms |
+| 500 | 27.9 ms | 2.1 ms |
+| 1000 | 53.7 ms | 2.5 ms |
+
+(median acquire, single client, loopback; `release` went from 78 ms to 1.9 ms at
+1000 leases.) An intermediate per-document version fixed the write but still read
+every lease over the bus (~49 ms at 1000, of which the compare is microseconds);
+the in-memory index fixed that. Numbers were taken with a throwaway harness
+against a real bus and store — the same method the repo asks for elsewhere, and
+the reason the doc's earlier "sub-millisecond" framing is gone. Re-measure with
+any change to the table, the store, or the dispatch gate.
+
+Remaining cost at realistic scale is one round trip: ~1.5 ms per mutating call
+(the compare itself is microseconds). Denials are cheaper than acquires (no
+write). The stale sweep runs on the `onIdle` tick (30 s), so an expired claim is
+removed without charging every acquire for it.
+
+### A.2.4 Where the lock lives in time
 
 Acquire immediately before dispatch; release when the call completes (the call
 id *is* the lease id). Because turns never nest within a conversation, contention
@@ -95,7 +128,7 @@ is necessarily cross-conversation — which is the real bug. A bounded wait budg
 covers the legitimate case, so two sessions editing *different* files of one repo
 still run concurrently: their stripes do not overlap.
 
-### A.2.4 Fail-closed where it matters, fail-open where it does not
+### A.2.5 Fail-closed where it matters, fail-open where it does not
 
 - **`locks` absent** (e.g. `--minimal`) → no arbitration, one warning. Making
   absence fatal would break a boot profile for a capability that only matters

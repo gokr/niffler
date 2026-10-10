@@ -29,10 +29,12 @@
 ##   arbitration (a warning, like repomap absent); the component being present
 ##   but unreachable is a refusal (core decides that half — see dispatch).
 ##
-## State is a store document, not a process global: core may supervise several
-## replicas and a restarted lock table must keep the leases it handed out. The
-## store's rev-based put is the single-writer arbitration; a lost race simply
-## re-reads and re-evaluates.
+## State: the authoritative lease table is **in memory** (one process serves a
+## harness; its pump serializes handlers), persisted one document per lease so a
+## restarted component rebuilds the table it handed out. Persisting per-lease
+## rather than as one blob is deliberate — see the cost table in the design doc.
+## Do not set `replicas` on this component: two instances would each hold a
+## partial view and arbitration would silently weaken.
 
 import std/[algorithm, json, os, strutils, times]
 import niffler/sdk
@@ -54,9 +56,13 @@ type
     ttlMs*: int
 
 const storeKind = "lock-lease"
-const storeId = "table"
 
 var comp = newComponent("locks", "0.1.0")
+
+var gLeases: seq[Lease]
+  ## The live lease table (see loadTable). Loaded once at boot, then kept in
+  ## memory with write-through persistence.
+var gLoaded = false
 
 proc defaultTtlMs(): int =
   ## A lease outlives a slow tool call (tool timeouts reach 300s) but not a
@@ -141,31 +147,75 @@ proc overlaps(a, b: openArray[string]): bool =
 # ---------------------------------------------------------------------------
 # table load / save
 
-proc loadTable(c: Component): seq[Lease] =
-  try:
-    let item = c.storeGet(storeKind, storeId, 5_000)
-    if item.value == nil: return @[]
-    let v = item.value{"leases"}
-    if v == nil or v.kind != JArray: return @[]
-    for e in v: result.add(leaseFromJson(e))
-  except StoreNotFoundError:
-    discard
-  except CatchableError:
-    discard
-
 proc sweep(leases: seq[Lease], now: float): seq[Lease] =
   for l in leases:
     if live(l, now): result.add(l)
 
-proc saveTable(c: Component, leases: seq[Lease]): bool =
-  var arr = newJArray()
-  for l in leases: arr.add(toJson(l))
-  let doc = %*{"v": 1, "leases": arr, "updatedAt": epochTime()}
+proc loadIndex(c: Component) =
+  ## One-time boot load: rebuild the in-memory table from the durable documents
+  ## a previous incarnation of this component wrote.
+  if gLoaded: return
+  gLoaded = true
   try:
-    let rev = c.storePut(storeKind, storeId, doc, timeoutMs = 5_000)
+    for item in c.storeListAll(storeKind, "", 10_000, 10_000):
+      if item.value != nil:
+        gLeases.add(leaseFromJson(item.value))
+  except CatchableError:
+    discard  # an unreachable store leaves an empty index; acquire persists below
+
+proc loadTable(c: Component): seq[Lease] =
+  ## The lease table. In memory, loaded once from the store at boot and
+  ## write-through on every change: an acquire must not pay for reading every
+  ## other lease (measured: listing 1000 docs was ~49ms, of which the compare
+  ## itself is microseconds). The store stays the durable record — a restarted
+  ## component rebuilds its index from it — while the runtime authority is this
+  ## table, which is safe because exactly one `locks` instance serves a harness
+  ## (its pump serializes handlers). **Do not set `replicas` on this component**:
+  ## two instances would each hold a partial view and arbitration would silently
+  ## weaken. The store documents are the durable record, one per lease.
+  loadIndex(c)
+  result = gLeases
+
+proc persistLease(c: Component, l: Lease): bool =
+  ## Write one lease document (the durable half of an acquire).
+  try:
+    let rev = c.storePut(storeKind, l.leaseId, toJson(l), timeoutMs = 5_000)
     result = rev >= 0
   except CatchableError:
     result = false
+
+proc forgetLease(c: Component, leaseId: string): bool =
+  ## Remove one lease from the index and the store. The store's `del` is
+  ## idempotent, so existence is decided by the index — the `released` count is
+  ## a diagnostic the contract test reads, and "removes nothing" must stay
+  ## distinguishable from "removed one".
+  var found = false
+  var kept: seq[Lease]
+  for l in gLeases:
+    if l.leaseId == leaseId: found = true
+    else: kept.add(l)
+  if not found: return false
+  gLeases = kept
+  try:
+    discard c.request("store", "del", %*{"kind": storeKind, "id": leaseId},
+                      5_000)
+  except CatchableError:
+    discard  # the index is authoritative at runtime; a stale doc is swept later
+  result = true
+
+proc dropLease(c: Component, leaseId: string): bool =
+  ## Kept for the sweep's call shape; forgetLease is the implementation.
+  forgetLease(c, leaseId)
+
+proc sweepStale(c: Component, now: float) =
+  ## Drop leases whose TTL has passed, from the index and the store. Runs on the
+  ## idle tick, so a dead runner's claim is cleaned up without charging every
+  ## acquire for it.
+  var stale: seq[string]
+  for l in gLeases:
+    if not live(l, now): stale.add(l.leaseId)
+  for id in stale:
+    discard forgetLease(c, id)
 
 proc leaseIdFor(sessionId, callId: string): string =
   ## The lease key. Derived, not the bare call id, so the same call re-claiming
@@ -202,6 +252,7 @@ proc denial(paths: openArray[string], h: Lease, now: float): string =
 proc hLockAcquire(c: Component, args: JsonNode): JsonNode =
   ## Take (or extend) a write lease for one dispatched call. Denies, naming the
   ## holder, when another live lease overlaps.
+  loadIndex(c)
   let now = epochTime()
   let sessionId = args{"sessionId"}.getStr("")
   let tool = args{"tool"}.getStr("")
@@ -229,27 +280,34 @@ proc hLockAcquire(c: Component, args: JsonNode): JsonNode =
     return %*{"ok": false, "error": "lock_acquire needs at least one path"}
 
   let stripes = stripesFor(paths)
-  var leases = sweep(loadTable(c), now)
-  let holder = holderOf(leases, stripes, sessionId, callId)
+  # Live leases only: an expired claim is not a holder (the document itself is
+  # removed by the idle sweep). The compare is in-memory — the whole table is
+  # walked, but on strings, not over the bus.
+  let holder = holderOf(sweep(gLeases, now), stripes, sessionId, callId)
   if holder.leaseId.len > 0:
     return %*{"ok": false, "busy": true,
               "holder": holder.sessionId, "holderTool": holder.tool,
               "error": denial(paths, holder, now)}
 
-  # Drop any prior lease for this exact call (a re-dispatch of the same call
-  # id must not accumulate duplicates), then record ours.
   let leaseId = leaseIdFor(sessionId, callId)
-  var kept: seq[Lease]
-  for l in leases:
-    if l.leaseId != leaseId: kept.add(l)
   let ttl = if args{"ttlMs"}.getInt(0) > 0: args{"ttlMs"}.getInt(defaultTtlMs())
             else: defaultTtlMs()
-  kept.add(Lease(leaseId: leaseId, sessionId: sessionId, tool: tool,
-                 callId: callId, stripes: stripes, root: normalize(root),
-                 acquiredAt: now, ttlMs: ttl))
-  if not saveTable(c, kept):
+  let lease = Lease(leaseId: leaseId, sessionId: sessionId, tool: tool,
+                    callId: callId, stripes: stripes, root: normalize(root),
+                    acquiredAt: now, ttlMs: ttl)
+  # Persist FIRST: if the store refuses we have not recorded a lease the caller
+  # cannot release later. Then publish to the index in place (same id on a
+  # re-dispatch, so a call never accumulates duplicates).
+  if not persistLease(c, lease):
     return %*{"ok": false, "error":
       "lock store unreachable — refusing the write rather than guarding nothing"}
+  var replaced = false
+  for i in 0 ..< gLeases.len:
+    if gLeases[i].leaseId == leaseId:
+      gLeases[i] = lease
+      replaced = true
+      break
+  if not replaced: gLeases.add(lease)
   %*{"ok": true, "leaseId": leaseId, "stripes": stripes, "ttlMs": ttl}
 
 discard comp.tool("lock_acquire", toolSchema(%*{
@@ -273,32 +331,24 @@ discard comp.tool("lock_acquire", toolSchema(%*{
 proc hLockRelease(c: Component, args: JsonNode): JsonNode =
   ## Release the lease a call holds. Idempotent: releasing an unknown or already
   ## expired lease is a success (the caller is done either way), so a retry of a
-  ## release never fails a turn.
+  ## release never fails a turn. Deletes exactly one document — the cost does
+  ## not grow with the number of other live leases.
   let sessionId = args{"sessionId"}.getStr("")
   let callId = args{"callId"}.getStr("")
   let leaseId = args{"leaseId"}.getStr("")
-  let now = epochTime()
   let key = if leaseId.len > 0: leaseId else: leaseIdFor(sessionId, callId)
-  var kept: seq[Lease]
-  var removed = 0
-  for l in sweep(loadTable(c), now):
-    if l.leaseId == key:
-      inc removed
-    else:
-      kept.add(l)
-  if removed > 0:
-    discard saveTable(c, kept)
+  let removed = if dropLease(c, key): 1 else: 0
   %*{"ok": true, "released": removed}
 
 proc hLockStatus(c: Component, args: JsonNode): JsonNode =
-  ## Live leases after a sweep. Sweeping on read is deliberate: an operator
-  ## asking "who holds this?" should not see a dead runner's expired claim.
+  ## Live leases. An expired claim is filtered out here (a dead runner must not
+  ## read as a holder); the document itself is removed by the idle sweep, so
+  ## this stays a read.
   let now = epochTime()
   let only = args{"sessionId"}.getStr("")
-  let leases = sweep(loadTable(c), now)
   var arr = newJArray()
   var n = 0
-  for l in leases:
+  for l in sweep(loadTable(c), now):
     if only.len > 0 and l.sessionId != only: continue
     arr.add(%*{"leaseId": l.leaseId, "sessionId": l.sessionId,
                "tool": l.tool, "paths": l.stripes,
@@ -322,7 +372,14 @@ discard comp.tool("lock_status", toolSchema(%*{
   "sessionId": {"type": "string",
                 "description": "Optional: only leases held by this conversation"}
 }, @[],
-  "List live write leases (expired ones are swept first): paths, holder, tool, age. Read-only; for diagnosing a refusal or an orphaned claim."), hLockStatus,
+  "List live write leases: paths, holder, tool, age. Read-only; for diagnosing a refusal or an orphaned claim."), hLockStatus,
   %*{"effect": "read", "timeoutMs": 10000})
+
+# Stale-lease sweep on the idle tick: a runner that dies mid-call leaves its
+# lease behind, and nothing else would ever remove the document. Doing this
+# here, rather than inside lock_acquire, keeps the acquire path free of the
+# table scan — the measured reason the per-lease table exists at all.
+discard comp.onIdle(30_000) do (c: Component):
+  sweepStale(c, epochTime())
 
 comp.run()
