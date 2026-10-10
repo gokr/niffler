@@ -47,6 +47,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A provider is no longer refused its own model.** The guard that stops a
+  model pinned without its provider (a UI pinning a model and letting it ride to
+  the harness default) asked `models_list` for the model's owners with
+  `query` + `limit: 50` — a *substring* search over id/name/family/description.
+  A model id that several providers share is buried under near-misses (the live
+  catalog has 245 entries mentioning `deepseek-flash`, with
+  `deepseek/deepseek-flash` sorting 56th), so the page clipped the resolved
+  provider's own entry and the guard refused **every pin-less conversation's
+  first turn** with `model "deepseek-flash" is served by provider 302ai, but
+  this call resolved provider "deepseek"`. Ownership now comes from
+  `models_resolve` (exact id, no page), and the provider's own configured model
+  is exempt — it is what a pin-less conversation resolves to and what core then
+  sends as an explicit override, so the guard never fired for the shape it was
+  written to protect anyway. A model only *another* provider serves is still
+  refused, with `make test-llm-modelpin` pinning both directions.
 - **The one-line installer ships release binaries.** `scripts/bootstrap.sh`
   now runs `make release` for its build step instead of `make build`, so a
   fresh install runs the optimized (`-d:release`) binaries rather than the
