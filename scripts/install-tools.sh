@@ -18,6 +18,13 @@
 #   zip       pack archives
 #   unzip     unpack archives
 #   sqlite3   read the store database directly (var/store.db debugging)
+#   trafilatura
+#             better HTML-to-text for the fetch component (strips nav/
+#             boilerplate); without it fetch falls back to its built-in
+#             extractor. Not available as a distro package — installed as an
+#             isolated Python CLI via uv (preferred), pipx, or pip --user.
+#             Optional, and the only tool here that asks before installing
+#             (default yes on a terminal).
 #
 # Installs from the platform package manager (apt on Debian/Ubuntu, brew on
 # macOS); sudo is used only for the system package install. Debian's fd/bat
@@ -99,6 +106,61 @@ done <<< "$specs"
 
 linkAs fdfind fd
 linkAs batcat bat
+
+# ---------------------------------------------------------------------------
+# trafilatura — optional, and the one tool that prompts (default yes). It is a
+# Python CLI, so it comes from uv/pipx/pip rather than the package manager, and
+# the fetch component prefers it for HTML extraction but works without it.
+haveTrafilatura() {
+  have trafilatura && return 0
+  [ -x "$BIN/trafilatura" ] && return 0
+  return 1
+}
+
+trafilaturaWanted() {
+  case "${WITH_TRAFILATURA:-}" in
+    1 | yes | YES | true | y | Y) return 0 ;;
+    0 | no | NO | false | n | N) return 1 ;;
+  esac
+  # Ask only on a real terminal, and default to yes: an empty reply installs.
+  # Anything non-interactive (CI, pipes, make install-tools in a script)
+  # skips unless WITH_TRAFILATURA=1 asked for it — never block a build on a
+  # prompt nobody can answer.
+  [ -t 0 ] || return 1
+  local reply=""
+  printf 'install: install trafilatura (better HTML-to-text for fetch)? [Y/n] '
+  read -r -t 120 reply </dev/tty 2>/dev/null || read -r -t 120 reply || true
+  case "$reply" in
+    n | N | no | No | NO) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+installTrafilatura() {
+  # One best-effort isolated install; the first mechanism that provides the
+  # binary wins (0 = success).
+  if have uv && uv tool install trafilatura >/dev/null 2>&1; then return 0; fi
+  if have pipx && pipx install trafilatura >/dev/null 2>&1; then return 0; fi
+  for c in pip3 pip python3; do
+    if have "$c" && "$c" -m pip install --user trafilatura >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if haveTrafilatura; then
+  ok trafilatura
+elif trafilaturaWanted; then
+  if installTrafilatura && haveTrafilatura; then
+    new trafilatura
+  else
+    failed=$((failed+1))
+    fail trafilatura "'uv tool install trafilatura' did not provide it (optional — fetch uses its built-in extractor)"
+  fi
+else
+  echo "skip trafilatura — optional; later: make install-tools WITH_TRAFILATURA=1"
+fi
 
 echo
 if [ "$installed" -gt 0 ]; then
