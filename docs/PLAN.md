@@ -139,6 +139,20 @@ gets scheduled, and keep the rationale edits in the owning research doc.
 
 ### Agents, delegation and model policy
 
+- **Agent persona** — a `persona` store document resolved once into the frozen
+  prompt at a conversation's birth (birth-only, like `fork`; editing it never
+  rewrites a live conversation), carrying the tool profile, model, budgets and
+  workspace it also freezes ([FLEET.md](research/FLEET.md) §6; the gap is the
+  `persona`/`toolFilter` row in [SUBAGENTS.md](research/SUBAGENTS.md)).
+- **Heartbeat (scheduled turns)** — an idle-seam component plus durable
+  `heartbeat` records that start turns nobody asked for, on a machinery-marked
+  admission lane of its own with per-day budgets; the wake lane cannot carry it
+  (a wake is admitted only when notices are pending) and must not
+  ([FLEET.md](research/FLEET.md) §7).
+- **Resident instances + fleet delegation** — a server-hosted harness in manual
+  mode with an identity, a persona and a heartbeat, driven from any client;
+  `fleet_*` delegates a task to a *conversation on another instance* over the
+  existing `session` call ([FLEET.md](research/FLEET.md) §8–§9).
 - **`team` teammates + a durable mailbox** — named teammates, three delivery
   lanes ([DSH-STEAL.md](research/DSH-STEAL.md) §5).
 - **Subagent model tiers + structured outputs + visibility**
@@ -303,7 +317,9 @@ gets scheduled, and keep the rationale edits in the owning research doc.
   transport, instance identity (`NIF_NAME` + a persisted instance id — root and
   `gitHash` do not distinguish two VMs), remote lifecycle in manual mode
   (`niffler-remote`), and the `/niffler` switcher modelled on `/fav`
-  (`Ctrl+N` rotation, per-instance claim/approval/state).
+  (`Ctrl+N` rotation, per-instance claim/approval/state). The agent-side half of
+  the same note — persona, heartbeat, cross-instance delegation and the resident
+  composition — is indexed under *Agents, delegation and model policy*.
 - **Capability diagnostics** — a `doctor`-style probe over the live catalog
   ([REASONIX.md](research/REASONIX.md) #10).
 - **Worker-aware Nim pump** — deferred until a mixed-stateful component
