@@ -1,11 +1,23 @@
-# Remote instances and the `/niffler` switcher
+# Remote instances, resident agents and the `/niffler` switcher
 
-> Proposal (nothing implemented). How to run one or several full Nifflers on
-> remote machines and drive them from another Niffler, or from a bare
-> `niffler-tui` with no local harness at all. Covers the transport question
-> (SSH tunnel vs. overlay vs. leaf nodes vs. open port), instance identity,
-> remote lifecycle, and the client-side UX: a `/niffler` command that works
-> like `/fav` — an ordered list you switch between with a key combo.
+> Proposal (nothing implemented). Two halves of one story.
+>
+> **Part I (§1–§5)** — running one or several full Nifflers on remote machines
+> and driving them from another Niffler, or from a bare `niffler-tui` with no
+> local harness at all: the transport question (SSH tunnel vs. overlay vs. leaf
+> nodes vs. open port), instance identity, remote lifecycle, and the client-side
+> `/niffler` command that works like `/fav` — an ordered list you rotate with a
+> key combo.
+>
+> **Part II (§6–§9)** — the agent side: *persona* (who an agent is, resolved
+> once into the frozen prompt at its birth), *heartbeat* (waking an agent nobody
+> is driving, with its own admission lane because the wake lane deliberately
+> refuses the job), *cross-instance delegation* (a remote child is a
+> conversation on the other instance), and the composed **resident agent**: a
+> server-hosted instance that stays up, has an identity, wakes on its own, and
+> can be driven from any client.
+>
+> §10 is the ladder for both halves; §11–§13 are the boundaries.
 >
 > Companions: [REMOTE.md](REMOTE.md) is the prior-art survey and the two
 > long-range paths (Chetter, a native fleet over leaf nodes + a shared TiDB
@@ -30,6 +42,16 @@ and a switching client is currently also the VM harness's liveness signal), and
 **a client that can hold more than one bus** (the Go SDK reads
 `NIF_NATS_URL` from the environment, so one process = one instance today).
 
+Part II is smaller still: **identity and schedule are data, and a remote child is
+just a conversation on the other instance.** A *persona* is a store document
+resolved once into the frozen prompt at a conversation's birth (so editing it
+never rewrites a live conversation); a *heartbeat* is a store document plus a
+component on the idle seam that starts turns through a machinery-marked lane of
+its own — because the existing wake lane deliberately refuses to run with nothing
+pending; and cross-instance delegation goes through the `session` call the `cli`
+component already uses, so it needs no wire change and the delegated work lands
+as a first-class conversation the human can open and take over.
+
 The ladder, cheapest first:
 
 | | Slice | Effort | Where the code lands |
@@ -42,6 +64,20 @@ The ladder, cheapest first:
 
 M0 is a real, useful feature on its own. M4 is where the hard thinking in
 REMOTE.md §6.2 lives, and it is deliberately last: none of the ask requires it.
+
+Part II is the agent side, and it is a second ladder — smaller, and mostly
+independent of the first:
+
+| | Slice | Effort | Where the code lands |
+|---|---|---|---|
+| **A0** | Persona: `persona` store kind, `session {persona}` → a `persona` argument on `svc.systemprompt.call`, provenance in the header | days | core (two call sites) + `components/systemprompt` |
+| **A1** | Heartbeat: a component + `heartbeat` store records + a `heartbeat`-marked admission lane beside the wake lane | days | new component + core's admission branch |
+| **A2** | Cross-instance delegation: `fleet` component with one connection per peer, `fleet_*` tools, durable `fleetjob` records, cross-machine settlement wake | 1–2 weeks | new component (own connections — no SDK change) |
+| **A3** | Resident deployment: `systemd --user` unit, `niffler-remote`, manual-mode/keepalive/tunnel-key documentation | days | `scripts/` + MANUAL |
+
+A0 and A1 are useful locally and need no remote work at all; A2 wants M0's
+profiles and M2's identity before it is worth shipping; A3 is a script plus
+documentation. Neither half needs the wire to change.
 
 ## 1. What already works (verified, so the proposal can be small)
 
@@ -121,7 +157,7 @@ Details that matter:
   *separate* key with `restrict,command="/usr/local/bin/niffler-remote"` for
   lifecycle commands (§4.2) so the tunnel key can never run a shell. What the
   tunnel key grants is still large — everybody on the bus can call `bash` on
-  that VM, gated only by approvals (§8).
+  that VM, gated only by approvals (§12).
 
 ### T2 — Overlay network (WireGuard/Tailscale) with a bound, authenticated bus
 
@@ -284,7 +320,7 @@ order *is* the rotation order, a management command, and a key combo that
 applies the next entry. The differences are forced by the medium: favorites
 live in the harness's store (`kind: modelfavorite`) because they describe *that
 harness*; the instance list must exist **before** any connection, so it is a
-client-side file (optionally mirrored into a local harness's store later, §7).
+client-side file (optionally mirrored into a local harness's store later, §10).
 
 ### 5.1 Where it lives
 
@@ -424,7 +460,248 @@ event, labelled, without polling.
   fleet help text; the temptation to "share keys" is what a shared store would
   be for (REMOTE.md §6.2), not the fleet client.
 
-## 6. Implementation sketch (so this is actionable)
+## 6. Persona: who the agent is at birth
+
+Today a child's *identity* is whatever the task text implies: `agent_run`
+prepends a fixed `taskPreamble` ("You are a subagent…",
+`components/agent/main.nim:38-46`) and everything else — model, thinking, tool
+allowlist, budgets — is passed per call and frozen at the child's first turn.
+Nothing names *what* the agent is. [SUBAGENTS.md](SUBAGENTS.md):49,318-319 records
+`persona`/`toolFilter` as the two gaps (the tool allowlist is the half that
+exists), and the closest existing seam is the `prompt_hint {slot, content,
+source, key, mode}` tool that renders `<prompt_slot name="…">` blocks
+(`components/systemprompt/main.nim:169-203,300-304`). That seam is **global and
+forward-only**: one registration affects every conversation composed after it.
+Right for a plugin contributing tool guidance, wrong for per-conversation
+identity.
+
+**A persona is data.** `store kind "persona"`, id = the name:
+
+```json
+{ "name": "reviewer",
+  "body": "You review changes the way this repo reviews them: …",
+  "toolProfile": "review", "model": "…", "thinking": "high",
+  "budgets": {"maxRounds": 12, "maxCalls": 60},
+  "approvals": "ask", "workspace": "/srv/reviews", "note": "nightly PR pass" }
+```
+
+Written by the human or by the agent (store `put`, or a persona-shaped wrapper
+tool later), read by core. No component learns a role list and no `case persona`
+branch appears anywhere: adding a persona is adding a document — the AGENTS.md
+data-vs-code test passing by construction.
+
+**Resolution happens once, at birth, and is frozen.** `session {persona:
+"reviewer"}` → core passes `persona` to the systemprompt component (today's call
+carries `{cwd, sessionId, firstMessage}`, `core/conversation.nim:77-83` — a
+one-field, backward-compatible addition) → the component composes the base
+prompt + project context files + a `<persona name="…">` block + the global slot
+fragments, and core persists the result in the conversation header exactly as
+today (`resolveSystemPrompt`, `:88-110`). The persona's other fields land in
+mechanisms that already exist and freeze at that same moment:
+
+| Persona field | Existing mechanism it resolves into |
+|---|---|
+| `body` | the frozen system prompt (via `systemprompt`) |
+| `toolProfile` | the frozen direct toolset (tool `profile`, resolved at the first turn) |
+| `model`, `thinking` | the header's frozen controls |
+| `budgets` | `maxRounds` / `maxCalls` / `maxTokens` |
+| `workspace` | the conversation workspace (immutable after the first turn) |
+| `approvals` | the conversation's gate mode (`ask`/`auto`) — **the human's explicit `/approvals` setting wins**, because that gate is the security boundary |
+
+Three laws, all consequences of the prompt-cache discipline:
+
+- **Birth-only.** `agent_spawn {persona}` applies to a fresh child; a
+  continuation refuses it — the rule `fork` already follows ("a fork is a birth,
+  not a continuation"), and for the same reason: the child's prefix is frozen.
+- **Edits never rewrite history.** Changing the `persona` document affects only
+  conversations born after it. The header stores `persona: {name, digest}` so a
+  later edit is *visible* as drift (a UI can say "persona edited since this
+  conversation was born") instead of silently inconsistent.
+- **No mid-conversation switching.** A persona is not a runtime mode; switching
+  identity means a new conversation. That keeps the request prefix byte-stable,
+  and it is what makes the resident story (§9) cheap.
+
+What a persona deliberately is not: a second system-prompt channel for one
+conversation, a tool-schema mechanism (that is a tool `profile`), or a way to
+grant capability the human has not approved.
+
+## 7. Heartbeat: waking an agent nobody is driving
+
+A turn today starts from a human, or from a *wake* that folds settled subagents:
+`session {wake: true}` is admitted only when something is pending — core peeks
+`agent_notices {peek: true}` and declines a wake with nothing to fold
+(`core/conversation.nim:3858-3888`) — and it is bounded by `NIF_AGENT_WAKES`
+(default 3) consecutive wake-marked messages, reset by the human's next real
+message. Both properties are deliberate, and together they mean a heartbeat
+**cannot** be a wake: nothing is ever pending for it, and the budget would refuse
+the fourth tick. That is the constraint the design has to respect — and
+respecting it is what keeps the wake lane honest ("machinery that serves work
+the human asked for").
+
+So: a `heartbeat` component plus `store kind "heartbeat"` records —
+
+```json
+{ "id": "nightly-pr-pass", "session": "vm1-review", "enabled": true,
+  "intervalSec": 86400, "prompt": "Check the open PRs and report.",
+  "budgets": {"maxPerDay": 4, "maxTokensPerDay": 400000},
+  "nextAt": 1730000000, "lastAt": 1729913600, "lastResult": "ok" }
+```
+
+— ticked through the SDK's **idle seam** (`comp.onIdle`: the same seam
+`processes` reaps background children with and `lsp` publishes diagnostics
+through; all three SDKs have it, so this component can be Nim, Go or TS). When a
+record is due, the component calls the existing session lane with a **third
+machinery marker**, `notice: {kind: "heartbeat", id: …}` — the same structural
+lane as wakes, so rendering, trimming and compaction already treat it as
+machinery and never as something the human typed (the TUI's stored-message
+renderer keys on `notice` today: `tui/session_history_test.go:326`,
+`tui/main_test.go:3079-3095`). Admission rules:
+
+- The heartbeat component owns the budget check *before* publishing, and the
+  runner rejects a record whose budget is spent — defense in depth, so a stale or
+  hand-edited record cannot punch through.
+- A heartbeat that arrives while the runner holds a turn is **skipped, not
+  queued** (`busy`), and retried at the next tick: a scheduled turn must never
+  queue behind a live human turn.
+- Nothing is persisted when the record is not due: a heartbeat is a policy
+  object, not an empty user message.
+
+Why a component and not core work: it is optional (a stock harness must not pay
+for it — the `von`/`jev` precedent), it is per-instance and local (exactly right
+for a fleet, §8), and the agent can write or replace it like anything else.
+
+What a heartbeat is **not**: it keeps nothing alive. The harness stays up in
+manual mode (§4.1), and a session runner retires after `NIF_RUNNER_IDLE_S`
+(default 600 s) and is respawned on demand (`core/session.nim:186-193`). The
+heartbeat is a *trigger*; liveness is answered elsewhere.
+
+Two honest consequences:
+
+- **Approvals.** A heartbeat turn can hit the gate (`bash`, `spawn`), and on a
+  server with no human attached the gate **denies** — correctly. A resident
+  agent therefore either works with read-effect tools, or the human grants that
+  conversation `auto` knowingly (§6). Heartbeat + auto approvals is autonomous
+  shell on a server; enter it deliberately, and let the instance's status line
+  say so.
+- **Cost.** Every tick is a full turn: tokens, money, and a real assistant
+  message in the transcript. Per-day budgets and a visible `nextAt`/`lastResult`
+  are not decoration — they are what makes a heartbeat trustworthy enough to
+  leave enabled.
+
+## 8. Delegation across instances: one conversation, many machines
+
+The local subagent tools are bus-local by construction: `agent_run`/`agent_spawn`
+prepare a child on the local store, lineage is `sessionmeta.parent`, the depth
+cap and `noSpawn` guard are enforced by the local dispatch gate, and the
+settlement tap watches the local bus. None of that crosses a machine — and it
+does not need to, because the bus already carries the one call that does.
+
+**A remote child is a conversation on the other instance.** The fleet component
+opens a session there with the existing `session` call and a fresh session id —
+exactly what `components/cli` already does for headless turns
+(`components/cli/main.nim:676,1027`, which even connects to an arbitrary
+`--bus`). The result is a first-class conversation *on that instance*: durable in
+its store, listed in its sessions, steerable and cancellable over its bus, and
+continuable by sending content only — so the remote child's cached prefix
+survives, the same append-only rule local continuation obeys.
+
+The component (`fleet`, planned as M4, running on the **local** bus) holds one
+connection per peer. That is cheap and needs no SDK change: components already
+open their own `natsnim` connections beside their component one
+(`components/cli`, `components/console`), so the peer taps, the `session` calls
+and the `catalog` probes are plain client code. Its tools, written so the model
+can tell them apart from the local three:
+
+- `fleet_agents` — peers, their `NIF_NAME`/id/revision, their resident personas
+  and heartbeats, live turn state.
+- `fleet_run {peer, task, persona?, model?, background?, origin?}` — one
+  conversation on one peer; `background: true` returns a `jobId` immediately.
+- `fleet_fanout {peers: [...], task, …}` — the many-machines case: one
+  conversation per peer, results gathered as they settle.
+- `fleet_status` / `fleet_wait` / `fleet_steer` / `fleet_stop` — durable records
+  (`store kind "fleetjob"`: `{peer, remoteSession, origin, status, summary}`),
+  never a lying "running" after a restart.
+
+The split the tool descriptions must state plainly (they are the model's only
+window): `fabric` for mechanical fan-out over *data* in this process, `agent_*`
+for subagents *on this instance*, `fleet_*` for *other machines*.
+
+Settlement crosses back the way subagent settlements already do: the component
+taps the peer's `ev.session.<id>.turn` on its own connection, writes the local
+terminal `fleetjob` record, and reuses the local wake path (`session {wake:
+true}` on the parent conversation — the same code path and budget as
+`components/agent`'s `tryWake`) so an idle parent is woken with a bounded,
+labelled summary. **Approvals are the exception:** they stay on the peer's bus,
+where the human's fleet client is attached (§5.5). Relaying an approval into the
+local conversation would move a human's authority across a machine boundary
+implicitly; the fleet client surfacing `vm1: approval pending` is the honest
+version.
+
+Guards, because cross-machine delegation is where a small mistake becomes a
+distributed one:
+
+- **Single-hop by default.** A conversation launched by `fleet_run` carries an
+  origin marker and the `fleet_*` tools are hidden from it, so a remote child
+  delegates locally (its own `agent_*`) but cannot recurse across machines unless
+  the human configures that instance's peer list explicitly.
+- **Version skew is checked, not assumed.** The component reads the peer's
+  `catalog` (`root`, `gitHash`, and after M2 `name`/id) and refuses a job whose
+  required capability the peer lacks. A half-working delegation is worse than a
+  refusal.
+- **Authority stays with the peer's human.** The remote child's tools, budgets
+  and gate mode are fixed at its birth *there*; the local caller cannot widen
+  them, exactly as a local subagent cannot widen its own.
+- **The peer list is a secret** (§12): it holds SSH targets and bus URLs, lives
+  client-side (or in a local store scope), and is never pushed to peers.
+
+The reverse direction — a peer delegating into us — is deliberately out of scope
+for the first cut: it needs the same component on the other side plus a mutual
+trust decision, and nothing in the "drive my machines" ask requires it.
+
+## 9. The composition: a resident agent
+
+Put the pieces together and the thing the question is really about falls out of
+existing mechanisms plus two small additions:
+
+| Want | Mechanism | Status |
+|---|---|---|
+| Survives the TUI exiting | manual mode (no `NIF_AUTOSTART`), `systemd --user` / `niffler-remote` (§4.1–4.2) | design; needs `niffler-remote` |
+| Distinguishable in a fleet | `NIF_NAME` + persisted instance id in `catalog` (§3) | small core change |
+| Has an identity | persona resolved into the frozen prompt at birth (§6) | new, small |
+| Wakes on its own | heartbeat component + `notice.kind: "heartbeat"` (§7) | new, small |
+| Delegates locally / to other machines | `agent_*` (shipped) / `fleet_*` (§8) | local shipped; fleet new |
+| Observed and steered from anywhere | the fleet client: `/niffler`, per-instance claims, background approvals (§5) | new, medium |
+
+Worked example — "vm1 hosts the reviewer":
+
+1. `vm1` runs the harness in manual mode under `systemd --user`, with
+   `NIF_NAME=vm1`, its own clone, store and `.env`.
+2. A persona document `reviewer` (body + `toolProfile: review` + budgets +
+   `approvals: ask`) and a heartbeat record (`session: vm1-review`,
+   `intervalSec: 86400`, prompt "check the open PRs").
+3. The human's laptop runs `niffler-tui`; `/niffler` lists `* local` and
+   `vm1 (idle, heartbeat in 3h, last 21:04 ok)`; `Ctrl+N` switches, and switching
+   back lands on the conversation the human last used there.
+4. The heartbeat fires while nobody is watching: the turn runs, its transcript is
+   durable, and its summary lands in `lastResult`. If it wants `git push`, the
+   gate denies (no human reachable) and the human later sees
+   `vm1: approval pending`, answerable from the modal (§5.5).
+5. From a local conversation, `fleet_run {peer: "vm1", persona: "reviewer",
+   task: "…"}` starts a *conversation on vm1*; its settlement wakes the local
+   parent — so a laptop conversation can drive work on three machines without
+   holding any of it open.
+
+What the human must always be able to see, or none of it is trustworthy: which
+instance is active and which are live, whether a heartbeat exists and when it
+next runs, which approvals are pending and on which instance, and which revisions
+the peers are on. "Idle" and "unreachable" must never look alike.
+
+Ops notes: heartbeats are turns (keep them read-mostly; the budgets exist for a
+reason), memory is per instance (`make ram` already groups by stack), and the
+store is the instance's whole memory — a resident instance is a thing to back up,
+not a thing to reprovision casually.
+
+## 10. Implementation sketch (so this is actionable)
 
 **M0 — profile + `/niffler` + re-exec switch (plugin + wrapper).**
 `/niffler` writes a handoff file naming the target instance and exits with a new
@@ -461,6 +738,32 @@ also the piece most likely to be solved by *someone else's* infrastructure
 (Chetter runners, a cloud-init script), so keep it a script, not an
 architecture.
 
+And the agent-side slices (§6–§8), independent of the above except where noted:
+
+**A0 — persona (`store kind "persona"` + a birth argument).** Add `persona` to
+the `session` call, carry it into `askSystemPrompt`'s payload
+(`core/conversation.nim:77-83`), teach `components/systemprompt` to compose a
+`<persona>` block, and stamp `persona: {name, digest}` in the header. Small, and
+testable at the bus level: a persona's text must appear in the frozen prompt of a
+conversation born after it, and never in one born before it.
+
+**A1 — heartbeat (new component + an admission lane).** The component holds
+`heartbeat` records and ticks on the idle seam; core's wake-admission branch
+gains the `heartbeat` marker kind with its own budget. The interesting test is
+the negative one: a due heartbeat during a live human turn is skipped, and a
+heartbeat past its daily budget is refused by both the component and the runner.
+
+**A2 — cross-instance delegation (the `fleet` component).** Own connections per
+peer, `fleet_*` tools (`onDemand`, so they cost nothing until discovered),
+`fleetjob` records, a cross-machine settlement wake, and the origin marker that
+hides `fleet_*` from delegated children. Depends on M0 (profiles) and M2
+(identity) to be worth shipping, and on nothing else.
+
+**A3 — resident deployment (scripts + docs).** A `systemd --user` unit,
+`niffler-remote`, and the manual-mode / keepalive / tunnel-key documentation that
+makes "the instance survives my laptop" a supported statement rather than
+folklore.
+
 **M4 — aggregation (`fleet` component + leaf topology).** A local `fleet`
 component that owns the instance list (mirrored into a store kind so the web UI
 and other local clients share it), owns the tunnels as supervised children,
@@ -470,7 +773,7 @@ half of REMOTE.md §6.2, which is where leaf nodes and (if anyone wants it) a
 shared TiDB scope belong. Nothing in M0–M3 depends on it, and it should not be
 allowed to delay them.
 
-## 7. What not to do
+## 11. What not to do
 
 - **Do not merge two cores onto one bus** without per-instance subject
   prefixes; the queue-group and flat-tool-name assumptions make it silently
@@ -485,8 +788,16 @@ allowed to delay them.
 - **Do not make remote instances autostart-mode by accident** when a client
   switches or exits (§4.1).
 - **Do not send the local working directory to a remote instance** (§5.3.6).
+- **Do not let a persona edit reach a live conversation.** Personas resolve at
+  birth; a document edit that silently changed a running agent's prompt would
+  break the request prefix and the agent's own history at once (§6).
+- **Do not run heartbeats on the wake lane, and do not let one queue.** A
+  heartbeat has nothing pending (the wake admission would refuse it) and a
+  scheduled turn must never queue behind a human's live turn (§7).
+- **Do not relay a peer's approval into a local conversation.** The human who
+  owns that machine answers it, on that machine's bus (§8).
 
-## 8. Security posture (short, because it is the part people get wrong)
+## 12. Security posture (short, because it is the part people get wrong)
 
 The bus is the control plane and it is unauthenticated inside its boundary, so
 **transport security *is* authorization**: whoever can reach the bus can call
@@ -506,8 +817,15 @@ conversation and provider credential in that store. Therefore:
   it is a secret-bearing file (0600), and must never be written by the agent or
   readable over the bus (which means: not in the store, until a scoped/shared
   store design exists).
+- A **resident instance is an always-on shell with credentials**: a heartbeat
+  plus `auto` approvals means unattended `bash` on a machine that holds your
+  provider keys and your repos. If that is not the intent, the resident agent
+  works with read-effect tools and the gate stays `ask` — and either way the
+  fleet client says which mode an instance is in (§9).
+- A peer's delegation authority is *its* human's to grant: the local caller
+  cannot widen a remote child's tools, budgets or gate mode (§8).
 
-## 9. Open questions
+## 13. Open questions
 
 1. **Rotation semantics for "local"** — is the local harness an implicit first
    entry (my suggestion) or one entry among equals that can be removed?
@@ -527,7 +845,26 @@ conversation and provider credential in that store. Therefore:
 6. **Web UI parity** — the profile file and the per-component bus are shared
    with `sdk/ts`, so the unmaintained `niffler-ui` could read the same
    `instances.json`; decide whether to keep it in scope at all.
-7. **Leaf-node spike** — verify whether subject-rewriting import/export rules
+7. **Heartbeat schedule shape** — interval only, or cron-ish expressions? The
+   schedule is evaluated on the instance that owns it, so there is no clock-skew
+   question; the open one is how much surface a human needs for "every morning"
+   versus "every 15 minutes while I am away".
+8. **Heartbeat transcript placement** — the same conversation (recommended: one
+   durable history, machinery-marked) or a separate audit conversation. The
+   second is tidier and worse for the model, which loses the continuity the
+   heartbeat exists to provide.
+9. **Persona editing across the fleet** — should the fleet client edit a peer's
+   persona documents directly (a `store` call on the peer's bus), or is `write`
+   through a delegated conversation the honest path? Store-write is direct and
+   auditable; the delegated path is the dogfood way.
+10. **Reverse delegation** — a peer launching work on us. What is the trust
+    primitive: a peer list on both sides, or explicit per-job acceptance? Out of
+    scope for the first cut, but the answer decides whether a fleet is symmetric.
+11. **One `fleet` component or one per peer?** One keeps the registry in one
+    place; a component per peer would isolate a wedged peer at the cost of a
+    shared registry. The `replicas: N` rule (stateless, externally coordinated)
+    points at "one component, N connections" first.
+12. **Leaf-node spike** — verify whether subject-rewriting import/export rules
    could give per-instance namespaces on a hub without component changes (T3).
    If yes, M4's aggregation gets much cheaper; if no, one connection per
    instance stays the answer forever.
