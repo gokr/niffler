@@ -37,6 +37,19 @@ done
 
 answers() { NIF_NATS_URL="$1" "$CLI" catalog >/dev/null 2>&1; }
 
+# Run core detached from the terminal that started it, so the terminal's
+# SIGINT/SIGHUP never reach it. setsid(1) is util-linux and absent on macOS;
+# there, ignore those signals first — POSIX keeps an ignored disposition across
+# exec, so the child survives the terminal without needing perl or any other
+# helper (the SDK's ensureHarness gets its own session via SysProcAttr).
+detach() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@"
+  else
+    sh -c 'trap "" INT HUP; exec "$@"' sh "$@"
+  fi
+}
+
 if [ -n "${NIF_NATS_URL:-}" ]; then
   url="$NIF_NATS_URL"                       # explicit bus: attach only
 else
@@ -49,7 +62,7 @@ else
   if [ -z "$found" ]; then
     echo "niffler-tui: booting harness at $ROOT ..." >&2
     mkdir -p "$ROOT/var/logs"
-    NIF_AUTOSTART=1 setsid "$CORE" </dev/null >>"$ROOT/var/logs/core.log" 2>&1 &
+    NIF_AUTOSTART=1 detach "$CORE" </dev/null >>"$ROOT/var/logs/core.log" 2>&1 &
     for _ in $(seq 1 150); do
       [ -f "$ROOT/var/nats-url" ] && url="$(tr -d '[:space:]' < "$ROOT/var/nats-url")"
       answers "$url" && break

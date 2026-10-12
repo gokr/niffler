@@ -204,6 +204,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sends as an explicit override, so the guard never fired for the shape it was
   written to protect anyway. A model only *another* provider serves is still
   refused, with `make test-llm-modelpin` pinning both directions.
+- **`niffler-tui` boots the harness on macOS.** The installed wrapper detached
+  core with `setsid(1)`, which is util-linux only, so on macOS the boot failed
+  instantly (`setsid: command not found`, buried in `var/logs/core.log`) and
+  the wrapper gave up after 30 s with "harness did not answer". The wrapper now
+  falls back to ignoring the terminal's `INT`/`HUP` before `exec` — POSIX keeps
+  an ignored disposition across `exec`, so core still outlives the terminal it
+  was started from, with no extra dependency. Existing installs pick it up with
+  `make install`.
+
 - **The one-line installer ships release binaries.** `scripts/bootstrap.sh`
   now runs `make release` for its build step instead of `make build`, so a
   fresh install runs the optimized (`-d:release`) binaries rather than the
