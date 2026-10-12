@@ -12,6 +12,9 @@
 > Companion docs: [PI-VS-NIFFLER.md](PI-VS-NIFFLER.md) (protocol
 > support), [REBOOT.md](REBOOT.md) (NATS topology notes),
 > [PI-NEXT.md](PI-NEXT.md) (the near-term list this extends),
+> [FLEET.md](FLEET.md) (the near-term client-side design in front of both
+> paths here: SSH-tunnel transport, instance identity, the `/niffler`
+> switcher),
 > [../MANUAL.md](../MANUAL.md) (bus identity, approvals, store engines).
 
 ## 0. The answer in one line
@@ -317,7 +320,7 @@ depends on the §5 prerequisites (identity, auth, provisioning) either way.
 
 | Piece | Effort | Notes |
 |---|---|---|
-| SSH-tunnel remote harness (no code) | ~0 | `ssh -L 4222:localhost:4222 host`, set `NIF_NATS_URL`; approvals reach the local UI over the tunnel. Works today. |
+| SSH-tunnel remote harness (no code) | ~0 | `ssh -L 4222:localhost:4222 host`, set `NIF_NATS_URL`; approvals reach the local UI over the tunnel. Works today — [FLEET.md](FLEET.md) turns this into the fleet client's transport (tunnel ownership, per-instance ports, tunnel-only `authorized_keys` confinement). |
 | Chetter rung 1: `mcp_add` the Chetter server (and accept `runner-bridge`) | ~0 | Niffler's `mcp` component already does stdio/HTTP/SSE + header auth; 60 tools arrive in the catalog on demand. |
 | `--auth` + non-loopback bind option | small | The bundled server already supports the flags; core never passes them. WIRE/MANUAL update + tests. |
 | `NIF_NAME` + fleet identity in `core.status`/UI | small | Catalog already carries root+revision; add an operator-chosen name. Also the store-scope key. |
