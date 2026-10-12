@@ -298,7 +298,12 @@ gets scheduled, and keep the rationale edits in the owning research doc.
 - **Remote paths** — first-class Chetter support and/or a native fleet over
   NATS leaf nodes + a shared TiDB scope; shared prerequisites are `NIF_NAME`
   identity, bus auth and provisioning
-  ([REMOTE.md](research/REMOTE.md) §6–7).
+  ([REMOTE.md](research/REMOTE.md) §6–7). The near-term, client-side slice in
+  front of both is planned in [FLEET.md](research/FLEET.md): SSH-tunnel
+  transport, instance identity (`NIF_NAME` + a persisted instance id — root and
+  `gitHash` do not distinguish two VMs), remote lifecycle in manual mode
+  (`niffler-remote`), and the `/niffler` switcher modelled on `/fav`
+  (`Ctrl+N` rotation, per-instance claim/approval/state).
 - **Capability diagnostics** — a `doctor`-style probe over the live catalog
   ([REASONIX.md](research/REASONIX.md) #10).
 - **Worker-aware Nim pump** — deferred until a mixed-stateful component
