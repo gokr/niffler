@@ -590,6 +590,63 @@ Two honest consequences:
 
 ## 8. Delegation across instances: one conversation, many machines
 
+### 8.0 One contract, two surfaces (why `agent_*` and `fleet_*` overlap on purpose)
+
+`agent_*` and `fleet_*` share a verb — *delegate work to a conversation that is
+not this one* — so the overlap is real and should not be papered over. The
+useful question is which half of it is the same thing. Answer, from the code:
+
+**Shared, and it must stay shared (these exist once, not twice):**
+
+| Shared thing | Already generic in the harness |
+|---|---|
+| The delegation record shape | `sessionmeta` (`{parent, fork, activations, firstActivationAt, closed}`) — *read* generically by core: `session_info` surfaces parent/fork/activations/closed and counts children (`core/dispatch.nim:789-812`), and the depth walk counts `sessionmeta.parent` links (`:1711-1726`) |
+| The depth guard | `x-harness.noSpawn` + `lineageDepth` at dispatch time (`core/dispatch.nim:2000-2014`): any tool carrying the annotation inherits it, including the two deliberate properties — the tool **stays visible at the cap** and refuses *loudly* with the caller's depth, so the model learns why instead of finding a hidden tool |
+| Report-back | the durable job record + settlement notice + the `session {wake: true}` lane (`components/agent`'s `tryWake`) |
+| Continuation authorization | the append-only continuation contract (content only; lineage checked; explicit refusals) |
+| The refusal vocabulary | unknown / self / root / foreign / closed / busy / unreachable — one spelling, so a model reads the same failure the same way wherever it delegated |
+
+**Different, and must not be merged (this is where the two nouns earn their
+keep):**
+
+| Difference | Why it is structural |
+|---|---|
+| **Address space** | `agent_*` names a session id **in this harness's own store** — no discovery, no peer set, no transport, no identity check. `fleet_*` names a **peer** first: registry, tunnel, identity verification, connection per peer. Everything hard about fleet lives here, and none of it applies locally. |
+| **Failure model** | A local child fails as a runner crash (its store is always reachable). A remote job fails as *tunnel down / peer unreachable / peer restarted mid-turn / peer's revision lacks the tool / our connection died while the remote turn kept running*. `unreachable` must never be rendered as `interrupted`. |
+| **Authority** | A local child's approvals route to **this** human's client (one bus, `x-harness.sessionContext` forwarding). A remote child's approvals are answered on the **peer's** bus, by whoever is attached there — possibly a different human. That difference must be visible, not normalized away. |
+| **The noun the model plans with** | "A subagent" is cheap, local, idle-retired after 600 s (`NIF_RUNNER_IDLE_S`), and spends this harness's budget. "A machine" is persistent, has a name, its own humans, its own repos and its own key. Merging the tools would teach the model that fanning out to five machines is like fanning out to five subagents — it is not: it spends someone else's money, writes someone else's filesystem and can block on someone else's approval. |
+
+**So: reuse the contract, keep the address space distinct.** Concretely —
+
+- `fleet_*` tools carry the same annotations as `agent_*` (`x-harness.
+  sessionContext`, `noSpawn`, `onDemand`, approval on the mutating ones), so the
+  depth guard and the session-context proxy work unchanged.
+- A remote child gets a **local mirror** `sessionmeta` record
+  `{parent: <local session>, peer, remoteSession}`, so core's existing readers
+  include remote children for free: `session_info {children: N}` counts them,
+  `agent_list`'s roster shows them, and the depth walk sees them. The mirror is
+  **visibility, not authority**: continuing or stopping a remote child is
+  authorized by the fleet component's own registry (peer + remote session),
+  never by the local mirror alone — the local record cannot grant access to a
+  conversation whose messages live in another store. And the remote child must
+  never be resumable locally: the local handle is qualified (`vm1:<id>`), so the
+  local runner can never mistake it for one of its own.
+- One **drift guard**, in the spirit of OpenHands' machine-enforced architecture
+  tests: a catalog-level contract test asserting that *every* tool which starts a
+  delegate (a schema with `noSpawn`, or whose component writes `sessionmeta`)
+  also carries `sessionContext`, and that `unreachable` and `interrupted` are
+  distinct in its status vocabulary. A third delegation surface should not be
+  able to be born sloppy.
+
+**If the two ever merge into one noun, the merge point is `team`, not `fleet`.**
+A teammate (named, with a persona and a durable mailbox — already on the PLAN
+from DSH-STEAL §5) is a local subagent *plus identity*; a resident remote agent
+is a teammate *plus a location*. The axes are separable — who (persona), when
+(heartbeat), where (peer), what (delegation) — and each is data, so the
+composition is cheap *later* precisely because the surfaces stay honest *now*.
+
+### 8.1 The mechanism
+
 The local subagent tools are bus-local by construction: `agent_run`/`agent_spawn`
 prepare a child on the local store, lineage is `sessionmeta.parent`, the depth
 cap and `noSpawn` guard are enforced by the local dispatch gate, and the
@@ -764,14 +821,20 @@ hides `fleet_*` from delegated children. Depends on M0 (profiles) and M2
 makes "the instance survives my laptop" a supported statement rather than
 folklore.
 
-**M4 — aggregation (`fleet` component + leaf topology).** A local `fleet`
-component that owns the instance list (mirrored into a store kind so the web UI
-and other local clients share it), owns the tunnels as supervised children,
-aggregates `ev.session.>` across instances into one stream, and exposes
-`fleet_list` / `fleet_status` / `fleet_delegate` to the *agent* — the agent-side
-half of REMOTE.md §6.2, which is where leaf nodes and (if anyone wants it) a
-shared TiDB scope belong. Nothing in M0–M3 depends on it, and it should not be
-allowed to delay them.
+**M4 — the `fleet` component (aggregation + delegation).** One component does
+both jobs, because both need the same thing it holds: peer connections. It owns
+the instance list (mirrored into a store kind so other local clients share it),
+owns the tunnels as supervised children, aggregates `ev.session.>` across peers
+into one stream for the client, and exposes `fleet_*` to the *agent* (§8). The
+leaf-node topology (T3) and, if anyone ever wants it, a shared TiDB scope belong
+here too — that is the REMOTE.md §6.2 half. Nothing in M0–M3 depends on it, and
+it should not be allowed to delay them.
+
+**A2 collapses into M4.** §8's cross-instance delegation is not a second
+component: it is this one's second job, sharing the peer registry, the tunnels
+and the identity checks with the read-only aggregation. Build M4 when the
+`/niffler` client and the CLI-level remote turns have proven the ergonomics;
+until then `cli --bus` is the honest way to drive a peer.
 
 ## 11. What not to do
 
@@ -864,7 +927,12 @@ conversation and provider credential in that store. Therefore:
     place; a component per peer would isolate a wedged peer at the cost of a
     shared registry. The `replicas: N` rule (stateless, externally coordinated)
     points at "one component, N connections" first.
-12. **Leaf-node spike** — verify whether subject-rewriting import/export rules
+12. **The drift guard's teeth** — should the delegation contract test also
+    assert that a delegate-starting tool's description states its address space
+    ("a subagent here" vs "a machine")? It is prose, but the model's choice
+    between `agent_*` and `fleet_*` is made from that prose alone, and the
+    description is the only place the discriminator reaches it.
+13. **Leaf-node spike** — verify whether subject-rewriting import/export rules
    could give per-instance namespaces on a hub without component changes (T3).
    If yes, M4's aggregation gets much cheaper; if no, one connection per
    instance stays the answer forever.
