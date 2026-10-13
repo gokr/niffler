@@ -143,6 +143,28 @@ var nextHintSequence = 0
 proc hintKey(slot, source, key: string): string =
   slot & "\x1f" & source & "\x1f" & key
 
+proc validName(name: string): bool =
+  ## A persona/tool-profile style name: the store-id alphabet, bounded. Keeps a
+  ## typo'd or hostile document from injecting markup into the <persona> tag.
+  if name.len == 0 or name.len > 64: return false
+  for ch in name:
+    if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: return false
+  true
+
+proc renderPersona(doc: JsonNode): string =
+  ## One persona document as a <persona> block. Only the name is normalized (it
+  ## is a store id); the body is used verbatim, because it is the conversation's
+  ## instructions and byte-stability through the header is what keeps the
+  ## provider's prompt cache warm across resumes. A malformed or nameless
+  ## document renders nothing: a broken persona must never silently become a
+  ## half-prompt. Design: docs/research/FLEET.md §6.
+  if doc == nil or doc.kind != JObject: return ""
+  let name = doc{"name"}.getStr("").strip()
+  if not validName(name): return ""
+  let body = doc{"body"}.getStr("")
+  if body.strip().len == 0: return ""
+  result = "<persona name=\"" & name & "\">\n" & body & "\n</persona>\n"
+
 proc renderPromptSlot(slot: string): string =
   var entries: seq[PromptHint]
   for hint in promptHints.values:
@@ -285,6 +307,37 @@ proc main() =
       # appears when cwd != root, and two conversations on one machine share
       # the same root, so cache prefixes still line up.
       var prompt = basePrompt
+
+      # Persona (docs/research/FLEET.md §6): a named identity document the
+      # conversation was BORN with. Read from the store here, resolved into
+      # this prompt exactly once, and persisted by core in the conversation
+      # header — so an edit to the document never rewrites a live
+      # conversation (the prompt prefix must stay byte-stable), and a
+      # continuation never re-reads it. Placed immediately after the product
+      # prompt: it is the top-level "who you are", above per-project context.
+      let personaName = toolArgs{"persona"}.getStr("").strip()
+      if personaName.len > 0:
+        var personaDoc: JsonNode = nil
+        if validName(personaName):
+          try:
+            # storeGet raises StoreNotFoundError when the document is absent —
+            # an unknown persona is a normal outcome (a stale name after a
+            # rename), so it is caught here with every other read failure.
+            let item = c.storeGet("persona", personaName, 5_000)
+            personaDoc = item.value
+          except CatchableError as e:
+            stderr.writeLine("systemprompt: persona read failed for " &
+                             personaName & ": " & e.msg)
+        let block0 = renderPersona(personaDoc)
+        if block0.len > 0:
+          prompt &= "\n\n" & block0
+        else:
+          # Absent from the conversation, never silent in the log: core keeps
+          # the conversation; this is the trail that explains the missing
+          # instructions without writing filesystem paths into the prompt.
+          stderr.writeLine("systemprompt: unknown or unusable persona \"" &
+                           personaName & "\" (conversation " &
+                           toolArgs{"sessionId"}.getStr("?") & ")")
 
       # Long first messages get the independent-review instruction, inserted
       # MID-PROMPT at reviewAnchor -- not appended after the product prompt.

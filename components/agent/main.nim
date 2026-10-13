@@ -910,15 +910,28 @@ proc childSessArgs(child, task, model, thinking: string,
   ## child already knows it is a subagent (it was told on turn one).
   if fresh:
     result = %*{"sessionId": child, "content": taskPreamble & task}
+    # Persona (docs/research/FLEET.md §6): a fresh child may be born with a
+    # named identity, which the systemprompt component resolves into the
+    # prompt it composes. Passed to BOTH the pre-resolution below and (as
+    # `persona` on the first session call) the core path that resolves when we
+    # do not — so either way the child's prompt is the persona's, and the
+    # header records the name.
+    let personaName = if toolArgs != nil:
+                        toolArgs{"persona"}.getStr("").strip()
+                      else: ""
     try:
-      let sp = comp.request("systemprompt", "systemprompt",
-        %*{"cwd": getEnv("NIF_ROOT", getCurrentDir()), "sessionId": child},
-        5_000)
+      var spArgs = %*{"cwd": getEnv("NIF_ROOT", getCurrentDir()),
+                      "sessionId": child}
+      if personaName.len > 0:
+        spArgs["persona"] = %personaName
+      let sp = comp.request("systemprompt", "systemprompt", spArgs, 5_000)
       let prompt = sp{"systemPrompt"}.getStr("")
       if prompt.len > 0:
         result["systemPrompt"] = %prompt
     except CatchableError:
       discard
+    if personaName.len > 0:
+      result["persona"] = %personaName
     if model.len > 0:
       result["model"] = %model
       # Provider and model are one pin: without the provider the child's
@@ -1071,6 +1084,8 @@ let runSchema = toolSchema(%*{
             "description": "Optional exact model override for the subagent; mutually exclusive with modelTier"},
   "modelTier": {"type": "string", "enum": ["weak", "medium", "strong"],
                 "description": "Optional model tier for a FRESH child. Resolves through NIF_AGENT_MODEL_* and is clamped to the parent's tier; mutually exclusive with model"},
+  "persona": {"type": "string",
+              "description": "FRESH RUNS ONLY: birth this child with a named persona (store kind 'persona') — an identity document resolved into its system prompt and recorded in its header. Use it for a standing role (reviewer, triager) instead of restating the role in `task`; the child then carries that identity for every continuation. Ignored when `session` is set: a person is fixed at birth, like fork and the tool allowlist."},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
   "tools": {"type": "array",
@@ -1112,6 +1127,16 @@ discard comp.tool("agent_run", runSchema,
       # has its history, and re-seeding it would duplicate it.
       return errResult("fork only applies to a fresh child — drop it when " &
                        "continuing an existing session",
+                       extra = %*{"sessionId": target})
+    if not isFresh and toolArgs{"persona"}.getStr("").strip().len > 0:
+      # A persona is a birth too, and for the same structural reason: the
+      # child's system prompt is frozen in its header, so "apply this persona"
+      # to a live conversation can only mean rewriting its prefix — which the
+      # cache discipline forbids. Refuse loudly rather than ignore it
+      # (docs/research/FLEET.md §6).
+      return errResult("persona only applies to a fresh child — a " &
+                       "continuation keeps the identity it was born with; " &
+                       "start a new child to change it",
                        extra = %*{"sessionId": target})
     # Model inheritance on the fresh path only: a continuation's model was
     # frozen at its first turn (the result's effectiveControls reports it).
@@ -1216,6 +1241,8 @@ let spawnSchema = toolSchema(%*{
             "description": "Optional exact model override for the subagent; mutually exclusive with modelTier"},
   "modelTier": {"type": "string", "enum": ["weak", "medium", "strong"],
                 "description": "Optional model tier for a FRESH child. Resolves through NIF_AGENT_MODEL_* and is clamped to the parent's tier; mutually exclusive with model"},
+  "persona": {"type": "string",
+              "description": "FRESH RUNS ONLY: birth this child with a named persona (store kind 'persona') — an identity document resolved into its system prompt and recorded in its header. Use it for a standing role (reviewer, triager) instead of restating the role in `task`; the child then carries that identity for every continuation. Ignored when `session` is set: a person is fixed at birth, like fork and the tool allowlist."},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
   "tools": {"type": "array",
@@ -1257,6 +1284,16 @@ discard comp.tool("agent_spawn", spawnSchema,
       # has its history, and re-seeding it would duplicate it.
       return errResult("fork only applies to a fresh child — drop it when " &
                        "continuing an existing session",
+                       extra = %*{"sessionId": target})
+    if not isFresh and toolArgs{"persona"}.getStr("").strip().len > 0:
+      # A persona is a birth too, and for the same structural reason: the
+      # child's system prompt is frozen in its header, so "apply this persona"
+      # to a live conversation can only mean rewriting its prefix — which the
+      # cache discipline forbids. Refuse loudly rather than ignore it
+      # (docs/research/FLEET.md §6).
+      return errResult("persona only applies to a fresh child — a " &
+                       "continuation keeps the identity it was born with; " &
+                       "start a new child to change it",
                        extra = %*{"sessionId": target})
     # Model inheritance on the fresh path only (see agent_run).
     var resolvedModel = (ok: true, model: "", provider: "", error: "")

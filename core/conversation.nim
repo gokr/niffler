@@ -75,18 +75,25 @@ const systemPromptTimeoutMs = 8_000
   ## hiccup on a loaded machine should not degrade every conversation.
 
 proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId, cwd,
-                     firstMessage: string): string =
-  ## One request/reply attempt; "" on timeout or any failure.
+                     firstMessage: string, persona = ""): string =
+  ## One request/reply attempt; "" on timeout or any failure. `persona` is
+  ## the conversation's persona NAME at birth (docs/research/FLEET.md §6): the
+  ## systemprompt component resolves it into the prompt it returns, so the
+  ## document's text is frozen in the header like everything else in the
+  ## prefix. Continuations never reach here with one — a persona is birth-only.
   try:
+    var args = %*{"cwd": cwd, "sessionId": sessionId,
+                  "firstMessage": firstMessage}
+    if persona.len > 0:
+      args["persona"] = %persona
     let r = dispatchSubjectCall(ct, "svc.systemprompt.call", "systemprompt",
-      %*{"cwd": cwd, "sessionId": sessionId, "firstMessage": firstMessage},
-      waitMs)
+      args, waitMs)
     result = r{"systemPrompt"}.getStr("")
   except CatchableError:
     result = ""
 
 proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
-                          cwd = "", firstMessage = ""): string =
+                          cwd = "", firstMessage = "", persona = ""): string =
   ## The conversation's system prompt: ask the systemprompt component once
   ## per conversation and freeze the answer for the conversation's lifetime
   ## (the prompt prefix must stay stable so providers reuse it). Falls back
@@ -98,10 +105,10 @@ proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
   # timeout. Only when the catalog says the component IS registered do we
   # grant the full budget (covers a boot race or a slow first call).
   let promptCwd = if cwd.len > 0: cwd else: ct.root
-  result = askSystemPrompt(ct, 500, sessionId, promptCwd, firstMessage)
+  result = askSystemPrompt(ct, 500, sessionId, promptCwd, firstMessage, persona)
   if result.len == 0 and ct.cat.components.hasKey("systemprompt"):
     result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId, promptCwd,
-                             firstMessage)
+                             firstMessage, persona)
   if result.len > 200_000:
     result = result[0 ..< 200_000] &
       "\n\n[system prompt truncated at 200000 bytes]\n"
@@ -3399,6 +3406,12 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     var sp = header{"systemPrompt"}.getStr("")
     if sp.len == 0:
       sp = args{"systemPrompt"}.getStr("")
+    # Persona: the NAME the conversation was born with, recorded in the header
+    # beside the prompt it resolved into. The document is never re-read — the
+    # prompt above is the frozen answer — so an edit to the persona document
+    # changes nothing for this conversation, and the stored name is what makes
+    # that visible (a UI can point out that the persona has since changed).
+    let personaName = args{"persona"}.getStr("").strip()
     if sp.len == 0:
       # The first user message goes along so the systemprompt component can size
       # the request: a long one is usually a requirement list, and that is where
@@ -3406,10 +3419,12 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       # the stored prompt verbatim, and "first message" would then be the wrong
       # message.
       sp = resolveSystemPrompt(ct, sessionId, entry.workspace,
-                               args{"content"}.getStr(""))
+                               args{"content"}.getStr(""), personaName)
     try:
-      ct.updateConversationHeader(sessionId,
-        %*{"systemPrompt": sp, "cwd": entry.workspace})
+      var headerUpdate = %*{"systemPrompt": sp, "cwd": entry.workspace}
+      if personaName.len > 0:
+        headerUpdate["persona"] = %personaName
+      ct.updateConversationHeader(sessionId, headerUpdate)
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
     entry.messages = @[%*{"role": "system", "content": sp}]
