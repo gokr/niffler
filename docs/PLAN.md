@@ -73,6 +73,7 @@ of this file.
   ([SANDBOX-PLAN.md](research/SANDBOX-PLAN.md),
   [SANDBOX-MATRIX.md](research/SANDBOX-MATRIX.md),
   [SANDBOX-IMPLEMENTATION.md](research/SANDBOX-IMPLEMENTATION.md),
+  [SANDBOX-ROUTE.md](research/SANDBOX-ROUTE.md),
   [CODEWHALE.md](research/CODEWHALE.md) #4,
   [REASONIX.md](research/REASONIX.md) #11). Deliberately last: SANDBOX-PLAN §6
   records that the agent edits the harness's own source tree — the control
@@ -83,8 +84,9 @@ of this file.
   not be described as a chroot; and a confined shell has no bus, which is what
   closes the component-bypass path (a shell asking `edit`/`builder` to do the
   write) rather than merely preventing exfiltration. Two decisions are recorded
-  there: the backend pair is **bwrap + Seatbelt** (Landlock cannot hide reads
-  in v1), and read confinement is a **separate increment** built on a declared
+  there: the backend pair is **bwrap + Seatbelt** (Landlock has no deny rule,
+  so it cannot carve an in-tree `.env` out of a granted workspace — not for lack
+  of read support), and read confinement is a **separate increment** built on a declared
   per-tool path scope (`x-harness.reads`) enforced in core — a tool call that
   would read `.env` is refused, while component self-rewriting stays explicitly
   out of scope ([SANDBOX-MATRIX.md](research/SANDBOX-MATRIX.md) §5–§6a).

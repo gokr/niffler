@@ -109,7 +109,7 @@ unambiguous about it:
 
 | Backend | Write confinement | **Read** confinement ("chroot") | Cost |
 |---|---|---|---|
-| **Landlock** | yes (the v1 promise) | only from a newer ABI; the plan defers it | unprivileged, in-process, no new binary deps |
+| **Landlock** | yes (the v1 promise) | **not as a deny rule** — `READ_FILE` exists from the first ABI, but Landlock has no deny semantics, so it cannot carve a file out of a granted directory (see [SANDBOX-ROUTE.md](SANDBOX-ROUTE.md) §2) | unprivileged, in-process, no namespace, no new binary deps |
 | **Seatbelt** | yes | yes (the `strict` profiles) | macOS only |
 | **bubblewrap** | yes | **yes, by construction** — you mount only what you bind | needs user namespaces, and **Ubuntu 23.10+ denies those to unconfined programs** via `apparmor_restrict_unprivileged_userns=1` (verified on this host: `bwrap --unshare-user` → *setting up uid map: Permission denied*). Needs an AppArmor profile, root, or a container/VM route; also blocked on WSL1 |
 
@@ -135,9 +135,11 @@ Both hiding mechanisms are per-process and differ only in technique:
 
 **bwrap = bubblewrap** (`bwrap` is the project's executable name; codex also
 ships a "bundled bubblewrap" fallback). Landlock is the only one of the three
-that cannot hide reads in v1 — which is exactly the gap if hiding `.env` is a
-requirement, and makes the live backend pair **bwrap + Seatbelt**, not
-Landlock + Seatbelt.
+that cannot hide an in-tree file — not for lack of read support (`READ_FILE`
+is in the first ABI) but for lack of any **deny** rule, so a granted directory
+cannot have one file carved out of it ([SANDBOX-ROUTE.md](SANDBOX-ROUTE.md) §2).
+That is exactly the gap if hiding `.env` is a requirement, and it makes the live
+backend pair **bwrap + Seatbelt**, not Landlock + Seatbelt.
 
 Our plan's recommendation ("first ship opt-in shell write protection, not a new
 security framework") remains the right *first release*. §5 is the argument for

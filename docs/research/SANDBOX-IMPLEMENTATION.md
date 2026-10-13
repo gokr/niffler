@@ -84,6 +84,14 @@ prerequisite for 1–2.
    must be *our own* profiled binary — a reason to ship `niffler-sandbox`
    rather than exec the system `bwrap` directly.
 
+   **Settled in [SANDBOX-ROUTE.md](SANDBOX-ROUTE.md)** (measured, with the
+   rejected alternatives): ship the profiled-bwrap launcher; install the profile
+   as an opt-in prerequisite; report a three-way backend state (`landlock` =
+   writes confined/reads unconfined, `bwrap` = the full promise, `off`/`failed`)
+   so a degraded host is never presented as protected. Note Landlock **has** read
+   support — what it lacks is a deny rule, so it cannot carve an in-tree `.env`
+   out of a granted workspace. That, not read support, is why bwrap is needed.
+
    **Consequences to settle before Phase 1:**
 
    - **Packaging.** The profile must be installed (root) and the launcher path
