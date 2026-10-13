@@ -74,6 +74,7 @@ independent of the first:
 | **A1** | Heartbeat: a component + `heartbeat` store records + a `heartbeat`-marked admission lane beside the wake lane | days | new component + core's admission branch |
 | **A2** | Cross-instance delegation: `fleet` component with one connection per peer, `fleet_*` tools, durable `fleetjob` records, cross-machine settlement wake | 1–2 weeks | new component (own connections — no SDK change) |
 | **A3** | Resident deployment: `systemd --user` unit, `niffler-remote`, manual-mode/keepalive/tunnel-key documentation | days | `scripts/` + MANUAL |
+| **A4** | Notice contract: one record shape and one lane discipline, written into WIRE, with `fleetjob` as its cross-instance specialization (§8.3) | days | WIRE + store kinds |
 
 A0 and A1 are useful locally and need no remote work at all; A2 wants M0's
 profiles and M2's identity before it is worth shipping; A3 is a script plus
@@ -720,6 +721,87 @@ The reverse direction — a peer delegating into us — is deliberately out of s
 for the first cut: it needs the same component on the other side plus a mutual
 trust decision, and nothing in the "drive my machines" ask requires it.
 
+### 8.2 Where the notice lives (there is no outbox on the peer)
+
+Facts first, because they answer the question exactly:
+
+- Notices are written by the **spawning side, into the parent's store**:
+  `agentnotice` records keyed `<parentSession>:<seq>`
+  (`components/agent/main.nim:225,1421-1489`), with `deliveredAt`/`deliveredVia`
+  marking delivery when they are drained (`agent_notices`, `:1577-1605`).
+- The fleet component spawns through the peer's `session` call, so on vm1 that
+  conversation is an ordinary **root conversation**: no `sessionmeta` (no
+  parent), no `agentnotice` records, nothing addressed outward. Its result is
+  its transcript in vm1's store — which is not a gap. A root conversation's
+  result *is* its history.
+- Therefore the tracking is entirely **ours**, and it has to be: the *pointer*
+  must live somewhere durable that survives the peer restarting, the tunnel
+  dying or the peer being unreachable. Our `fleetjob` record
+  `{peer, remoteSession, origin, status}` is the outbox entry; the peer's
+  transcript is the payload; we hold the address.
+
+That is precisely why §9.1 works: the records are durable locally, and the truth
+they point at is durable on the peer (reconcile). The peer stays "just another
+Niffler" — it runs a conversation and knows nothing about being remote.
+
+Two consequences to own rather than discover:
+
+- **Two directions of loss.** Wipe the peer and the work is gone (it is the
+  peer's store — back it up). Wipe the *requester* and the pointers are gone:
+  the remote conversations survive, orphaned, and nothing local names them. The
+  cheap fix is self-description **on the peer**: stamp the spawned conversation's
+  header with an opaque origin (`origin: {instance, session}`) and a title prefix
+  (`[fleet] …`). The peer never interprets either — data, not code — but then
+  *either* instance can rediscover the relation without asking the other.
+  Bookkeeping must not be the only memory.
+- **The durable direction is pull; push is a latency optimization.** The
+  requester is usually the *less* reachable party (a laptop, an inbound-only
+  tunnel), so a design where the peer must reach back is fragile in exactly the
+  case that matters. Keep the truth on the worker, reconcile from the requester,
+  and let the bus push (the steer lane) only shorten the path when both ends
+  happen to be up.
+
+### 8.3 The abstraction that is genuinely missing
+
+Not a messaging system — the bus already does live delivery, and re-inventing it
+would duplicate NATS badly. What is missing is that the **notice idiom is
+already three variants of one pattern**, and the fleet work would add a fourth:
+
+| | Durable record | Live lane | Ground truth when both missed |
+|---|---|---|---|
+| Subagent settlement | `agentnotice`, written record-first | steer packet (`kind: subagent-settled`) | the child transcript + `agentjob` reconcile |
+| Process exit | none — pointer only | steer packet (`kind: process-exited`, "pointer, not payload") | the `processes` registry |
+| Fleet settlement (new) | `fleetjob` pointer | steer packet on the origin conversation | the peer's transcript + reconcile |
+
+So the abstraction worth extracting is one durable, **addressed** message with
+the delivery lanes already proved:
+`{to, from, kind, summary, ref, createdAt, deliveredAt, deliveredVia, readAt}`,
+where `to` is a *principal* (locally `session:<id>`; instance-qualified only for
+transport), `ref` is a pointer to the payload (`agentjob`/`process`/`fleetjob`
+id) and never the payload itself — the pointer-not-payload rule all three
+existing variants already follow for good reason (a notice must not outgrow the
+bus, and the detail must stay readable after the fact).
+
+Why an *address* earns its keep: with one, the reply path becomes **data**.
+`replyTo` in a request is then all a peer needs for reverse delegation, and
+vm1 → vm2 → vm3 is routing instead of a new protocol. Without one, "who to reply
+to" stays the hardcoded parent relation, and neither reverse delegation nor
+multi-hop can be expressed at all. That is the whole argument for the
+abstraction — not tidiness.
+
+What must **not** be unified: the tools. `agent_notices`, `fleet_inbox` and
+`processes_list` stay separate surfaces, because they differ in exactly the ways
+§8.0 established (address space, authority, failure vocabulary). Unify the
+*contract* — one record shape, one lane discipline, one delivery semantics —
+keep the *surfaces* honest.
+
+**Sequencing (and a warning against building it early).** Do not build a general
+mailbox speculatively. Write the contract down, make `fleetjob` its first
+cross-instance specialization (same record-first rule, same lanes,
+`deliveredAt`/`deliveredVia` semantics identical to `agentnotice`), and
+generalize only when a consumer needs *addressing* rather than a parent link.
+Reverse delegation and teammate mailboxes are that consumer; nothing else is.
+
 ## 9. The composition: a resident agent
 
 Put the pieces together and the thing the question is really about falls out of
@@ -947,6 +1029,12 @@ until then `cli --bus` is the honest way to drive a peer.
 - **Do not make remote instances autostart-mode by accident** when a client
   switches or exits (§4.1).
 - **Do not send the local working directory to a remote instance** (§5.3.6).
+- **Do not give the peer an outbox.** The spawned conversation is a plain root
+  conversation there; the pointer belongs on the requester, the payload on the
+  worker, and the durable direction is always pull (§8.2).
+- **Do not build a general mailbox before a consumer needs addressing.** Write
+  the contract, ship `fleetjob` as its first specialization, generalize when
+  reverse delegation or teammates arrive (§8.3).
 - **Do not let a persona edit reach a live conversation.** Personas resolve at
   birth; a document edit that silently changed a running agent's prompt would
   break the request prefix and the agent's own history at once (§6).
@@ -1034,7 +1122,10 @@ conversation and provider credential in that store. Therefore:
     For a single-operator fleet that is obviously fine; for a shared one it wants
     the peer's owner to be able to require `ask` regardless of what the caller
     asked for (§8's "authority stays with the peer's human").
-14. **Leaf-node spike** — verify whether subject-rewriting import/export rules
+14. **Does the notice contract need pruning?** Addressed notices accumulate
+    (`*:<seq>` ids, marked delivered but never removed) exactly as `agentnotice`
+    does today. A retention rule belongs in the contract, not in each consumer.
+15. **Leaf-node spike** — verify whether subject-rewriting import/export rules
    could give per-instance namespaces on a hub without component changes (T3).
    If yes, M4's aggregation gets much cheaper; if no, one connection per
    instance stays the answer forever.
