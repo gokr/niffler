@@ -744,6 +744,42 @@ That is precisely why §9.1 works: the records are durable locally, and the trut
 they point at is durable on the peer (reconcile). The peer stays "just another
 Niffler" — it runs a conversation and knows nothing about being remote.
 
+**Two relationships, often confused (get this straight or the rest reads
+wrong).** The horizontal relation is ours and is not lineage; the vertical ones
+belong to the peer and are ordinary:
+
+```
+   requester (laptop)                       peer (vm1)
+   ------------------                       ----------
+   parent conversation ──── fleet_run ────> X   (a ROOT conversation there)
+        |                                     |
+        └── fleetjob {peer, session: X}       ├── agent_spawn ──> child #1
+            (the pointer, our store)          └── agent_spawn ──> child #2
+
+                                            in the peer's store:
+                                              sessionmeta.parent = X
+                                              agentnotice "X:000001"  (X's mail)
+```
+
+- The horizontal edge is **ours**: no `sessionmeta` on the peer says X belongs to
+  anyone, and the peer sees a conversation with a task in it. Our `fleetjob` is
+  the pointer that makes it a fleet job.
+- The vertical edges are the **peer's**, and they are exactly what they would be
+  locally: X is the parent of the children *X* spawns, and their notices are
+  addressed to X (`X:<seq>`).
+
+So the answer to "where do the notices go when the remote agent spawns
+subagents" is: **to X, on the peer** — and they are delivered by the peer's own
+lanes (steer while X is mid-turn, wake while X is idle and its budget allows,
+pull at X's next turn). X needs no awareness of being remotely driven, which is
+precisely why the peer needs no new feature. The only thing crossing the machine
+boundary is our pointer.
+
+A useful corollary: an undrained notice is still *readable* — `store list {kind:
+"agentnotice", idPrefix: "X:"}` on the peer's bus is an ordinary read, and
+reading is not delivering. So a morning digest can honestly report "X: 2 notices
+not yet folded" without waking X.
+
 Two consequences to own rather than discover:
 
 - **Two directions of loss.** Wipe the peer and the work is gone (it is the
