@@ -6,6 +6,9 @@ implementation decisions
 in [SANDBOX.md](SANDBOX.md) and the original version of this plan. The research
 is useful background, not an implementation specification. Open work has one
 home — [../PLAN.md](../PLAN.md); this file is the design record it points at.
+Background: [SANDBOX-MATRIX.md](SANDBOX-MATRIX.md) surveys what the harness
+shelf actually ships — it confirms the mode vocabulary below, and its §5 is
+the evidence for re-opening the backend choice in §8 before PR 1 is frozen.
 
 **Recommendation: first ship opt-in shell write protection, not a new security
 framework.** Use the same small launcher on Linux and macOS, leave the shared
