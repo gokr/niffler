@@ -309,6 +309,7 @@ components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
 components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
+	var/bin/niffler-sandbox \
 	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
 	var/bin/observe var/bin/logfile var/bin/console \
@@ -452,6 +453,14 @@ var/bin/fixture-mcp-server: tests/fixtures/mcp_server.nim $(NIM_CONF) | var/bin
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/$*.nim
 
+# The sandbox launcher (sandbox/) is a helper binary, not a component: it has
+# no NATS surface and is exec'd by a component. Not in the manifest.
+var/bin/test_t_sandbox: tests/t_sandbox.nim sandbox/policy.nim $(NIM_CONF)
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) -o:$@ tests/t_sandbox.nim
+
+var/bin/niffler-sandbox: sandbox/main.nim sandbox/policy.nim sandbox/landlock.nim $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) -o:$@ sandbox/main.nim
+
 var/bin/test_t_schema_validation: core/schema_validation.nim
 
 var/bin/test_t_catalog: core/catalog.nim core/schema_validation.nim
@@ -536,6 +545,12 @@ test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
 test-locks:   build var/bin/test_t_locks   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_locks
+# Two runs on purpose: the default must REFUSE (no backend here), and the
+# degraded opt-in must actually confine writes. A single run would silently
+# cover only whichever branch this host happens to take.
+test-sandbox: build var/bin/test_t_sandbox var/bin/niffler-sandbox
+	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_sandbox
+	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" NIF_SANDBOX_ALLOW_DEGRADED=1 ./var/bin/test_t_sandbox
 test-arbitration: build var/bin/test_t_arbitration ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_arbitration
 test-edit-lsp-slow: build var/bin/test_t_edit_lsp_slow var/bin/fixture-slow-lsp ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit_lsp_slow
 test-vars:    build var/bin/test_t_vars    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_vars
@@ -661,12 +676,23 @@ install-lsp:
 	@# `make install-lsp ALL=1` installs everything unattended.
 	@bash scripts/install-lsp.sh $(if $(filter 1,$(ALL)),--all,)
 
+install-sandbox-profile:
+	@# Grant the sandbox launcher permission to create user namespaces on Linux.
+	@# Ubuntu 23.10+ refuses CLONE_NEWUSER to unconfined programs, which disables
+	@# bubblewrap outright (docs/research/SANDBOX-ROUTE.md). Idempotent, non-fatal,
+	@# and deliberately NOT part of `make setup`: sandboxing is opt-in and the
+	@# harness runs unguarded-but-reported without it. Needs root:
+	@#   make install-sandbox-profile SUDO=1    (or run the script with --sudo)
+	@bash scripts/install-sandbox-profile.sh $(if $(filter 1,$(SUDO)),--sudo,)
+
+uninstall-sandbox-profile:
+	@bash scripts/install-sandbox-profile.sh --uninstall $(if $(filter 1,$(SUDO)),--sudo,)
+
 install-jev:
 	@# The Von runtime behind the jev component (venv + von-sdk). Opt-in:
 	@# ~5.4 GB including CUDA wheels; model weights download on first serve.
 	@# Never part of `make setup` — the harness runs fine without Von.
 	@bash scripts/install-jev.sh
-
 von-up:
 	@# Enable the supervised Von launcher: a persisted core.spawn record,
 	@# restored on every boot until `make von-down` (needs a live harness).

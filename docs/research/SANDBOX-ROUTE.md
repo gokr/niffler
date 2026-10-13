@@ -89,6 +89,31 @@ Rejected alternatives, with reasons:
 - **The launcher is ours, not an exec of system `bwrap`.** It must be the
   profiled binary, because the profile is attached by *path*. This also gives
   us the launch-id/outcome channel SANDBOX-PLAN §3 requires.
+- **⚠ Correction after implementing: the profile must be on the binary that
+  *creates the namespace*, not on a wrapper that execs bwrap.** AppArmor
+  profiles attach **per exec** — the profile is the *executing* program's — so
+  granting `userns` to `niffler-sandbox` would not extend to the `bwrap` it
+  spawns. Confirmed by the shipped precedent: every profile on this host names
+  the namespace creator itself (`profile ch-run /usr/bin/ch-run`, likewise
+  `buildah`, `crun`, `ch-checkns`), never a wrapper.
+
+  Two ways to satisfy that, and they should be chosen deliberately:
+
+  1. **The launcher creates the namespace itself** (`unshare(CLONE_NEWUSER |
+     CLONE_NEWNS | CLONE_NEWNET)`, write `uid_map`/`gid_map`, then exec bwrap
+     with the `--unshare-*` flags dropped). Keeps the grant on our own binary.
+     Note the measured split: `unshare(CLONE_NEWUSER)` **succeeds in-process**
+     on this host; what AppArmor denies is the mapped-namespace setup bwrap
+     does (`setting up uid map: Permission denied`). So the failure is in the
+     uid/gid mapping step, which the launcher would own directly.
+  2. **Profile `bwrap`'s own path.** Fewer moving parts, but the grant then
+     covers *every* bwrap use on the machine, which is broader than intended.
+
+  Option 1 is the one consistent with "narrow grant"; option 2 is the one
+  consistent with "less code". **Unverified on this host either way — profile
+  loading needs root, which this session did not have.** Phase 1's bwrap path
+  is therefore implemented but *not* proven, and must not be reported as
+  working until a host with the profile has run the enforcement tests.
 - **Profile installation** follows the `make install-lsp` precedent: a script,
   idempotent, per-item, **non-fatal on failure**, and never part of `make
   setup`. `make doctor` reports it as a prerequisite with the exact remedy
@@ -103,7 +128,8 @@ Rejected alternatives, with reasons:
   | `off`/`failed` | no confinement; the command did not run unguarded if the operator asked for guarding |
 - **Never silently fall back** between them. A host that cannot get a profile
   runs `landlock` and *says so*; a host asked for the full promise refuses
-  rather than downgrading quietly.
+  rather than downgrading quietly. Verified behaviour: with no profile and no
+  opt-in, `probe` reports `none` and `run` exits 125 having executed nothing.
 - **The probe must use Landlock's own ABI**, not the kernel version:
   `LANDLOCK_CREATE_RULESET_VERSION` (returns 8 here), and it must assert a
   **forbidden operation fails**, never that `true` succeeds (SANDBOX-PLAN §3).

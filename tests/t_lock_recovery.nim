@@ -1,6 +1,6 @@
 ## Fault-injection contract: an unavailable store must not turn a restart
 ## into an empty lock table, or a failed release into a successful unlock.
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc]
 import natsnim
 import helpers
 
