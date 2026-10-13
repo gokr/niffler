@@ -111,7 +111,7 @@ unambiguous about it:
 |---|---|---|---|
 | **Landlock** | yes (the v1 promise) | only from a newer ABI; the plan defers it | unprivileged, in-process, no new binary deps |
 | **Seatbelt** | yes | yes (the `strict` profiles) | macOS only |
-| **bubblewrap** | yes | **yes, by construction** — you mount only what you bind | needs user namespaces (blocked on some distros/WSL1); a wrapper binary |
+| **bubblewrap** | yes | **yes, by construction** — you mount only what you bind | needs user namespaces, and **Ubuntu 23.10+ denies those to unconfined programs** via `apparmor_restrict_unprivileged_userns=1` (verified on this host: `bwrap --unshare-user` → *setting up uid map: Permission denied*). Needs an AppArmor profile, root, or a container/VM route; also blocked on WSL1 |
 
 The pattern is stark: **every harness that wanted to hide files used bubblewrap.
 Every harness using Landlock treats it as write-only protection.** dsh's own doc

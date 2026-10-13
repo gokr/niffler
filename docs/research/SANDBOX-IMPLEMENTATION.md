@@ -41,20 +41,79 @@ prerequisite for 1–2.
 
 ## Phase 0 — decide and de-risk (no product code)
 
-1. **Confirm the backend pair** and record the platform matrix. Already
-   verified on this machine: `bwrap` present, `unprivileged_userns_clone=1`,
-   Ubuntu 24.04 / kernel 7.0. `sandbox-exec` is macOS-only and absent here, so
-   macOS enforcement needs a real Mac before its phase can be called done.
-2. **Write down the one immutable launch request** (SANDBOX-PLAN §2 already
+1. **Confirm the backend pair** and record the platform matrix. Verified on
+   this machine: Ubuntu 24.04 / kernel 7.0, `bwrap` present,
+   `unprivileged_userns_clone=1`. `sandbox-exec` is macOS-only and absent here,
+   so macOS enforcement needs a real Mac before its phase can be called done.
+2. **⚠ `unprivileged_userns_clone=1` is NOT sufficient on Ubuntu 24.04.**
+   AppArmor's `kernel.apparmor_restrict_unprivileged_userns = 1` (the default
+   since 23.10, and **set on this host**) overrides it: an *unconfined*
+   program may no longer create a user namespace. Measured by hand:
+
+   ```
+   $ bwrap --unshare-user --ro-bind / / /bin/true
+   bwrap: setting up uid map: Permission denied
+   $ bwrap --unshare-net --ro-bind / / /bin/true
+   bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+   $ unshare -Ur true
+   unshare: write failed /proc/self/uid_map: Operation not permitted
+   ```
+
+   `--unshare-user`, `--unshare-net`, `--unshare-all` all fail, so **plain
+   bubblewrap does not work out of the box here**, and a hand-written
+   `--unshare-net` is not available either. This is the failure codex's probe
+   exists to catch (`USER_NAMESPACE_FAILURES`), and it confounds the earlier
+   "Phase 0 exit criterion" of running `bwrap … /bin/true` by hand.
+
+   **The remedy is small and well-understood.** AppArmor grants `userns` to a
+   program that *has a profile*; Ubuntu ships exactly this for the tools that
+   need it (`/etc/apparmor.d/{ch-run,ch-checkns,buildah,crun}` are all the
+   three-line "unconfined but named" pattern):
+
+   ```
+   abi <abi/4.0>,
+   include <tunables/global>
+   profile niffler-sandbox /path/to/niffler-sandbox flags=(unconfined) {
+     userns,
+     include if exists <local/niffler-sandbox>
+   }
+   ```
+
+   `bwrap` itself has **no** profile on this host (`grep -rl bwrap
+   /etc/apparmor.d/` is empty), which is why it is refused. So the launcher
+   must be *our own* profiled binary — a reason to ship `niffler-sandbox`
+   rather than exec the system `bwrap` directly.
+
+   **Consequences to settle before Phase 1:**
+
+   - **Packaging.** The profile must be installed (root) and the launcher path
+     is machine-specific, so it cannot be a blind `make` step. Model it on
+     `make install-lsp` (idempotent, per-item, non-fatal) and document it in
+     `make doctor` as a prerequisite with a named remedy — never a silent
+     fallback.
+   - **Alternatives if the profile is refused:** run the launcher as root with
+     `setpriv` (our supervisor already uses `setpriv --pdeathsig`), or ship a
+     container/VM route (SANDBOX-PLAN §8). All are acceptable; what is *not*
+     acceptable is falling back to unconfined execution.
+   - **Landlock is the lower-friction backend here** precisely because it needs
+     no user namespace — `no_new_privs` plus `landlock_create_ruleset`. It is
+     still **not** the answer for hiding `.env` (write-only in v1); it is the
+     answer for "the guard must work on a stock Ubuntu without a profile".
+     Do not let that trade-off be decided by convenience without recording it.
+   - **CI and dev machines differ.** A test that passes because the runner ran
+     as root, or on a host with the restriction off, proves nothing. The probe
+     must assert the *forbidden operation* fails, per SANDBOX-PLAN §3.
+3. **Write down the one immutable launch request** (SANDBOX-PLAN §2 already
    specifies it): canonical workspace, canonical cwd, writable roots, private
    scratch, explicit env, exact argv. Resolve once per launch; no policy
    lattice, no glob language.
-3. **Decide the default.** Plan says `NIF_BASH_SANDBOX=off|on`, initially
+4. **Decide the default.** Plan says `NIF_BASH_SANDBOX=off|on`, initially
    **off**. Keep that — a guard that breaks common workflows on day one gets
    turned off permanently.
 
-**Exit:** a one-page decision note; `bwrap --unshare-user … /bin/true` succeeds
-by hand on the target host.
+**Exit:** a one-page decision note; a *profiled* launcher binary creates a
+user namespace and hides a file **on this host** (not merely a host where the
+restriction is disabled).
 
 ## Phase 1 — the launcher (§ helper binary, not a component)
 
