@@ -125,6 +125,14 @@ patterns where licensing permits; do not promise a line count. If either
 backend needs excessive compatibility machinery, stop and compare the
 existing-wrapper alternative in §8 before expanding the implementation.
 
+**Superseded for Linux:** [SANDBOX-ROUTE.md](SANDBOX-ROUTE.md) measured that
+plain bwrap is refused on Ubuntu 23.10+ (AppArmor withholds user namespaces from
+unconfined programs) *and* that Landlock cannot hide an in-tree file, so the
+chosen Linux backend is a profiled bwrap launcher, with Landlock as a
+degraded, honestly-reported fallback. This paragraph's "two candidates" and its
+instruction not to build backend selection are therefore both overtaken; the
+Seatbelt half still stands.
+
 ### Backend requirements
 
 **Linux:** detect the available Landlock ABI, not just the kernel version.

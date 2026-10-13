@@ -104,9 +104,10 @@ prerequisite for 1–2.
      container/VM route (SANDBOX-PLAN §8). All are acceptable; what is *not*
      acceptable is falling back to unconfined execution.
    - **Landlock is the lower-friction backend here** precisely because it needs
-     no user namespace — `no_new_privs` plus `landlock_create_ruleset`. It is
-     still **not** the answer for hiding `.env` (write-only in v1); it is the
-     answer for "the guard must work on a stock Ubuntu without a profile".
+     no user namespace — `no_new_privs` plus `landlock_create_ruleset` — and it
+     works on a stock Ubuntu with no profile (ABI 8 measured). It is still
+     **not** the answer for hiding `.env`, because it has no deny rule to carve
+     an in-tree file out of a granted directory ([SANDBOX-ROUTE.md](SANDBOX-ROUTE.md) §2).
      Do not let that trade-off be decided by convenience without recording it.
    - **CI and dev machines differ.** A test that passes because the runner ran
      as root, or on a host with the restriction off, proves nothing. The probe
