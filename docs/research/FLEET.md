@@ -671,13 +671,18 @@ can tell them apart from the local three:
 
 - `fleet_agents` — peers, their `NIF_NAME`/id/revision, their resident personas
   and heartbeats, live turn state.
-- `fleet_run {peer, task, persona?, model?, background?, origin?}` — one
-  conversation on one peer; `background: true` returns a `jobId` immediately.
+- `fleet_run {peer, task, persona?, model?, background?, origin?, approvals?}` —
+  one conversation on one peer; `background: true` returns a `jobId`
+  immediately, and `approvals: "auto"` is the explicit, recorded decision to let
+  it run unattended (§9.1).
 - `fleet_fanout {peers: [...], task, …}` — the many-machines case: one
   conversation per peer, results gathered as they settle.
 - `fleet_status` / `fleet_wait` / `fleet_steer` / `fleet_stop` — durable records
-  (`store kind "fleetjob"`: `{peer, remoteSession, origin, status, summary}`),
-  never a lying "running" after a restart.
+  (`store kind "fleetjob"`: `{peer, remoteSession, origin, status, summary,
+  approvals, tokens}`), never a lying "running" after a restart.
+- `fleet_inbox {since?}` — the reconnect digest: every job since you last
+  looked, reconciled read-only against the peers, with what needs your decision
+  first (§9.1). The client's `/niffler inbox` is the same call.
 
 The split the tool descriptions must state plainly (they are the model's only
 window): `fabric` for mechanical fan-out over *data* in this process, `agent_*`
@@ -757,6 +762,97 @@ Ops notes: heartbeats are turns (keep them read-mostly; the budgets exist for a
 reason), memory is per instance (`make ram` already groups by stack), and the
 store is the instance's whole memory — a resident instance is a thing to back up,
 not a thing to reprovision casually.
+
+### 9.1 "Spawn three tasks on the server, come back tomorrow"
+
+This is the case that decides whether the design is honest, so it is worth
+walking end to end. What actually runs the work is the **peer's** instance: its
+runners, its store, its provider key. Your laptop's connection is only how you
+asked. Three consequences follow immediately, and only the first is pleasant:
+
+1. **Your laptop may be switched off.** The tasks do not live in your client.
+   So the right ergonomics for background fleet work is exactly "spawn, then
+   close the laptop" — not "keep the TUI open overnight". Note the corollary:
+   *your local conversation is also asleep*, so nothing local spends tokens
+   while the peer works.
+2. **The peer's harness must be up**, which is the manual-mode rule from §4.1
+   doing real work: an `NIF_AUTOSTART=1` harness would exit ten seconds after
+   your client detached — mid-job — and every one of those three tasks would be
+   `interrupted` by morning. The `systemd --user` unit is not tidiness here; it
+   is the feature.
+3. **Results are durable before they are delivered.** Settlement is
+   record-first: the job record is written before any delivery is attempted,
+   delivered by the steer lane when the parent is mid-turn and otherwise left
+   pending for the parent's next turn
+   (`components/agent/main.nim:60-72,129-151` — the same machinery `fleetjob`
+   reuses). So reconnecting is not a retrieval step: the results were never
+   lost, only unread.
+
+**Reconnecting, concretely.** Three surfaces, in the order a human reaches for
+them:
+
+- **The digest (missing from the plan until now, and the primary one).** A
+  `fleet_inbox {since?}` tool plus `/niffler inbox` in the client: every job
+  since you last looked, with `status`, `summary`, the remote session id, tokens
+  spent, and whether anything is *waiting on you*. "I was away ten hours" wants
+  one screen, not three transcripts — and the notices that arrived while you
+  were gone may already be folded or stale, so the digest must be
+  **authoritative and derived from the durable records + a read-only reconcile**,
+  not from the notice stream.
+- **The notices** (ambient). When you return and send your parent conversation
+  anything, its next turn drains the pending settlements, so your "morning
+  message" naturally contains "3 jobs settled". No action required; the wake
+  lane may even have woken the parent on its own, bounded by `NIF_AGENT_WAKES`.
+- **The transcripts** (depth). Each job's summary names its remote session id —
+  and that id is a real conversation **in the peer's store**, readable over the
+  bus with the same `store.list`/`get` calls the client already makes for
+  `/info`, the session browser and history replay. So `/info <remoteSession>`
+  against vm1 — or just opening it in `/niffler`'s browser — shows everything,
+  including which tools ran and where the tokens went. There is no sync, no
+  export and no copy: you read the result where it lives. (The same trick is how
+  the morning digest can be cheap: summaries from the records, detail on demand.)
+
+**Reconcile, never lie.** On reconnect the component re-reads its non-terminal
+`fleetjob` records and asks each peer (its `catalog`, then `session_info` on the
+remote session) what is actually true — the lazy-restart-recovery rule
+`agentjob` already follows (`components/agent/main.nim:25-27,1056-1063`,
+`reconcileAll` at boot plus on every status read):
+
+| Observed | Reported |
+|---|---|
+| remote turn still live | `running` (with its event stream re-attached) |
+| remote session has a completed assistant message, our tap was missed | `done`, synthesized from the peer's transcript |
+| remote harness restarted with no live turn and no completion | `interrupted` — truthful, not retried automatically |
+| peer did not answer | `unreachable` — never rendered as `interrupted` (§8.0) |
+
+**The one that bites: approvals while you were away.** A job that hits the
+human gate does **not** run, and with nobody attached to that bus the gate
+**denies** (fail closed — this is the harness's existing rule, and it is the
+right one). So "spawn tasks and come back tomorrow" only works for work that
+either never needs the gate or was *granted the gate before you left*. That
+makes a per-job `approvals: "ask" | "auto"` flag on `fleet_run` — recorded in
+the `fleetjob` and labelled in the digest — a **requirement of this scenario**,
+not a nicety: it is the difference between "three tasks finished while I slept"
+and "three tasks sat at a prompt until they were denied". Since the conversation
+workspace and gate mode freeze at birth anyway, this costs nothing structurally;
+it just has to be an explicit, visible decision at spawn time.
+
+The other morning surprises worth designing out, all small:
+
+- **Turn limits.** A long autonomous job can end as `budget-exhausted` or at
+  its round cap (§8.1's `maxRounds`/`maxCalls`/`maxTokens`, frozen at value
+  selection). The digest must show a partial result as *partial*, not as failure.
+- **Cost.** Overnight spend happens on the peer's key and the peer's bill. The
+  digest should carry per-job tokens (the data exists: `session_info` reports
+  `completionTotal`), and a `maxTokens` cap per job is the enforcement.
+- **Local ports.** Overnight, another process may take your local tunnel port;
+  the identity check (§3) turns that into a refusal rather than a conversation
+  with the wrong machine, and a dead tunnel shows as `vm1: tunnel down` — never
+  as an empty job list.
+- **Not three wake turns at breakfast.** The wake budget already bounds this
+  (default 3, reset by your next real message); the digest is what you actually
+  want to read first, so the client should present it before the parent's
+  auto-folded notices.
 
 ## 10. Implementation sketch (so this is actionable)
 
@@ -932,7 +1028,13 @@ conversation and provider credential in that store. Therefore:
     ("a subagent here" vs "a machine")? It is prose, but the model's choice
     between `agent_*` and `fleet_*` is made from that prose alone, and the
     description is the only place the discriminator reaches it.
-13. **Leaf-node spike** — verify whether subject-rewriting import/export rules
+13. **Does `approvals: auto` on a delegated job need a second human?** The gate
+    exists so a human decides; `auto` on a *remote* job means the *caller* has
+    decided on behalf of a machine they are not sitting at, possibly not theirs.
+    For a single-operator fleet that is obviously fine; for a shared one it wants
+    the peer's owner to be able to require `ask` regardless of what the caller
+    asked for (§8's "authority stays with the peer's human").
+14. **Leaf-node spike** — verify whether subject-rewriting import/export rules
    could give per-instance namespaces on a hub without component changes (T3).
    If yes, M4's aggregation gets much cheaper; if no, one connection per
    instance stays the answer forever.
