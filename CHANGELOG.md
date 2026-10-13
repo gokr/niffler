@@ -6,6 +6,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- LSP server disposal now reaps the child after SIGKILL before closing its
+  handles. Unreaped server PIDs stayed visible to grandchild client-PID
+  watchdogs, leaking nimsuggest processes after timeouts and LRU eviction.
+  Linux regression coverage checks eviction while LSP remains alive and
+  shutdown of all remaining servers on an isolated test bus.
+
 ### Changed
 
 - **The website lays out cleanly on phones.** The nav splits into links and
