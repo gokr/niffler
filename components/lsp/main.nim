@@ -277,15 +277,19 @@ var gDiagGen = initTable[string, int]()
 proc diagKey(session, path: string): string = session & "\x1f" & path
 
 proc dispose(h: Instance) =
-  ## Kill the server process; safe to call twice.
-  if h.p != nil:
-    try:
-      if h.p.running():
-        h.p.terminate()
-        sleep(50)
-        if h.p.running(): h.p.kill()
-    except CatchableError:
-      discard
+  ## Terminate and reap the owned server before releasing its handle.
+  if h.p == nil: return
+  try:
+    if h.p.running():
+      h.p.terminate()
+      sleep(50)
+      if h.p.running(): h.p.kill()
+    # close() only releases pipes on POSIX. Reap after SIGKILL as well:
+    # a zombie's reserved PID keeps client-PID watchdogs in grandchildren
+    # (such as nimsuggest) believing their dead parent is still alive.
+    discard h.p.waitForExit()
+  except CatchableError:
+    discard
   try: h.p.close()
   except CatchableError: discard
   h.p = nil

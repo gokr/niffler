@@ -12,7 +12,7 @@
 ## lsp_registry add/remove (agent-editable registry — a new language with
 ## zero code changes, live on the next call).
 
-import std/[json, os, osproc, sequtils, strutils]
+import std/[json, os, osproc, posix, sequtils, strutils, times]
 import natsnim
 import envelope
 import helpers
@@ -509,6 +509,92 @@ proc main() =
       cleanDelivered = env.payload{"clean"}.getBool(false)
       break
   check("async clean verdict carries explicit display-only classification", cleanDelivered)
+  # Linux /proc distinguishes a reaped PID from a reserved zombie PID.
+  when defined(linux):
+    block:
+      let (zBus, zUrl) = startNats()
+      defer: stopServer(zBus)
+      var zNc = waitConnect(zUrl)
+      defer: zNc.close()
+      let zReg = tmp / "lsp-zombie-registry.json"
+      let zPidDir = tmp / "zombie-pids"
+      createDir(zPidDir)
+      writeFile(zReg, (%*{
+        "zsrv": {"command": ["python3", root / "tests" / "fixtures" /
+                              "lsp_zombie_server.py"],
+                 "extensions": %*{".zk": "zk"}}
+      }).pretty())
+      var regSub: ptr natsSubscription
+      discard natsConnection_SubscribeSync(addr regSub, zNc.conn, "reg.publish")
+      defer: natsSubscription_Destroy(regSub)
+      discard natsConnection_Flush(zNc.conn)
+      let zProc = startComponent(bin, zUrl, root = tmp,
+                                 extra = [("NIF_LSP_REGISTRY", zReg),
+                                          ("ZOMBIE_PID_DIR", zPidDir)])
+      defer:
+        stopProcess(zProc)
+        discard zProc.waitForExit()
+        # Cleanup is fixture-PID-scoped even if an assertion fails.
+        for path in walkFiles(zPidDir / "*"):
+          let serverPid = path.extractFilename.parseInt
+          let childPid = readFile(path).strip.parseInt
+          discard posix.kill(Pid(childPid), SIGKILL)
+          discard posix.kill(Pid(serverPid), SIGKILL)
+      check("zombie-test component registers on its isolated bus",
+            waitRegisteredOn(regSub, "lsp"))
+
+      # Nine roots force eviction at MAX_INSTANCES=8 while LSP stays alive.
+      for i in 0 ..< 9:
+        let ws = tmp / ("zws" & $i)
+        createDir(ws)
+        writeFile(ws / "a.zk", "x\n")
+        let reply = call(zNc, "lsp", "lsp", %*{
+          "operation": "hover", "path": "a.zk", "line": 1,
+          "character": 1, "workspaceRoot": ws})
+        check("zombie fixture hover " & $i, reply{"ok"}.getBool(false), $reply)
+
+      proc processState(pid: int): char =
+        try:
+          let stat = readFile("/proc/" & $pid & "/stat")
+          return stat[stat.rfind(')') + 2]
+        except CatchableError:
+          return '\0'
+
+      proc counts(): tuple[servers, reaped, children: int] =
+        for path in walkFiles(zPidDir / "*"):
+          inc result.servers
+          if processState(path.extractFilename.parseInt) == '\0':
+            inc result.reaped
+          if processState(readFile(path).strip.parseInt) notin {'\0', 'Z'}:
+            inc result.children
+
+      # Poll a bounded window for the child watchdog, rather than sleeping
+      # for a fixed time or treating a missing fixture as success.
+      let deadline = epochTime() + 5.0
+      var observed = counts()
+      while epochTime() < deadline and observed != (9, 1, 8):
+        sleep(25)
+        observed = counts()
+      check("zombie fixture started nine server instances", observed.servers == 9,
+            $observed)
+      check("evicted server was reaped, not left a zombie", observed.reaped == 1,
+            $observed)
+      check("evicted server's grandchild exited; eight warm children remain",
+            observed.children == 8, $observed)
+      check("LSP remains alive after eviction", zProc.running())
+
+      drain(zNc)
+      let drainDeadline = epochTime() + 5.0
+      while zProc.running() and epochTime() < drainDeadline: sleep(25)
+      check("LSP drains after reaping its remaining servers", not zProc.running())
+      let childDeadline = epochTime() + 5.0
+      observed = counts()
+      while epochTime() < childDeadline and observed != (9, 9, 0):
+        sleep(25)
+        observed = counts()
+      check("drain reaps all servers and stops their watchdog children",
+            observed == (9, 9, 0), $observed)
+
   report("LSP TEST")
 
 main()
