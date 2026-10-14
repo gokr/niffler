@@ -1,8 +1,40 @@
-# Bash guard integration — current status
+# Bash guard + read scope — current status
 
 Implemented on `feat/sandbox-implementation`, not merged or enabled by default.
-Linux bwrap integration only; Seatbelt and tool read-scope enforcement remain
-unimplemented. This is a scoped opt-in increment, not completion of the plan.
+Linux bwrap integration plus tool read-scope enforcement for `read` and `grep`;
+Seatbelt remains unimplemented. This is a scoped opt-in increment, not
+completion of the plan.
+
+## Read scope (tools, not just commands)
+
+A shell guard constrains a COMMAND through a mount policy. It cannot constrain
+an in-process reader, so the same masked paths are also consulted by readers
+via `sdk/niffler/readscope.nim` — one policy, one spelling, shared so two lists
+cannot silently disagree:
+
+- `read` (edit) refuses a masked path with `[E_MASKED]`, at the single place the
+  component reads a file for display, so every argument shape (`path`,
+  `reads[].path`, `windows[]`, glob-selected items) is covered by construction.
+  Symlink aliases are refused too: the comparison is on canonical paths.
+- `read`'s MUTATION path refuses as well. An edit necessarily reads the old
+  bytes and its diff would echo them back.
+- `grep`/`files` filter results through one funnel (`finish`), because argument
+  checks are insufficient: `path` legitimately points at the workspace, and a
+  traversal rooted there reaches masked files no argument names. `files` is
+  covered too — a masked file's *name* is part of what masking hides.
+
+Honest limits, stated rather than implied:
+
+- Result filtering removes what would have been RETURNED, not what was read.
+- This is a deny of declared absolute paths on canonical paths. It cannot hide a
+  copy, an undeclared hard link, or the same bytes reached through a path that
+  was never declared. It is a mask, not a confidentiality model.
+- Relative mask entries are the shell guard's per-launch shorthand; a reader has
+  no launch to resolve against, so it honours only absolute entries rather than
+  guessing a workspace.
+- **Not yet covered**: `repomap`, `lsp`, `observe`, `fetch`, `skills` and
+  `builder` read files without consulting the policy. Anything not listed above
+  is unaffected until it is updated.
 
 ## Enable
 
@@ -68,6 +100,17 @@ configured secret masking, provider-env stripping, cross-workspace write denial,
 timeout/descendant teardown and missing-root/background refusals. It is picked
 up by `make test-server`. `make test-sandbox` covers the helper separately.
 
+`tests/t_readscope.nim` drives the real `edit` and `grep` components over NATS
+with a mask configured (a filename the policy does NOT need to know, so nothing
+there depends on `.env` being special). It covers both failure shapes — a
+DIRECT name (refused, policy named, symlink alias refused too) and a TRAVERSAL
+that never names the file (workspace-wide search, match-all sweep, and the file
+listing) — and asserts unmasked files still read and edit normally, because a
+policy that denied everything would pass the denial checks while breaking the
+tool. Note for future readers: an absence assertion ("does not contain X")
+passes trivially when the call itself failed, so this test first proves each
+tool actually answered.
+
 Availability and policy probes now have 5-second bounds with process-group
 teardown. `bash_sandbox_status` is an on-demand read tool: it distinguishes
 configured/off from backend availability and warns that neither attests to the
@@ -80,12 +123,15 @@ Self-check writes use a random owned workspace directory, never a fixed user
 filename. Status records also use a private random directory, not predictable
 shared-temp filenames.
 
-Remaining before calling Phase 2 complete: guarded background integration
-decision, concurrent alias/race hardening, actual macOS implementation.
-Seatbelt has no implementation at all yet. Guarded background execution still
-refuses pending lifecycle integration.
-No blanket whole-harness protection: `read`, grep traversal, native Fabric,
-plugins and MCP need their own enforcement paths.
+Remaining before calling Phase 2/3 complete: guarded background integration
+decision, concurrent alias/race hardening, read-scope coverage for the
+in-process readers listed above, actual macOS implementation. Seatbelt has no
+implementation at all yet. Guarded background execution still refuses pending
+lifecycle integration.
+
+No blanket whole-harness protection: `read` and `grep` are covered; the readers
+listed as not yet covered, plus native Fabric, plugins and MCP, still bypass all
+of it.
 
 Prompt effect: existing direct schemas and frozen system prefix unchanged.
 The new status tool is on-demand; discovery adds append-only history. Private

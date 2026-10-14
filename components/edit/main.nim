@@ -24,6 +24,7 @@
 import std/[algorithm, json, os, posix, sequtils, strutils, tables]
 import checksums/sha1
 import niffler/sdk
+import niffler/readscope
 
 proc posixStat(pathname: cstring, buf: var Stat): cint {.importc: "stat",
   header: "<sys/stat.h>".}
@@ -167,6 +168,11 @@ proc loadText(displayPath: string): TextFile =
   if getFileSize(target) > MAX_BYTES:
     raise newException(ValueError,
       "[E_FILE_TOO_LARGE] " & displayPath & " exceeds the 100MB edit limit; use bash")
+  # Masked paths are outside tool authority for MUTATION as well as reading:
+  # an edit necessarily reads the file, and the diff/observe path would then
+  # echo the very content the mask exists to hide.
+  if isMasked(target):
+    raise newException(ValueError, "[E_MASKED] " & maskRefusal(displayPath))
   let raw = readFile(target)
   if raw.len == 0:
     raise newException(ValueError,
@@ -1311,6 +1317,13 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   if getFileSize(target) > MAX_BYTES:
     raise newException(ValueError,
       "[E_FILE_TOO_LARGE] " & path & " exceeds the 100MB read limit; use bash")
+  # Read-scope policy, enforced at the ONE place this component reads a file for
+  # display: every spelling that reaches it (path, reads[].path, windows[],
+  # glob-selected items) is covered here, so a new shape cannot bypass the
+  # check by accident. The refusal names the policy so the model reports a
+  # policy decision instead of retrying variations.
+  if isMasked(target):
+    raise newException(ValueError, "[E_MASKED] " & maskRefusal(shownPath))
   let raw = readFile(target)
   let lazy = lazyInstructionText(session, target)
   if raw.len == 0:

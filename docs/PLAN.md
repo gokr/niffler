@@ -78,7 +78,16 @@ of this file.
   [REASONIX.md](research/REASONIX.md) #11). Deliberately last: SANDBOX-PLAN §6
   records that the agent edits the harness's own source tree — the control
   plane a workspace write guard cannot protect — so a VM/container deployment
-  covers the real risk better and more cheaply than a new launcher. The
+  covers the real risk better and more cheaply than a new launcher.
+  **Partial increment, in progress on `feat/sandbox-implementation` (unmerged,
+  opt-in, off by default):** an opt-in bash write guard using system bwrap, and
+  mask enforcement in the `read`/`grep` readers sharing one path list with the
+  guard. Not a chroot: arbitrary host reads remain possible except explicitly
+  masked paths, readers other than `read`/`grep` are not covered, Seatbelt is
+  unimplemented, and the core-side read-scope containment (`x-harness.reads`,
+  `E_READ_OUTSIDE`, fail-closed-undeclared) is NOT done. Status and honest
+  limits: [SANDBOX-BASH-STATUS.md](research/SANDBOX-BASH-STATUS.md).
+  The
   shelf survey sharpened two points to settle before any launcher:
   only bubblewrap can promise *read* confinement, so a write-only release must
   not be described as a chroot; and a confined shell has no bus, which is what

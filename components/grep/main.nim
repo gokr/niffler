@@ -12,6 +12,7 @@
 
 import std/[json, os, strutils, tempfiles, times]
 import niffler/sdk
+import niffler/readscope
 
 let comp = newComponent("grep", "0.1.0")
 
@@ -34,7 +35,14 @@ proc runRg(args: seq[string], timeoutMs: int,
 proc finish(code: int, output: string, maxResults: int): JsonNode =
   ## Shared result shape: rg exit code (0 matches / 1 none / 2 error / 124
   ## timeout / 127 missing binary) + line-capped, byte-capped output.
-  var o = output
+  ##
+  ## Read-scope filtering happens HERE, the one funnel every rg result passes
+  ## through, so both tools are covered by construction. Doing it at the
+  ## arguments was not enough: `path` legitimately points at the workspace, and
+  ## a traversal rooted there reaches masked files that no argument names.
+  ## Filtering removes what would have been RETURNED, not what was read (see
+  ## readscope's header for that honest limit).
+  var o = dropMaskedLines(output)
   if code == 124:
     o = "[timed out]\n" & o
   if code == 1 and o.strip().len == 0:

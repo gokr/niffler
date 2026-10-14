@@ -185,7 +185,32 @@ off-mode behavior byte-identical; `bash cat .env` refused when on.
 text arrive as append-only tool results. A refusal is history, never a prefix
 change — the same rule the write-arbitration work followed.
 
-## Phase 3 — read scope in core (§6a) — *stops the tool call*
+## Phase 3 — read scope — *partially delivered, by a different route*
+
+**Status note (read this before the plan below).** What was implemented on
+`feat/sandbox-implementation` is mask enforcement in the readers, not the
+core-containment design sketched here:
+
+- Delivered: a shared policy module (`sdk/niffler/readscope.nim`) consulted by
+  `read` (both display and mutation) and by `grep`/`files` (result filtering).
+  Same masked-path list as the shell guard — one policy, one spelling.
+- NOT delivered: `x-harness.reads` declarations, `applyWorkspace` containment,
+  `E_READ_OUTSIDE`, and the fail-closed-undeclared default. Reads are still
+  unrestricted apart from declared masks, which preserves the existing honest
+  stance that arbitrary host reads remain possible.
+
+Why this route first: the mask is the policy an operator actually configured,
+and enforcing it in readers closes a real, demonstrable leak (a workspace-wide
+`grep` reaching a masked file no argument names) without changing what `read`
+may do in general. Containment is a larger behavioural change — it refuses reads
+that work today — and belongs in its own increment with its own gate. The two
+are complementary: containment bounds WHERE tools may read, masks bound WHAT
+must never be surfaced, and neither substitutes for the other.
+
+Still true from the plan below: declarations stay declarative (no `.env` list in
+a shared component), and the guarantee is a mask, not a confidentiality model.
+
+### Original plan (not yet implemented)
 
 1. **Add `x-harness.reads {pathFields, …}`**, mirroring `x-harness.writes`.
 2. **Make `applyWorkspace` contain, not just resolve.** Today it rewrites
