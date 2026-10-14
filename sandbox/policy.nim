@@ -62,6 +62,25 @@ proc insideRoot(ws, path: string): bool =
   if ws.len == 0 or path.len == 0: return false
   ws == "/" or path == ws or path.startsWith(ws & "/")
 
+proc masksInsideWorkspace*(req: LaunchRequest): int =
+  ## How many requested masks sit inside the writable workspace.
+  ##
+  ## MEASURED, not assumed: on this backend an in-workspace mask is just as
+  ## strong as an outside one for a guarded command — reads, copies AND deletes
+  ## of the masked path all fail (`Permission denied`; remove reports `Device or
+  ## resource busy` because it is a mount point), and the host file is
+  ## untouched. An earlier draft claimed the command could simply `cp` the
+  ## secret away; the measurement disproved that.
+  ##
+  ## The honest residual risk is therefore not "the command copies it" but
+  ## **scope**: a mask applies only to commands launched THROUGH this guard. Any
+  ## other reader of that path — another tool (`read`, grep traversal), a
+  ## different component, an unguarded launch, or version-control history —
+  ## still sees the file. Inside a workspace that is worth flagging, because
+  ## that is exactly where other tools are pointed.
+  for m in req.masks:
+    if insideRoot(req.workspace, m): inc result
+
 proc validate*(req: LaunchRequest): string =
   ## Returns "" when the request is launchable, else a human-readable reason.
   ## Validation is fail-closed: anything unclear refuses the command rather

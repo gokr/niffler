@@ -16,13 +16,18 @@ proc main() =
   writeFile(a / "secret", "SECRET-A")
   writeFile(a / ".niffler-write-probe", "USER-FILE-MUST-SURVIVE")
   writeFile(b / "secret", "SECRET-B")
+  # A secret OUTSIDE both workspaces: the strong case. The confined command
+  # cannot create aliases there, so masking is a real boundary.
+  let outsideSecret = root / "outside-secret"
+  writeFile(outsideSecret, "OUTSIDE-SECRET")
+  putEnv("NIF_BASH_SANDBOX_MASKS", "secret\n" & outsideSecret)
   let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()
   let child = startComponent(repo / "var/bin/bash", url, root = root,
     extra = @[("NIF_BASH_SANDBOX", "on"),
-              ("NIF_BASH_SANDBOX_MASKS", "secret"),
+              ("NIF_BASH_SANDBOX_MASKS", "secret\n" & outsideSecret),
               ("NIF_SANDBOX_ALLOW_DEGRADED", ""),
               ("NIF_SANDBOX_BACKEND", ""),
               ("NIF_OPENAI_API_KEY", "SENTINEL-KEY")])
@@ -94,6 +99,29 @@ proc main() =
       exit125{"sandbox"}{"state"}.getStr("") == "applied", $exit125)
     let outside = run(a, "echo escaped > " & quoteShell(b / "outside"))
     check("second conversation workspace not writable", not fileExists(b / "outside"), $outside)
+    # MEASURED: an in-workspace mask is not a weaker hiding mechanism for a
+    # guarded command — reads, copies and deletes of it all FAIL, and the host
+    # file survives. An earlier draft asserted the command could copy the secret
+    # away; the measurement disproved it. What must be reported instead is
+    # SCOPE: the mask covers only commands launched through this guard.
+    for ws in [a, b]:
+      let masked = run(ws, "cat secret; cp secret stolen 2>/dev/null; rm -f secret; echo done")
+      check("an in-workspace mask blocks reads, copies and deletes",
+        not fileExists(ws / "stolen") and fileExists(ws / "secret") and
+        not ($masked).contains("SECRET-"), $masked)
+      check("the result states the mask's scope limit",
+        masked{"sandbox"}{"inWorkspaceMasks"}.getBool(false) and
+        masked{"sandbox"}{"note"}.getStr("").contains("only to commands launched through the guard"), $masked)
+    if outsideSecret.len > 0:
+      let outsideRun = call(nc, "bash", "bash", %*{
+        "command": "cat " & quoteShell(outsideSecret), "cwd": a, "timeoutMs": 10000,
+        "__workspace": {"root": a}}, 15000)
+      check("an outside secret is genuinely unreadable",
+        not ($outsideRun).contains("OUTSIDE-SECRET"), $outsideRun)
+      # The scope flag is PER LAUNCH: this launch also masks an in-workspace
+      # path, so it is correctly set. Asserting it absent here would be wrong.
+      check("the scope flag reflects any in-workspace mask in the launch",
+        outsideRun{"sandbox"}{"inWorkspaceMasks"}.getBool(false), $outsideRun)
     let timed = run(a, "sleep 3; touch late", 1000)
     check("guard preserves timeout outcome", timed{"exit_code"}.getInt(0) == 124, $timed)
     sleep(2500)

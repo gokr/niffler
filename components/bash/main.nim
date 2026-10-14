@@ -209,6 +209,9 @@ discard comp.tool("bash", bashSchema,
                                    else: "failed"),
                        "scope": "shell",
                        "backend": j{"backend"}.getStr("")}
+          if j{"masksInWorkspace"}.getInt(0) > 0:
+            sandbox["inWorkspaceMasks"] = %true
+            sandbox["note"] = %"this mask applies only to commands launched through the guard; other tools, other components and unguarded launches still see the path"
       except CatchableError:
         discard
       finally:

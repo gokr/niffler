@@ -125,7 +125,8 @@ proc writeStatus(req: LaunchRequest, backend: string, applied: bool) =
   if req.statusFile.len == 0: return
   try:
     writeFile(req.statusFile,
-              $(%*{"backend": backend, "applied": applied, "scope": "shell"}))
+              $(%*{"backend": backend, "applied": applied, "scope": "shell",
+                   "masksInWorkspace": masksInsideWorkspace(req), "masks": req.masks.len}))
   except CatchableError:
     discard
 
