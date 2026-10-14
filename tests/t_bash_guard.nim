@@ -1,7 +1,9 @@
 ## Opt-in bash guard exercised through the actual component's NATS contract.
 import std/[json, os, osproc, strutils, times]
 import natsnim
+import envelope
 import helpers
+when defined(posix): import std/posix
 
 proc main() =
   let repo = getEnv("NIF_REPO_ROOT", getEnv("NIF_ROOT", getAppDir().parentDir()))
@@ -12,6 +14,7 @@ proc main() =
   createDir(a)
   createDir(b)
   writeFile(a / "secret", "SECRET-A")
+  writeFile(a / ".niffler-write-probe", "USER-FILE-MUST-SURVIVE")
   writeFile(b / "secret", "SECRET-B")
   let (server, url) = startNats()
   defer: stopServer(server)
@@ -53,6 +56,38 @@ proc main() =
             result{"sandbox"}{"state"}.getStr("") == "policy_checked", $result)
       check("attestation names the backend",
             result{"sandbox"}{"backend"}.getStr("") == "bwrap", $result)
+    check("policy probe preserves existing user file",
+      readFile(a / ".niffler-write-probe") == "USER-FILE-MUST-SURVIVE")
+    let large = run(a, "for i in $(seq 1 20000); do echo guarded-line-$i; done", 20000)
+    let spill = large{"spill"}{"path"}.getStr("")
+    check("guard preserves output spilling", spill.len > 0 and fileExists(spill), $large)
+    if spill.len > 0 and fileExists(spill):
+      check("trusted parent retains full output",
+        readFile(spill).contains("guarded-line-10000") and
+        large{"text"}.getStr("").contains("truncated"), spill)
+    when defined(posix):
+      # Independent process publishes cancellation while the serialized handler
+      # is occupied. A fresh connection avoids sharing inherited NATS state.
+      let publisher = fork()
+      doAssert publisher >= 0
+      if publisher == 0:
+        sleep(1000)
+        var bus = waitConnect(url)
+        let notice = Envelope(v: 1, id: newId(), kind: ekEvent,
+          payload: %*{"sessionId": "guard-cancel", "tool": "bash", "ts": epochTime()}).encode()
+        discard natsConnection_Publish(bus.conn, "cancel.bash", notice.cstring, notice.len.cint)
+        discard natsConnection_Flush(bus.conn)
+        bus.close()
+        exitnow(0)
+      let cancelled = call(nc, "bash", "bash", %*{
+        "command": "sleep 3; touch cancelled-late", "cwd": a, "timeoutMs": 10000,
+        "__workspace": {"root": a}, "__session": {"session": "guard-cancel"}}, 15000)
+      var status: cint
+      discard waitpid(publisher, status, 0)
+      check("guard preserves cancellation outcome",
+        cancelled{"exit_code"}.getInt(0) == 130 and cancelled{"cancelled"}.getBool(false), $cancelled)
+      sleep(2500)
+      check("cancelled child does not survive", not fileExists(a / "cancelled-late"))
     let exit125 = run(a, "exit 125")
     check("command exit 125 is not mislabelled as a failed policy",
       exit125{"exit_code"}.getInt(0) == 125 and

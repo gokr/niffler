@@ -129,7 +129,7 @@ proc writeStatus(req: LaunchRequest, backend: string, applied: bool) =
   except CatchableError:
     discard
 
-proc verifyPrelude(req: LaunchRequest, probeDir: string): string =
+proc verifyPrelude(req: LaunchRequest, probeDir, positiveDir: string): string =
   ## A shell prelude run INSIDE the same bwrap policy that will run the real
   ## command, doing forbidden things and requiring them to FAIL.
   ##
@@ -149,9 +149,8 @@ proc verifyPrelude(req: LaunchRequest, probeDir: string): string =
     result.add "[ -s " & quoteShell(m) & " ] && rc=1\n"
   # POSITIVE control: the workspace MUST remain writable. Without this, a
   # backend that denied everything would look like perfect confinement.
-  result.add "( : > " & quoteShell(req.workspace / ".niffler-write-probe") &
+  result.add "( : > " & quoteShell(positiveDir / "w") &
              " ) 2>/dev/null || rc=1\n"
-  result.add "rm -f " & quoteShell(req.workspace / ".niffler-write-probe") & "\n"
   result.add "printf 'niffler-verify:%s' \"$rc\"\n"
 
 proc verifyPolicy(binPath: string, req: LaunchRequest): tuple[ok: bool, why: string] =
@@ -169,8 +168,12 @@ proc verifyPolicy(binPath: string, req: LaunchRequest): tuple[ok: bool, why: str
   let probeParent = if dirExists("/var/tmp"): "/var/tmp" else: getEnv("HOME", "/")
   let probeDir = createTempDir("niffler-verify-", "", probeParent)
   defer: removeDir(probeDir)
+  # Own a random private directory rather than truncating a fixed workspace
+  # path. Even an existing .niffler-write-probe must remain untouched.
+  let positiveDir = createTempDir(".niffler-verify-", "", req.workspace)
+  defer: removeDir(positiveDir)
   var probe = req
-  probe.argv = @["/bin/sh", "-c", verifyPrelude(req, probeDir)]
+  probe.argv = @["/bin/sh", "-c", verifyPrelude(req, probeDir, positiveDir)]
   let argv = bwrapArgv(binPath, probe)
   var args: seq[string]
   for i in 1 ..< argv.len: args.add argv[i]

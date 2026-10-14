@@ -3,7 +3,7 @@
 ## The agent's normal path to self-extension: write source files with bash,
 ## compile with builder, spawn with core.
 
-import std/[json, os, osproc, sequtils, strutils, times]
+import std/[json, os, osproc, sequtils, strutils, times, tempfiles]
 import natsnim
 import niffler/sdk
 import guard
@@ -147,13 +147,14 @@ discard comp.tool("bash", bashSchema,
     # NIF_BASH_NET=off the lightweight netns variant (procutil docs).
     var guarded: GuardedCommand
     var statusFile = ""
+    var statusDir = ""
+    defer:
+      if statusDir.len > 0: removeDir(statusDir)
     if getEnv("NIF_BASH_SANDBOX", "off") == "on":
-      # Unique per call: a reused path could carry a stale verdict from the
-      # previous command, which is exactly the forgery this channel must not
-      # allow.
-      statusFile = getTempDir() / ("niffler-sbx-" & $getCurrentProcessId() &
-                                  "-" & $epochTime().int & "-" & $sessionId.len & ".json")
-      removeFile(statusFile)
+      # Private random directory avoids predictable filenames, stale records
+      # and pre-planted symlinks in the shared temp directory.
+      statusDir = createTempDir("niffler-sbx-", "")
+      statusFile = statusDir / "status.json"
     try:
       guarded = guardCommand(toolArgs, toolArgs{"command"}.getStr(""), statusFile)
     except CatchableError as e:

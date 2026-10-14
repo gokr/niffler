@@ -65,8 +65,15 @@ teardown. `bash_sandbox_status` is an on-demand read tool: it distinguishes
 configured/off from backend availability and warns that neither attests to the
 actual launch. Guarded tool text also renders the policy-check limitation.
 
-Remaining before calling Phase 2 complete: cancellation-specific and spill regressions, guarded
-background integration decision, mask alias tests, actual macOS implementation,
+Cancellation-specific and spill regressions now pass through the real bash
+component: cancel returns 130 and descendants cannot perform a delayed write;
+large output remains capped and the trusted parent preserves its full spill.
+Self-check writes use a random owned workspace directory, never a fixed user
+filename. Status records also use a private random directory, not predictable
+shared-temp filenames.
+
+Remaining before calling Phase 2 complete: guarded background integration
+decision, mask alias tests, actual macOS implementation,
 and fd-level attestation for the real exec rather than a parallel self-check.
 No blanket whole-harness protection: `read`, grep traversal, native Fabric,
 plugins and MCP need their own enforcement paths.
