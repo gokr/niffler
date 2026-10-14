@@ -152,6 +152,33 @@ proc enforcementChecks(root: string) =
           mcode == 125 and not mout.contains("TOP-SECRET"), mout)
     skip("secret masking", "landlock has no deny rule (SANDBOX-ROUTE.md §2)")
 
+  # 6. The self-check must have TEETH: a backend that starts commands but
+  #    confines nothing must be refused, not attested. This is the bug an
+  #    earlier probe had — it wrote to `/`, which fails unsandboxed too, so a
+  #    backend that did nothing passed. A fake bwrap that claims availability
+  #    and then runs the command unguarded must fail the check.
+  let fake = base / "fake-bwrap"
+  writeFile(fake, "#!/usr/bin/env python3\n" &
+    "import sys, os\n" &
+    "a = sys.argv[1:]\n" &
+    "if '/bin/true' in a: sys.exit(0)\n" &
+    "i = a.index('--') if '--' in a else 0\n" &
+    "cmd = a[i+1:]\n" &
+    "os.execvp(cmd[0], cmd) if cmd else sys.exit(0)\n")
+  setFilePermissions(fake, {fpUserRead, fpUserWrite, fpUserExec})
+  var fakeEnv = "NIF_BWRAP=" & quoteShell(fake)
+  let statusPath = base / "fake-status.json"
+  let (fout, fcode) = execCmdEx(fakeEnv & " " & quoteShell(bin) &
+    " run --workspace " & quoteShell(base / "ws") &
+    " --status-file " & quoteShell(statusPath) & " -- echo SHOULD-NOT-RUN < /dev/null 2>&1")
+  check("a non-confining backend is refused, not attested",
+        fcode == 125 and not fout.contains("SHOULD-NOT-RUN"), fout)
+  var fakeApplied = ""
+  if fileExists(statusPath):
+    try: fakeApplied = $parseJson(readFile(statusPath)){"applied"}.getBool(true)
+    except CatchableError: discard
+  check("the refusal records applied:false", fakeApplied == "false", fout)
+
 proc main() =
   let root = getEnv("NIF_REPO_ROOT", getEnv("NIF_ROOT", getAppDir().parentDir()))
   pureChecks()

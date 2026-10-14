@@ -146,8 +146,16 @@ discard comp.tool("bash", bashSchema,
     # prepared container image (no network, workspace-only filesystem) and
     # NIF_BASH_NET=off the lightweight netns variant (procutil docs).
     var guarded: GuardedCommand
+    var statusFile = ""
+    if getEnv("NIF_BASH_SANDBOX", "off") == "on":
+      # Unique per call: a reused path could carry a stale verdict from the
+      # previous command, which is exactly the forgery this channel must not
+      # allow.
+      statusFile = getTempDir() / ("niffler-sbx-" & $getCurrentProcessId() &
+                                  "-" & $epochTime().int & "-" & $sessionId.len & ".json")
+      removeFile(statusFile)
     try:
-      guarded = guardCommand(toolArgs, toolArgs{"command"}.getStr(""))
+      guarded = guardCommand(toolArgs, toolArgs{"command"}.getStr(""), statusFile)
     except CatchableError as e:
       return %*{"exit_code": 125, "text": "[E_SANDBOX] refused: " & e.msg,
         "sandbox": {"state": "refused", "scope": "shell"}}
@@ -188,9 +196,23 @@ discard comp.tool("bash", bashSchema,
         "re-run a narrower command (grep/head/tail/wc) for the missing part")
     var payload = %*{"exit_code": code, "cancelled": code == 130}
     if guarded.enabled:
-      # A command can itself exit 125; do not mislabel that as a sandbox refusal.
-      # Until the dedicated startup FD is wired, attest only to requesting it.
-      payload["sandbox"] = %*{"state": "requested", "scope": "shell"}
+      # The verdict is the LAUNCHER's, read from its own file after the command
+      # exited — never inferred from the exit code, which the command controls
+      # (a command can itself exit 125). An absent file means the launcher
+      # produced no evidence, so we report requested rather than claim applied.
+      var sandbox = %*{"state": "requested", "scope": "shell"}
+      try:
+        if fileExists(statusFile):
+          let j = parseJson(readFile(statusFile))
+          sandbox = %*{"state": (if j{"applied"}.getBool(false): "applied"
+                                   else: "failed"),
+                       "scope": "shell",
+                       "backend": j{"backend"}.getStr("")}
+      except CatchableError:
+        discard
+      finally:
+        removeFile(statusFile)
+      payload["sandbox"] = sandbox
     var status = "(exit " & $code
     if code == 124: status.add(" — timed out after " & $timeoutMs &
       "ms; raise timeoutMs for a slow build, or use run_in_background for work that outlives a call")

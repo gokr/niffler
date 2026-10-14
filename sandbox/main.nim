@@ -13,7 +13,7 @@
 ## The probe tests a *forbidden operation*, never `/bin/true` — a launcher that
 ## starts commands but confines nothing must not read as healthy.
 
-import std/[os, strutils, json, osproc, posix]
+import std/[os, strutils, json, osproc, posix, streams, tempfiles]
 import policy
 import landlock
 
@@ -116,6 +116,73 @@ proc bwrapArgv(binPath: string, req: LaunchRequest): seq[string] =
 
 proc runWithLandlock(req: LaunchRequest): int
 
+proc writeStatus(req: LaunchRequest, backend: string, applied: bool) =
+  ## Launcher-owned evidence, written by the TRUSTED parent after the sandbox
+  ## has done its work — never by the confined command, which could otherwise
+  ## forge it. An absent file means "no usable backend" and must read as
+  ## unguarded, never as success.
+  if req.statusFile.len == 0: return
+  try:
+    writeFile(req.statusFile,
+              $(%*{"backend": backend, "applied": applied, "scope": "shell"}))
+  except CatchableError:
+    discard
+
+proc verifyPrelude(req: LaunchRequest, probeDir: string): string =
+  ## A shell prelude run INSIDE the same bwrap policy that will run the real
+  ## command, doing forbidden things and requiring them to FAIL.
+  ##
+  ## SANDBOX-PLAN §3: a probe that only runs `/bin/true` proves nothing. It also
+  ## warns that Unix permissions already deny some writes, so a negative test
+  ## must use something the UNCONFINED process could actually do. An earlier
+  ## version wrote to `/` — denied to a normal user with or without a sandbox —
+  ## and therefore passed for a backend that confined nothing at all.
+  result = "rc=0\n"
+  # NEGATIVE: probeDir is created writable by us and sits OUTSIDE the
+  # workspace, so an unsandboxed shell writes it happily; only a real mount
+  # policy (read-only host root) denies it.
+  result.add "( : > " & quoteShell(probeDir / "w") & " ) 2>/dev/null && rc=1\n"
+  # NEGATIVE: every requested mask must read as EMPTY. That is what hidden
+  # means; a non-empty read means the mask did not take effect.
+  for m in req.masks:
+    result.add "[ -s " & quoteShell(m) & " ] && rc=1\n"
+  # POSITIVE control: the workspace MUST remain writable. Without this, a
+  # backend that denied everything would look like perfect confinement.
+  result.add "( : > " & quoteShell(req.workspace / ".niffler-write-probe") &
+             " ) 2>/dev/null || rc=1\n"
+  result.add "rm -f " & quoteShell(req.workspace / ".niffler-write-probe") & "\n"
+  result.add "printf 'niffler-verify:%s' \"$rc\"\n"
+
+proc verifyPolicy(binPath: string, req: LaunchRequest): tuple[ok: bool, why: string] =
+  ## Prove the policy is enforceable before running the command.
+  ##
+  ## Honest limit: this is a SEPARATE bwrap invocation built by the same
+  ## `bwrapArgv`, so it demonstrates the policy is correctly constructed and
+  ## enforced, not that the real exec was instrumented. That is weaker than
+  ## intercepting the actual launch, stronger than a version probe, and the
+  ## strongest thing available without fd plumbing through bwrap.
+  # The probe dir must sit where the REAL policy still sees the host path:
+  # /tmp is deliberately shadowed by a fresh tmpfs, so a dir there would not
+  # exist inside the sandbox and the write would fail for the wrong reason.
+  # /var/tmp is world-writable on FHS systems and outside any workspace.
+  let probeParent = if dirExists("/var/tmp"): "/var/tmp" else: getEnv("HOME", "/")
+  let probeDir = createTempDir("niffler-verify-", "", probeParent)
+  defer: removeDir(probeDir)
+  var probe = req
+  probe.argv = @["/bin/sh", "-c", verifyPrelude(req, probeDir)]
+  let argv = bwrapArgv(binPath, probe)
+  var args: seq[string]
+  for i in 1 ..< argv.len: args.add argv[i]
+  try:
+    let p = startProcess(argv[0], args = args, options = {poStdErrToStdOut})
+    let outp = p.outputStream.readAll()
+    discard p.waitForExit()
+    p.close()
+    if outp.contains("niffler-verify:0"): return (true, "")
+    return (false, "the sandbox did not enforce the requested policy: " & outp.strip())
+  except CatchableError as e:
+    return (false, "self-check could not run: " & e.msg)
+
 proc runRequest(req: LaunchRequest): int =
   ## Apply the requested guard and exec. Returns the command's exit status, or
   ## refuses (exit 125) with a reason on stderr — never runs unguarded.
@@ -127,21 +194,35 @@ proc runRequest(req: LaunchRequest): int =
   case probe.backend
   of bkWrap:
     let binPath = bwrapPath()
+    # Prove the policy BEFORE running the command: a policy that cannot be
+    # demonstrated is a refusal, not a warning (SANDBOX-PLAN §7).
+    let check = verifyPolicy(binPath, req)
+    if not check.ok:
+      stderr.writeLine "niffler-sandbox: policy self-check failed — " & check.why
+      writeStatus(req, "bwrap", false)
+      return 125
     let argv = bwrapArgv(binPath, req)
     var args: seq[string]
     for i in 1 ..< argv.len: args.add argv[i]
     try:
       let p = startProcess(argv[0], args = args, options = {poParentStreams})
-      return waitForExit(p)
+      let code = waitForExit(p)
+      p.close()
+      writeStatus(req, "bwrap", true)
+      return code
     except CatchableError as e:
       stderr.writeLine "niffler-sandbox: cannot start bubblewrap: " & e.msg
+      writeStatus(req, "bwrap", false)
       return 125
   of bkLandlock:
     if req.masks.len > 0:
       stderr.writeLine "niffler-sandbox: refusing requested masks: Landlock cannot enforce them"
+      writeStatus(req, "landlock", false)
       return 125
     stderr.writeLine "niffler-sandbox: " & probe.detail
-    return runWithLandlock(req)
+    let code = runWithLandlock(req)
+    writeStatus(req, "landlock", true)
+    return code
   of bkNone:
     stderr.writeLine "niffler-sandbox: no usable backend — " & probe.detail
     return 125
@@ -196,6 +277,9 @@ proc parseRequest(args: seq[string]): LaunchRequest =
     of "--mask":
       inc i
       if i < args.len: result.masks.add canonicalExisting(args[i])
+    of "--status-file":
+      inc i
+      if i < args.len: result.statusFile = args[i]
     of "--":
       inc i
       while i < args.len:

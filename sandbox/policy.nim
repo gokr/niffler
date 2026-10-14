@@ -26,6 +26,9 @@ type
     masks*: seq[string]    ## paths made unreadable/unwritable (secrets)
     argv*: seq[string]     ## exact command, never a shell string
     envKeep*: seq[string]  ## environment allowlist (empty = launcher default)
+    statusFile*: string    ## where the launcher writes its own evidence, after
+                           ## the command exits (launcher-owned; never trusted
+                           ## from the command's own output)
 
   SandboxError* = object of CatchableError
 

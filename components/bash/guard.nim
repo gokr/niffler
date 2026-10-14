@@ -5,9 +5,12 @@ import std/[os, json, strutils]
 type GuardedCommand* = object
   command*: string
   enabled*: bool
+  statusFile*: string
 
-proc guardCommand*(args: JsonNode, command: string): GuardedCommand =
+proc guardCommand*(args: JsonNode, command: string,
+                   statusFile: string): GuardedCommand =
   result.command = command
+  result.statusFile = statusFile
   let setting = getEnv("NIF_BASH_SANDBOX", "off")
   if setting == "off": return
   if setting != "on":
@@ -28,6 +31,7 @@ proc guardCommand*(args: JsonNode, command: string): GuardedCommand =
     raise newException(ValueError, "sandbox launcher missing; run make build")
   var argv = @[helper, "run", "--workspace", workspace,
                "--cwd", args{"cwd"}.getStr(workspace)]
+  if statusFile.len > 0: argv.add @["--status-file", statusFile]
   # Operator-owned exact paths, one per line. A missing configured secret
   # refuses rather than silently omitting protection. No filename heuristics.
   for path in getEnv("NIF_BASH_SANDBOX_MASKS", "").splitLines():

@@ -42,6 +42,12 @@ proc main() =
       check("workspace write succeeds", fileExists(ws / "marker"), $result)
       check("configured secret is masked", not ($result).contains("SECRET-"), $result)
       check("provider environment is absent", result{"text"}.getStr("").contains("unset"), $result)
+      # The launcher attests AFTER the command, so the verdict cannot be
+      # forged by the command's own exit code.
+      check("launcher attests to enforced policy",
+            result{"sandbox"}{"state"}.getStr("") == "applied", $result)
+      check("attestation names the backend",
+            result{"sandbox"}{"backend"}.getStr("") == "bwrap", $result)
     let outside = run(a, "echo escaped > " & quoteShell(b / "outside"))
     check("second conversation workspace not writable", not fileExists(b / "outside"), $outside)
     let timed = run(a, "sleep 3; touch late", 1000)

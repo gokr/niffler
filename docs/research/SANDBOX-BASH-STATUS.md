@@ -39,10 +39,18 @@ not every automatically discovered sibling checkout.
   ignore them. Landlock without masks remains a separate opt-in prototype.
 - Existing off-mode execution is unchanged. Guarded timeout still reports 124;
   tested descendants do not survive timeout.
-- `sandbox.state` is `requested`, not `applied`: exit 125 can be the command's
-  own exit, and no dedicated startup evidence FD is wired yet. No false success
-  attestation is made. Availability probe still needs bounded execution and
-  an enforcement test rather than `/bin/true` alone.
+- `sandbox.state` is `applied` only when the launcher's own post-command
+  evidence file says so. The launcher proves the policy with a **negative test
+  that would succeed unsandboxed** plus a workspace-writable positive control,
+  then refuses (exit 125, `applied:false`, command never starts) if the policy
+  cannot be demonstrated. An earlier version wrote to `/` — denied to an
+  ordinary user with or without a sandbox — so a backend confining *nothing*
+  passed it; `tests/t_sandbox.nim` now keeps a fake non-confining bwrap as a
+  permanent regression. Exit codes are never read as the verdict: a command can
+  itself exit 125.
+- Honest limit on that evidence: it is a separate bwrap invocation built by the
+  same argument constructor, so it proves the policy is correctly built and
+  enforced, not that the real exec was instrumented.
 
 ## Verification
 
@@ -51,9 +59,10 @@ configured secret masking, provider-env stripping, cross-workspace write denial,
 timeout/descendant teardown and missing-root/background refusals. It is picked
 up by `make test-server`. `make test-sandbox` covers the helper separately.
 
-Remaining before calling Phase 2 complete: dedicated launch evidence,
+Remaining before calling Phase 2 complete: bounded probe execution,
 `bash_sandbox_status`, cancellation-specific and spill regressions, guarded
-background integration decision, mask alias tests, actual macOS implementation.
+background integration decision, mask alias tests, actual macOS implementation,
+and fd-level attestation for the real exec rather than a parallel self-check.
 No blanket whole-harness protection: `read`, grep traversal, native Fabric,
 plugins and MCP need their own enforcement paths.
 
