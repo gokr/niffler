@@ -34,13 +34,20 @@ proc canonicalExisting*(path: string): string =
   ## a workspace reached through a symlinked `var` and one reached directly are
   ## the same directory, and comparing spellings made every launch miss
   ## (see procutil.realPathOf for the sibling bug that motivated this).
-  result = expandFilename(path)
+  proc realpath(p: cstring, buffer: pointer): cstring {.
+    importc, header: "<stdlib.h>".}
+  proc free(p: pointer) {.importc, header: "<stdlib.h>".}
+  let resolved = realpath(path.cstring, nil)
+  if resolved == nil:
+    raise newException(SandboxError, "cannot resolve existing path: " & path)
+  result = $resolved
+  free(resolved)
 
 proc insideRoot(ws, path: string): bool =
   ## True when `path` is `ws` itself or below it. Prefix comparison is done on
   ## whole path components so `/ws-other` is not treated as inside `/ws`.
   if ws.len == 0 or path.len == 0: return false
-  path == ws or path.startsWith(ws & "/")
+  ws == "/" or path == ws or path.startsWith(ws & "/")
 
 proc validate*(req: LaunchRequest): string =
   ## Returns "" when the request is launchable, else a human-readable reason.

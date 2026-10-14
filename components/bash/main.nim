@@ -6,6 +6,7 @@
 import std/[json, os, osproc, sequtils, strutils, times]
 import natsnim
 import niffler/sdk
+import guard
 
 let comp = newComponent("bash", "0.1.0")
 
@@ -144,8 +145,14 @@ discard comp.tool("bash", bashSchema,
     # netScoped: NIF_BASH_SANDBOX_MAP runs every command inside its task's
     # prepared container image (no network, workspace-only filesystem) and
     # NIF_BASH_NET=off the lightweight netns variant (procutil docs).
-    let command = netScoped(toolArgs{"command"}.getStr(""),
-                            toolArgs{"cwd"}.getStr(""))
+    var guarded: GuardedCommand
+    try:
+      guarded = guardCommand(toolArgs, toolArgs{"command"}.getStr(""))
+    except CatchableError as e:
+      return %*{"exit_code": 125, "text": "[E_SANDBOX] refused: " & e.msg,
+        "sandbox": {"state": "refused", "scope": "shell"}}
+    let command = if guarded.enabled: guarded.command else:
+      netScoped(toolArgs{"command"}.getStr(""), toolArgs{"cwd"}.getStr(""))
     # The caller's budget, clamped: an absurd value must not outlive core's
     # wait for this call (the component's exit-124 report carries the output;
     # a core-side timeout would not).
@@ -180,6 +187,10 @@ discard comp.tool("bash", bashSchema,
       full = capBytes(full, maxCaptureBytes,
         "re-run a narrower command (grep/head/tail/wc) for the missing part")
     var payload = %*{"exit_code": code, "cancelled": code == 130}
+    if guarded.enabled:
+      # A command can itself exit 125; do not mislabel that as a sandbox refusal.
+      # Until the dedicated startup FD is wired, attest only to requesting it.
+      payload["sandbox"] = %*{"state": "requested", "scope": "shell"}
     var status = "(exit " & $code
     if code == 124: status.add(" — timed out after " & $timeoutMs &
       "ms; raise timeoutMs for a slow build, or use run_in_background for work that outlives a call")

@@ -148,8 +148,8 @@ proc enforcementChecks(root: string) =
     check("the full-promise backend hides the masked secret",
           not mout.contains("TOP-SECRET"), mout)
   else:
-    check("the degraded backend reports reads unconfined rather than hiding",
-          mout.contains("TOP-SECRET"), mout)
+    check("the degraded backend refuses requested secret masks",
+          mcode == 125 and not mout.contains("TOP-SECRET"), mout)
     skip("secret masking", "landlock has no deny rule (SANDBOX-ROUTE.md §2)")
 
 proc main() =

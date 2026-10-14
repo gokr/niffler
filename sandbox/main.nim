@@ -88,7 +88,13 @@ proc bwrapArgv(binPath: string, req: LaunchRequest): seq[string] =
   ## outside — what every shelf harness does), everything else read-only, and
   ## each mask is bound over with /dev/null.
   result = @[binPath]
-  result.add "--new-session"
+  # Keep the caller's process group so runCmd cancellation reaches bwrap.
+  result.add "--cap-drop"; result.add "ALL"
+  result.add "--clearenv"
+  result.add "--setenv"; result.add "PATH"; result.add "/usr/bin:/bin"
+  result.add "--setenv"; result.add "HOME"; result.add "/tmp"
+  result.add "--setenv"; result.add "TMPDIR"; result.add "/tmp"
+  result.add "--setenv"; result.add "LANG"; result.add "C.UTF-8"
   result.add "--die-with-parent"
   result.add "--unshare-user"
   result.add "--unshare-pid"
@@ -97,6 +103,7 @@ proc bwrapArgv(binPath: string, req: LaunchRequest): seq[string] =
   result.add "--ro-bind"; result.add "/"; result.add "/"
   result.add "--dev"; result.add "/dev"
   result.add "--proc"; result.add "/proc"
+  result.add "--tmpfs"; result.add "/tmp"
   for r in req.extraRoots:
     result.add "--bind"; result.add r; result.add r
   result.add "--bind"; result.add req.workspace; result.add req.workspace
@@ -130,6 +137,9 @@ proc runRequest(req: LaunchRequest): int =
       stderr.writeLine "niffler-sandbox: cannot start bubblewrap: " & e.msg
       return 125
   of bkLandlock:
+    if req.masks.len > 0:
+      stderr.writeLine "niffler-sandbox: refusing requested masks: Landlock cannot enforce them"
+      return 125
     stderr.writeLine "niffler-sandbox: " & probe.detail
     return runWithLandlock(req)
   of bkNone:
@@ -182,17 +192,18 @@ proc parseRequest(args: seq[string]): LaunchRequest =
       if i < args.len: result.cwd = canonicalExisting(args[i])
     of "--allow":
       inc i
-      if i < args.len: result.extraRoots.add args[i]
+      if i < args.len: result.extraRoots.add canonicalExisting(args[i])
     of "--mask":
       inc i
-      if i < args.len: result.masks.add args[i]
+      if i < args.len: result.masks.add canonicalExisting(args[i])
     of "--":
       inc i
       while i < args.len:
         result.argv.add args[i]
         inc i
       break
-    else: discard
+    else:
+      raise newException(SandboxError, "unknown launch argument: " & args[i])
     inc i
   if result.cwd.len == 0 and result.workspace.len > 0:
     result.cwd = result.workspace
@@ -209,7 +220,11 @@ proc main() =
               "landlockAbi": p.abi, "detail": p.detail})
     quit(if p.usable: 0 else: 1)
   of "run":
-    quit(runRequest(parseRequest(params[1 .. ^1])))
+    try:
+      quit(runRequest(parseRequest(params[1 .. ^1])))
+    except CatchableError as e:
+      stderr.writeLine "niffler-sandbox: refusing launch: " & e.msg
+      quit(125)
   else:
     stderr.writeLine "niffler-sandbox: unknown command " & params[0]
     quit(2)
