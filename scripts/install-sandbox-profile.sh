@@ -28,12 +28,21 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Kept for the doc comment: if the launcher ever creates the namespace itself
+# instead of exec'ing bwrap, the profile target moves here.
 LAUNCHER="$ROOT/var/bin/niffler-sandbox"
-TARGET="$LAUNCHER"
+# The profile must name the binary that CREATES the namespace, not the wrapper
+# that execs it: AppArmor attaches per exec, so a grant on niffler-sandbox does
+# NOT extend to the bwrap it starts (docs/research/SANDBOX-ROUTE.md §4). Today
+# niffler-sandbox execs /usr/bin/bwrap for the full-promise path, so bwrap is
+# the correct default target. If the launcher later creates the namespace
+# itself, this default must change to $LAUNCHER.
+BWRAP="$(command -v bwrap 2>/dev/null || echo /usr/bin/bwrap)"
+TARGET="$BWRAP"
 USE_SUDO=0
 UNINSTALL=0
 PROFILE_DIR="/etc/apparmor.d"
-PROFILE_NAME="niffler-sandbox"
+PROFILE_NAME="niffler-bwrap"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -67,7 +76,12 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 if [ ! -x "$TARGET" ]; then
-  echo "sandbox profile: no launcher at $TARGET — run 'make build' first" >&2
+  echo "sandbox profile: no binary at $TARGET" >&2
+  if [ "$TARGET" = "$BWRAP" ]; then
+    echo "  bubblewrap is not installed — install it (sudo apt install bubblewrap)." >&2
+  else
+    echo "  run 'make build' first, or pass --target." >&2
+  fi
   exit 1
 fi
 

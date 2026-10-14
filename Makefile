@@ -677,12 +677,12 @@ install-lsp:
 	@bash scripts/install-lsp.sh $(if $(filter 1,$(ALL)),--all,)
 
 install-sandbox-profile:
-	@# Grant the sandbox launcher permission to create user namespaces on Linux.
-	@# Ubuntu 23.10+ refuses CLONE_NEWUSER to unconfined programs, which disables
-	@# bubblewrap outright (docs/research/SANDBOX-ROUTE.md). Idempotent, non-fatal,
-	@# and deliberately NOT part of `make setup`: sandboxing is opt-in and the
-	@# harness runs unguarded-but-reported without it. Needs root:
-	@#   make install-sandbox-profile SUDO=1    (or run the script with --sudo)
+	@# Let bubblewrap create user namespaces on Ubuntu 23.10+ (AppArmor refuses
+	@# CLONE_NEWUSER to unconfined programs, which disables bwrap outright).
+	@# This profiles the BINARY THAT CREATES THE NAMESPACE — /usr/bin/bwrap today,
+	@# not our wrapper (AppArmor attaches per exec). See SANDBOX-ROUTE.md section 4.
+	@# Idempotent, non-fatal, and deliberately NOT part of `make setup`.
+	@# Needs root:  make install-sandbox-profile SUDO=1
 	@bash scripts/install-sandbox-profile.sh $(if $(filter 1,$(SUDO)),--sudo,)
 
 uninstall-sandbox-profile:
