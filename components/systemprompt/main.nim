@@ -228,6 +228,7 @@ proc main() =
   let schema = toolSchema(%*{
     "cwd": {"type": "string",
             "description": "Working directory the conversation runs in (defaults to the harness root)"},
+    "persona": {"type": "string", "description": "Birth-time persona name (store kind persona); resolves its body into the frozen prompt."},
     "firstMessage": {"type": "string",
             "description": "The conversation's first user message, if this is a fresh conversation. Used only to size the request: a long one is usually a requirement list and earns the independent-review instruction mid-prompt. Never echoed into the prompt."}
   }, description = "Return the system prompt for a new conversation. Internal service: core session runners call this once per conversation; not an LLM tool.")

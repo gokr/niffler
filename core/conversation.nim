@@ -18,6 +18,7 @@ import checksums/sha2
 import natsnim
 import ../sdk/envelope
 import ../sdk/niffler/jsonx
+import ../sdk/niffler/agentdefs
 import catalog
 import compaction
 import dispatch
@@ -561,9 +562,18 @@ proc directToolSnapshot(ct: CoreTools): JsonNode =
                   "name": name, "schema": tool{"schema"}})
 
 proc exposureValue(exposure: ToolExposure): JsonNode =
+  ## The frozen exposure document. Names are the post-rename `toolset`, and the
+  ## pre-rename `profile`/`profileMissing` keys are STILL WRITTEN beside them:
+  ## a released TUI reads those fields, and the doc is a wire artifact (the
+  ## client reads it back verbatim). `loadToolExposure` prefers the new
+  ## spelling and falls back, so the pair can be dropped once the clients in
+  ## the wild have moved — the same "deprecated, not removed" rule as the tool
+  ## alias and the `session {profile}` key.
   %*{"version": 1, "direct": exposure.direct,
      "discovered": exposure.discovered,
      "initializedAt": exposure.initializedAt,
+     "toolset": exposure.profile,
+     "toolsetMissing": (if exposure.profileMissing == nil: newJArray() else: exposure.profileMissing),
      "profile": exposure.profile,
      "profileMissing": (if exposure.profileMissing == nil: newJArray() else: exposure.profileMissing),
      "updatedAt": epochTime()}
@@ -596,8 +606,12 @@ proc loadToolExposure*(ct: CoreTools, sessionId: string,
       if result.discovered == nil or result.discovered.kind != JArray:
         result.discovered = newJArray()
       result.initializedAt = value{"initializedAt"}.getFloat(epochTime())
-      result.profile = value{"profile"}.getStr("")
-      result.profileMissing = value{"profileMissing"}
+      # Post-rename key first, pre-rename key second: an exposure doc written
+      # before the rename still names its toolset.
+      result.profile = value{"toolset"}.getStr(value{"profile"}.getStr(""))
+      result.profileMissing = value{"toolsetMissing"}
+      if result.profileMissing == nil:
+        result.profileMissing = value{"profileMissing"}
       if result.profileMissing == nil or result.profileMissing.kind != JArray:
         result.profileMissing = newJArray()
       result.rev = rev
@@ -609,10 +623,16 @@ proc loadToolExposure*(ct: CoreTools, sessionId: string,
                         discovered: newJArray(),
                         initializedAt: epochTime())
   if profile.len > 0:
-    let (doc, _) = ct.storeGetItem("profile", profile)
+    # Toolsets live under store kind "toolset"; docs saved before the rename
+    # live under "profile". Read the new kind first so a harness with both
+    # prefers the current spelling, then fall back — an existing store must
+    # keep working without a migration.
+    var (doc, _) = ct.storeGetItem("toolset", profile)
+    if doc == nil:
+      (doc, _) = ct.storeGetItem("profile", profile)
     if doc == nil:
       raise newException(ValueError,
-        "profile '" & profile & "' not found — profile {\"op\": \"list\"} lists saved profiles")
+        "toolset '" & profile & "' not found — toolset {\"op\": \"list\"} lists saved toolsets")
     var selectors: seq[string]
     if doc{"tools"} != nil and doc{"tools"}.kind == JArray:
       for sel in doc{"tools"}:
@@ -3264,7 +3284,7 @@ proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: str
     return (false, "", "cwd is not a directory: " & requested)
   (true, candidate, "")
 
-proc handleSessionCall*(ct: CoreTools, args: JsonNode,
+proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                          sessions: var Table[string, Session],
                          caller = ""): JsonNode =
   ## session {sessionId, content?, model?}: run one turn or persist a model
@@ -3272,7 +3292,18 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   ## the store on first use (resume). caller is the self-declared component
   ## name from the call envelope — the interactive component driving this
   ## session; approvals raised by the turn are routed to it.
-  let sessionId = args{"sessionId"}.getStr("")
+  let sessionId = inputArgs{"sessionId"}.getStr("")
+  var args = inputArgs
+  if inputArgs{"agent"}.getStr("").len > 0:
+    let existing = loadConversationHeader(ct, sessionId)
+    if not sessions.hasKey(sessionId) and existing{"systemPrompt"}.getStr("").len == 0:
+      try:
+        args = resolveAgentDefinition(inputArgs,
+          proc(kind, id: string): JsonNode = ct.storeGetItem(kind, id).value)
+      except CatchableError as e:
+        return %*{"error": e.msg}
+    elif existing{"agent"}.getStr("") != inputArgs{"agent"}.getStr(""):
+      return %*{"error": "agent is birth-only; start a new conversation"}
   let content = args{"content"}.getStr("")
   # Autonomous wake (components/agent settle path): a session call with
   # `wake: true` runs a turn whose only purpose is folding pending
@@ -3307,6 +3338,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasTitle = args.kind == JObject and args.hasKey("title")
   let hasCwd = args.kind == JObject and args.hasKey("cwd")
   let hasProfile = args.kind == JObject and args.hasKey("profile")
+  let hasToolset = args.kind == JObject and args.hasKey("toolset")
   let hasDiscovery = args{"discovery"} != nil and args{"discovery"}.kind == JObject
   let hasExport = args.kind == JObject and args.hasKey("export") and
                   args{"export"}.getBool(false)
@@ -3355,7 +3387,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
           # The constitution was already frozen (legacy control-call freeze):
           # re-resolve it against the corrected workspace and refresh both the
           # header and the in-memory system message.
-          let sp = resolveSystemPrompt(ct, sessionId, entry.workspace, "")
+          let birthHeader = loadConversationHeader(ct, sessionId)
+          let sp = resolveSystemPrompt(ct, sessionId, entry.workspace, "",
+                                       birthHeader{"persona"}.getStr(""))
           try:
             ct.updateConversationHeader(sessionId,
               %*{"systemPrompt": sp, "cwd": entry.workspace})
@@ -3411,7 +3445,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     # prompt above is the frozen answer — so an edit to the persona document
     # changes nothing for this conversation, and the stored name is what makes
     # that visible (a UI can point out that the persona has since changed).
-    let personaName = args{"persona"}.getStr("").strip()
+    let personaName = if header{"systemPrompt"}.getStr("").len > 0:
+                        header{"persona"}.getStr("")
+                      else: args{"persona"}.getStr("").strip()
     if sp.len == 0:
       # The first user message goes along so the systemprompt component can size
       # the request: a long one is usually a requirement list, and that is where
@@ -3424,6 +3460,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       var headerUpdate = %*{"systemPrompt": sp, "cwd": entry.workspace}
       if personaName.len > 0:
         headerUpdate["persona"] = %personaName
+      if args{"agent"}.getStr("").len > 0 and header{"systemPrompt"}.getStr("").len == 0:
+        headerUpdate["agent"] = args{"agent"}
       ct.updateConversationHeader(sessionId, headerUpdate)
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
@@ -3760,9 +3798,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     # toolset once, here, and frozen with the exposure doc. Resumes ignore
     # the argument entirely. An unknown profile name fails the call —
     # explicit selection must not silently fall back to the base set.
-    let profileName = args{"profile"}.getStr(getEnv("NIF_PROFILE", ""))
+    # Profile → toolset (naming): the new key wins when both are present, and
+    # NIF_PROFILE keeps its name for one more release so deployments do not
+    # have to change an env var in the same commit as the binary.
+    let profileName =
+      if hasToolset: args{"toolset"}.getStr("")
+      elif hasProfile: args{"profile"}.getStr("")
+      else: getEnv("NIF_TOOLSET", getEnv("NIF_PROFILE", ""))
     entry.exposure = loadToolExposure(ct, sessionId, profileName)
-    ct.updateConversationHeader(sessionId, %*{"profile": entry.exposure.profile})
+    # Both header keys are written for one release: the TUI reads `profile`,
+    # the new spelling is `toolset`. A reader prefers `toolset` and falls back,
+    # so dropping the old key is a later, client-driven step — the same rule as
+    # the tool alias and the exposure doc.
+    ct.updateConversationHeader(sessionId,
+      %*{"toolset": entry.exposure.profile,
+         "profile": entry.exposure.profile})
 
   # Presence of the key means "set/clear the override"; omission preserves
   # the conversation's previous selection.
@@ -4275,7 +4325,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
       case env.tool
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
           "session_prepare", "session_info", "prompt_preview", "doctor",
-          "conversation_delete", "profile":
+          "conversation_delete", "toolset", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))

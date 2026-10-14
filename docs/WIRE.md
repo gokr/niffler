@@ -4,6 +4,25 @@ One page. Versioned, boring, identical on every transport (NATS, stdio/NDJSON
 behind pipewrap, future HTTP gateway). JSON everywhere by default; codec
 upgrades are per-seam via NATS headers, never a global format.
 
+## Agent definitions and toolsets
+
+`persona` store documents contain `{name, body}`: prompt text only. `agent`
+store documents contain technical birth defaults: `persona`, `toolset`, `model`,
+`provider`, `thinking`, `tools`, `cwd`, `maxRounds`, `maxCalls`, `maxTokens`,
+and optional `name`/`note`. `session {agent}` and fresh `agent_run`/`agent_spawn
+{agent}` resolve these with explicit arguments taking precedence, including
+explicit empty values. Unknown definitions, invalid types and unsupported
+fields refuse. Definitions cannot carry `approvals`; approval authority stays
+with human session controls. Selection is birth-only, recorded in the header;
+continuations never reapply edited documents. Prefix effect: frozen at birth.
+
+`toolset` is the canonical selector-list CRUD tool and store kind;
+`session.toolset` and `NIF_TOOLSET` select it. Legacy `profile` tool/argument,
+`NIF_PROFILE` and stored documents remain readable. New spelling wins when both
+are supplied. List replies and frozen exposure records retain legacy keys for
+released clients. The legacy tool is hidden; canonical toolset is on demand.
+Neither spelling alters an existing conversation's frozen schemas.
+
 ## Envelope
 
 ```json

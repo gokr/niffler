@@ -139,11 +139,13 @@ gets scheduled, and keep the rationale edits in the owning research doc.
 
 ### Agents, delegation and model policy
 
-- **Agent persona** — a `persona` store document resolved once into the frozen
-  prompt at a conversation's birth (birth-only, like `fork`; editing it never
-  rewrites a live conversation), carrying the tool profile, model, budgets and
-  workspace it also freezes ([FLEET.md](research/FLEET.md) §6; the gap is the
-  `persona`/`toolFilter` row in [SUBAGENTS.md](research/SUBAGENTS.md)).
+- **Agent definitions — implemented on `feat/fleet`**: persona stays text;
+  `agent` store documents supply technical birth defaults (persona, toolset,
+  model/thinking, workspace and budgets) for roots and spawned children.
+  Explicit arguments win; definitions cannot grant approval authority.
+  `toolset` is canonical with legacy profile compatibility. Client command
+  migration and definition-management UI remain pending. See
+  [MANUAL.md](MANUAL.md#agent-definitions) and [FLEET.md](research/FLEET.md) §6.
 - **Heartbeat (scheduled turns)** — an idle-seam component plus durable
   `heartbeat` records that start turns nobody asked for, on a machinery-marked
   admission lane of its own with per-day budgets; the wake lane cannot carry it

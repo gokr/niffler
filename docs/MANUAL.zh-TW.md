@@ -1432,6 +1432,17 @@ Niffler 維護一份完整的全域目錄，同時對每個會話只暴露一組
 - 分派、核准、`x-harness.timeoutMs` 以及元件對元件的呼叫
   一律查詢完整目錄。
 
+### Agent definitions
+
+persona 是提示文字（persona 儲存文件：{name, body}）。agent 是技術定義，
+引用 persona 和 toolset，並可提供 model、provider、thinking、tools、cwd、
+maxRounds、maxCalls、maxTokens 預設值。透過 put {kind:"agent", id:"reviewer",
+value:…} 儲存；新對話用 session {agent:"reviewer"}，新子代理用
+agent_run / agent_spawn {agent:"reviewer", task:…}。明確參數（包括空值）優先。
+定義僅在建立時解析；續接不重新套用。定義不能設定 approvals，自動核准仍須
+人類明確選擇。toolset 是原 profile 工具的新名稱；舊工具、參數、NIF_PROFILE
+及儲存文件仍相容。用戶端 /profile 命令改名尚未完成。
+
 ### Core tools
 
 `discover` 與 `invoke` 在每個新會話中都是直接的核心工具。`profile` 是一個 on-demand 核心工具，用於管理具名工具設定檔；`session.profile` 會在會話首次建立時選取一個。Web UI 或 TUI 中的 `/profile` 會設定 `/new` 所使用的用戶端預設值。

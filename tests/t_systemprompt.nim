@@ -326,6 +326,35 @@ proc main() =
              10_000){"systemPrompt"}.getStr("") == plainNow,
         "an empty persona body leaked into the prompt")
 
+  discard call(nc, "store", "put", %*{"kind": "agent", "id": "reviewer",
+    "value": {"persona": "reviewer", "thinking": "high", "maxCalls": 20}})
+  let defined = call(nc, "core", "session", %*{"sessionId": "sp-defined",
+    "content": "go", "agent": "reviewer", "thinking": "low"}, 120_000)
+  check("agent definition starts a conversation", defined{"error"} == nil, $defined)
+  let definedHeader = call(nc, "store", "get", %*{"kind": "conversation",
+    "id": "sp-defined"}){"value"}
+  check("agent definition supplies persona and records provenance",
+    definedHeader{"agent"}.getStr() == "reviewer" and
+    definedHeader{"systemPrompt"}.getStr().contains("You review changes"), $definedHeader)
+  check("explicit controls override definition defaults",
+    definedHeader{"thinkingEffort"}.getStr() == "low", $definedHeader)
+
+  for parent in ["agt-defined-run", "agt-defined-spawn"]:
+    let delegated = call(nc, "core", "session", %*{"sessionId": parent,
+      "content": "go"}, 120_000)
+    check(parent & " completed", delegated{"error"} == nil, $delegated)
+    var child = ""
+    for item in call(nc, "store", "list", %*{"kind": "sessionmeta"}){"items"}:
+      if item{"value"}{"parent"}.getStr() == parent: child = item{"id"}.getStr()
+    var childHeader: JsonNode
+    for attempt in 0 ..< 50:
+      childHeader = call(nc, "store", "get", %*{"kind": "conversation", "id": child}){"value"}
+      if childHeader{"systemPrompt"}.getStr().len > 0: break
+      sleep(100)
+    check(parent & " used the definition", child.len > 0 and
+      childHeader{"agent"}.getStr() == "reviewer" and
+      childHeader{"systemPrompt"}.getStr().contains("You review changes"), $childHeader)
+
   # Birth-only, proven through the store rather than the reply: a conversation
   # born with the persona records the name AND the resolved prompt in its
   # header; editing the document afterwards changes neither.

@@ -463,6 +463,14 @@ event, labelled, without polling.
 
 ## 6. Persona: who the agent is at birth
 
+> Implementation update (`feat/fleet`): persona is text only. Technical defaults
+> now live in store kind `agent`, referencing persona and toolset. The canonical
+> selector tool is `toolset` (legacy profile remains compatible). Supported
+> defaults use flat session argument names, including cwd/maxRounds/maxCalls/
+> maxTokens. Definitions cannot grant auto approvals. Earlier alternatives below
+> are design history; the current contract is WIRE.md and MANUAL.md.
+
+
 ### 6.0 Prior art: the word is established, but it names the *prompt half*
 
 Surveyed on the harness shelf (2026-10-14). "Persona" is **not** a Niffler

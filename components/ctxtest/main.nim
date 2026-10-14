@@ -276,6 +276,11 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_spawn",
                         %*{"task": "FAB_SLOWBASH sleep via the bridge"})
       return %*{"content": "fcs-parent-done"}
+    if sessionId in ["agt-defined-run", "agt-defined-spawn"]:
+      if stage == 0:
+        return toolCall("t1", (if sessionId.endsWith("spawn"): "agent_spawn" else: "agent_run"),
+                        %*{"agent": "reviewer", "task": "review this", "thinking": "low"})
+      return %*{"content": "agent-turn-done"}
     if sessionId == "agt-allow":
       if stage == 0:
         # allowlist scoping: the child may dispatch only session_info, so

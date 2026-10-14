@@ -5,8 +5,8 @@
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[algorithm, json, monotimes, os, osproc, strutils, tables,
-            times]
+import std/[algorithm, json, monotimes, os, osproc, sets, strutils,
+            tables, times]
 import yaml/tojson
 import natsnim
 import ../sdk/envelope
@@ -446,37 +446,55 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       echo "core: warning — component record not deleted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "persisted": false}
-  of "profile":
-    ## Named tool profiles (store kind "profile"): persistent selector
-    ## lists resolved once into a conversation's direct toolset at its
-    ## first turn. Admin-time surface — onDemand, so conversations that
-    ## never touch it pay nothing. list/get resolve against the live
-    ## catalog to report toolCount/estTokens/missing for pickers and
+  of "toolset", "profile":
+    ## Named toolsets (store kind "toolset"; pre-rename docs under "profile"):
+    ## persistent selector lists resolved once into a conversation's direct
+    ## toolset at its first turn. Admin-time surface — onDemand, so
+    ## conversations that never touch it pay nothing. list/get resolve against
+    ## the live catalog to report toolCount/estTokens/missing for pickers and
     ## budget checks; save/delete just manage the stored selector list.
+    ##
+    ## "profile" is the pre-rename tool name, routed here unchanged: a released
+    ## TUI calls it, and the tool stays REGISTERED (hidden) so those calls keep
+    ## working. Same for the response key below `toolsets`/`profiles`. The
+    ## whole alias surface is deleted together once clients have moved.
+    let preRename = tool == "profile"
+    let label = if preRename: "profile" else: "toolset"
     let op = args{"op"}.getStr("")
     case op
     of "list":
+      # Both kinds, deduped by name with "toolset" winning: a store may hold
+      # docs saved before the rename under the old kind.
       var items = newJArray()
-      for item in ct.storeListItems("profile"):
-        let doc = item{"value"}
-        var selectors: seq[string]
-        if doc{"tools"} != nil and doc{"tools"}.kind == JArray:
-          for sel in doc{"tools"}:
-            if sel.getStr("").len > 0: selectors.add(sel.getStr(""))
-        let (direct, missing) = ct.cat.resolveProfile(ct.cat.promptTools(),
-                                                      selectors)
-        items.add(%*{"name": item{"id"}.getStr(""),
-                     "tools": doc{"tools"}, "note": doc{"note"}.getStr(""),
-                     "toolCount": direct.len, "estTokens": profileTokens(direct),
-                     "missing": missing})
-      return %*{"profiles": items}
+      var seen = initHashSet[string]()
+      for kind in ["toolset", "profile"]:
+        for item in ct.storeListItems(kind):
+          let key = item{"id"}.getStr("")
+          if key.len == 0 or key in seen: continue
+          seen.incl(key)
+          let doc = item{"value"}
+          var selectors: seq[string]
+          if doc{"tools"} != nil and doc{"tools"}.kind == JArray:
+            for sel in doc{"tools"}:
+              if sel.getStr("").len > 0: selectors.add(sel.getStr(""))
+          let (direct, missing) = ct.cat.resolveProfile(ct.cat.promptTools(),
+                                                        selectors)
+          items.add(%*{"name": key, "kind": kind,
+                       "tools": doc{"tools"}, "note": doc{"note"}.getStr(""),
+                       "toolCount": direct.len, "estTokens": profileTokens(direct),
+                       "missing": missing})
+      # Both response keys, so old and new readers work: the renamed key is
+      # canonical, the old one is the deprecated alias.
+      return %*{"toolsets": items, "profiles": items}
     of "get":
       let name = args{"name"}.getStr("")
       if name.len == 0:
-        return %*{"error": "profile get needs name"}
-      let (doc, _) = ct.storeGetItem("profile", name)
+        return %*{"error": label & " get needs name"}
+      var (doc, rev) = ct.storeGetItem("toolset", name)
       if doc == nil:
-        return %*{"error": "profile '" & name & "' not found"}
+        (doc, rev) = ct.storeGetItem("profile", name)
+      if doc == nil:
+        return %*{"error": "toolset '" & name & "' not found"}
       var selectors: seq[string]
       if doc{"tools"} != nil and doc{"tools"}.kind == JArray:
         for sel in doc{"tools"}:
@@ -486,24 +504,31 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       for tool in direct: names.add(tool{"name"})
       return %*{"name": name, "tools": doc{"tools"}, "note": doc{"note"},
                 "resolved": names, "missing": missing,
-                "estTokens": profileTokens(direct)}
+                "estTokens": profileTokens(direct), "rev": rev}
     of "save":
       let name = args{"name"}.getStr("")
       let tools = args{"tools"}
       if name.len == 0 or tools == nil or tools.kind != JArray:
-        return %*{"error": "profile save needs name and a tools selector array"}
-      discard ct.storePutRev("profile", name,
+        return %*{"error": label & " save needs name and a tools selector array"}
+      # New saves land under the current kind. A pre-rename doc of the same
+      # name is NOT deleted here: leaving it means a rollback to an older
+      # binary still finds what it wrote, which is the point of a rename with
+      # an alias window.
+      discard ct.storePutRev("toolset", name,
         %*{"name": name, "tools": tools, "note": args{"note"}.getStr(""),
            "updatedAt": epochTime()})
       return %*{"ok": true, "name": name}
     of "delete":
       let name = args{"name"}.getStr("")
       if name.len == 0:
-        return %*{"error": "profile delete needs name"}
+        return %*{"error": label & " delete needs name"}
+      # Delete BOTH kinds: removal is removal, and a leftover pre-rename doc
+      # would resurrect the toolset on the next list.
+      ct.storeDel("toolset", name)
       ct.storeDel("profile", name)
       return %*{"ok": true, "name": name}
     else:
-      return %*{"error": "profile op must be list, get, save or delete"}
+      return %*{"error": label & " op must be list, get, save or delete"}
   of "conversation_delete":
     ## Delete a conversation and everything hanging off it: the runner
     ## (killed first — a live turn would resurrect records), the header,
@@ -783,6 +808,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         return %*{"error": "no conversation '" & sessionId & "'"}
       for f in ["title", "createdAt", "model", "modelOverride", "provider",
                 "thinkingEffort", "cwd", "context", "contextUsed",
+                "agent", "persona", "toolset",
                 "promptTokens", "cachePrompt", "cacheRead", "cacheHitRate"]:
         if header.value{f} != nil:
           info[f] = header.value{f}
@@ -1889,7 +1915,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
               "session_info", "prompt_preview", "doctor", "ui",
-              "conversation_delete", "profile"] and
+              "conversation_delete", "toolset", "profile"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:

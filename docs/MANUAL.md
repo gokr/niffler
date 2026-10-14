@@ -1093,9 +1093,12 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   "Provider/model pins are one selection"). A model-only call persists and
   resolves the selection without inference; presence with an empty value
   clears it.
-  `profile` names a stored tool profile resolved into the direct toolset on
-  the conversation's first call only (`NIF_PROFILE` supplies the default);
-  an unknown profile fails the call, and resumes ignore the argument.
+  `toolset` names a stored selector list resolved into the direct toolset on
+  the conversation's first call only (`NIF_TOOLSET` supplies the default).
+  An unknown toolset fails the call; resumes retain their frozen snapshot.
+  Legacy `profile`, `NIF_PROFILE` and store kind `profile` remain compatible.
+  `persona` selects prompt text; `agent` selects a technical definition (see
+  [Agent definitions](#agent-definitions)), with explicit arguments winning.
   `thinking` is the reasoning effort, one of `""`, `low`, `medium`, `high`,
   `max`; `""` is the provider default (UIs show it as "auto") and is the only
   value that clears an earlier choice. It is forwarded to the provider as
@@ -2463,9 +2466,32 @@ hidden tools directly over NATS.
 - Dispatch, approvals, `x-harness.timeoutMs`, and component-to-component calls
   always consult the full catalog.
 
+### Agent definitions
+
+A **persona** is text (`persona` store document: `{name, body}`). A **toolset**
+selects direct tools. An **agent** combines technical defaults, referring to both:
+
+```json
+{"persona":"reviewer", "toolset":"review", "thinking":"high", "maxCalls":60}
+```
+
+Save that value with `put {kind:"agent", id:"reviewer", value:…}`. Start a root
+conversation with `session {sessionId, agent:"reviewer", content:…}`, or delegate
+with `agent_run` / `agent_spawn {agent:"reviewer", task:…}`.
+
+Supported definition fields: `name`, `note`, `persona`, `toolset`, `model`,
+`provider`, `thinking`, `tools` (dispatch allowlist), `cwd`, `maxRounds`,
+`maxCalls`, `maxTokens`. Explicit arguments—including empty values—override
+stored defaults. Unknown definitions and malformed fields refuse explicitly.
+Definitions **cannot grant auto approvals**: approval mode remains a separate,
+human-controlled session setting. Selecting a definition is birth-only;
+subagent continuations send content only. Changes to documents never rewrite
+an existing conversation's frozen prompt or tool snapshot. `session_info`
+reports the selected agent, persona and toolset names.
+
 ### Core tools
 
-`discover` and `invoke` are direct core tools in every new conversation. `profile` is an on-demand core tool for managing named tool profiles; `session.profile` selects one when a conversation is first created. `/profile` in the web UI or TUI sets the client default used by `/new`.
+`discover` and `invoke` are direct core tools in every new conversation. `toolset` is an on-demand core tool for managing named selector lists; `session.toolset` selects one at birth. The legacy `profile` tool and `/profile` in released clients remain compatible; the client command rename is pending.
 `session_info` (onDemand) summarizes a conversation (header fields,
 per-role message counts, cumulative completion tokens); `prompt_preview`
 (onDemand) shows composed-request provenance — where the system prompt came

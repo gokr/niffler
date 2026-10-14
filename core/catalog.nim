@@ -183,18 +183,35 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       },
       "required": ["tool", "arguments"]
     }))
-  coreReg.tools.add(ToolReg(name: "profile", component: "core",
+  coreReg.tools.add(ToolReg(name: "toolset", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Named tool profiles: persistent selector lists resolved into a conversation's direct toolset at its first turn. ops: list (with resolved size estimate), get, save, delete. Selectors: component name, component.tool, -name to exclude; unresolvable names are skipped and reported.",
+      "description": "Named toolsets: persistent selector lists resolved into a conversation's direct toolset at its first turn. ops: list (with resolved size estimate), get, save, delete. Selectors: component name, component.tool, -name to exclude; unresolvable names are skipped and reported.",
       "properties": {
         "op": {"type": "string", "enum": ["list", "get", "save", "delete"], "description": "Operation"},
-        "name": {"type": "string", "description": "Profile name (get/save/delete)"},
+        "name": {"type": "string", "description": "Toolset name (get/save/delete)"},
         "tools": {"type": "array", "items": {"type": "string"}, "description": "save: selector list applied on top of the fundamental direct set"},
-        "note": {"type": "string", "description": "save: what the profile is for"}
+        "note": {"type": "string", "description": "save: what the toolset is for"}
       },
       "required": ["op"],
       "x-harness": {"onDemand": true}
+    }))
+  # The pre-rename tool name stays REGISTERED and routed: a released TUI (and
+  # any script) calls "profile", and the store holds docs saved under that
+  # name. Deprecated, not removed — the alias is how the rename ships without
+  # a synchronization window. See the routing in dispatch.nim.
+  coreReg.tools.add(ToolReg(name: "profile", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Deprecated alias for the toolset tool (pre-rename name); use toolset.",
+      "properties": {
+        "op": {"type": "string", "enum": ["list", "get", "save", "delete"]},
+        "name": {"type": "string"},
+        "tools": {"type": "array", "items": {"type": "string"}},
+        "note": {"type": "string"}
+      },
+      "required": ["op"],
+      "x-harness": {"onDemand": true, "hidden": true}
     }))
   coreReg.tools.add(ToolReg(name: "session", component: "core",
     schema: %*{
@@ -211,7 +228,9 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "thinking": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default). Values: low, medium, high, max (deepest)"},
         "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"},
-        "profile": {"type": "string", "description": "Named tool profile resolved into the direct toolset when the conversation is first built; ignored on resume (the snapshot is byte-stable)"},
+        "toolset": {"type": "string", "description": "Named toolset resolved into the direct toolset when the conversation is first built; ignored on resume (the snapshot is byte-stable)"},
+        "profile": {"type": "string", "description": "Deprecated alias for toolset (pre-rename name); accepted on the first call only, exactly like toolset"},
+        "agent": {"type": "string", "description": "Birth-only named agent definition (store kind agent). Supplies persona, toolset, model, thinking, cwd and budgets; explicit arguments win. Definitions cannot grant auto approvals."},
         "persona": {"type": "string", "description": "Named persona (store kind 'persona'): an identity document resolved into the system prompt when the conversation is first built, and recorded in the header beside it. Birth-only like profile — ignored on resume, because a conversation's prompt prefix is frozen. Editing the persona document never rewrites a live conversation; start a new one to pick up the change."},
         "wake": {"type": "boolean", "description": "Wake a dormant conversation: run a turn that folds pending background-settlement notices in, so a parent learns its subagents finished without the human asking. Declined (no turn) when wakes are disabled via NIF_AGENT_WAKES=0, when the consecutive-wake budget (NIF_AGENT_WAKES, default 3) is spent, or when nothing is pending. Used by the agent component, not UIs."},
         "discovery": {"type": "object", "description": "Per-call discovery projection passed to the discover tool ({include?, exclude?, components?}); presence of the key replaces the turn's default projection. The handler honours it; the argument was omitted from this schema (A124 — UIs sent it schemaless)"},

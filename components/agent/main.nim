@@ -37,6 +37,7 @@
 import std/[json, monotimes, os, sequtils, sets, strutils, tables, times]
 import natsnim
 import niffler/sdk
+import niffler/agentdefs
 
 let comp = newComponent("agent", "0.1.0")
 
@@ -920,8 +921,11 @@ proc childSessArgs(child, task, model, thinking: string,
                         toolArgs{"persona"}.getStr("").strip()
                       else: ""
     try:
-      var spArgs = %*{"cwd": getEnv("NIF_ROOT", getCurrentDir()),
-                      "sessionId": child}
+      let root = getEnv("NIF_ROOT", getCurrentDir())
+      var workspace = if toolArgs != nil: toolArgs{"cwd"}.getStr(root) else: root
+      if workspace.len == 0: workspace = root
+      if not workspace.isAbsolute(): workspace = root / workspace
+      var spArgs = %*{"cwd": workspace, "sessionId": child}
       if personaName.len > 0:
         spArgs["persona"] = %personaName
       let sp = comp.request("systemprompt", "systemprompt", spArgs, 5_000)
@@ -932,6 +936,11 @@ proc childSessArgs(child, task, model, thinking: string,
       discard
     if personaName.len > 0:
       result["persona"] = %personaName
+    if toolArgs != nil:
+      for key in ["toolset", "cwd", "agent", "provider"]:
+        if toolArgs.hasKey(key): result[key] = toolArgs[key]
+      # Resolved defaults are explicit in this first call, so core's resolver
+      # cannot replace them with newer document defaults.
     if model.len > 0:
       result["model"] = %model
       # Provider and model are one pin: without the provider the child's
@@ -1084,6 +1093,7 @@ let runSchema = toolSchema(%*{
             "description": "Optional exact model override for the subagent; mutually exclusive with modelTier"},
   "modelTier": {"type": "string", "enum": ["weak", "medium", "strong"],
                 "description": "Optional model tier for a FRESH child. Resolves through NIF_AGENT_MODEL_* and is clamped to the parent's tier; mutually exclusive with model"},
+  "agent": {"type": "string", "description": "Fresh child only: named agent definition from store kind agent; supplies persona, toolset, model and budgets. Explicit arguments override its defaults."},
   "persona": {"type": "string",
               "description": "FRESH RUNS ONLY: birth this child with a named persona (store kind 'persona') — an identity document resolved into its system prompt and recorded in its header. Use it for a standing role (reviewer, triager) instead of restating the role in `task`; the child then carries that identity for every continuation. Ignored when `session` is set: a person is fixed at birth, like fork and the tool allowlist."},
   "thinking": {"type": "string",
@@ -1110,7 +1120,14 @@ runSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 900_000,
                             "sessionContext": true, "noSpawn": true,
                             "onDemand": true}
 discard comp.tool("agent_run", runSchema,
-  proc(c: Component, toolArgs: JsonNode): JsonNode =
+  proc(c: Component, inputArgs: JsonNode): JsonNode =
+    var toolArgs = inputArgs
+    if inputArgs{"session"}.getStr("").len == 0 and inputArgs{"agent"}.getStr("").len > 0:
+      try:
+        toolArgs = resolveAgentDefinition(inputArgs,
+          proc(kind, id: string): JsonNode = c.storeGet(kind, id).value)
+      except CatchableError as e:
+        return errResult(e.msg)
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
     if parentSession.len == 0:
       return errResult("agent_run needs a live session context")
@@ -1119,6 +1136,8 @@ discard comp.tool("agent_run", runSchema,
       return errResult("agent_run needs task")
     let target = toolArgs{"session"}.getStr("")
     let isFresh = target.len == 0
+    if not isFresh and toolArgs{"agent"}.getStr("").len > 0:
+      return errResult("agent is birth-only; continuation sends task and session only")
     let (forkOk, forkErr, forkMode, forkK, forkChars) = parseForkSpec(toolArgs)
     if not forkOk:
       return errResult(forkErr)
@@ -1241,6 +1260,7 @@ let spawnSchema = toolSchema(%*{
             "description": "Optional exact model override for the subagent; mutually exclusive with modelTier"},
   "modelTier": {"type": "string", "enum": ["weak", "medium", "strong"],
                 "description": "Optional model tier for a FRESH child. Resolves through NIF_AGENT_MODEL_* and is clamped to the parent's tier; mutually exclusive with model"},
+  "agent": {"type": "string", "description": "Fresh child only: named agent definition from store kind agent; supplies persona, toolset, model and budgets. Explicit arguments override its defaults."},
   "persona": {"type": "string",
               "description": "FRESH RUNS ONLY: birth this child with a named persona (store kind 'persona') — an identity document resolved into its system prompt and recorded in its header. Use it for a standing role (reviewer, triager) instead of restating the role in `task`; the child then carries that identity for every continuation. Ignored when `session` is set: a person is fixed at birth, like fork and the tool allowlist."},
   "thinking": {"type": "string",
@@ -1267,7 +1287,14 @@ spawnSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                               "sessionContext": true, "noSpawn": true,
                               "onDemand": true}
 discard comp.tool("agent_spawn", spawnSchema,
-  proc(c: Component, toolArgs: JsonNode): JsonNode =
+  proc(c: Component, inputArgs: JsonNode): JsonNode =
+    var toolArgs = inputArgs
+    if inputArgs{"session"}.getStr("").len == 0 and inputArgs{"agent"}.getStr("").len > 0:
+      try:
+        toolArgs = resolveAgentDefinition(inputArgs,
+          proc(kind, id: string): JsonNode = c.storeGet(kind, id).value)
+      except CatchableError as e:
+        return errResult(e.msg)
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
     if parentSession.len == 0:
       return errResult("agent_spawn needs a live session context")
@@ -1276,6 +1303,8 @@ discard comp.tool("agent_spawn", spawnSchema,
       return errResult("agent_spawn needs task")
     let target = toolArgs{"session"}.getStr("")
     let isFresh = target.len == 0
+    if not isFresh and toolArgs{"agent"}.getStr("").len > 0:
+      return errResult("agent is birth-only; continuation sends task and session only")
     let (forkOk, forkErr, forkMode, forkK, forkChars) = parseForkSpec(toolArgs)
     if not forkOk:
       return errResult(forkErr)

@@ -187,6 +187,18 @@ proc main() =
     check("estTokens is a positive estimate",
           got{"estTokens"}.getInt(0) > 0, $got)
 
+    let renamed = call(nc, "core", "toolset", %*{"op": "get", "name": "dev"})
+    check("toolset and legacy profile resolve the same document",
+          renamed{"resolved"} == got{"resolved"}, $renamed)
+    discard call(nc, "store", "put", %*{"kind": "profile", "id": "legacy",
+      "value": {"tools": ["fixture_direct"], "note": "legacy document"}})
+    let legacy = call(nc, "core", "toolset", %*{"op": "get", "name": "legacy"})
+    check("toolset reads pre-rename store documents",
+          "fixture_direct" in names(legacy{"resolved"}), $legacy)
+    discard call(nc, "core", "toolset", %*{"op": "delete", "name": "legacy"})
+    let removed = call(nc, "core", "profile", %*{"op": "get", "name": "legacy"})
+    check("delete removes legacy documents as well", removed{"error"} != nil, $removed)
+
     # hidden tools are never promotable, even by exact-name selector
     discard call(nc, "core", "profile",
                  %*{"op": "save", "name": "sneaky",
@@ -202,7 +214,7 @@ proc main() =
                  %*{"op": "save", "name": "dev", "tools": ["ghost_tool"]})
     let turn = call(nc, "core", "session",
                     %*{"sessionId": "profile-conv", "content": "go-sticky",
-                       "profile": "dev"}, 120_000)
+                       "toolset": "dev"}, 120_000)
     check("sticky round-2 call is LLM-visible in the tools array",
           turn{"reply"}.getStr("") == "sticky:in-array", $turn)
     check("sticky invoke promoted the tool into the direct set",
@@ -211,6 +223,7 @@ proc main() =
                         %*{"kind": "session",
                            "id": "profile-conv:tools"})
     check("exposure doc records profile name and missing selectors",
+          exposure{"value"}{"toolset"}.getStr("") == "dev" and
           exposure{"value"}{"profile"}.getStr("") == "dev" and
           exposure{"value"}{"profileMissing"} != nil and
           exposure{"value"}{"profileMissing"}.len == 1 and
