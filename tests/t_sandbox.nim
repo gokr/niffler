@@ -191,9 +191,36 @@ proc enforcementChecks(root: string) =
         fcode == 125 and not fout.contains("SHOULD-NOT-RUN"), fout)
   var fakeApplied = ""
   if fileExists(statusPath):
-    try: fakeApplied = $parseJson(readFile(statusPath)){"policyChecked"}.getBool(true)
+    try: fakeApplied = $parseJson(readFile(statusPath)){"applied"}.getBool(true)
     except CatchableError: discard
   check("the refusal records applied:false", fakeApplied == "false", fout)
+
+  # 7. The acknowledgement must come from the ACTUAL bootstrap. A backend that
+  #    starts but never runs the bootstrap (so it can never attest) must be
+  #    refused, and the user command must not run.
+  let fake2 = base / "fake-bwrap-nobootstrap"
+  writeFile(fake2, "#!/usr/bin/env python3\n" &
+    "import sys, os\n" &
+    "a = sys.argv[1:]\n" &
+    "if '/bin/true' in a: sys.exit(0)\n" &
+    "sys.stdout.write('fake backend said hello\\n')\n" &
+    "i = a.index('--') if '--' in a else 0\n" &
+    "cmd = a[i+1:]\n" &
+    "if cmd and 'niffler-bootstrap' not in ' '.join(cmd): os.execvp(cmd[0], cmd)\n" &
+    "sys.exit(0)\n")
+  setFilePermissions(fake2, {fpUserRead, fpUserWrite, fpUserExec})
+  let noBootStatus = base / "noboot-status.json"
+  let (nbOut, nbCode) = execCmdEx("NIF_BWRAP=" & quoteShell(fake2) & " " &
+    quoteShell(bin) & " run --workspace " & quoteShell(base / "ws") &
+    " --status-file " & quoteShell(noBootStatus) &
+    " -- echo SHOULD-NOT-RUN < /dev/null 2>&1")
+  check("a backend that skips the bootstrap is refused",
+        nbCode == 125 and not nbOut.contains("SHOULD-NOT-RUN"), nbOut)
+  var noBootApplied = "true"
+  if fileExists(noBootStatus):
+    try: noBootApplied = $parseJson(readFile(noBootStatus)){"applied"}.getBool(true)
+    except CatchableError: discard
+  check("a skipped bootstrap records applied:false", noBootApplied == "false", nbOut)
 
 proc main() =
   let root = getEnv("NIF_REPO_ROOT", getEnv("NIF_ROOT", getAppDir().parentDir()))

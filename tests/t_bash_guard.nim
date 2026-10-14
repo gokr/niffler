@@ -53,7 +53,7 @@ proc main() =
       # The launcher attests AFTER the command, so the verdict cannot be
       # forged by the command's own exit code.
       check("launcher attests to enforced policy",
-            result{"sandbox"}{"state"}.getStr("") == "policy_checked", $result)
+            result{"sandbox"}{"state"}.getStr("") == "applied", $result)
       check("attestation names the backend",
             result{"sandbox"}{"backend"}.getStr("") == "bwrap", $result)
     check("policy probe preserves existing user file",
@@ -91,7 +91,7 @@ proc main() =
     let exit125 = run(a, "exit 125")
     check("command exit 125 is not mislabelled as a failed policy",
       exit125{"exit_code"}.getInt(0) == 125 and
-      exit125{"sandbox"}{"state"}.getStr("") == "policy_checked", $exit125)
+      exit125{"sandbox"}{"state"}.getStr("") == "applied", $exit125)
     let outside = run(a, "echo escaped > " & quoteShell(b / "outside"))
     check("second conversation workspace not writable", not fileExists(b / "outside"), $outside)
     let timed = run(a, "sleep 3; touch late", 1000)

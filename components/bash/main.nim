@@ -205,7 +205,7 @@ discard comp.tool("bash", bashSchema,
       try:
         if fileExists(statusFile):
           let j = parseJson(readFile(statusFile))
-          sandbox = %*{"state": (if j{"policyChecked"}.getBool(false): "policy_checked"
+          sandbox = %*{"state": (if j{"applied"}.getBool(false): "applied"
                                    else: "failed"),
                        "scope": "shell",
                        "backend": j{"backend"}.getStr("")}
@@ -224,7 +224,7 @@ discard comp.tool("bash", bashSchema,
     if guarded.enabled:
       text.add("[sandbox: " & payload{"sandbox"}{"state"}.getStr("requested") &
         "; backend: " & payload{"sandbox"}{"backend"}.getStr("unknown") &
-        "; a separate policy check is not actual-launch attestation]\n")
+        "; startup acknowledgement precedes user exec]\n")
     # transcript cap: spill the full capture and keep only head+tail in
     # the conversation; the model pages the rest with read (offset/limit).
     if full.len > transcriptCapBytes:

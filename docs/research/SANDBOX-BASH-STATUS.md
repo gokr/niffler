@@ -43,19 +43,23 @@ not every automatically discovered sibling checkout.
   ignore them. Landlock without masks remains a separate opt-in prototype.
 - Existing off-mode execution is unchanged. Guarded timeout still reports 124;
   tested descendants do not survive timeout.
-- `sandbox.state` is `policy_checked` when the launcher's post-command record
-  says the separate policy self-check passed. The earlier `applied` label
-  overstated what this proves and has been removed. The launcher proves the policy with a **negative test
-  that would succeed unsandboxed** plus a workspace-writable positive control,
-  then refuses (exit 125, `policyChecked:false`, command never starts) if the policy
-  cannot be demonstrated. An earlier version wrote to `/` — denied to an
-  ordinary user with or without a sandbox — so a backend confining *nothing*
-  passed it; `tests/t_sandbox.nim` now keeps a fake non-confining bwrap as a
-  permanent regression. Exit codes are never read as the verdict: a command can
-  itself exit 125.
-- Honest limit on that evidence: it is a separate bwrap invocation built by the
-  same argument constructor, so it proves the policy is correctly built and
-  enforced, not that the real exec was instrumented.
+- `sandbox.state` is `applied` when the ACTUAL launch acknowledged. A bootstrap
+  inside the real bwrap invocation performs the policy checks with a **negative
+  test that would succeed unsandboxed** plus a workspace-writable positive
+  control, writes an acknowledgment line to its stdout, closes nothing further,
+  and only then execs the user command. The parent consumes exactly that line
+  and forwards the command's remaining output byte-for-byte, so the user
+  command cannot spoof the marker, suppress it, or have its output rewritten.
+  No acknowledgment means the command never started: exit 125, `applied:false`.
+  (This host's bwrap has no `--preserve-fds`, so the marker uses stdout rather
+  than an extra descriptor.)
+- An earlier self-check ran a SEPARATE bwrap process and therefore could not
+  attest to the real launch. It also first tested "a write at `/` must fail" —
+  which fails for an ordinary user with or without a sandbox, so a backend
+  confining nothing passed. `tests/t_sandbox.nim` keeps both as permanent
+  regressions: a non-confining fake bwrap, and a fake that skips the bootstrap.
+- Honest limit: the system bwrap and `/bin/sh` bootstrap are trusted. This is
+  not attestation against a malicious backend or arbitrary same-user host code.
 
 ## Verification
 
@@ -77,8 +81,9 @@ filename. Status records also use a private random directory, not predictable
 shared-temp filenames.
 
 Remaining before calling Phase 2 complete: guarded background integration
-decision, concurrent alias/race hardening, actual macOS implementation,
-and fd-level attestation for the real exec rather than a parallel self-check.
+decision, concurrent alias/race hardening, actual macOS implementation.
+Seatbelt has no implementation at all yet. Guarded background execution still
+refuses pending lifecycle integration.
 No blanket whole-harness protection: `read`, grep traversal, native Fabric,
 plugins and MCP need their own enforcement paths.
 

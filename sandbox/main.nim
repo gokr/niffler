@@ -13,7 +13,7 @@
 ## The probe tests a *forbidden operation*, never `/bin/true` — a launcher that
 ## starts commands but confines nothing must not read as healthy.
 
-import std/[os, strutils, json, osproc, posix, streams, tempfiles]
+import std/[os, strutils, json, posix, tempfiles, monotimes, times]
 import policy
 import landlock
 import ../sdk/niffler/procutil
@@ -125,7 +125,7 @@ proc writeStatus(req: LaunchRequest, backend: string, applied: bool) =
   if req.statusFile.len == 0: return
   try:
     writeFile(req.statusFile,
-              $(%*{"backend": backend, "policyChecked": applied, "scope": "shell"}))
+              $(%*{"backend": backend, "applied": applied, "scope": "shell"}))
   except CatchableError:
     discard
 
@@ -153,38 +153,93 @@ proc verifyPrelude(req: LaunchRequest, probeDir, positiveDir: string): string =
              " ) 2>/dev/null || rc=1\n"
   result.add "printf 'niffler-verify:%s' \"$rc\"\n"
 
-proc verifyPolicy(binPath: string, req: LaunchRequest): tuple[ok: bool, why: string] =
-  ## Prove the policy is enforceable before running the command.
-  ##
-  ## Honest limit: this is a SEPARATE bwrap invocation built by the same
-  ## `bwrapArgv`, so it demonstrates the policy is correctly constructed and
-  ## enforced, not that the real exec was instrumented. That is weaker than
-  ## intercepting the actual launch, stronger than a version probe, and the
-  ## strongest thing available without fd plumbing through bwrap.
-  # The probe dir must sit where the REAL policy still sees the host path:
-  # /tmp is deliberately shadowed by a fresh tmpfs, so a dir there would not
-  # exist inside the sandbox and the write would fail for the wrong reason.
-  # /var/tmp is world-writable on FHS systems and outside any workspace.
-  let probeParent = if dirExists("/var/tmp"): "/var/tmp" else: getEnv("HOME", "/")
-  let probeDir = createTempDir("niffler-verify-", "", probeParent)
+proc runBwrap(req: LaunchRequest): int =
+  ## Bootstrap in the ACTUAL command sandbox, acknowledge on fd 3, close it,
+  ## then exec user argv. Stdout, stderr and command exit codes carry no evidence.
+  ## The system bwrap and /bin/sh bootstrap are trusted; this is not attestation
+  ## against a malicious replacement backend or arbitrary same-user host code.
+  let probeDir = createTempDir("niffler-verify-", "", "/var/tmp")
   defer: removeDir(probeDir)
-  # Own a random private directory rather than truncating a fixed workspace
-  # path. Even an existing .niffler-write-probe must remain untouched.
   let positiveDir = createTempDir(".niffler-verify-", "", req.workspace)
   defer: removeDir(positiveDir)
-  var probe = req
-  probe.argv = @["/bin/sh", "-c", verifyPrelude(req, probeDir, positiveDir)]
-  let argv = bwrapArgv(binPath, probe)
-  var args: seq[string]
-  for i in 1 ..< argv.len: args.add argv[i]
-  try:
-    var command = quoteShell(argv[0])
-    for arg in args: command.add " " & quoteShell(arg)
-    let (code, outp) = runCmd(command, 5000)
-    if code == 0 and outp.strip() == "niffler-verify:0": return (true, "")
-    return (false, "the sandbox did not enforce the requested policy: " & outp.strip())
-  except CatchableError as e:
-    return (false, "self-check could not run: " & e.msg)
+  var bootstrap = req
+  let checks = verifyPrelude(req, probeDir, positiveDir)
+  const marker = "NIFSANDBOX-OK"
+  bootstrap.argv = @["/bin/sh", "-c",
+    checks.replace("printf 'niffler-verify:%s' \"$rc\"\n",
+      "[ \"$rc\" -eq 0 ] || exit 125\n" &
+      "printf '" & marker & "\\n' || exit 125\nexec \"$@\"\n"),
+    "niffler-bootstrap"] & req.argv
+  let argv = bwrapArgv(bwrapPath(), bootstrap)
+  # The acknowledgement rides a private stdout pipe rather than an extra fd:
+  # this bwrap has no --preserve-fds, and the marker is unforgeable anyway
+  # because ONLY the pre-exec bootstrap can be the first writer. The parent
+  # consumes the marker line, then forwards the command's real output unchanged.
+  var outPipe: array[2, cint]
+  if pipe(outPipe) != 0:
+    writeStatus(req, "bwrap", false)
+    return 125
+  let pid = fork()
+  if pid < 0:
+    discard close(outPipe[0])
+    discard close(outPipe[1])
+    writeStatus(req, "bwrap", false)
+    return 125
+  if pid == 0:
+    discard close(outPipe[0])
+    if dup2(outPipe[1], STDOUT_FILENO) < 0: exitnow(125)
+    if outPipe[1] != STDOUT_FILENO: discard close(outPipe[1])
+    let cargv = allocCStringArray(argv)
+    discard execv(cargv[0], cargv)
+    exitnow(125)
+  discard close(outPipe[1])
+  var ackBuf: array[256, char]
+  var ackLen = 0
+  var acknowledged = false
+  var sawNewline = false
+  let deadline = getMonoTime() + initDuration(milliseconds = 5000)
+  while ackLen < ackBuf.len:
+    if getMonoTime() > deadline: break
+    var pollFd = TPollfd(fd: outPipe[0], events: POLLIN)
+    if poll(addr pollFd, 1, 200) <= 0: continue
+    let n = posix.read(outPipe[0], addr ackBuf[ackLen], 1)
+    if n == 1:
+      if ackBuf[ackLen] == '\n':
+        sawNewline = true
+        break
+      inc ackLen
+      continue
+    if n == 0: break
+    if osLastError().int32 notin [EAGAIN, EINTR]: break
+  if sawNewline:
+    var got = newString(ackLen)
+    for k in 0 ..< ackLen: got[k] = ackBuf[k]
+    acknowledged = got == marker
+  # Anything after the newline is the command's own output and is forwarded
+  # untouched; the remainder of the stream follows until EOF. Nothing is
+  # prepended or reordered, so the command's byte stream is unchanged.
+  var forward: array[65536, char]
+  while true:
+    let n = posix.read(outPipe[0], addr forward[0], forward.len)
+    if n <= 0: break
+    var off = 0
+    while off < n:
+      let w = posix.write(STDOUT_FILENO, addr forward[off], n - off)
+      if w <= 0: break
+      off += w
+  discard close(outPipe[0])
+  # Record immediately: a subsequent cancellation must not erase startup truth.
+  writeStatus(req, "bwrap", acknowledged)
+  if not acknowledged:
+    stderr.writeLine "niffler-sandbox: bootstrap did not acknowledge policy; refusing"
+    discard kill(pid, SIGKILL)
+  var status: cint
+  while waitpid(pid, status, 0) < 0:
+    if osLastError().int32 != EINTR: return 125
+  if not acknowledged: return 125
+  if WIFEXITED(status): return WEXITSTATUS(status)
+  if WIFSIGNALED(status): return 128 + WTERMSIG(status)
+  125
 
 proc runRequest(req: LaunchRequest): int =
   ## Apply the requested guard and exec. Returns the command's exit status, or
@@ -196,27 +251,7 @@ proc runRequest(req: LaunchRequest): int =
   let probe = doProbe()
   case probe.backend
   of bkWrap:
-    let binPath = bwrapPath()
-    # Prove the policy BEFORE running the command: a policy that cannot be
-    # demonstrated is a refusal, not a warning (SANDBOX-PLAN §7).
-    let check = verifyPolicy(binPath, req)
-    if not check.ok:
-      stderr.writeLine "niffler-sandbox: policy self-check failed — " & check.why
-      writeStatus(req, "bwrap", false)
-      return 125
-    let argv = bwrapArgv(binPath, req)
-    var args: seq[string]
-    for i in 1 ..< argv.len: args.add argv[i]
-    try:
-      let p = startProcess(argv[0], args = args, options = {poParentStreams})
-      let code = waitForExit(p)
-      p.close()
-      writeStatus(req, "bwrap", true)
-      return code
-    except CatchableError as e:
-      stderr.writeLine "niffler-sandbox: cannot start bubblewrap: " & e.msg
-      writeStatus(req, "bwrap", false)
-      return 125
+    return runBwrap(req)
   of bkLandlock:
     if req.masks.len > 0:
       stderr.writeLine "niffler-sandbox: refusing requested masks: Landlock cannot enforce them"
