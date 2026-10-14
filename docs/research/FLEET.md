@@ -463,6 +463,39 @@ event, labelled, without polling.
 
 ## 6. Persona: who the agent is at birth
 
+### 6.0 Prior art: the word is established, but it names the *prompt half*
+
+Surveyed on the harness shelf (2026-10-14). "Persona" is **not** a Niffler
+coinage, and it is never the name of the whole agent: everywhere it means the
+prompt-identity contribution, inside something larger.
+
+| Harness | What it calls the whole thing | What it calls the prompt part |
+|---|---|---|
+| **dsh** (deepseek-harness) | **agent preset** (`preset.yml` + `cordis.patch.yml`, `@deepseek-ai/dsh-agent-preset`, ids `standard`/`ptc`/`minimal`/`cordis`) | **persona** — the `@deepseek-ai/dsh-persona` plugin, `personaPrefix`/`personaSuffix`, system-prompt sections named `deployment:persona-prefix` |
+| **CodeWhale** | **agent profile** — `.codewhale/agents/`, `$CODEWHALE_HOME/agents`, and `.claude/agents` (Claude Code's convention) | **`persona`** *or* `instructions.text` — the parser takes `instructions` and falls back to `persona`; the profile also carries `role_hint`/`base_role`, `loadout` (tools), `model`, `provider`, `requires` (capability requirements) |
+| **OpenHands** | agent profile / template | **`persona`**, as a *field distinct from* `system_message_suffix`: persona replaces the prompt, instructions append to it |
+| **Reasonix** | "output style" (a selectable, user-authored block) | the doc comment says it plainly: *"adds a selectable output style — a block of persona … appended to the system prompt"* |
+| **gemini-cli** | subagent (`.gemini/agents`, `subagents.md`) | prose only: *"Each subagent has its own system prompt and persona."* No field. |
+| **pi, kimi-cli, maki** | — | the word does not appear at all |
+
+Two conclusions for Niffler:
+
+1. **`persona` is the right word for what A0 shipped** — the body that becomes
+   the frozen prompt. It matches dsh's plugin, CodeWhale's field and OpenHands'
+   field.
+2. **It is the wrong word for the whole document** if that document also carries
+   tools, model and budgets — which is what §6.1 below proposes. The prior art
+   calls that an **agent profile** (CodeWhale, OpenHands) or an **agent preset**
+   (dsh). Niffler already spends *profile* on tool profiles (the `profile`
+   tool), so the collision is real and worth a deliberate decision (§6.2).
+
+CodeWhale's `.claude/agents` compatibility is the interesting interop detail:
+that convention is markdown with YAML frontmatter (`name`, `description`,
+`tools`, `model`) plus a body, read from both the project and the home
+directory — a format Niffler could read as-is (§6.2).
+
+### 6.1 The design
+
 Today a child's *identity* is whatever the task text implies: `agent_run`
 prepends a fixed `taskPreamble` ("You are a subagent…",
 `components/agent/main.nim:38-46`) and everything else — model, thinking, tool
@@ -502,12 +535,55 @@ mechanisms that already exist and freeze at that same moment:
 
 | Persona field | Existing mechanism it resolves into |
 |---|---|
-| `body` | the frozen system prompt (via `systemprompt`) |
-| `toolProfile` | the frozen direct toolset (tool `profile`, resolved at the first turn) |
-| `model`, `thinking` | the header's frozen controls |
-| `budgets` | `maxRounds` / `maxCalls` / `maxTokens` |
-| `workspace` | the conversation workspace (immutable after the first turn) |
-| `approvals` | the conversation's gate mode (`ask`/`auto`) — **the human's explicit `/approvals` setting wins**, because that gate is the security boundary |
+| Persona field | Existing mechanism it resolves into | Status |
+|---|---|---|
+| `body` | the frozen system prompt (via `systemprompt`) | **shipped** (A0) |
+| `toolProfile` | the frozen direct toolset (tool `profile`, resolved at the first turn) | planned |
+| `model`, `thinking` | the header's frozen controls | planned |
+| `budgets` | `maxRounds` / `maxCalls` / `maxTokens` | planned |
+| `workspace` | the conversation workspace (immutable after the first turn) | planned |
+| `approvals` | the conversation's gate mode (`ask`/`auto`) — **the human's explicit `/approvals` setting wins**, because that gate is the security boundary | planned |
+
+Only `body` (and the `name` used in the tag) is wired today: A0 deliberately
+shipped the prompt half first — it is the part with no existing mechanism to
+reuse, and the part the cache discipline shapes. The remaining rows are
+pass-throughs to arguments that already exist, and are better done together
+(§6.2) than one at a time.
+
+### 6.2 The naming decision (open)
+
+Given §6.0, the document that carries `body` **plus** `toolProfile`, `model` and
+`budgets` is an **agent definition**, not a persona. Three ways to square that:
+
+- **Keep `persona`, widen the document.** One word, one store kind, and the field
+  semantics match dsh/CodeWhale/OpenHands where they use the word. Cost: the word
+  then means more than the prior art means by it.
+- **`agent` as the store kind, `persona` as its prompt field.** Closest to
+  CodeWhale/OpenHands. Cost: `agent` is already the component name and the
+  `agent_*` tool prefix — a store kind named `agent` would be a constant source
+  of "which one?".
+- **Two kinds: `persona` (prompt identity) and `agentdef` (persona + policy).**
+  Honest and the most machinery; two documents to keep in sync for the common
+  case of one named role.
+
+Recommendation: the second option's *semantics* with the first option's
+*spelling* — keep `persona` as the store kind and the user-facing word, document
+that it is "the persona half of an agent definition", and if a full agent
+definition earns its own document later, name it `agentdef` with `persona` as
+the field inside it. That is also what keeps the CodeWhale / Claude Code
+markdown import cheap (frontmatter `name`/`description`/`tools`/`model` + body →
+one document).
+
+### 6.3 Rules the shipped half already enforces
+
+A0 froze the three laws below in code, and its test pins each of them. Worth
+naming what the implementation does *not* do yet, so the doc cannot overclaim:
+the prompt half is complete (resolution, placement, birth-only, edits that never
+rewrite, a resume that never re-resolves, an unknown persona that degrades to the
+plain prompt with the reason on stderr), while the policy half of §6.1's table is
+absent by design.
+
+### 6.4 The laws
 
 Three laws, all consequences of the prompt-cache discipline:
 
