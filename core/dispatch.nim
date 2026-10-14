@@ -24,6 +24,7 @@ type
     cat*: Catalog
     sup*: Supervisor                      ## nil in session runners (no children)
     root*: string                         ## harness root (var/, components/, sdk/)
+    instanceId*, instanceName*: string    ## system-core routing metadata; never prompt context
     approval*: Approval
     coreSub*: ptr natsSubscription        ## svc.core.call (set by niffler.nim; nil in runners)
     callSub*: ptr natsSubscription        ## svc.session.<id>.call (set by session.nim:
@@ -637,7 +638,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       ## whose core serves THIS root — a foreign core on 4222 must never be
       ## adopted, and users can see which clone they are talking to.
       return %*{"tools": ct.cat.promptTools(), "root": ct.root,
-                "gitHash": harnessGitHash(ct.root)}
+                "gitHash": harnessGitHash(ct.root),
+                "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "components":
       ## component→tools view for bus clients that missed the registrations
       ## (cli seeds its catalog from this)
@@ -649,7 +651,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           tools.add(%t.name)
         comps[name] = tools
       return %*{"components": comps, "root": ct.root,
-                "gitHash": harnessGitHash(ct.root)}
+                "gitHash": harnessGitHash(ct.root),
+                "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "schemas":
       return ct.cat.selectedSchemas(args{"tools"})
     if args{"op"}.getStr("") == "snapshot":
@@ -705,7 +708,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             discard
         comps.add(entry)
       return %*{"components": comps, "root": ct.root,
-                "gitHash": harnessGitHash(ct.root)}
+                "gitHash": harnessGitHash(ct.root),
+                "instanceId": ct.instanceId, "name": ct.instanceName}
     return %*{"error":
       "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}
   of "discover":

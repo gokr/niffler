@@ -2466,6 +2466,15 @@ hidden tools directly over NATS.
 - Dispatch, approvals, `x-harness.timeoutMs`, and component-to-component calls
   always consult the full catalog.
 
+### Instance identity
+
+`NIF_NAME` labels this instance (hostname by default). Catalog replies also
+expose a stable `instanceId` persisted in `var/instance-id`; restarts and label
+changes retain it. Preserve that file when moving an instance, but do not copy
+it when provisioning a new one. A malformed file refuses startup rather than
+silently changing identity. The ID is routing metadata, not authentication;
+remote client pinning is not yet implemented.
+
 ### Scheduled turns (heartbeat)
 
 Heartbeat is built by `make build` but enabled only through an approved

@@ -1196,6 +1196,13 @@ Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小
 - 派发、审批、`x-harness.timeoutMs` 以及组件到组件的调用
   始终查询完整目录。
 
+### Instance identity
+
+`NIF_NAME` 是实例标签（默认主机名）。catalog 还返回稳定的 `instanceId`，
+保存在 `var/instance-id`；重启和改名不改变 ID。迁移实例时保留此文件，
+创建新实例时不要复制。文件损坏会拒绝启动，不会静默更换身份。
+ID 是路由元数据，不是身份认证；远程客户端固定身份尚未实现。
+
 ### Scheduled turns (heartbeat)
 
 heartbeat 由 `make build` 构建，仅通过获批的 `spawn` 启用，不自动启动。

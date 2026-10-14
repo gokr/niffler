@@ -311,6 +311,10 @@ gets scheduled, and keep the rationale edits in the owning research doc.
   ([CODEWHALE.md](research/CODEWHALE.md) D7–8).
 - **Lifecycle event outbox** ([CODEWHALE.md](research/CODEWHALE.md) D9;
   overlaps *durable Fabric/agent traces* below).
+- **Fleet rollout** — [step-by-step implementation plan](research/FLEET-IMPLEMENTATION.md):
+  identity → persistent service → SSH install/adopt → Multipass provisioning →
+  `/niffler` switching → delegation → reconnect inbox/artifacts. Step 1 is
+  implemented on `feat/fleet`: persisted instanceId plus NIF_NAME in catalog.
 - **Remote paths** — first-class Chetter support and/or a native fleet over
   NATS leaf nodes + a shared TiDB scope; shared prerequisites are `NIF_NAME`
   identity, bus auth and provisioning

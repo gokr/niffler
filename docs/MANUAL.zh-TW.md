@@ -1432,6 +1432,13 @@ Niffler 維護一份完整的全域目錄，同時對每個會話只暴露一組
 - 分派、核准、`x-harness.timeoutMs` 以及元件對元件的呼叫
   一律查詢完整目錄。
 
+### Instance identity
+
+`NIF_NAME` 是實例標籤（預設主機名）。catalog 亦回傳穩定的 `instanceId`，
+儲存在 `var/instance-id`；重啟和改名不改變 ID。遷移實例時保留此檔案，
+建立新實例時不要複製。檔案損壞會拒絕啟動，不會靜默更換身分。
+ID 是路由中繼資料，不是身分驗證；遠端用戶端固定身分尚未實作。
+
 ### Scheduled turns (heartbeat)
 
 heartbeat 由 `make build` 建置，僅透過獲准的 `spawn` 啟用，不自動啟動。

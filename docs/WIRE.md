@@ -4,6 +4,17 @@ One page. Versioned, boring, identical on every transport (NATS, stdio/NDJSON
 behind pipewrap, future HTTP gateway). JSON everywhere by default; codec
 upgrades are per-seam via NATS headers, never a global format.
 
+## Instance identity
+
+Catalog `list`, `components` and `snapshot` replies carry `instanceId` (128
+random bits encoded as 32 lowercase hex characters) and `name` (`NIF_NAME`,
+otherwise hostname), alongside unchanged `root` and `gitHash`. System core
+creates `var/instance-id` before spawning children; restarts preserve it and
+malformed existing files refuse startup. Backups/clones copying var copy this
+identity too: provision fresh roots without copied runtime state. This is routing
+metadata, not authentication. It contributes nothing to frozen prompts or
+append-only conversation history. Client identity pinning is a subsequent step.
+
 ## Scheduled turns (heartbeat)
 
 The opt-in heartbeat component publishes `session {sessionId, content,
