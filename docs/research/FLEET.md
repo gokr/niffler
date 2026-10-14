@@ -550,29 +550,83 @@ reuse, and the part the cache discipline shapes. The remaining rows are
 pass-throughs to arguments that already exist, and are better done together
 (§6.2) than one at a time.
 
-### 6.2 The naming decision (open)
+### 6.2 The naming decision
 
-Given §6.0, the document that carries `body` **plus** `toolProfile`, `model` and
-`budgets` is an **agent definition**, not a persona. Three ways to square that:
+Three names are in play for three different things, and the codebase has already
+half-decided two of them.
 
-- **Keep `persona`, widen the document.** One word, one store kind, and the field
-  semantics match dsh/CodeWhale/OpenHands where they use the word. Cost: the word
-  then means more than the prior art means by it.
-- **`agent` as the store kind, `persona` as its prompt field.** Closest to
-  CodeWhale/OpenHands. Cost: `agent` is already the component name and the
-  `agent_*` tool prefix — a store kind named `agent` would be a constant source
-  of "which one?".
-- **Two kinds: `persona` (prompt identity) and `agentdef` (persona + policy).**
-  Honest and the most machinery; two documents to keep in sync for the common
-  case of one named role.
+**1. `persona` = the text.** Settled (A0 shipped it) and it matches the shelf's
+usage (§6.0).
 
-Recommendation: the second option's *semantics* with the first option's
-*spelling* — keep `persona` as the store kind and the user-facing word, document
-that it is "the persona half of an agent definition", and if a full agent
-definition earns its own document later, name it `agentdef` with `persona` as
-the field inside it. That is also what keeps the CodeWhale / Claude Code
-markdown import cheap (frontmatter `name`/`description`/`tools`/`model` + body →
-one document).
+**2. `profile` → `toolset`.** The interesting evidence: Niffler's *identifiers*
+already call this a toolset, everywhere, while only the *surface names* say
+profile —
+
+| Says "toolset" (concept) | Says "profile" (surface) |
+|---|---|
+| `exposure.toolset`, "resolved once into a conversation's direct toolset", `if withToolset && !withSystemPrompt` semantics in tests, "frozen toolset snapshot" | the `profile` core tool, `session {profile}`, store kind `"profile"`, `NIF_PROFILE`, TUI `/profile`, `profileTokens` |
+
+So this rename is not a preference — it aligns four public surface names to the
+vocabulary the code has been using all along. Mechanical, wire-compatible in
+practice (the `session` schema's key stays readable for one release while the
+canonical spelling becomes `toolset`), and worth doing on its own merits.
+
+**3. The definition document.** The shelf's word for it is **agent**:
+opencode's `agents.mdx` defines an agent as *"specialized AI assistants …
+custom prompts, models, and tool access"* — exactly the combined document —
+with `primary`/`subagent` modes, Tab-cycling between them and `@`-mention to
+invoke; CodeWhale calls it an agent profile; dsh calls it an agent preset. The
+counter-argument to reusing `profile` here is that it makes "profile" mean two
+unrelated things permanently, and Niffler already has a *provider* profile
+surface in the TUI (`provider_list` fields, the OAuth/profile editor), so a
+third meaning would be the one with no precedent behind it.
+
+That leaves the collision to weigh: in Niffler, **`agent`** is currently the
+component name, the `agent_*` tool prefix, and the word for a running subagent.
+Using it for the definition too is a deliberate overload, and it needs a rule to
+be usable:
+
+> bare `agent` = the **definition** document · `agent_*` = the tools that run
+> one · "a subagent" = a running instance of one · the `agent` component = the
+> implementer of those tools.
+
+That reads naturally ("what agents do I have?" / "list my agents" = definitions)
+and it is what a user of opencode or Claude Code would already expect. The
+alternative — `agentdef` — is accurate but, as noted, contrived; it also loses
+the interop advantage, because the importable formats on the shelf are
+`agents.mdx`-style documents and `.claude/agents` files, both of which call the
+thing an agent.
+
+**Recommendation:** `persona` (text), `toolset` (tool visibility), `agent`
+(definition), with the overload rule above written into WIRE. If that overload is
+judged too costly, the fallback is `agentdef` — accurate, and the only cost is a
+word nobody says out loud.
+
+**What is *not* needed is new machinery.** All three fields a definition would
+set are mechanisms that already exist and freeze at birth:
+
+| Definition field | Lands in | Already exists as |
+|---|---|---|
+| `persona` | the frozen system prompt | A0 (shipped) |
+| `toolset` | the frozen direct toolset | `session {profile}`, `profile` tool |
+| `model`, `thinking` | the header's frozen controls | session args |
+| `budgets` | round/call/token caps | session args (subagents pass them per call — `components/agent/main.nim:938-945`) |
+| `workspace` | the conversation workspace | `cwd` (birth-only already) |
+| `approvals` | the gate mode | `approvals` control (human's setting wins) |
+
+So "resolve an agent" is a **resolution order**, not a subsystem: for each field,
+`explicit argument > definition field > harness default`. The work is the
+resolver plus one provenance surface — and the provenance surface is the part
+that makes it debuggable, because "which model am I actually running?" must not
+become a guessing game.
+
+**One divergence from opencode worth recording:** their agents are switchable
+mid-session (Tab) because they rebuild the prompt. Niffler's cache discipline
+forbids that — a definition is birth-only, exactly as persona proved. Switching
+identity means a new conversation (or, later, a deliberate prefix rebuild with an
+explicit `reset:agent` reason, the way `reset:tools` already works for sticky
+invokes). That is the honest cost of the frozen prefix, and it should be stated
+up front rather than discovered when someone tries to Tab between agents.
 
 ### 6.3 Rules the shipped half already enforces
 
