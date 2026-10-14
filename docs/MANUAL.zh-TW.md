@@ -1432,6 +1432,17 @@ Niffler 維護一份完整的全域目錄，同時對每個會話只暴露一組
 - 分派、核准、`x-harness.timeoutMs` 以及元件對元件的呼叫
   一律查詢完整目錄。
 
+### Scheduled turns (heartbeat)
+
+heartbeat 由 `make build` 建置，僅透過獲准的 `spawn` 啟用，不自動啟動。
+用 `heartbeat_set {id, session, prompt, intervalSec}` 設定，`heartbeat_list`
+檢視，`heartbeat_remove` 刪除排程。修改需要核准；忙碌對話跳過觸發，不排隊。
+`NIF_HEARTBEAT=0` 暫停；輪詢預設 30000 毫秒；`NIF_HEARTBEAT_MAX_PER_DAY`
+預設每筆記錄滾動 24 小時內四次。runner 獨立驗證記錄並在推理前記錄准入。
+發布前預留嘗試，當機可能漏掉一次但不會重複執行。狀態只表示嘗試，不表示完成；
+結果在對話記錄中。heartbeat 不授予核准權限，也不維持 harness 存活。
+伺服器常駐執行時不要設定 `NIF_AUTOSTART=1`。詳見元件指南。
+
 ### Agent definitions
 
 persona 是提示文字（persona 儲存文件：{name, body}）。agent 是技術定義，

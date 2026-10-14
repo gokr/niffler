@@ -4,6 +4,20 @@ One page. Versioned, boring, identical on every transport (NATS, stdio/NDJSON
 behind pipewrap, future HTTP gateway). JSON everywhere by default; codec
 upgrades are per-seam via NATS headers, never a global format.
 
+## Scheduled turns (heartbeat)
+
+The opt-in heartbeat component publishes `session {sessionId, content,
+notice:{kind:"heartbeat",id}}`. The runner requires an enabled heartbeat
+record with the same session and prompt, checks `NIF_HEARTBEAT` and the rolling
+24-hour `NIF_HEARTBEAT_MAX_PER_DAY` admission limit, and records a unique
+`heartbeatmark` before inference. Store failures decline admission. A busy
+runner refuses; scheduled turns never queue. Admitted messages carry the
+heartbeat notice marker in durable history, not in provider-visible metadata.
+Prefix effect: append-only history, unchanged system prompt and tool schemas.
+Scheduling attempts are reserved before publication; a crash may lose a tick.
+Fire-and-forget dispatch reports attempts, not completion. Results live in the
+conversation transcript. See components/heartbeat/README.md.
+
 ## Agent definitions and toolsets
 
 `persona` store documents contain `{name, body}`: prompt text only. `agent`

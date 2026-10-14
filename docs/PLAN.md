@@ -146,11 +146,11 @@ gets scheduled, and keep the rationale edits in the owning research doc.
   `toolset` is canonical with legacy profile compatibility. Client command
   migration and definition-management UI remain pending. See
   [MANUAL.md](MANUAL.md#agent-definitions) and [FLEET.md](research/FLEET.md) §6.
-- **Heartbeat (scheduled turns)** — an idle-seam component plus durable
-  `heartbeat` records that start turns nobody asked for, on a machinery-marked
-  admission lane of its own with per-day budgets; the wake lane cannot carry it
-  (a wake is admitted only when notices are pending) and must not
-  ([FLEET.md](research/FLEET.md) §7).
+- **Heartbeat — implemented on `feat/fleet`**: opt-in idle-seam scheduler,
+  durable schedules and runner admission marks, rolling daily turn caps,
+  busy-turn skips and append-only machinery-marked history. Completion delivery,
+  cron expressions, daily token accounting and ledger retention remain pending.
+  See [components/heartbeat/README.md](../components/heartbeat/README.md).
 - **Resident instances + fleet delegation** — a server-hosted harness in manual
   mode with an identity, a persona and a heartbeat, driven from any client;
   `fleet_*` delegates a task to a *conversation on another instance* over the

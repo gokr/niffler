@@ -2466,6 +2466,23 @@ hidden tools directly over NATS.
 - Dispatch, approvals, `x-harness.timeoutMs`, and component-to-component calls
   always consult the full catalog.
 
+### Scheduled turns (heartbeat)
+
+Heartbeat is built by `make build` but enabled only through an approved
+`spawn {name:"heartbeat", binary:"var/bin/heartbeat", policy:"on-failure"}`.
+Use `heartbeat_set {id, session, prompt, intervalSec}` to schedule turns,
+`heartbeat_list` to inspect them and `heartbeat_remove` to remove a schedule.
+Mutating tools require approval. Busy conversations skip ticks, never queue.
+
+`NIF_HEARTBEAT=0` pauses execution; `NIF_HEARTBEAT_TICK_MS` defaults to 30000;
+`NIF_HEARTBEAT_MAX_PER_DAY` defaults to four turns per record per rolling day.
+The runner independently validates the record and records admission before
+inference. Scheduling reserves attempts before publishing, so a crash can lose
+a tick rather than duplicate work. Status reports attempts, not completion;
+results are in the conversation transcript. Heartbeats never grant approvals
+or keep a harness alive: resident servers must run without `NIF_AUTOSTART=1`.
+See [the component guide](../components/heartbeat/README.md) for limits.
+
 ### Agent definitions
 
 A **persona** is text (`persona` store document: `{name, body}`). A **toolset**

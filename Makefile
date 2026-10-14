@@ -73,7 +73,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 .PHONY: help all build components components-inner run down down-here \
          test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
-        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
+        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
@@ -198,6 +198,9 @@ var/bin/test_t_lsp: $(call NIM_SRCS,lsp)
 var/bin/processes: components/processes/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/processes/main.nim
 
+var/bin/heartbeat: components/heartbeat/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/heartbeat/main.nim
+
 var/bin/grep: components/grep/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/grep/main.nim
 
@@ -309,7 +312,7 @@ components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
 components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
-	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
+	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/heartbeat var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
@@ -542,6 +545,7 @@ test-vars:    build var/bin/test_t_vars    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp
 test-repomap: build var/bin/test_t_repomap_tags var/bin/test_t_repomap_score \
     var/bin/test_t_repomap ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_tags && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_score && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap
+test-heartbeat: build var/bin/test_t_heartbeat ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_heartbeat
 test-processes: build var/bin/test_t_processes ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_processes
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-parallel: build var/bin/test_t_parallel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_parallel

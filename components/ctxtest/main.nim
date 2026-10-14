@@ -65,6 +65,9 @@ comp.tool(%*{"hidden": true}):
     ## - anything else (t_nested): ctxecho probe, then final reply.
     let stage = chatStage.mgetOrPut(sessionId, 0)
     chatStage[sessionId] = stage + 1
+    if sessionId == "hb-busy":
+      sleep(8000)
+      return %*{"content": "human-turn-done"}
     if sessionId.startsWith("agent-"):
       # forced LLM failure: a task carrying the marker makes the child's
       # chat raise — the runner turns that into a turnError, and agent_run

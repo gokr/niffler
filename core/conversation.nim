@@ -802,6 +802,33 @@ proc consecutiveWakeTurns*(messages: seq[JsonNode]): int =
     if m{"notice"} == nil: return result
     if m{"notice"}{"kind"}.getStr("") == "wake": inc result
 
+proc heartbeatMaxPerDay*(): int =
+  ## Autonomous turns one heartbeat record may run per day. 0 disables
+  ## heartbeats entirely (a scheduled-turn kill switch that leaves records and
+  ## transcripts intact). Exported for tests.
+  try: result = max(0, getEnv("NIF_HEARTBEAT_MAX_PER_DAY", "4").parseInt())
+  except CatchableError: result = 4
+
+proc heartbeatTurnsToday*(ct: CoreTools, heartbeatId: string): int =
+  ## Count admission marks for this record in the last 24 hours, paging the
+  ## entire kind prefix. Marks are separate from editable scheduling state;
+  ## a runner restart does not reset this limit. Store failure refuses admission.
+  let now = epochTime()
+  try:
+    var count = 0
+    # One record names one conversation, so every marked turn carries that
+    # record's id and the marks ARE its turn log. The mark is written at
+    # admission (below), one small doc per turn — a day of heartbeats is a
+    # handful of docs, and the page is bounded by the store's own limit.
+    for item in ct.storeListAll("heartbeatmark", heartbeatId & ":", 10_000):
+      let at = item{"value"}{"at"}.getFloat(0.0)
+      if at > 0.0 and now - at < 86_400.0: inc count
+    return count
+  except CatchableError:
+    # Unreadable: fail closed. An autonomous turn must not run when its budget
+    # cannot be verified.
+    return heartbeatMaxPerDay()
+
 proc consecutiveWakeTurnsFromStore(ct: CoreTools, sessionId: string): int =
   ## The wake budget derived from the STORED records: the in-memory
   ## projection goes through providerMessage(), which strips storage-only
@@ -3377,6 +3404,21 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   # happens below once entry.messages is loaded; a declined wake runs no
   # turn and persists nothing.
   let isWake = args{"wake"}.getBool(false)
+  # Heartbeat (components/heartbeat, docs/research/FLEET.md §7): a scheduled
+  # turn nobody asked for in the moment. It rides its OWN marker rather than
+  # the wake lane, because a wake is admitted only when notices are pending and
+  # is bounded by NIF_AGENT_WAKES — a heartbeat has nothing pending and would
+  # be refused on its fourth tick. Same structural treatment (machinery, not
+  # something the human typed), different budget: the record's own daily one.
+  let heartbeatId = block:
+    let n = args{"notice"}
+    if n != nil and n{"kind"}.getStr("") == "heartbeat": n{"id"}.getStr("")
+    else: ""
+  # Marker present but id empty: a client tried to hand-roll one. Refuse rather
+  # than run an unbudgeted autonomous turn.
+  if args{"notice"} != nil and args{"notice"}{"kind"}.getStr("") == "heartbeat" and
+      heartbeatId.len == 0:
+    return %*{"error": "heartbeat turns need notice.id (a heartbeat record)"}
   var turnContent = content
   # Dropped-image attachments (docs/WIRE.md "Attachments"): validated here,
   # stored beside the message, and materialized into the provider content
@@ -3995,6 +4037,45 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   # last real user input (derived from history — no counter to lose). A
   # declined/skipped wake is a normal result, never an error: the notice
   # stays pending and the parent's next real turn delivers it.
+  if heartbeatId.len > 0:
+    # Budget checked against the DURABLE record, not a counter in this process:
+    # the runner may be fresh (a retired runner resumes the conversation), and
+    # the heartbeat component's own check cannot be trusted alone — a
+    # hand-edited record must not become unbounded autonomous turns.
+    # Require a live, enabled record addressed to this conversation. The
+    # marker alone grants no scheduling authority, and stale publishes after
+    # removal must not create another turn.
+    try:
+      let record = ct.storeGetItem("heartbeat", heartbeatId).value
+      if record == nil or record.kind != JObject or
+          not record{"enabled"}.getBool(true) or
+          record{"session"}.getStr("") != sessionId or
+          record{"prompt"}.getStr("") != content:
+        return %*{"ok": true, "heartbeat": "declined", "reason": "record mismatch or disabled"}
+    except CatchableError:
+      return %*{"ok": true, "heartbeat": "declined", "reason": "record unreachable"}
+    let capTurns = heartbeatMaxPerDay()
+    if capTurns <= 0 or getEnv("NIF_HEARTBEAT", "1") == "0":
+      return %*{"ok": true, "heartbeat": "declined", "reason": "disabled"}
+    if heartbeatTurnsToday(ct, heartbeatId) >= capTurns:
+      return %*{"ok": true, "heartbeat": "declined", "reason": "budget",
+                "maxPerDay": capTurns}
+    if content.strip().len == 0:
+      return %*{"ok": true, "heartbeat": "declined", "reason": "no prompt"}
+    # Mark the admitted turn BEFORE it runs, keyed by record and time: this is
+    # the durable budget the check above reads, so a crash mid-turn cannot
+    # grant a free extra run (over-counting by one is the safe direction).
+    try:
+      discard ct.storePutRev("heartbeatmark",
+        heartbeatId & ":" & newId(),
+        %*{"id": heartbeatId, "session": sessionId, "at": epochTime()},
+        timeoutMs = 5_000)
+    except CatchableError as e:
+      # Cannot record it: refuse instead of running an unaccounted autonomous
+      # turn. The record keeps its nextAt and the component retries.
+      return %*{"ok": true, "heartbeat": "declined",
+                "reason": "cannot record the turn (" & e.msg & ")"}
+
   if isWake:
     let budget = wakeBudget()
     if budget <= 0:
@@ -4022,7 +4103,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   # content. Without this guard the call fell into the control/status branch
   # below, answered ok, and ran no turn at all — the dropped image vanished
   # while every client saw success.
-  if content.len == 0 and attachRefs.len == 0 and not isWake:
+  if content.len == 0 and attachRefs.len == 0 and not isWake and
+      heartbeatId.len == 0:
     if hasCompact:
       # Manual compaction: run the §6.3 replaceable-compactor rung now, with
       # no LLM turn and no user message. The attempt installs a checkpoint
@@ -4166,6 +4248,13 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       # human typed (the same structural lane as subagent-settled notices).
       %*{"role": "user", "content": turnContent,
          "notice": {"kind": "wake"}}
+    elif heartbeatId.len > 0:
+      # Same machinery lane, carrying the record id: the transcript shows WHO
+      # scheduled this turn, and trimming/rendering never mistake it for the
+      # human. Stamped in the same message the model sees, so a later reader
+      # (or the runner rebuilding counters from the store) can tell.
+      %*{"role": "user", "content": turnContent,
+         "notice": {"kind": "heartbeat", "id": heartbeatId}}
     elif attachRefs.len > 0:
       # The stored message keeps the text and the small refs, never the
       # base64: a `list` page carrying inline images outgrows the bus
@@ -4182,7 +4271,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # carry their data URL, older ones an honest text marker. Deterministic
     # from the refs, so every resume rebuilds the same projection.
     materializeProjection(ct, entry.messages)
-  if entry.persister.seqNo == 1 and not hasTitle and not isWake:
+  if entry.persister.seqNo == 1 and not hasTitle and not isWake and
+      heartbeatId.len == 0:
     # first message of a fresh conversation: title it from the message so
     # session lists are descriptive instead of conv-<epoch>. An explicit
     # title on the same call wins; a later rename always overwrites.
