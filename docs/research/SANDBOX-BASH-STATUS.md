@@ -16,8 +16,12 @@ NIF_BASH_SANDBOX_MASKS=/absolute/path/to/secret
 Masks are exact existing files, one per line; relative entries resolve against
 that call's primary workspace. Set `.env` to protect each workspace's top-level
 `.env`; this is not an automatic recursive `.env` search. Missing configured
-paths refuse rather than omit protection. Mask aliases/hardlinks and secret
-copies are not yet covered; do not claim complete confidentiality.
+paths refuse rather than omit protection. Symlink masks resolve to the canonical
+regular file; reads through that symlink and the canonical spelling are tested.
+Files with multiple hard links refuse before user code runs: masking one name
+would leave another readable. Concurrent alias creation/path replacement and
+secret copies remain outside the current guarantee; no complete confidentiality
+claim is made.
 
 Session calls receive a workspace root through existing runner-owned private
 context. Direct operator calls need `NIF_BASH_SANDBOX_ROOT`. A cwd does not
@@ -73,7 +77,7 @@ filename. Status records also use a private random directory, not predictable
 shared-temp filenames.
 
 Remaining before calling Phase 2 complete: guarded background integration
-decision, mask alias tests, actual macOS implementation,
+decision, concurrent alias/race hardening, actual macOS implementation,
 and fd-level attestation for the real exec rather than a parallel self-check.
 No blanket whole-harness protection: `read`, grep traversal, native Fabric,
 plugins and MCP need their own enforcement paths.

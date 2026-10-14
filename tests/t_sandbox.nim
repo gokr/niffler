@@ -152,6 +152,22 @@ proc enforcementChecks(root: string) =
           mcode == 125 and not mout.contains("TOP-SECRET"), mout)
     skip("secret masking", "landlock has no deny rule (SANDBOX-ROUTE.md §2)")
 
+  createSymlink(base / "ws" / ".env", base / "ws" / "secret-link")
+  let (aliasCode, aliasOutput) = runLauncher(bin, @[
+    "run", "--workspace", base / "ws", "--mask", base / "ws" / "secret-link",
+    "--", "sh", "-c", "cat " & quoteShell(base / "ws" / ".env") &
+      " " & quoteShell(base / "ws" / "secret-link")])
+  if backend == "bwrap":
+    check("masking a symlink hides canonical target and symlink spelling",
+       aliasCode in [0, 1] and not aliasOutput.contains("TOP-SECRET"), aliasOutput)
+  createHardlink(base / "ws" / ".env", base / "ws" / "hard-alias")
+  let (hardCode, hardOutput) = runLauncher(bin, @[
+    "run", "--workspace", base / "ws", "--mask", base / "ws" / ".env",
+    "--", "sh", "-c", "echo SHOULD-NOT-RUN"])
+  check("hard-linked secret refuses before user command",
+    hardCode == 125 and hardOutput.contains("hard-link aliases") and
+    not hardOutput.contains("SHOULD-NOT-RUN"), hardOutput)
+
   # 6. The self-check must have TEETH: a backend that starts commands but
   #    confines nothing must be refused, not attested. This is the bug an
   #    earlier probe had — it wrote to `/`, which fails unsandboxed too, so a

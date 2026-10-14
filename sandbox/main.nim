@@ -280,7 +280,7 @@ proc parseRequest(args: seq[string]): LaunchRequest =
       if i < args.len: result.extraRoots.add canonicalExisting(args[i])
     of "--mask":
       inc i
-      if i < args.len: result.masks.add canonicalExisting(args[i])
+      if i < args.len: result.masks.add canonicalMask(args[i])
     of "--status-file":
       inc i
       if i < args.len: result.statusFile = args[i]

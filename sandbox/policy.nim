@@ -46,6 +46,16 @@ proc canonicalExisting*(path: string): string =
   result = $resolved
   free(resolved)
 
+proc canonicalMask*(path: string): string =
+  ## Bind masking one pathname does not hide other hard links to its inode.
+  ## Refuse such files instead of searching the filesystem for aliases.
+  result = canonicalExisting(path)
+  let info = getFileInfo(result)
+  if info.kind != pcFile:
+    raise newException(SandboxError, "secret masks currently require a regular file: " & path)
+  if info.linkCount != 1:
+    raise newException(SandboxError, "secret has hard-link aliases; refusing incomplete mask: " & path)
+
 proc insideRoot(ws, path: string): bool =
   ## True when `path` is `ws` itself or below it. Prefix comparison is done on
   ## whole path components so `/ws-other` is not treated as inside `/ws`.
