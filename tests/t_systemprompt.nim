@@ -338,6 +338,37 @@ proc main() =
     definedHeader{"systemPrompt"}.getStr().contains("You review changes"), $definedHeader)
   check("explicit controls override definition defaults",
     definedHeader{"thinkingEffort"}.getStr() == "low", $definedHeader)
+  # The identity is stamped in TWO places, and the lineage doc is the one that
+  # survives a header-write loss: it is written with a compare-and-set, so a
+  # racing turn cannot interleave a read-modify-write and leave the
+  # conversation looking unborn (which would re-birth it mid-conversation).
+  let lineage = call(nc, "store", "get",
+    %*{"kind": "sessionmeta", "id": "sp-defined"})
+  check("the birth identity is recorded durably in the lineage doc",
+    lineage{"value"}{"agent"}.getStr("") == "reviewer", $lineage)
+  # A client that keeps naming the SAME agent — what a picker that persists a
+  # choice does — must be idempotent, not refused: this is the resume path
+  # after a runner retirement.
+  let sameAgent = call(nc, "core", "session", %*{
+    "sessionId": "sp-defined", "content": "again", "agent": "reviewer"},
+    120_000)
+  check("re-sending the same agent is idempotent",
+    sameAgent{"error"} == nil, $sameAgent)
+  let stillSame = call(nc, "store", "get", %*{"kind": "conversation",
+    "id": "sp-defined"}){"value"}
+  check("the frozen prompt survives a redundant agent call",
+    stillSame{"systemPrompt"}.getStr("") == definedHeader{"systemPrompt"}.getStr(""),
+    "a redundant agent call re-resolved the constitution")
+  # A DIFFERENT agent is still a re-birth, and refuses.
+  let reborn = call(nc, "core", "session", %*{
+    "sessionId": "sp-defined", "agent": "other"}, 120_000)
+  check("a different agent on a born conversation is refused",
+    reborn{"error"}.getStr("").contains("birth-only"), $reborn)
+  discard call(nc, "store", "del", %*{"kind": "sessionmeta", "id": "sp-defined"})
+  let afterCookie = call(nc, "core", "session", %*{
+    "sessionId": "sp-defined", "agent": "other"}, 120_000)
+  check("the header alone still holds the identity when the doc is gone",
+    afterCookie{"error"}.getStr("").contains("birth-only"), $afterCookie)
 
   for parent in ["agt-defined-run", "agt-defined-spawn"]:
     let delegated = call(nc, "core", "session", %*{"sessionId": parent,

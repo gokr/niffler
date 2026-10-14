@@ -536,6 +536,55 @@ proc updateConversationHeader(ct: CoreTools, convId: string, fields: JsonNode) =
   except CatchableError as e:
     echo "core: WARNING conversation metadata persistence failed: " & e.msg
 
+proc conversationAgent*(ct: CoreTools, sessionId: string): string =
+  ## The agent a conversation was BORN with, read from the two durable places
+  ## that can hold it: the lineage doc (authoritative — written with a
+  ## compare-and-set) and the conversation header (written with the frozen
+  ## prompt). "" means the conversation has no agent identity, which is also
+  ## what a conversation born without one reports forever.
+  ##
+  ## Two readers on purpose. The header write is best-effort (`echo` on
+  ## failure) while a conversation cannot run a turn without its prompt, so a
+  ## header that lost a race would otherwise read as "born with no agent", and
+  ## the next call naming an agent would RE-BIRTH a mid-conversation session —
+  ## a fresh prompt off an established prefix, the one thing birth-only exists
+  ## to prevent.
+  try:
+    let meta = ct.storeGetItem("sessionmeta", sessionId).value
+    if meta != nil and meta.kind == JObject:
+      let named = meta{"agent"}.getStr("").strip()
+      if named.len > 0: return named
+  except CatchableError:
+    discard
+  try:
+    return loadConversationHeader(ct, sessionId){"agent"}.getStr("").strip()
+  except CatchableError:
+    return ""
+
+proc recordConversationAgent*(ct: CoreTools, sessionId, name: string) =
+  ## Stamp a conversation's birth identity durably: compare-and-set on the
+  ## lineage doc's revision (the store's own optimistic concurrency, so two
+  ## racing turns cannot interleave a read-modify-write), retried a bounded
+  ## number of times, merging into whatever the doc already holds (`parent`,
+  ## `fork`, a child's activation ledger).
+  ##
+  ## Best-effort like every other header write: a failure costs the reader its
+  ## fast path, not the conversation — the header still carries the identity,
+  ## and `conversationAgent` accepts either. It must never fail a turn.
+  if name.len == 0: return
+  for attempt in 0 ..< 5:
+    try:
+      let (value, rev) = ct.storeGetItem("sessionmeta", sessionId)
+      var doc = newJObject()
+      if value != nil and value.kind == JObject: doc = value
+      if doc{"agent"}.getStr("") == name: return
+      doc["agent"] = %name
+      discard ct.storePutRev("sessionmeta", sessionId, doc, expectRev = rev)
+      return
+    except CatchableError:
+      discard  # rev conflict or a transient outage: re-read and retry
+
+
 proc persistConversationRuntime(p: Persister, providerOverride, modelOverride, provider,
                                 model: string) =
   var fields = %*{
@@ -3294,15 +3343,31 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   ## session; approvals raised by the turn are routed to it.
   let sessionId = inputArgs{"sessionId"}.getStr("")
   var args = inputArgs
-  if inputArgs{"agent"}.getStr("").len > 0:
-    let existing = loadConversationHeader(ct, sessionId)
-    if not sessions.hasKey(sessionId) and existing{"systemPrompt"}.getStr("").len == 0:
+  var agentExisting = ""
+  let agentAsked = inputArgs{"agent"}.getStr("").strip()
+  let agentAttached = inputArgs.hasKey("agent") or inputArgs.hasKey("persona")
+  if agentAsked.len > 0:
+    # Birth-only, but NOT "first turn only". The header (and, locked, the
+    # lineage doc) is the durable record of the identity a conversation was
+    # born with; a client that keeps naming the same agent — the obvious
+    # shape for a picker that persists a choice — must be idempotent, not
+    # refused. Only a genuinely DIFFERENT agent is a re-birth.
+    #
+    # Read the lineage doc (the race-proof copy) and treat "unborn" as "no
+    # frozen prompt yet" — NOT as "no header". The header is created by
+    # ensureConversationHeader before any resolution runs, so testing for its
+    # existence skipped the birth path entirely and a definition's persona
+    # never reached the prompt.
+    agentExisting = conversationAgent(ct, sessionId)
+    let born = ct.storeGetItem("conversation", sessionId).value
+    if agentExisting.len == 0 and
+        (born == nil or born{"systemPrompt"}.getStr("").len == 0):
       try:
         args = resolveAgentDefinition(inputArgs,
           proc(kind, id: string): JsonNode = ct.storeGetItem(kind, id).value)
       except CatchableError as e:
         return %*{"error": e.msg}
-    elif existing{"agent"}.getStr("") != inputArgs{"agent"}.getStr(""):
+    elif agentExisting.len > 0 and agentExisting != agentAsked:
       return %*{"error": "agent is birth-only; start a new conversation"}
   let content = args{"content"}.getStr("")
   # Autonomous wake (components/agent settle path): a session call with
@@ -3460,8 +3525,13 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       var headerUpdate = %*{"systemPrompt": sp, "cwd": entry.workspace}
       if personaName.len > 0:
         headerUpdate["persona"] = %personaName
-      if args{"agent"}.getStr("").len > 0 and header{"systemPrompt"}.getStr("").len == 0:
-        headerUpdate["agent"] = args{"agent"}
+      # The birth identity goes to BOTH records: the lineage doc (compare-and-
+      # set, hence race-proof) and the header (readable beside the frozen
+      # prompt it produced). Either alone satisfies conversationAgent, so a
+      # lost header race can never turn into a re-birth.
+      if agentAsked.len > 0:
+        headerUpdate["agent"] = %agentAsked
+        recordConversationAgent(ct, sessionId, agentAsked)
       ct.updateConversationHeader(sessionId, headerUpdate)
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
