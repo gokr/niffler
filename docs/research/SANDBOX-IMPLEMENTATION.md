@@ -1,12 +1,18 @@
 # SANDBOX-IMPLEMENTATION — an ordered plan
 
-Status: **plan; nothing implemented.** Concrete execution schedule for the
+Status: **launcher prototype implemented; not integrated with bash.**
+**Current Linux route is authoritative in [SANDBOX-ROUTE.md](SANDBOX-ROUTE.md):
+use system bubblewrap, with an opt-in direct system-bwrap AppArmor grant where
+needed.** The earlier Phase 0 claims below about mandatory wrapper profiling
+and AppArmor exec inheritance are superseded by that corrected decision.
+Concrete execution schedule for the
 design settled in [SANDBOX-MATRIX.md](SANDBOX-MATRIX.md) §5–§6a and
 [SANDBOX-PLAN.md](SANDBOX-PLAN.md). Read those first — this file does not
 re-argue the decisions, it schedules them.
 
 Supersedes [SANDBOX-PLAN.md](SANDBOX-PLAN.md) §3–§5 in two places: the backend
-pair is **bwrap + Seatbelt** (not Landlock + Seatbelt, which cannot hide reads),
+pair is **bwrap + Seatbelt** (Landlock has read support but no subtractive deny
+rule to mask `.env` under a broad readable workspace grant),
 and read confinement is a **core-side scope check**, not part of the launcher.
 SANDBOX-PLAN's scope, honesty and stopping rules still govern.
 

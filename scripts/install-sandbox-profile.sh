@@ -1,138 +1,103 @@
 #!/usr/bin/env bash
-# scripts/install-sandbox-profile.sh — grant the sandbox launcher permission to
-# create user namespaces on Linux.
-#
-# WHY THIS IS NEEDED (docs/research/SANDBOX-ROUTE.md): Ubuntu 23.10+ ships
-# kernel.apparmor_restrict_unprivileged_userns=1, which refuses CLONE_NEWUSER to
-# any *unconfined* program. That silently disables bubblewrap:
-#
-#     $ bwrap --unshare-user --ro-bind / / /bin/true
-#     bwrap: setting up uid map: Permission denied
-#
-# AppArmor grants `userns` to a program that HAS a profile, which is why Ubuntu
-# ships three-line "unconfined but named" stubs for ch-run, buildah and crun.
-# This script installs the same shape for Niffler's launcher.
-#
-# The profile must name the binary that CREATES the namespace. AppArmor attaches
-# per exec, so profiling a wrapper does not extend to the bwrap it spawns.
-# See SANDBOX-ROUTE.md §4 — if the launcher creates the namespace itself, this
-# path should point at the launcher; if bwrap is profiled directly, point it
-# there, accepting that the grant then covers every bwrap on the machine.
-#
-# Idempotent; failures are non-fatal (the harness runs unguarded-but-reported
-# without it — sandboxing is opt-in). Needs root: pass --sudo to use sudo.
-#
-#   ./scripts/install-sandbox-profile.sh [--sudo] [--target PATH]
-#
-# Uninstall: ./scripts/install-sandbox-profile.sh --uninstall [--sudo]
-set -uo pipefail
+# Optional AppArmor userns grant for the system bubblewrap binary.
+# This permits ALL uses of that binary to create user namespaces; it does not
+# grant host root, confine commands, or turn on Niffler's bash sandbox.
+# Exec profile inheritance is policy-dependent; we profile bwrap directly
+# rather than relying on an untested wrapper inheritance configuration.
+# Usage: make install-sandbox-profile SUDO=1
+# Preview: bash scripts/install-sandbox-profile.sh --dry-run
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Kept for the doc comment: if the launcher ever creates the namespace itself
-# instead of exec'ing bwrap, the profile target moves here.
-LAUNCHER="$ROOT/var/bin/niffler-sandbox"
-# The profile must name the binary that CREATES the namespace, not the wrapper
-# that execs it: AppArmor attaches per exec, so a grant on niffler-sandbox does
-# NOT extend to the bwrap it starts (docs/research/SANDBOX-ROUTE.md §4). Today
-# niffler-sandbox execs /usr/bin/bwrap for the full-promise path, so bwrap is
-# the correct default target. If the launcher later creates the namespace
-# itself, this default must change to $LAUNCHER.
-BWRAP="$(command -v bwrap 2>/dev/null || echo /usr/bin/bwrap)"
-TARGET="$BWRAP"
+TARGET=/usr/bin/bwrap
+PROFILE_PATH=/etc/apparmor.d/niffler-bwrap
 USE_SUDO=0
 UNINSTALL=0
-PROFILE_DIR="/etc/apparmor.d"
-PROFILE_NAME="niffler-bwrap"
-
+DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --sudo) USE_SUDO=1 ;;
     --uninstall) UNINSTALL=1 ;;
-    --target) shift; TARGET="${1:-}" ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help)
+      printf '%s\n' 'Usage: install-sandbox-profile.sh [--sudo] [--dry-run] [--uninstall]'
+      exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
 done
-
-if [ "$(uname -s)" != "Linux" ]; then
-  echo "sandbox profile: not Linux — on macOS use Seatbelt (needs no profile)."
+if [ "$(uname -s)" != Linux ]; then
+  echo 'AppArmor installation is Linux-only; no changes made.'
   exit 0
 fi
-
 run() { if [ "$USE_SUDO" = 1 ]; then sudo "$@"; else "$@"; fi; }
-
-PROFILE_PATH="$PROFILE_DIR/$PROFILE_NAME"
-
 if [ "$UNINSTALL" = 1 ]; then
-  if run test -f "$PROFILE_PATH"; then
-    run apparmor_parser -R "$PROFILE_PATH" 2>/dev/null || true
-    run rm -f "$PROFILE_PATH"
-    echo "sandbox profile: removed $PROFILE_PATH"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf 'Would unload and remove %s\n' "$PROFILE_PATH"
+    exit 0
+  fi
+  if [ -f "$PROFILE_PATH" ]; then
+    # Do not report successful removal if the running policy remains loaded.
+    run apparmor_parser -R "$PROFILE_PATH"
+    run rm -- "$PROFILE_PATH"
+    echo "Removed $PROFILE_PATH"
   else
-    echo "sandbox profile: nothing to remove"
+    echo 'No Niffler bubblewrap profile to remove.'
   fi
   exit 0
 fi
 
-if [ ! -x "$TARGET" ]; then
-  echo "sandbox profile: no binary at $TARGET" >&2
-  if [ "$TARGET" = "$BWRAP" ]; then
-    echo "  bubblewrap is not installed — install it (sudo apt install bubblewrap)." >&2
-  else
-    echo "  run 'make build' first, or pass --target." >&2
-  fi
+# Fixed system path: never grant userns to a PATH-selected, agent-writable
+# binary, and never interpolate arbitrary paths into privileged policy syntax.
+if [ ! -x "$TARGET" ] || [ -L "$TARGET" ]; then
+  echo 'Expected a system binary at /usr/bin/bwrap; install bubblewrap first.' >&2
   exit 1
 fi
-
-# Resolve symlinks: AppArmor matches the file it executes, and a profile naming
-# a symlinked spelling will not attach.
-TARGET="$(readlink -f "$TARGET")"
-
-if ! command -v apparmor_parser >/dev/null; then
-  echo "sandbox profile: apparmor_parser not found — install apparmor-utils" >&2
+read -r owner mode < <(stat -c '%u %a' "$TARGET")
+if [ "$owner" != 0 ] || (( (8#$mode & 8#022) != 0 )); then
+  echo '/usr/bin/bwrap must be root-owned and not group/world writable.' >&2
   exit 1
 fi
+printf '%s\n' 'Scope: this userns permission applies to every use of /usr/bin/bwrap.'
 
-restricted="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"
-if [ "$restricted" != "1" ]; then
-  echo "sandbox profile: userns is not restricted on this kernel ($restricted) —"
-  echo "  bubblewrap should work without a profile. Installing anyway (harmless)."
-fi
-
-tmp="$(mktemp)"
-cat > "$tmp" <<EOF
-# Installed by Niffler's scripts/install-sandbox-profile.sh.
-#
-# AppArmor refuses user namespaces to unconfined programs on Ubuntu 23.10+, which
-# disables bubblewrap. This grants 'userns' to the Niffler sandbox launcher only.
-# Shape copied from Ubuntu's own stubs for ch-run, buildah and crun.
-#
-# See docs/research/SANDBOX-ROUTE.md. Remove with:
-#   ./scripts/install-sandbox-profile.sh --uninstall
+# Private workspace scratch, removed even on failure. No privileged change until
+# the exact generated profile has passed apparmor_parser's syntax check.
+mkdir -p "$ROOT/var"
+tmpDir="$(mktemp -d "$ROOT/var/sandbox-profile.XXXXXX")"
+trap 'rm -rf -- "$tmpDir"' EXIT
+profile="$tmpDir/niffler-bwrap"
+cat > "$profile" <<'EOF'
+# Managed by Niffler install-sandbox-profile.sh. Applies to ALL system bwrap uses.
+# Allows user namespace creation, not host privilege elevation or confinement.
 abi <abi/4.0>,
 include <tunables/global>
 
-profile $PROFILE_NAME $TARGET flags=(unconfined) {
+profile niffler-bwrap /usr/bin/bwrap flags=(unconfined) {
   userns,
-
-  # site-specific additions and overrides
-  include if exists <local/$PROFILE_NAME>
+  include if exists <local/niffler-bwrap>
 }
 EOF
-
-if ! run install -m 0644 "$tmp" "$PROFILE_PATH"; then
-  rm -f "$tmp"
-  echo "sandbox profile: could not write $PROFILE_PATH (needs root — try --sudo)" >&2
+if [ "$DRY_RUN" = 1 ]; then
+  printf 'Would install and load %s:\n' "$PROFILE_PATH"
+  cat "$profile"
+  exit 0
+fi
+if ! command -v apparmor_parser >/dev/null; then
+  echo 'apparmor_parser not found; install the AppArmor tooling first.' >&2
   exit 1
 fi
-rm -f "$tmp"
-
+apparmor_parser -Q -T "$profile"
+if [ -e "$PROFILE_PATH" ]; then
+  # Preserve a different operator-managed profile; do not overwrite it blindly.
+  if ! cmp -s "$profile" "$PROFILE_PATH"; then
+    echo "$PROFILE_PATH differs; review/remove it manually before installation." >&2
+    exit 1
+  fi
+else
+  run install -m 0644 "$profile" "$PROFILE_PATH"
+fi
 if ! run apparmor_parser -r "$PROFILE_PATH"; then
-  echo "sandbox profile: wrote $PROFILE_PATH but apparmor_parser refused it." >&2
-  echo "  The guard stays unavailable; the launcher will report that honestly." >&2
+  echo "Profile load failed; $PROFILE_PATH remains for diagnosis. No sandbox success claimed." >&2
   exit 1
 fi
-
-echo "sandbox profile: installed for $TARGET"
-echo "verify with: $ROOT/var/bin/niffler-sandbox probe"
+printf 'Profile loaded. This is NOT proof of confinement. Verify with:\n  %s/var/bin/niffler-sandbox probe\n  make test-sandbox\n' "$ROOT"
