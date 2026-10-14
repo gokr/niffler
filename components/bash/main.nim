@@ -204,7 +204,7 @@ discard comp.tool("bash", bashSchema,
       try:
         if fileExists(statusFile):
           let j = parseJson(readFile(statusFile))
-          sandbox = %*{"state": (if j{"applied"}.getBool(false): "applied"
+          sandbox = %*{"state": (if j{"policyChecked"}.getBool(false): "policy_checked"
                                    else: "failed"),
                        "scope": "shell",
                        "backend": j{"backend"}.getStr("")}
@@ -220,6 +220,10 @@ discard comp.tool("bash", bashSchema,
     elif code == 126: status.add(" — found but not executable; run it via an interpreter, e.g. bash ./script.sh")
     status.add(")")
     var text = status & "\n"
+    if guarded.enabled:
+      text.add("[sandbox: " & payload{"sandbox"}{"state"}.getStr("requested") &
+        "; backend: " & payload{"sandbox"}{"backend"}.getStr("unknown") &
+        "; a separate policy check is not actual-launch attestation]\n")
     # transcript cap: spill the full capture and keep only head+tail in
     # the conversation; the model pages the rest with read (offset/limit).
     if full.len > transcriptCapBytes:
@@ -241,6 +245,28 @@ discard comp.tool("bash", bashSchema,
       text.add(full)
     payload["text"] = %text
     return payload)
+
+let sandboxStatusSchema = toolSchema(%*{}, @[],
+  description = "Inspect shell guard configuration and backend availability before a guarded command. Availability is not proof of enforcement for a particular launch.")
+sandboxStatusSchema["x-harness"] = %*{"effect": "read", "onDemand": true, "timeoutMs": 15000}
+discard comp.tool("bash_sandbox_status", sandboxStatusSchema,
+  proc(c: Component, args: JsonNode): JsonNode =
+    let enabled = getEnv("NIF_BASH_SANDBOX", "off") == "on"
+    let helper = getAppDir() / "niffler-sandbox"
+    var availability = %*{"usable": false, "detail": "launcher missing; run make build"}
+    if fileExists(helper):
+      let (code, output) = runCmd(quoteShell(helper) & " probe", 7000)
+      try:
+        availability = parseJson(output)
+      except CatchableError:
+        availability = %*{"usable": false, "detail": "probe did not return JSON", "exit_code": code}
+    return %*{"ok": true, "enabled": enabled,
+      "state": (if enabled: "configured" else: "off"),
+      "availability": availability, "backgroundSupported": false,
+      "text": "Shell guard " & (if enabled: "configured" else: "off") &
+        ". Backend availability: " & $availability &
+        ". Per-call policy checks are separate from actual-launch attestation; " &
+        "host reads remain possible except explicitly masked paths."})
 
 discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
   ## Self test (docs/WIRE.md): exercise the component's real exec path

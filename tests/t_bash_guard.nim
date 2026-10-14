@@ -28,6 +28,11 @@ proc main() =
     discard child.waitForExit(2000)
     child.close()
   check("guarded bash registers", waitRegistered(nc, "bash"))
+  let status = call(nc, "bash", "bash_sandbox_status", %*{})
+  check("status distinguishes configured from applied",
+    status{"enabled"}.getBool(false) and status{"state"}.getStr("") == "configured", $status)
+  check("status warns about attestation limits",
+    status{"text"}.getStr("").contains("actual-launch"), $status)
   proc run(ws, cmd: string, timeout = 10000): JsonNode =
     call(nc, "bash", "bash", %*{"command": cmd, "cwd": ws,
       "timeoutMs": timeout, "__workspace": {"root": ws}}, 15000)
@@ -45,9 +50,13 @@ proc main() =
       # The launcher attests AFTER the command, so the verdict cannot be
       # forged by the command's own exit code.
       check("launcher attests to enforced policy",
-            result{"sandbox"}{"state"}.getStr("") == "applied", $result)
+            result{"sandbox"}{"state"}.getStr("") == "policy_checked", $result)
       check("attestation names the backend",
             result{"sandbox"}{"backend"}.getStr("") == "bwrap", $result)
+    let exit125 = run(a, "exit 125")
+    check("command exit 125 is not mislabelled as a failed policy",
+      exit125{"exit_code"}.getInt(0) == 125 and
+      exit125{"sandbox"}{"state"}.getStr("") == "policy_checked", $exit125)
     let outside = run(a, "echo escaped > " & quoteShell(b / "outside"))
     check("second conversation workspace not writable", not fileExists(b / "outside"), $outside)
     let timed = run(a, "sleep 3; touch late", 1000)

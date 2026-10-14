@@ -39,10 +39,11 @@ not every automatically discovered sibling checkout.
   ignore them. Landlock without masks remains a separate opt-in prototype.
 - Existing off-mode execution is unchanged. Guarded timeout still reports 124;
   tested descendants do not survive timeout.
-- `sandbox.state` is `applied` only when the launcher's own post-command
-  evidence file says so. The launcher proves the policy with a **negative test
+- `sandbox.state` is `policy_checked` when the launcher's post-command record
+  says the separate policy self-check passed. The earlier `applied` label
+  overstated what this proves and has been removed. The launcher proves the policy with a **negative test
   that would succeed unsandboxed** plus a workspace-writable positive control,
-  then refuses (exit 125, `applied:false`, command never starts) if the policy
+  then refuses (exit 125, `policyChecked:false`, command never starts) if the policy
   cannot be demonstrated. An earlier version wrote to `/` — denied to an
   ordinary user with or without a sandbox — so a backend confining *nothing*
   passed it; `tests/t_sandbox.nim` now keeps a fake non-confining bwrap as a
@@ -59,12 +60,17 @@ configured secret masking, provider-env stripping, cross-workspace write denial,
 timeout/descendant teardown and missing-root/background refusals. It is picked
 up by `make test-server`. `make test-sandbox` covers the helper separately.
 
-Remaining before calling Phase 2 complete: bounded probe execution,
-`bash_sandbox_status`, cancellation-specific and spill regressions, guarded
+Availability and policy probes now have 5-second bounds with process-group
+teardown. `bash_sandbox_status` is an on-demand read tool: it distinguishes
+configured/off from backend availability and warns that neither attests to the
+actual launch. Guarded tool text also renders the policy-check limitation.
+
+Remaining before calling Phase 2 complete: cancellation-specific and spill regressions, guarded
 background integration decision, mask alias tests, actual macOS implementation,
 and fd-level attestation for the real exec rather than a parallel self-check.
 No blanket whole-harness protection: `read`, grep traversal, native Fabric,
 plugins and MCP need their own enforcement paths.
 
-Prompt effect: unchanged direct tool schema and frozen system prefix. Private
+Prompt effect: existing direct schemas and frozen system prefix unchanged.
+The new status tool is on-demand; discovery adds append-only history. Private
 workspace context exists already. Status/refusals append ordinary tool results.

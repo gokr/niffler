@@ -16,6 +16,7 @@
 import std/[os, strutils, json, osproc, posix, streams, tempfiles]
 import policy
 import landlock
+import ../sdk/niffler/procutil
 
 const
   NifflerBwrap = "bwrap"
@@ -42,8 +43,8 @@ proc bwrapProbe(binPath: string): string =
   ## says nothing about whether it works.
   if binPath.len == 0:
     return "bubblewrap (bwrap) is not installed"
-  let (outp, rc) = execCmdEx(quoteShell(binPath) & " --unshare-user --unshare-net" &
-    " --ro-bind / / /bin/true 2>&1")
+  let (rc, outp) = runCmd(quoteShell(binPath) & " --unshare-user --unshare-net" &
+    " --ro-bind / / /bin/true", 5000)
   if rc != 0:
     let msg = outp.strip()
     if msg.contains("uid map") or msg.contains("No permissions to create a new namespace") or
@@ -124,7 +125,7 @@ proc writeStatus(req: LaunchRequest, backend: string, applied: bool) =
   if req.statusFile.len == 0: return
   try:
     writeFile(req.statusFile,
-              $(%*{"backend": backend, "applied": applied, "scope": "shell"}))
+              $(%*{"backend": backend, "policyChecked": applied, "scope": "shell"}))
   except CatchableError:
     discard
 
@@ -174,11 +175,10 @@ proc verifyPolicy(binPath: string, req: LaunchRequest): tuple[ok: bool, why: str
   var args: seq[string]
   for i in 1 ..< argv.len: args.add argv[i]
   try:
-    let p = startProcess(argv[0], args = args, options = {poStdErrToStdOut})
-    let outp = p.outputStream.readAll()
-    discard p.waitForExit()
-    p.close()
-    if outp.contains("niffler-verify:0"): return (true, "")
+    var command = quoteShell(argv[0])
+    for arg in args: command.add " " & quoteShell(arg)
+    let (code, outp) = runCmd(command, 5000)
+    if code == 0 and outp.strip() == "niffler-verify:0": return (true, "")
     return (false, "the sandbox did not enforce the requested policy: " & outp.strip())
   except CatchableError as e:
     return (false, "self-check could not run: " & e.msg)
@@ -221,7 +221,8 @@ proc runRequest(req: LaunchRequest): int =
       return 125
     stderr.writeLine "niffler-sandbox: " & probe.detail
     let code = runWithLandlock(req)
-    writeStatus(req, "landlock", true)
+    # No startup acknowledgement from the restricted child yet.
+    writeStatus(req, "landlock", false)
     return code
   of bkNone:
     stderr.writeLine "niffler-sandbox: no usable backend — " & probe.detail

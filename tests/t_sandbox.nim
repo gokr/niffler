@@ -175,7 +175,7 @@ proc enforcementChecks(root: string) =
         fcode == 125 and not fout.contains("SHOULD-NOT-RUN"), fout)
   var fakeApplied = ""
   if fileExists(statusPath):
-    try: fakeApplied = $parseJson(readFile(statusPath)){"applied"}.getBool(true)
+    try: fakeApplied = $parseJson(readFile(statusPath)){"policyChecked"}.getBool(true)
     except CatchableError: discard
   check("the refusal records applied:false", fakeApplied == "false", fout)
 
