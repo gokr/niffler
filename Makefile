@@ -73,7 +73,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 .PHONY: help all build components components-inner run down down-here \
          test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
-        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat \
+        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-server-lifecycle \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
@@ -545,6 +545,9 @@ test-vars:    build var/bin/test_t_vars    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp
 test-repomap: build var/bin/test_t_repomap_tags var/bin/test_t_repomap_score \
     var/bin/test_t_repomap ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_tags && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_score && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap
+test-server-lifecycle: var/bin/test_t_server
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_server
+
 test-heartbeat: build var/bin/test_t_heartbeat ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_heartbeat
 test-processes: build var/bin/test_t_processes ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_processes
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert

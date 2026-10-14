@@ -2475,6 +2475,28 @@ it when provisioning a new one. A malformed file refuses startup rather than
 silently changing identity. The ID is routing metadata, not authentication;
 remote client pinning is not yet implemented.
 
+### Persistent server lifecycle
+
+`bash scripts/bootstrap.sh --server <root>` builds without installing the TUI,
+PATH wrappers or optional extras. Existing checkouts are adopted without a pull;
+updating is a separate decision. Provider credentials must be configured explicitly
+in that root's `.env`; nothing is copied from another instance.
+
+On Linux, `bash scripts/server.sh install <root>` installs and enables a
+root-scoped **user** systemd unit but does not start it. Then use the same helper
+with `start`, `status`, `logs` or `stop`. Roots and HOME must use simple paths
+(letters, digits, `/`, `.`, `_`, `-`). Conflicting or symlinked units are refused,
+not overwritten. The service runs the normal manifest with explicit NIF_ROOT,
+no UI-autostart shutdown and no automatic approvals, on a core-owned isolated
+loopback NATS bus; its endpoint is `<root>/var/nats-url`. No public listener is
+installed. Disconnecting a client does not stop it.
+
+`bash scripts/server.sh linger <root>` reports linger separately. Without enabled
+linger, logout/reboot persistence is not guaranteed; ask an administrator about
+`loginctl enable-linger`. The helper never changes linger or uses sudo. These
+operations affect host lifecycle: obtain human approval before running them on
+an SSH/VM target. Tests use fake systemd commands, not the host service manager.
+
 ### Scheduled turns (heartbeat)
 
 Heartbeat is built by `make build` but enabled only through an approved

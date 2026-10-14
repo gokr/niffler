@@ -45,7 +45,10 @@ hasTty() { { : < /dev/tty; } 2>/dev/null; }
 
 usage() {
   cat <<'EOF'
-usage: bootstrap.sh [--dry-run] [<dir>]
+usage: bootstrap.sh [--dry-run] [--server] [<dir>]
+
+  --server builds the harness without TUI/PATH installation or optional extras.
+  It does not install/start a service; use scripts/server.sh install <root>.
 
   curl -fsSL .../scripts/bootstrap.sh | bash
   curl -fsSL .../scripts/bootstrap.sh | bash -s -- /where/you/want/niffler
@@ -62,10 +65,12 @@ EOF
 }
 
 DRY_RUN=0
+SERVER=0
 TARGET="${NIF_INSTALL_DIR:-}"
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
+    --server) SERVER=1 ;;
     --help|-h) usage; exit 0 ;;
     *) TARGET="$arg" ;;
   esac
@@ -97,6 +102,10 @@ info "                              asks about optional Node.js)"
 info "2. make setup                 the Nim toolchain + nimble packages"
 info "3. make release               core + every component into var/bin"
 info "4. seed .env                  provider/API-key settings — only if missing"
+if [ "$SERVER" = 1 ]; then
+info "5. server mode                no TUI, PATH installation or optional extras"
+info "                              service install/start is a separate explicit action"
+else
 info "5. make install-tui           PATH entries (NIF_BIN_DIR, else auto-detected): niffler,"
 info "                              niffler-cli, niffler-console + the niffler-tui wrapper"
 info "                              (niffler-prefixed names only — component binaries never shadow Unix tools)"
@@ -104,6 +113,7 @@ info "then optional extras, each asked one by one ([y/N] — Enter skips):"
 info "                  make install-lsp    language servers for the lsp component"
 info "                  make install-tools  the agent CLI toolkit (jq, yq, ripgrep, fd, bat, ...)"
 info "                  make install-jev    the Von runtime behind the jev advisor (~5.4 GB)"
+fi
 [ "$DRY_RUN" = 1 ] && say "(dry run — nothing will be changed)"
 echo
 
@@ -128,12 +138,12 @@ REPO_URL="https://github.com/gokr/niffler.git"
 
 # Step 1 — consent to the location first (zero side effects before it), then
 # make sure git + make exist on a pristine machine, then find or make the clone.
-if [ -f niffler.nimble ] && [ -d .git ]; then
+if [ -f niffler.nimble ] && [ -e .git ] && [ -z "$TARGET" ]; then
   ROOT="$(pwd)"
   say "step 1/5 — adopting this checkout as the instance home: $ROOT (no clone needed)"
 else
   ROOT="${TARGET:-$HOME/niffler}"
-  if [ ! -d "$ROOT/.git" ] && [ -z "$TARGET" ]; then
+  if [ ! -e "$ROOT/.git" ] && [ -z "$TARGET" ]; then
     # Read the answer from /dev/tty, never stdin: under `curl | bash` stdin
     # is the script stream itself.
     if [ "$DRY_RUN" = 0 ] && hasTty; then
@@ -190,7 +200,7 @@ else
   # Node is OPTIONAL: Niffler itself is Nim + Go — core, every component and
   # the TUI build without it. It earns its place for npx skills, npm-based
   # MCP servers and TypeScript components — so ask, and default to no.
-  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  if [ "$SERVER" = 0 ] && { ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; }; then
     wantNode=""
     if [ -n "${NIF_WITH_NODE:-}" ]; then
       wantNode=1
@@ -232,7 +242,7 @@ else
   # has — a tag checkout is a pin (a release tag never moves; delete the
   # clone or pass NIF_REF=main to change versions).
   REF="${NIF_REF:-}"
-  if [ -d "$ROOT/.git" ]; then
+  if [ -e "$ROOT/.git" ]; then
     :
   elif [ -n "$REF" ]; then
     say "step 1/5 — installing '$REF' (NIF_REF)"
@@ -260,7 +270,7 @@ else
     say "step 1/5 — stable release: $REF"
   fi
 
-  if [ -d "$ROOT/.git" ]; then
+  if [ -e "$ROOT/.git" ]; then
     PINNED=""
     if [ -z "$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null)" ]; then
       PINNED="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
@@ -269,8 +279,12 @@ else
       say "step 1/5 — reusing the existing clone at $ROOT — pinned at $PINNED"
       info "a release tag never moves; delete $ROOT or pass NIF_REF=main to change versions"
     else
-      info "reusing the existing clone at $ROOT — updating it (git pull --ff-only)"
-      run git -C "$ROOT" pull --ff-only || info "git pull skipped (local changes or offline) — continuing with the clone as-is"
+      if [ "$SERVER" = 1 ]; then
+        info "adopting existing checkout at $ROOT without updating it; updates are a separate decision"
+      else
+        info "reusing the existing clone at $ROOT — updating it (git pull --ff-only)"
+        run git -C "$ROOT" pull --ff-only || info "git pull skipped (local changes or offline) — continuing with the clone as-is"
+      fi
     fi
   else
     if [ "$REF" = "main" ]; then
@@ -319,6 +333,14 @@ if [ ! -f .env ]; then
   info "open .env and add NIF_OPENAI_API_KEY (or your provider's settings) before chatting"
 else
   say "step 4/5 — .env already present, leaving it alone"
+fi
+
+if [ "$SERVER" = 1 ]; then
+  say "server build ready at $ROOT — no TUI or optional extras installed"
+  info "configure provider settings in $ROOT/.env explicitly (no credentials copied)"
+  info "install service: bash $ROOT/scripts/server.sh install $ROOT"
+  info "then start: bash $ROOT/scripts/server.sh start $ROOT"
+  exit 0
 fi
 
 # Step 5 — PATH entries + the terminal client wrapper.

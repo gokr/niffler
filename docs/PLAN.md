@@ -315,6 +315,8 @@ gets scheduled, and keep the rationale edits in the owning research doc.
   identity → persistent service → SSH install/adopt → Multipass provisioning →
   `/niffler` switching → delegation → reconnect inbox/artifacts. Step 1 is
   implemented on `feat/fleet`: persisted instanceId plus NIF_NAME in catalog.
+  Step 2 adds server-only bootstrap and a root-scoped user-service helper with
+  conflict refusal and separate linger reporting (fake-systemd contract tests).
 - **Remote paths** — first-class Chetter support and/or a native fleet over
   NATS leaf nodes + a shared TiDB scope; shared prerequisites are `NIF_NAME`
   identity, bus auth and provisioning

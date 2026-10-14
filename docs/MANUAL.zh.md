@@ -1203,6 +1203,24 @@ Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小
 创建新实例时不要复制。文件损坏会拒绝启动，不会静默更换身份。
 ID 是路由元数据，不是身份认证；远程客户端固定身份尚未实现。
 
+### Persistent server lifecycle
+
+`bash scripts/bootstrap.sh --server <root>` 构建服务器，不安装 TUI、PATH
+包装器或可选附加项。已有检出只采用，不执行 pull；更新另行决定。
+提供商凭据须在该根目录的 `.env` 中明确配置，不从其他实例复制。
+
+Linux 上用 `bash scripts/server.sh install <root>` 安装并启用根目录专属的
+用户 systemd 单元，但不启动。随后用同一助手的 `start`、`status`、`logs`、
+`stop` 操作。根目录和 HOME 只允许字母、数字、`/`、`.`、`_`、`-`。
+冲突或符号链接单元会被拒绝，不覆盖。服务运行正常 manifest，明确设置
+NIF_ROOT，禁用 UI 自动退出和自动批准，使用核心拥有的隔离回环 NATS；
+地址写入 `<root>/var/nats-url`。不安装公共监听器，客户端断开不会停止服务。
+
+`bash scripts/server.sh linger <root>` 单独报告 linger。未启用时无法保证
+注销或重启后持续运行；请向管理员询问 `loginctl enable-linger`。助手不修改
+linger，也不使用 sudo。在 SSH/VM 目标执行这些生命周期操作前须取得人类
+批准。测试使用假的 systemd 命令，不操作主机服务管理器。
+
 ### Scheduled turns (heartbeat)
 
 heartbeat 由 `make build` 构建，仅通过获批的 `spawn` 启用，不自动启动。
