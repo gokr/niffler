@@ -148,6 +148,12 @@ class FleetTests(unittest.TestCase):
             self.install()
         self.assertEqual(target.read_text(), "{}")
 
+    def test_server_setup_omits_optional_node(self):
+        result = subprocess.run(["make", "-n", "setup", "NIF_SERVER=1"], cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("install-node; do", result.stdout)
+        self.assertIn("install-go ; do", result.stdout)
+
     def test_no_tty_no_automatic_consent(self):
         with patch("builtins.open", side_effect=OSError), patch.dict(os.environ, {"NIF_AUTO_APPROVE": "1", "NIF_ASSUME_YES": "1"}):
             with self.assertRaises(fleet.Refusal):

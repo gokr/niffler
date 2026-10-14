@@ -608,7 +608,7 @@ clean:
 # and Clang must exist before Nimble builds Futhark and BitBarrel.
 setup:
 	@set -e; for target in install-native-deps install-nim install-nim-deps \
-		install-go install-node; do \
+		install-go $(if $(filter 1,$(NIF_SERVER)),,install-node); do \
 		$(MAKE) --no-print-directory $$target; \
 	done
 	@echo "setup done — verify with 'make doctor', then 'make'"

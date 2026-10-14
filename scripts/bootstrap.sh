@@ -306,7 +306,8 @@ if [ "$DRY_RUN" = 0 ] && ! command -v make >/dev/null 2>&1; then
   die "make is required (step 1 should have installed it)"
 fi
 
-# Step 2 — platform prerequisites.
+# Step 2 — platform prerequisites. Server setup omits optional Node too.
+if [ "$SERVER" = 1 ]; then export NIF_SERVER=1; fi
 if [ "${NIF_SKIP_SETUP:-0}" = "1" ]; then
   say "step 2/5 — skipped (NIF_SKIP_SETUP=1): make setup would install prerequisites"
 else
