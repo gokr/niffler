@@ -44,6 +44,18 @@ proc resolveBusUrl(): string =
   ## (SDK's resolveNatsUrl — the same order every client follows).
   resolveNatsUrl()
 
+proc resolveCommandBusUrl(explicit: string): string =
+  ## The bus for the non-`run` commands (catalog/call/wait/install). These
+  ## are direct bus clients with no root-ownership logic, so `--bus` is the
+  ## operator's statement of intent and must win over everything — including
+  ## a NIF_NATS_URL inherited from the shell or set by a live client. It did
+  ## not, until this: `--bus` was parsed (and honouring it was documented) but
+  ## only `cli run` ever read it, so `cli --bus <other> call …` silently
+  ## dispatched against NIF_NATS_URL instead — a fleet operator driving a
+  ## remote instance talked to their own harness, which is exactly the
+  ## accidental cross-attachment the identity rules exist to prevent.
+  if explicit.len > 0: explicit else: resolveBusUrl()
+
 proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000): bool =
   ## Core owns registration acceptance. Replace both indexes on every read;
   ## a failed read must not leave stale entries available as proof of success.
@@ -856,7 +868,8 @@ proc cmdRun(opts: RunOptions): int =
   if ok: 0 else: 1
 
 proc usage() =
-  echo "usage: cli [--timeout <secs>] <catalog|call|wait|install|run> ..."
+  echo "usage: cli [--bus <url>] [--timeout <secs>] <catalog|call|wait|install|run> ..."
+  echo "  --bus <url>                               attach to an explicit bus (all commands)"
   echo "  catalog                                   list components and tools"
   echo "  call <tool> '<json args>'                 dispatch a tool call"
   echo "  wait <component> [<secs>]                 wait for registration"
@@ -898,28 +911,45 @@ proc main() =
           echo "cli: bad --timeout value: " & val
           quit(2)
       of "mcp", "mcp-file":
+        # NAME captured before consuming the next token: p.next() overwrites
+        # p.key with the VALUE, so comparing p.key afterwards silently filed
+        # `--mcp '{…}'` as a file path (the same trap as the flag table
+        # below). `=`-form was unaffected, which is why the test suite —
+        # written entirely with `=` — never caught it.
+        let optKey = p.key
         var val = p.val
         if val.len == 0:
           p.next()
           if p.kind == cmdArgument: val = p.key
           else:
-            echo "cli: --" & p.key & " needs a value (use --" & p.key & "=<v>)"
+            echo "cli: --" & optKey & " needs a value (use --" & optKey & "=<v>)"
             quit(2)
-        if p.key == "mcp": mcpDecls.add(val)
+        if optKey == "mcp": mcpDecls.add(val)
         else: mcpFiles.add(val)
       of "session", "root", "bus", "cwd", "provider", "model",
          "thinking", "approvals", "prompt", "cancel-grace", "export",
          "mcp-timeout":
         # `cli run` options (docs/MANUAL.md "Headless turns"). `--export` is
         # the one optional-value flag: bare, it writes the default path.
+        #
+        # The option NAME must be read before p.next(): that call replaces
+        # p.key with the consumed VALUE, so `flags[p.key] = val` after it
+        # stored the value under its own key and left the real flag unset.
+        # Every space-separated spelling (`--session foo`, `--bus nats://…`)
+        # was therefore silently ignored — `--session foo` started a NEW
+        # conversation and `--bus <url> catalog` answered from NIF_NATS_URL
+        # instead — while the `=` spelling worked, which is why the suite
+        # (written with `=`) never noticed. Reported while driving a remote
+        # instance over the fleet's `cli --bus` path.
+        let optKey = p.key
         var val = p.val
-        if val.len == 0 and p.key != "export" and p.kind == cmdLongOption:
+        if val.len == 0 and optKey != "export" and p.kind == cmdLongOption:
           p.next()
           if p.kind == cmdArgument: val = p.key
           else:
-            echo "cli: --" & p.key & " needs a value (use --" & p.key & "=<v>)"
+            echo "cli: --" & optKey & " needs a value (use --" & optKey & "=<v>)"
             quit(2)
-        flags[p.key] = val
+        flags[optKey] = val
       of "quiet", "own", "help", "h":
         switches[p.key] = true
       else:
@@ -1021,7 +1051,7 @@ proc main() =
       quit(2)
     quit(cmdRun(opts))
 
-  let url = resolveBusUrl()
+  let url = resolveCommandBusUrl(flags.getOrDefault("bus"))
   var nc: NatsConnection
   try:
     nc = connect(url)
