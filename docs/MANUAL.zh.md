@@ -1221,6 +1221,36 @@ NIF_ROOT，禁用 UI 自动退出和自动批准，使用核心拥有的隔离�
 linger，也不使用 sudo。在 SSH/VM 目标执行这些生命周期操作前须取得人类
 批准。测试使用假的 systemd 命令，不操作主机服务管理器。
 
+### SSH and Multipass provisioning
+
+Python 3 客户端助手 `scripts/fleet.py` 通过 SSH 或可选 Multipass 安装或采用
+Linux 服务器（Multipass 需单独安装）：
+
+```bash
+python3 scripts/fleet.py install --ssh ubuntu@worker --root /home/ubuntu/niffler --revision <full-published-commit-sha> --profile ~/.config/niffler/worker.json
+python3 scripts/fleet.py install --multipass niffler-test --cpus 2 --memory 4G --disk 20G --root /home/ubuntu/niffler --revision <full-published-commit-sha> --profile ~/.config/niffler/niffler-test.json
+python3 scripts/fleet.py probe --profile ~/.config/niffler/niffler-test.json
+```
+
+新目标须已安装 git；bootstrap 通过 Makefile 安装其余依赖，可能需要 sudo。
+revision 必须是 `gokr/niffler` 可获取的 40 位提交，包含服务器 bootstrap、服务
+和身份支持；不能安装未发布的本地提交。已有完整安装只采用，不拉取或重建；
+不完整或无关根目录会被拒绝。打印目标、路径、版本和资源后，须在 tty 输入
+`yes` 批准；非交互运行和继承的自动批准设置不能批准。构建日志实时输出。
+
+SSH 使用正常别名、密钥、ProxyJump 和 known_hosts，禁用 agent 转发，不放宽
+主机检查。Multipass 创建 Ubuntu 24.04 或通过 exec 采用已有 VM，不挂载主机、
+不复制凭据。回执中的 `createdVm` 仅是来源，不是删除授权；无删除或 purge
+操作。提供商配置和 linger 仍需明确设置；缺少用户 systemd 管理器会拒绝。
+
+服务启动后验证回环 catalog 的 root 和 instanceId，再原子保存 0600 回执。
+重跑固定该 ID，身份变化会拒绝；固定的 VM 消失时不会自动重建。这些回执
+尚不是 TUI 连接配置；`/niffler` 切换和隧道管理仍属后续工作。用 `--profile`
+配合 `status`、`logs`、`start`、`stop` 管理 Niffler；`vm-stop` 经单独确认停止
+Multipass VM。停止 Niffler 不停止或删除 VM。失败保留部分状态供明确检查，
+不自动删除 VM 或重试安装。`make test-fleet` 使用假传输；真实部署须获人类
+批准目标和资源计划。
+
 ### Scheduled turns (heartbeat)
 
 heartbeat 由 `make build` 构建，仅通过获批的 `spawn` 启用，不自动启动。

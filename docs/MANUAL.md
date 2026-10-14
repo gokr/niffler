@@ -2497,6 +2497,48 @@ linger, logout/reboot persistence is not guaranteed; ask an administrator about
 operations affect host lifecycle: obtain human approval before running them on
 an SSH/VM target. Tests use fake systemd commands, not the host service manager.
 
+### SSH and Multipass provisioning
+
+The client-local Python 3 helper `scripts/fleet.py` installs or adopts a Linux
+server using SSH or optional Multipass (install Multipass separately):
+
+```bash
+python3 scripts/fleet.py install --ssh ubuntu@worker \
+  --root /home/ubuntu/niffler --revision <full-published-commit-sha> \
+  --profile ~/.config/niffler/worker.json
+python3 scripts/fleet.py install --multipass niffler-test \
+  --cpus 2 --memory 4G --disk 20G \
+  --root /home/ubuntu/niffler --revision <full-published-commit-sha> \
+  --profile ~/.config/niffler/niffler-test.json
+python3 scripts/fleet.py probe --profile ~/.config/niffler/niffler-test.json
+```
+
+A new target requires git already installed; bootstrap installs the remaining
+prerequisites through the Makefile (sudo may be needed). The revision must be a
+40-character commit available from `gokr/niffler`, containing server bootstrap,
+service and identity support. Local unpublished commits cannot be installed this
+way. Existing built installations are adopted without pulling or rebuilding;
+incomplete/unrelated roots refuse instead of overwriting. An explicit tty `yes`
+approves the printed target/root/revision/resources plan; noninteractive or
+inherited auto-approval settings cannot approve it. Build output streams live.
+
+SSH honors normal aliases, keys, ProxyJump and known_hosts; agent forwarding is
+disabled and unknown hosts fail rather than disabling host checks. Multipass
+creates Ubuntu 24.04 or adopts an existing named VM via `multipass exec` with no
+host mounts or credential copying. `createdVm` in the receipt is provenance,
+not deletion authority. There is intentionally no delete/purge action. Provider
+setup and linger remain explicit, and a missing user systemd manager refuses.
+
+The helper starts the scoped service and verifies its loopback catalog root and
+stable instanceId before atomically saving a 0600 receipt. Reruns pin that ID and
+refuse identity drift. These receipts are not yet TUI connection profiles:
+`/niffler` switching and tunnel ownership are subsequent work. Use `status`,
+`logs`, `start` or `stop` with `--profile` for Niffler lifecycle; `vm-stop` stops
+only the Multipass VM after separate confirmation. Stopping Niffler does not
+stop/delete its VM. Failed installs retain partial state for explicit inspection;
+they never delete a VM or silently retry installation. `make test-fleet` exercises
+fake transports; real provisioning needs a human-approved target/resource plan.
+
 ### Scheduled turns (heartbeat)
 
 Heartbeat is built by `make build` but enabled only through an approved

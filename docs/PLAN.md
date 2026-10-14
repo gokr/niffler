@@ -317,6 +317,9 @@ gets scheduled, and keep the rationale edits in the owning research doc.
   implemented on `feat/fleet`: persisted instanceId plus NIF_NAME in catalog.
   Step 2 adds server-only bootstrap and a root-scoped user-service helper with
   conflict refusal and separate linger reporting (fake-systemd contract tests).
+  Steps 3–4 add `scripts/fleet.py`: approved SSH/Multipass install/adopt,
+  pinned catalog receipts and separate service/VM stop (fake transports tested;
+  real-target smoke and client tunnel/switch integration remain pending).
 - **Remote paths** — first-class Chetter support and/or a native fleet over
   NATS leaf nodes + a shared TiDB scope; shared prerequisites are `NIF_NAME`
   identity, bus auth and provisioning
