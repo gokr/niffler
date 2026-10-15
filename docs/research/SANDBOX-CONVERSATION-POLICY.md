@@ -86,14 +86,26 @@ the host network, not a domain allowlist, and the prompt must state that.
 Seatbelt implementation and equivalent behavior still require Mac validation.
 This is agreed design, not implemented per-call approval support.
 
+## LSP tools — approved by the user
+
+- Queries, automatic warmup and diagnostics are trusted infrastructure with no
+  additional sandbox approval. Their internal project/dependency reads are
+  trusted; direct filesystem tools remain subject to approved roots and denies.
+- Server listing/status needs no additional sandbox approval.
+- Registry changes retain existing approval requirements.
+- Remove the experimental mask-triggered blanket server refusal. Do not replace
+  it with a rule that disables the trusted server whenever any mask exists.
+
+This is the agreed target, not a claim that the current experimental LSP
+implementation has already been migrated.
+
 ## Remaining per-tool review
 
 The user requested individual review of tool treatments. The filesystem group
-and bash network policy above are approved in detail. Review next:
+plus bash network and LSP policies above are approved in detail. Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. LSP query, registry and server-management tools individually.
-3. fetch and extraction.
+2. fetch and extraction.
 4. builder build/build_package/info individually.
 5. observe inspection, request/publish and management tools individually.
 6. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
