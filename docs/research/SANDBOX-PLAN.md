@@ -1,5 +1,9 @@
 # SANDBOX-PLAN — a small, honest first release
 
+> Superseded policy direction: see [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md)
+> for the user-agreed per-conversation design and per-tool review sequence.
+> The historical status and first-release scope below are not current promises.
+
 Status: **revised plan; nothing implemented**. The historical sandbox branch
 and worktree are not part of the current checkout. This revision supersedes the
 implementation decisions
