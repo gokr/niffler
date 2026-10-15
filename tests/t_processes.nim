@@ -144,7 +144,8 @@ proc main() =
 
   check("start guidance discovers controls and explains wait/filter/tail",
     s1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
-    s1{"text"}.getStr("").contains("waitMs:25000") and
+    s1{"text"}.getStr("").contains("Completion is pushed") and
+    s1{"text"}.getStr("").contains("only when you need its output") and
     s1{"text"}.getStr("").contains("filter") and
     s1{"text"}.getStr("").contains("tail:\"1\""), $s1)
 
@@ -304,9 +305,9 @@ proc main() =
   check("bash flag teaches the follow-up verbs",
         b1{"text"}.getStr("").contains("process_poll") and
         b1{"text"}.getStr("").contains("process_kill"), $b1)
-  check("bash flag teaches discovery and bounded waiting",
+  check("bash flag teaches discovery and completion push",
         b1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
-        b1{"text"}.getStr("").contains("waitMs:25000"), $b1)
+        b1{"text"}.getStr("").contains("do not poll to wait for it"), $b1)
   let idB = b1{"id"}.getStr("")
   check("the forwarded process emitted before the poll",
         waitForLine(idB, "via-bash line"), "no output within the deadline")
@@ -424,6 +425,8 @@ proc main() =
   # noticed when a tool call happened to reap it, so finished background work
   # sat unseen.
   block exitNotice:
+    let wakeSub = openSub(nc, "svc.core.call")
+    defer: natsSubscription_Destroy(wakeSub)
     let steerSub = openSub(nc, "svc.session.bgnotice.steer")
     defer: natsSubscription_Destroy(steerSub)
     let started = pcall("process_start",
@@ -456,6 +459,21 @@ proc main() =
             notice{"label"}.getStr("") == "notice-fixture" and
             notice{"text"} == nil, $notice)
 
+    let wake = pollEnvelope(wakeSub, 5000)
+    check("notice: exit requests a bounded session wake without polling",
+      wake.found and wake.env.tool == "session" and
+      wake.env.args{"wake"}.getBool(false) and
+      wake.env.args{"sessionId"}.getStr("") == "bgnotice")
+    let pending = pcall("process_notices", %*{"session": "bgnotice", "peek": true})
+    check("notice: durable before wake and repeatable until ack",
+      pending{"count"}.getInt() == 1 and
+      pcall("process_notices", %*{"session": "bgnotice"}){"count"}.getInt() == 1)
+    check("notice: other sessions cannot drain completion",
+      pcall("process_notices", %*{"session": "foreign", "ack": ownedId}){"count"}.getInt() == 0)
+    discard pcall("process_notices", %*{"session": "bgnotice", "ack": ownedId})
+    check("notice: explicit acknowledgement deduplicates delivery",
+      pcall("process_notices", %*{"session": "bgnotice", "peek": true}){"count"}.getInt() == 0)
+
     # exactly once: further reaps, polls and listings must not repeat it
     var strays = 0
     let quietWindow = epochTime() + 2.5
@@ -484,6 +502,39 @@ proc main() =
     while epochTime() < unownedUntil:
       if pollEnvelope(steerSub, 100).found: inc unowned
     check("notice: no owner session means no notice", unowned == 0, $unowned)
+
+  block completionRecovery:
+    # A previously durable exit survives component restart, including output.
+    let recoveredId = "p999999"
+    let noticesDir = tmp / "var" / "processes" / "notices"
+    createDir(noticesDir)
+    writeFile(noticesDir / (recoveredId & ".json"), $(%*{
+      "session": "recovered-owner", "delivered": false,
+      "notice": {"kind": "process-exited", "processId": recoveredId,
+        "label": "recovered", "status": "exited(code 0)", "exitCode": 0}}))
+    writeFile(spoolPath(tmp, recoveredId, "out"), "retained output\n")
+    writeFile(spoolPath(tmp, recoveredId, "err"), "")
+    # Existing component doesn't own this synthesized record; a separate root
+    # exercises the boot path without disturbing the original process fixture.
+    let recoveredRoot = tempRoot("process-recovered")
+    defer: removeDir(recoveredRoot)
+    createDir(recoveredRoot / "var" / "processes" / "notices")
+    copyFile(noticesDir / (recoveredId & ".json"),
+      recoveredRoot / "var" / "processes" / "notices" / (recoveredId & ".json"))
+    copyFile(spoolPath(tmp, recoveredId, "out"), spoolPath(recoveredRoot, recoveredId, "out"))
+    let (recoveryServer, recoveryUrl) = startNats()
+    defer: stopServer(recoveryServer)
+    var recoveryNc = waitConnect(recoveryUrl)
+    defer: recoveryNc.close()
+    let recoveryProc = startComponent(bin, recoveryUrl, root = recoveredRoot)
+    defer: stopProcess(recoveryProc)
+    check("recovered component registered", waitRegistered(recoveryNc, "processes"))
+    let inbox = call(recoveryNc, "processes", "process_notices",
+      %*{"session": "recovered-owner", "peek": true})
+    check("completion survives component restart", inbox{"count"}.getInt() == 1)
+    let output = call(recoveryNc, "processes", "process_poll", %*{"id": recoveredId})
+    check("completion output survives component restart",
+      output{"text"}.getStr("").contains("retained output"), $output)
 
   report("t_processes")
 

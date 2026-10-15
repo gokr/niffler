@@ -1234,7 +1234,7 @@ git 工作流程的唯讀一半，作為一等工具；寫入的一半（add/com
 
 ## Background processes (`processes`)
 
-啟動結果給出精確控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<回傳 id>", waitMs: 25000}` 等待輸出或退出，用 `process_kill {id: "<回傳 id>"}` 停止。`filter` 仍排空所有新輸出但只顯示匹配行；`tail: "1"` 重讀最近原始輸出且不推進游標。仍執行行程的空非等待輪詢，每個行程只提示一次使用等待。排空語義不變。
+啟動結果給出精確控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<回傳 id>", waitMs: 25000}` 等待輸出或退出，用 `process_kill {id: "<回傳 id>"}` 停止。`filter` 仍排空所有新輸出但只顯示匹配行；`tail: "1"` 重讀最近原始輸出且不推進游標。輪詢用於讀取輸出，不用於發現完成 —— 完成會主動推送。仍執行行程的空非等待輪詢，每個行程只提示一次使用等待。排空語義不變。
 
 狀態：**已實作**（Nim 元件；`tests/t_processes.nim`）。
 
@@ -1243,7 +1243,7 @@ bash 依設計是同步的——伺服器、監看器和測試迴圈需要不同
 | Tool | What it does |
 |---|---|
 | `process_start {command, label?, workdir?}` | 分離生成命令（自己的行程群組、stdin 來自 /dev/null、stdout/stderr 附加到 `var/processes/` 下的 spool 檔案）並立即回傳其 id。受核准關卡管制。透過 `bash` 工具的 `run_in_background` 進行的背景啟動只在 `bash` 呼叫本身核准一次——內部的 `process_start` 直接走 NATS，絕不經過 core 的核准關卡，而透過 core 發出的直接 `process_start`（模型，或任何經由 `svc.core.call` 觸及的工具）則受管制——自行定址 `svc.processes.call` 的匯流排客戶端（`cli`、腳本）完全不受管制 |
-| `process_poll {id, waitMs?, filter?, tail?}` | 排出自上次輪詢以來附加的輸出——增量，絕不重新注入舊位元組；`waitMs` 阻塞直到有新輸出或退出（上限 25 秒）；`filter` 是對新行的正規表達式（排出游標仍會前進越過全部）；任何非空的 `tail` 會重新讀取原始輸出的最後約 64 KB。讀取效應 |
+| `process_poll {id, waitMs?, filter?, tail?}` | 排出自上次輪詢以來附加的輸出——增量，絕不重新注入舊位元組；`waitMs` 阻塞直到有新輸出或退出（上限 25 秒）；`filter` 是對新行的正規表達式（排出游標仍會前進越過全部）；任何非空的 `tail` 會重新讀取原始輸出的最後約 64 KB。用於讀取輸出，不用於發現完成——完成會主動推送。讀取效應 |
 | `process_kill {id}` | 終止整個行程群組——SIGTERM、300 毫秒寬限，然後 SIGKILL。受核准關卡管制 |
 | `process_list {}` | 顯示登錄檔——執行中與最近完成的項目及其退出碼。讀取效應 |
 
@@ -1252,9 +1252,9 @@ bash 依設計是同步的——伺服器、監看器和測試迴圈需要不同
 - 子行程以附加模式寫入 spool 檔案（絕不是可能死鎖的管道）；元件從每個串流的游標讀取，因此作業系統會吸收輸出突發。超過上限（32 MiB，`NIF_PROCESSES_SPOOL_CAP`）的 spool 會在下次輪詢時截斷至其尾部——保留最後 2 MiB，或在上限更小時保留上限的一半，且該次截斷輪詢會附加 `[spool truncated to its tail — the cap was reached]`；一次輪詢每個串流最多回傳 `NIF_PROCESSES_POLL_CHUNK` 個新位元組（預設 64 KiB）。
 - 每個工具帶有自己的派送預算 `x-harness.timeoutMs`——`process_start` 20 秒、`process_poll` 30 秒、`process_kill` 15 秒、`process_list` 10 秒——與 `process_poll` 內部的 `waitMs` 上限分開。
 - 上限：32 個並行行程。完成的項目絕不被淘汰：此元件生命週期內的每個行程都留在登錄檔中——只有*執行中*的會寫入 `registry.json`——因此 `process_list` 會持續將已完成的子行程回報為 `exited(code N)` 或 `killed(signal N)`，直到元件退出。
-- **完成的行程會通知它的會話。** 當你透過 `bash` 工具的 `run_in_background` 旗標啟動一個行程時，bash 會把擁有它的會話交給登錄檔；當該子行程退出時，`processes` 會向其中發佈一則退出通知（與 subagent 結算通知使用同一條通道），因此接下來的回合會以 `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes of output — read it with \`process_poll\` …` 開頭。它是個指標：輸出留在 spool 中，命令文字絕不傳遞。
+- **完成的行程會通知它的會話。** 當你透過 `bash` 工具的 `run_in_background` 旗標啟動一個行程時，bash 會把擁有它的會話交給登錄檔；當該子行程退出時，`processes` 會先寫入一筆持久完成記錄，再推送至該會話（與 subagent 結算通知使用同一條通道），因此接下來的回合會以 `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes of output — read it with \`process_poll\` …` 開頭。它是個指標：輸出留在 spool 中，命令文字絕不傳遞。
 
-  這就是為什麼背景工作不再被忽視：元件在週期性 tick（SDK 的 `onIdle`）上收割其子行程，而不只在有人輪詢時——這也意味著 `process_list` 會及時顯示 `exited(code N)`，而不是在被詢問前一直顯示 `running`。只有 `bash run_in_background` 會交出擁有它的會話（它是唯一傳遞 `session` 的呼叫者），因此以任何其他方式觸及的 `process_start`——模型自己的 `discover` + `invoke`、`cli`、腳本——都會在沒有擁有者會話的情況下啟動；會話執行器已退役的行程也不會被通知任何人。請輪詢那些。
+  因此背景工作不再需要輪詢：元件在週期性 tick（SDK 的 `onIdle`）上收割子行程，先記錄完成再宣告，並在會話閒置時要求一次有界喚醒。runner 只在成功附加後才確認記錄，因此完成能挺過元件重啟、沒有 runner 與發佈失敗，且同一完成不會被折入兩次。`process_poll` 仍用於讀取輸出，而不是發現完成。只有 `bash run_in_background` 會交出擁有它的會話（它是唯一傳遞 `session` 的呼叫者），因此以其他方式觸及的 `process_start`（模型自己的 `discover` + `invoke`、`cli`、腳本）沒有擁有者會話，也不會宣告。
 - 工具錯誤帶有穩定代碼：`E_BAD_SHAPE`（空的 `command`、缺失的 `workdir`、無效的 `filter` 正規表達式）、`E_NOT_FOUND`（未知 id——`process_list` 會顯示登錄檔）和 `E_LIMIT`（32 個存活行程，或無法 fork 的子行程）。
 - `process_list` 項目帶有 `started_at`（epoch 秒），因此客戶端可以顯示某個東西已執行多久——`bg 1 (7m)` 徽章是 `niffler-tui` 外掛的狀態列，不是 core 的。
 - `workdir` 預設為會話工作區：core 會為空值或 `.` 值替換它，並對工作區（`x-harness.workspace`）解析相對路徑，而不存在的路徑會以 `E_BAD_SHAPE` 失敗。純匯流排呼叫（`cli call process_start`）會跳過該替換，因此子行程繼承元件自己的 cwd（`$NIF_ROOT`）。

@@ -531,22 +531,23 @@ durable `agentnotice` record and delivers it to its **parent conversation** —
 not just to UIs (`ev.agent.done` is observe-only). Rationale and design:
 docs/research/SUBAGENTS-PLAN.md P0.1.
 
-**Background processes use the same lane** (components/processes): a tracked
-child that exits publishes a notice with `kind: "process-exited"` — and
-delivers it on exactly the same subject, so the runner folds it in as
-append-only history and nothing new is subscribed. It is a pointer too: the
+**Background processes use the same lane, plus a durable one**
+(components/processes): a tracked child that exits writes a durable outbox
+record (`var/processes/notices/<id>.json`, `delivered: false`) **before** it
+notifies, then publishes the steer notice and requests a wake
+(`svc.core.call` `session {wake: true}`). A busy parent folds the steer
+notice; an idle one is woken under the same bounded admission as a subagent
+settlement; a missed publish or an absent runner is retried by the
+component's idle tick every 10 s, so a completion cannot be lost — the
+record survives a component or core restart, and the runner acknowledges it
+through the hidden `process_notices {session, ack: processId}` tool after
+appending (peek never acknowledges). The notice is a pointer too: the
 process id, its status, how long it ran and how many bytes of output exist;
-the output itself stays in the spool for `process_poll`, and the command text
-never travels. It exists because *nothing reaped a child except a tool call*:
-an exit was invisible until someone happened to poll, so finished background
-work sat unnoticed. The reap is now periodic (the SDK's `onIdle`), which is
-what makes the notice possible — and stops `process_list` from reporting a
-finished child as running.
-
-The one asymmetry with the agent's notice: no durable record backs it (the
-process entry itself is the record). A process whose owning conversation has
-no live runner, or whose runner is gone by the time it exits, is announced to
-nobody — the entry stays pollable, so the fallback is asking.
+the output itself stays in the spool for `process_poll`, and the command
+text never travels. One process is folded at most once: the runner skips a
+notice whose `processId` is already in its history and only acknowledges
+after a successful append, so a persistence failure leaves the record
+pending rather than dropping it.
 
 Record (store kind `agentnotice`, id `<parentSession>:<zero-padded seq>`):
 

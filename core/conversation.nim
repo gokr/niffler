@@ -12,7 +12,7 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, math, monotimes, os, sequtils, strutils,
+import std/[algorithm, json, math, monotimes, os, sequtils, sets, strutils,
     tables, times, unicode]
 import checksums/sha2
 import natsnim
@@ -1424,7 +1424,29 @@ proc drainNotices(ct: CoreTools, p: var Persister,
   let pulled = if pending != nil: pending{"notices"} else: nil
   if pulled != nil and pulled.kind == JArray:
     for n in pulled: inbound.add(n)
+  if ct.cat.toolSchema("process_notices") != nil:
+    try:
+      let processes = ct.dispatchToolCall("process_notices",
+        %*{"session": sessionId, "peek": false}, 5_000)
+      let notices = processes{"notices"}
+      if notices != nil and notices.kind == JArray:
+        for n in notices: inbound.add(n)
+    except CatchableError:
+      discard # durable inbox remains available for the next drain
+  var seenProcesses = initHashSet[string]()
+  for m in messages:
+    if m{"notice"}{"kind"}.getStr("") == "process-exited":
+      seenProcesses.incl(m{"notice"}{"processId"}.getStr(""))
   for n in inbound:
+    if n{"kind"}.getStr("") == "process-exited":
+      let processId = n{"processId"}.getStr("")
+      if processId in seenProcesses and not p.failing:
+        try:
+          discard ct.dispatchToolCall("process_notices",
+            %*{"session": sessionId, "ack": processId}, 5_000)
+        except CatchableError: discard
+        continue
+      seenProcesses.incl(processId)
     # Two directions share the agentnotice kind (P3.9): child-settled
     # notices (a background job reached a terminal state) and parent-mail
     # (steering/questions queued while the child was between turns or
@@ -1493,6 +1515,11 @@ proc drainNotices(ct: CoreTools, p: var Persister,
     # 1:1 with the projection, and notices are runtime machinery it may
     # compact away like any other appended history (docs/research/COMPACTION.md §4.2)
     ctxAppend(p, messages, noticeMsg)
+    if n{"kind"}.getStr("") == "process-exited" and not p.failing:
+      try:
+        discard ct.dispatchToolCall("process_notices",
+          %*{"session": sessionId, "ack": n{"processId"}.getStr("")}, 5_000)
+      except CatchableError: discard
     if onEvent != nil:
       onEvent("notice", eventId)
     result += 1
@@ -4086,18 +4113,21 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         %*{"session": sessionId, "peek": true}, 5_000)
       pendingCount = peeked{"count"}.getInt(0)
     except CatchableError:
-      # Notices unreadable (agent or store down): a wake turn with nothing
-      # to fold is pure noise, and a pending notice is delivered by the
-      # parent's next real turn anyway.
-      return %*{"ok": true, "wake": "declined",
-                "reason": "notices unreachable"}
+      pendingCount = 0 # processes may have work even when agent is absent
+    if ct.cat.toolSchema("process_notices") != nil:
+      try:
+        let peeked = ct.dispatchToolCall("process_notices",
+          %*{"session": sessionId, "peek": true}, 5_000)
+        pendingCount += peeked{"count"}.getInt(0)
+      except CatchableError:
+        discard
     if pendingCount == 0:
       return %*{"ok": true, "wake": "skipped", "reason": "nothing pending"}
     if consecutiveWakeTurnsFromStore(ct, sessionId) >= budget:
       return %*{"ok": true, "wake": "declined", "reason": "budget",
                 "budget": budget}
     if turnContent.len == 0:
-      turnContent = "[wake] background subagents settled"
+      turnContent = "[wake] background work settled"
 
   # A caption-less image drop is still a TURN: the attachments ARE the
   # content. Without this guard the call fell into the control/status branch

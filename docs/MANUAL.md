@@ -2123,7 +2123,7 @@ different contract: start once, poll incremental output, kill explicitly.
 | Tool | What it does |
 |---|---|
 | `process_start {command, label?, workdir?}` | Spawn the command detached (own process group, stdin from /dev/null, stdout/stderr appended to spool files under `var/processes/`) and return its id immediately. Approval-gated. A background start through the `bash` tool's `run_in_background` is approved once, on the `bash` call itself — the internal `process_start` goes straight over NATS and never passes core's approval gate, while a direct `process_start` issued through core (the model, or any tool reached via `svc.core.call`) is gated — a bus client that addresses `svc.processes.call` itself (the `cli`, a script) is not gated at all |
-| `process_poll {id, waitMs?, filter?, tail?}` | Drain output appended since the last poll — incremental, never re-injects old bytes; `waitMs` blocks until new output or exit (25 s cap); `filter` is a regex over the new lines (the drain cursor still advances past all of them); any non-empty `tail` re-reads the last ~64 KB of raw output. Read-effect |
+| `process_poll {id, waitMs?, filter?, tail?}` | Drain output appended since the last poll — incremental, never re-injects old bytes; `waitMs` blocks until new output or exit (25 s cap); `filter` is a regex over the new lines (the drain cursor still advances past all of them); any non-empty `tail` re-reads the last ~64 KB of raw output. Use it for output, not to discover completion — that is pushed. Read-effect |
 | `process_kill {id}` | Terminate the whole process group — SIGTERM, 300 ms grace, then SIGKILL. Approval-gated |
 | `process_list {}` | Show the registry — running and recently finished entries with exit codes. Read-effect |
 
@@ -2131,11 +2131,12 @@ Details:
 
 - A start result provides exact controls: first
   `discover {tools: ["process_poll", "process_kill"]}`, then
-  `process_poll {id: "<returned id>", waitMs: 25000}` to wait for output or
-  exit, and `process_kill {id: "<returned id>"}` to stop. `filter` drains all
-  new output while showing matches; `tail: "1"` re-reads recent raw output
-  without advancing cursors. An empty nonwaiting poll of a still-running
-  process gives one waiting hint per process. Drain semantics are unchanged.
+  `process_poll {id: "<returned id>"}` **when you need its output** —
+  completion itself is pushed to the owning session, so a poll is never how
+  you wait for it. `filter` drains all new output while showing matches;
+  `tail: "1"` re-reads recent raw output without advancing cursors. An empty
+  nonwaiting poll of a still-running process gives one waiting hint per
+  process. Drain semantics are unchanged.
 - The child writes append-mode to spool files (never a pipe it could
   deadlock on); the component reads from per-stream cursors, so the OS
   absorbs output bursts. A spool beyond the cap (32 MiB,
@@ -2155,22 +2156,24 @@ Details:
   `killed(signal N)` until the component exits.
 - **A finished process tells its conversation.** When you start one through
   the `bash` tool's `run_in_background` flag, bash hands the owning
-  conversation to the registry; when that child exits, `processes` publishes
-  an exit notice into it (the same lane subagent settlement notices use), so
-  the turn that follows opens with `[background process p3 (dev-server)
-  exited(code 0)] ran 412s, 8123 bytes of output — read it with
-  \`process_poll\` …`. It is a pointer: the output stays in the spool, and the
-  command text never travels.
+  conversation to the registry; when that child exits, `processes` records a
+  durable completion and pushes it into that conversation (the same lane
+  subagent settlement notices use), so the next turn opens with
+  `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes
+  of output — read it with \`process_poll\` …`. It is a pointer: the output
+  stays in the spool, and the command text never travels.
 
-  This is why a background job no longer goes unnoticed: the component reaps
-  its children on a periodic tick (the SDK's `onIdle`), not only when someone
-  polls — which also means `process_list` shows `exited(code N)` promptly
-  instead of `running` until asked. Only `bash run_in_background` hands the
-  owning conversation over (it is the one caller that passes `session`), so a
-  `process_start` reached any other way — the model's own `discover` +
-  `invoke`, `cli`, a script — is started without an owner session; a process
-  whose conversation runner has already retired is announced to nobody too.
-  Poll those.
+  This is why a background job no longer needs polling: the component reaps
+  its children on a periodic tick (the SDK's `onIdle`), records the
+  completion before announcing it, and asks for a bounded wake when the
+  conversation is idle. The runner acknowledges the record only after
+  appending it, so a completion survives a component restart, an absent
+  runner and a failed publish — and the same completion is never folded
+  twice. `process_poll` remains for reading output, not for discovering that
+  work finished. Only `bash run_in_background` hands the owning conversation
+  over (it is the one caller that passes `session`), so a `process_start`
+  reached any other way — the model's own `discover` + `invoke`, `cli`, a
+  script — is started without an owner session and announces nothing.
 - Tool errors carry stable codes: `E_BAD_SHAPE` (empty `command`, a
   missing `workdir`, an invalid `filter` regex), `E_NOT_FOUND` (unknown
   id — `process_list` shows the registry) and `E_LIMIT` (32 live

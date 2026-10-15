@@ -998,7 +998,7 @@ git 工作流的只读部分，作为一等工具；写入部分（add/commit/pu
 
 ## Background processes (`processes`)
 
-启动结果给出精确控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<返回 id>", waitMs: 25000}` 等待输出或退出，用 `process_kill {id: "<返回 id>"}` 停止。`filter` 仍排空所有新输出但只显示匹配行；`tail: "1"` 重读最近原始输出且不推进游标。仍运行进程的空非等待轮询，每个进程只提示一次使用等待。排空语义不变。
+启动结果给出精确控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<返回 id>", waitMs: 25000}` 等待输出或退出，用 `process_kill {id: "<返回 id>"}` 停止。`filter` 仍排空所有新输出但只显示匹配行；`tail: "1"` 重读最近原始输出且不推进游标。轮询用于读取输出，不用于发现完成 —— 完成会主动推送。仍运行进程的空非等待轮询，每个进程只提示一次使用等待。排空语义不变。
 
 状态：**已实现**（Nim 组件；`tests/t_processes.nim`）。
 
@@ -1007,7 +1007,7 @@ bash 按设计是同步的 —— 服务器、监视器和测试循环需要不�
 | 工具 | 作用 |
 |---|---|
 | `process_start {command, label?, workdir?}` | 以分离方式生成命令（自己的进程组，stdin 来自 /dev/null，stdout/stderr 追加到 `var/processes/` 下的 spool 文件）并立即返回其 id。受审批门控制。通过 `bash` 工具的 `run_in_background` 进行的后台启动只在 `bash` 调用本身上审批一次 —— 内部的 `process_start` 直接走 NATS，从不经过 core 的审批门，而通过 core 发出的直接 `process_start`（模型，或任何经 `svc.core.call` 到达的工具）则受门控 —— 自己寻址 `svc.processes.call` 的总线客户端（`cli`、脚本）完全不受门控 |
-| `process_poll {id, waitMs?, filter?, tail?}` | 排空自上次轮询以来追加的输出 —— 增量，从不重新注入旧字节；`waitMs` 阻塞直到有新输出或退出（上限 25 秒）；`filter` 是对新行的正则（排空游标仍会越过所有行前进）；任何非空 `tail` 会重新读取原始输出的最后约 64 KB。读取效应 |
+| `process_poll {id, waitMs?, filter?, tail?}` | 排空自上次轮询以来追加的输出 —— 增量，从不重新注入旧字节；`waitMs` 阻塞直到有新输出或退出（上限 25 秒）；`filter` 是对新行的正则（排空游标仍会越过所有行前进）；任何非空 `tail` 会重新读取原始输出的最后约 64 KB。用于读取输出，而不是发现完成 —— 完成会主动推送。读取效应 |
 | `process_kill {id}` | 终止整个进程组 —— SIGTERM，300 毫秒宽限，然后 SIGKILL。受审批门控制 |
 | `process_list {}` | 显示注册表 —— 运行中和最近完成的条目及其退出码。读取效应 |
 
@@ -1016,9 +1016,9 @@ bash 按设计是同步的 —— 服务器、监视器和测试循环需要不�
 - 子进程以追加模式写入 spool 文件（绝不是可能死锁的管道）；组件从每流游标读取，因此操作系统会吸收输出突发。超过上限（32 MiB，`NIF_PROCESSES_SPOOL_CAP`）的 spool 会在下一次轮询时截断到其尾部 —— 保留最后 2 MiB，或当上限更小时保留上限的一半，并且截断的轮询会追加 `[spool truncated to its tail — the cap was reached]`；一次轮询每流最多返回 `NIF_PROCESSES_POLL_CHUNK` 个新字节（默认 64 KiB）。
 - 每个工具带有自己的调度预算 `x-harness.timeoutMs` —— `process_start` 20 秒，`process_poll` 30 秒，`process_kill` 15 秒，`process_list` 10 秒 —— 与 `process_poll` 内部的 `waitMs` 上限分开。
 - 上限：32 个并发进程。已完成的条目从不被淘汰：该组件生命周期内的每个进程都留在注册表中 —— 只有 *运行中* 的才会写入 `registry.json` —— 因此 `process_list` 会持续将已完成的子进程报告为 `exited(code N)` 或 `killed(signal N)`，直到组件退出。
-- **已完成的进程会告知其会话。** 当你通过 `bash` 工具的 `run_in_background` 标志启动一个进程时，bash 会将所属会话交给注册表；当该子进程退出时，`processes` 会向其发布退出通知（与 subagent 结算通知使用同一通道），因此接下来的回合会以 `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes of output — read it with \`process_poll\` …` 开头。它是一个指针：输出留在 spool 中，命令文本从不传递。
+- **已完成的进程会告知其会话。** 当你通过 `bash` 工具的 `run_in_background` 标志启动一个进程时，bash 会将所属会话交给注册表；当该子进程退出时，`processes` 会先写入一条持久完成记录，再推送到该会话（与 subagent 结算通知使用同一通道），因此接下来的回合会以 `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes of output — read it with \`process_poll\` …` 开头。它是一个指针：输出留在 spool 中，命令文本从不传递。
 
-  这就是后台作业不再被忽视的原因：组件在周期性 tick（SDK 的 `onIdle`）上回收其子进程，而不仅仅是在有人轮询时 —— 这也意味着 `process_list` 会及时显示 `exited(code N)`，而不是在被询问前一直显示 `running`。只有 `bash run_in_background` 会移交所属会话（它是唯一传递 `session` 的调用者），因此以任何其他方式到达的 `process_start` —— 模型自己的 `discover` + `invoke`、`cli`、脚本 —— 启动时没有所有者会话；会话运行器已退役的进程也不会向任何人宣告。轮询这些进程。
+  因此后台作业不再需要轮询：组件在周期性 tick（SDK 的 `onIdle`）上回收子进程，先记录完成再宣告，并在会话空闲时请求一次有界唤醒。runner 只在成功追加后才确认记录，因此完成能熬过组件重启、无 runner 和发布失败，且同一完成不会被并入两次。`process_poll` 仍用于读取输出，而不是发现完成。只有 `bash run_in_background` 会移交所属会话（它是唯一传递 `session` 的调用者），因此以其他方式到达的 `process_start`（模型自己的 `discover` + `invoke`、`cli`、脚本）没有所有者会话，也不会宣告。
 - 工具错误带有稳定的代码：`E_BAD_SHAPE`（空 `command`、缺失 `workdir`、无效的 `filter` 正则）、`E_NOT_FOUND`（未知 id —— `process_list` 会显示注册表）和 `E_LIMIT`（32 个活动进程，或无法 fork 的子进程）。
 - `process_list` 条目带有 `started_at`（epoch 秒），因此客户端可以显示某物已运行多久 —— `bg 1 (7m)` 徽章是 `niffler-tui` 插件的状态行，不是 core 的。
 - `workdir` 默认为会话工作区：core 会为空或 `.` 值替换它，并针对工作区（`x-harness.workspace`）解析相对路径，不存在的路径会以 `E_BAD_SHAPE` 失败。裸总线调用（`cli call process_start`）会跳过该替换，因此子进程继承组件自己的 cwd（`$NIF_ROOT`）。
