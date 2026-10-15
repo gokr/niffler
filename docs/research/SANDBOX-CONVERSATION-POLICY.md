@@ -189,26 +189,36 @@ the result may describe the action as sandboxed.
 The MCP server tool is the clearest case: an MCP server is an unconfined
 external process. Approving one means trusting that server, not confining it.
 
-## "Approve this tool from now on" — approved by the user
+## "Approve from now on" — approved by the user
 
-The user wants to be able to grant a tool for the rest of the conversation
-instead of re-approving every call. The machinery partly exists: persisted
-per-conversation auto-approve records (store kind `approval`, id
-`<session>:<key>`) are consulted by `checkAuto` (core/niffler.nim), so an
-auto-approved tool shows no dialog at all, and `autoKey` already keys
-program-shaped calls by digest rather than tool name.
+The user wants to grant an approval for the rest of the conversation instead of
+re-approving every call. The machinery partly exists: persisted per-conversation
+auto-approve records (store kind `approval`, id `<session>:<key>`) are consulted
+by `checkAuto` (core/niffler.nim), so an auto-approved tool shows no dialog at
+all, and `autoKey` already keys program-shaped calls by digest rather than tool
+name.
+
+Grant granularity is per tool, except where the user chose a coarser unit:
+
+- **MCP: per SERVER, per conversation** (user decision). One approval covers the
+  tools of that server in this conversation; it does not cover another server,
+  another conversation, or the same server in a child conversation beyond the
+  inheritance rule below. This is deliberately not "approve all MCP".
+- Everything else: per tool, as keyed today.
 
 Required properties for the sandbox conditional gate:
 
 - The conversation is one turn of a held approval, so the consequence is stated
-  plainly to the human: after a grant, later calls of that tool in THIS
-  conversation run without a prompt. The grant is recorded in append-only
-  history and is revocable.
+  plainly to the human: after a grant, later matching calls in THIS conversation
+  run without a prompt. The grant is recorded in append-only history and is
+  revocable.
 - Key the grant on everything that changes the risk in one step, not on the tool
   name alone. For MCP that is the server identity PLUS a digest of its
   configuration (command, args, url, env): otherwise `mcp_update` to a different
   command inherits the earlier approval for different code. Reuse the existing
-  `tool:digest` keying idea rather than inventing a second scheme.
+  `tool:digest` keying idea rather than inventing a second scheme. A per-server
+  grant with a per-server digest satisfies both this and the user's granularity
+  choice.
 - Changing or removing the thing approved invalidates its grant. A grant must
   never outlive the exact target the human saw.
 - The blanket conversation `approvals: auto` mode and `NIF_AUTO_APPROVE=1` must
@@ -216,11 +226,29 @@ Required properties for the sandbox conditional gate:
   this gate exists to resist. The operator emergency bypass remains a separate
   documented decision (see the per-call network grant above).
 - Grant scope is the conversation the human approved it in. It is not global, not
-  persistent across conversations and not a default for new ones.
-- Open decision, deliberately not assumed: whether a subagent inherits its
-  parent's grants. Inheriting would spread one human decision to work the human
-  never saw; not inheriting means a headless child fails closed and stalls. This
-  needs an explicit answer plus tests before implementation.
+  persistent across conversations and not a default for new ones. Inheritance by
+  subagents (below) is the one sanctioned way a grant reaches work the human did
+  not personally approve.
+
+## Subagent inheritance — approved by the user
+
+Subagents inherit the parent's effective sandbox policy AND its active grants.
+A child therefore runs under the same enablement, approved roots, deny rules and
+per-tool grants as its parent, and cannot widen any of them.
+
+Consequences to implement and test rather than assume:
+
+- One human approval now covers child work the human did not individually see.
+  That is the accepted trade: without it a headless child would fail closed and
+  stall mid-task. Refusals and inherited grants are recorded as append-only
+  history so the transcript shows what a child did under the parent's grant.
+- Inheritance is a decision at child creation from the parent's EFFECTIVE
+  policy, and continued children re-read it; the earlier open question about
+  later human updates propagating to existing children still needs an explicit
+  answer and tests (a stale child must not silently keep wider rights).
+- A child cannot weaken or bypass the policy, and a child's own new approval
+  request routes to a human through the existing approval UI rather than
+  self-granting.
 
 ## Remaining per-tool review
 
