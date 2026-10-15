@@ -178,16 +178,59 @@ implementation and do not provide per-conversation approved-root enforcement.
 
 This is the agreed target, not implemented per-conversation repository scoping.
 
+## Escape-capable tools — approved by the user
+
+processes, plugins, the MCP surface and native Fabric require approval on EVERY
+sandboxed use. They can start, drive or inspect arbitrary commands and external
+servers; nothing about them is confined by the conversation's filesystem policy.
+Approval is authorization to act outside that policy, and neither the prompt nor
+the result may describe the action as sandboxed.
+
+The MCP server tool is the clearest case: an MCP server is an unconfined
+external process. Approving one means trusting that server, not confining it.
+
+## "Approve this tool from now on" — approved by the user
+
+The user wants to be able to grant a tool for the rest of the conversation
+instead of re-approving every call. The machinery partly exists: persisted
+per-conversation auto-approve records (store kind `approval`, id
+`<session>:<key>`) are consulted by `checkAuto` (core/niffler.nim), so an
+auto-approved tool shows no dialog at all, and `autoKey` already keys
+program-shaped calls by digest rather than tool name.
+
+Required properties for the sandbox conditional gate:
+
+- The conversation is one turn of a held approval, so the consequence is stated
+  plainly to the human: after a grant, later calls of that tool in THIS
+  conversation run without a prompt. The grant is recorded in append-only
+  history and is revocable.
+- Key the grant on everything that changes the risk in one step, not on the tool
+  name alone. For MCP that is the server identity PLUS a digest of its
+  configuration (command, args, url, env): otherwise `mcp_update` to a different
+  command inherits the earlier approval for different code. Reuse the existing
+  `tool:digest` keying idea rather than inventing a second scheme.
+- Changing or removing the thing approved invalidates its grant. A grant must
+  never outlive the exact target the human saw.
+- The blanket conversation `approvals: auto` mode and `NIF_AUTO_APPROVE=1` must
+  NOT create, nor satisfy, a sandbox conditional grant. Those are the bypasses
+  this gate exists to resist. The operator emergency bypass remains a separate
+  documented decision (see the per-call network grant above).
+- Grant scope is the conversation the human approved it in. It is not global, not
+  persistent across conversations and not a default for new ones.
+- Open decision, deliberately not assumed: whether a subagent inherits its
+  parent's grants. Inheriting would spread one human decision to work the human
+  never saw; not inheriting means a headless child fails closed and stalls. This
+  needs an explicit answer plus tests before implementation.
+
 ## Remaining per-tool review
 
 The user requested individual review of tool treatments. The filesystem group,
-bash network, LSP, fetch, builder, observe, repomap, skills and git policies are
-approved in detail. Review next:
+bash network, LSP, fetch, builder, observe, repomap, skills, git and the
+escape-capable group above are approved in detail. Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. processes, plugins, MCP, native Fabric and remaining
-   escape paths. Undeclared new tools must not silently acquire sandbox authority;
-   the default treatment still needs agreement.
+2. Undeclared or newly added tools must not silently acquire sandbox authority;
+   the default treatment for an undeclared tool still needs agreement.
 
 ## Implementation slices
 
