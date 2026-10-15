@@ -154,6 +154,21 @@ class FleetTests(unittest.TestCase):
         self.assertNotIn("install-node; do", result.stdout)
         self.assertIn("install-go ; do", result.stdout)
 
+    def test_wrapper_remote_selection_never_boots_local_core(self):
+        root = self.path.parent
+        binaries = root / "var" / "bin"
+        binaries.mkdir(parents=True)
+        for name, body in {"tui": "exit 7", "cli": "echo forbidden-cli; exit 1", "niffler": "echo forbidden-core; exit 1"}.items():
+            executable = binaries / name
+            executable.write_text("#!/bin/sh\n" + body + "\n")
+            executable.chmod(0o700)
+        wrapper = REPO / "scripts" / "niffler-tui.in"
+        env = dict(os.environ, NIF_ROOT=str(root))
+        for option in ("--instance=worker", "--instance-probe=worker", "--instance-import=receipt"):
+            result = subprocess.run(["bash", str(wrapper), option], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 7)
+            self.assertNotIn("forbidden", result.stdout + result.stderr)
+
     def test_no_tty_no_automatic_consent(self):
         with patch("builtins.open", side_effect=OSError), patch.dict(os.environ, {"NIF_AUTO_APPROVE": "1", "NIF_ASSUME_YES": "1"}):
             with self.assertRaises(fleet.Refusal):

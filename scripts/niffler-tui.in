@@ -19,6 +19,22 @@ if [ ! -x "$TUI" ]; then
   exit 1
 fi
 
+# Explicit fleet selection owns its transport inside the TUI. Dispatch before
+# local discovery so a remote failure can never spawn or attach a local core.
+for arg in "$@"; do
+  case "$arg" in
+    --instance|--instance=*|--instance-import|--instance-import=*|--instance-probe|--instance-probe=*)
+      status=0
+      while :; do
+        status=0
+        "$TUI" "$@" || status=$?
+        [ "$status" -eq 85 ] || break
+      done
+      exit "$status"
+      ;;
+  esac
+done
+
 answers() { NIF_NATS_URL="$1" "$CLI" catalog >/dev/null 2>&1; }
 
 if [ -n "${NIF_NATS_URL:-}" ]; then
