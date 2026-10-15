@@ -128,15 +128,31 @@ This is the agreed target, not implemented conditional per-conversation gating.
 The experimental blanket mask-triggered refusal is to be replaced, not treated
 as the completed policy.
 
+## Observe — approved by the user
+
+- Reading bus payloads, traces or captures requires approval on every sandboxed
+  use, including any management response that includes payloads.
+- Sending service requests or publishing events requires approval on every
+  sandboxed use.
+- Payload-free status/counts and stopping an existing probe need no additional
+  sandbox approval. Stop responses must not include captured payloads under
+  this exemption.
+- Approval permits access beyond conversation scope; it is not confinement or
+  proof of secret redaction. Ordinary conversation auto-approval must not bypass
+  the conditional gate. Existing approvals still apply when sandboxing is off.
+
+This is agreed policy, not an implemented per-tool classification. Replace the
+experimental blanket refusal with these per-tool decisions after auditing each
+handler's outputs and effects.
+
 ## Remaining per-tool review
 
 The user requested individual review of tool treatments. The filesystem group,
-bash network, LSP, fetch and builder policies above are approved in detail.
+bash network, LSP, fetch, builder and observe policies are approved in detail.
 Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. observe inspection, request/publish and management tools individually.
-3. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
+2. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
    escape paths. Undeclared new tools must not silently acquire sandbox authority;
    the default treatment still needs agreement.
 
