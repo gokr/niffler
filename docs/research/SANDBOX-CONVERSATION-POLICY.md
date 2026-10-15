@@ -257,8 +257,82 @@ bash network, LSP, fetch, builder, observe, repomap, skills, git and the
 escape-capable group above are approved in detail. Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. Undeclared or newly added tools must not silently acquire sandbox authority;
-   the default treatment for an undeclared tool still needs agreement.
+2. Undeclared or newly added tools must not silently acquire sandbox authority.
+   The proposed default is fail-closed with a recorded refusal until a human
+   classifies the tool; it needs agreement because it can disable a brand-new
+   capability an operator expects to work.
+
+## User experience — what a sandboxed conversation feels like
+
+Written from the human's seat, so the design is testable against intent. Nothing
+below works yet; this is the target.
+
+**Setting it up (operator, once).** A default for new conversations (off in the
+initial release), plus approved roots and deny rules. Because the default is
+resolved when a conversation starts, changing it never reaches back into
+existing conversations.
+
+**Turning it on.** The human enables it for a conversation and grants the roots
+that conversation may reach. The agent cannot enable, disable or widen it. The
+toggle is per conversation, so a sandboxed conversation and an ordinary one can
+run at the same time on the same harness.
+
+**Inside an approved root, almost nothing changes.** read, grep, files, edit,
+write, replace_across, undo, repo_map and git keep working as they do today. The
+visible differences are at the edges:
+
+- A path outside the approved roots is refused with a clear reason, not a stack
+trace, and the refusal says which policy decided. The agent should report that
+and stop, not hunt for another route to the same file — and the message should
+not advertise one.
+- Deny rules apply even INSIDE approved roots: reading a repository's `.env` is
+  refused while its source files are not.
+- Defaults: `.env`-style deny rules start narrow and are reviewed, not an
+  open-ended "secret-looking file" heuristic.
+
+**Bash.** Commands run normally for ordinary work, with three differences the
+human will actually notice:
+
+- Writes are confined to the workspace and its writable roots. A command that
+  writes elsewhere fails rather than silently succeeding.
+- Reads are limited to approved roots plus a reviewed read-only runtime set
+  (system executables and libraries). Reads of arbitrary host paths, including
+  the home directory and the harness's own state outside the roots, no longer
+  work.
+- **Network is off by default.** A command that needs the network must say so and
+  give a reason, and a human approves that exact command for one run. The prompt
+  states plainly that approval grants full host network access for that command —
+  not filtered, not domain-limited.
+
+**Unconfined but approvable.** builder, observe, processes, plugins, MCP and
+native Fabric still work, but each sandboxed use asks a human first, because
+they act outside the conversation's filesystem policy. To avoid a prompt storm,
+the prompt offers **"approve from now on"**: for this conversation, that tool
+stops asking. For MCP the unit is the **server**, not all of MCP, and the grant
+is tied to the server's configuration — so editing a server to run different
+code asks again instead of inheriting the old approval.
+
+The honest framing a human gets here: approving these does not sandbox them. It
+is the human choosing to trust that tool, in that conversation.
+
+**Trusted tools that keep working.** LSP queries, fetch and trafilatura need no
+new ceremony. They are harness infrastructure, not agent shell commands, and
+they should not degrade because someone enabled sandboxing.
+
+**Subagents.** A child inherits the policy and the grants. So a headless child
+keeps working instead of stalling on an approval nobody will answer — at the
+cost that one human decision now covers work the human did not individually see.
+The transcript records what a child did under an inherited grant.
+
+**At the end of the turn.** Refusals and approvals are ordinary history entries.
+The system prompt and tool schemas do not change when the toggle moves, so
+turning sandboxing on mid-conversation does not invalidate the prompt cache.
+
+**What a human should NOT expect.** This bounds what agent-driven tools reach;
+it is not a security boundary against a hostile component on the same bus, and
+it is not yet available on macOS. Git history can still reveal content that deny
+rules hide in the working tree. A writable root that contains the harness's own
+source remains a deployment risk the policy cannot fix.
 
 ## Implementation slices
 
