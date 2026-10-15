@@ -38,13 +38,20 @@ Honest limits, stated rather than implied:
 - Skills discovery/load/audit skip masked on-disk SKILL.md files; resource
   listing/loading excludes masked resources. Baked-in bundled content is not
   an on-disk read and is not erased by a runtime mask.
-- **Not yet covered**: `lsp`, `observe`, `fetch` and `builder`. LSP servers and
-  compilers may read transitive inputs autonomously: checking only the named
-  source file would not protect a masked dependency. They need process-level
-  confinement or an explicit fail-closed policy, not just another `isMasked`.
-  Observe also exposes bus payloads, not just file contents; a path check cannot
-  redact previously captured secrets. Anything not listed as covered remains
-  unaffected.
+- `lsp`, `observe`, `fetch` and `builder` now **refuse every tool action** with
+  `E_MASK_UNCONFINED` whenever any nonblank mask entry is configured, including
+  relative entries. This deliberately sacrifices availability rather than
+  pretending a named-file check confines an autonomous reader. No masks means
+  unchanged behavior. LSP instance creation also refuses, covering automatic
+  warmup and queued diagnostics outside ordinary tool dispatch.
+  Language servers and compilers can read transitive dependencies; fetch's
+  extraction helpers and observe's captured bus payloads also lack process
+  confinement or reliable provenance. These components remain unconfined, not
+  selectively mask-aware. Observe may still collect bus traffic internally;
+  denying tool actions is not erasure or protection from trusted operators.
+  No tool schemas or frozen prompts change; refusals enter append-only history.
+  Plugins, MCP, native Fabric and other unreviewed paths remain outside this
+  guarantee.
 
 ## Enable
 

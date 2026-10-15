@@ -10,6 +10,7 @@ import std/[json, os, sequtils, strutils, times]
 import natsnim
 import envelope
 import niffler/sdk
+import niffler/maskedtools
 
 proc validComponentName(name: string): bool =
   if name.len == 0 or name.len > 64 or name[0] == '-' or name[^1] == '-':
@@ -541,4 +542,5 @@ comp.tool(%*{"onDemand": true}):
               "go": "package main\nimport \"encoding/json\"\nimport sdk \"niffler.dev/sdk\" // module path; import as `sdk`\nfunc main() {\n  comp := sdk.New(\"greet\", \"0.1.0\")\n  comp.Tool(\"greet\", map[string]any{\"type\": \"object\", \"properties\": map[string]any{\"name\": map[string]any{\"type\": \"string\"}}, \"required\": []string{\"name\"}},\n    func(c *sdk.Component, args json.RawMessage) (any, error) {\n      var a struct { Name string `json:\"name\"` }\n      json.Unmarshal(args, &a)\n      return map[string]any{\"greeting\": \"Hello, \" + a.Name}, nil\n    })\n  comp.Run()\n}",
               "ts": "import sdk from \"niffler-sdk\"; // source-only builder example; packaged plugins use their own package.json\nconst comp = sdk.newComponent(\"greet\", \"0.1.0\");\ncomp.tool(\"greet\", {\n  type: \"object\",\n  description: \"Greet someone\",\n  properties: { name: { type: \"string\" } },\n  required: [\"name\"],\n}, async (_c, args: any) => {\n  return { greeting: \"Hello, \" + (args?.name ?? \"world\") };\n});\ncomp.run();"}
 
+comp.refuseUnconfinedReaders()
 comp.run()

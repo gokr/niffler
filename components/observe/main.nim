@@ -9,6 +9,7 @@ import std/[algorithm, base64, httpclient, json, monotimes, os, sequtils,
             strutils, tables, times, unicode]
 import regex
 import niffler/sdk
+import niffler/maskedtools
 import ../../sdk/dotenv
 
 loadDotEnv(".env", rootDir() / ".env")
@@ -808,4 +809,5 @@ discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
             "summary": (if allOk: "observe wiring ok" else: "observe wiring FAILED"),
             "checks": checks})
 
+comp.refuseUnconfinedReaders()
 comp.run()

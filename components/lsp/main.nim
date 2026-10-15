@@ -34,6 +34,7 @@ import std/[algorithm, json, monotimes, os, osproc, posix, sequtils, streams, st
 import std/syncio
 import natsnim
 import niffler/sdk
+import niffler/maskedtools
 import roots
 import subjects   # sanitizeSessionId: the async diagnostics lane is per conversation
 
@@ -506,6 +507,9 @@ proc missingRuntime(conf: ServerConf): string =
   ""
 
 proc getInstance(conf: ServerConf, root: string): Instance =
+  # Also covers automatic warmup and queued diagnostics, outside tool dispatch.
+  if masksConfigured():
+    fail("E_MASK_UNCONFINED", "language servers are not confined under operator masks")
   var conf = conf                     # local: command[0] may be repathed below
   let k = instKey(conf.name, root)
   if gInstances.hasKey(k):
@@ -1741,4 +1745,5 @@ discard comp.onIdle(DIAG_IDLE_MS) do (c: Component):
 
 discard comp.selfTest(hLspSelfTest)
 
+comp.refuseUnconfinedReaders()
 comp.run()

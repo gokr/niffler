@@ -18,6 +18,7 @@
 import std/[json, net, nativesockets, os, osproc, streams, strutils, tempfiles,
             times, uri, xmltree]
 import niffler/sdk
+import niffler/maskedtools
 import pkg/htmlparser
 
 let comp = newComponent("fetch", "0.1.0")
@@ -453,4 +454,5 @@ comp.tool(%*{"onDemand": true,
     except CatchableError as e:
       return errResult("fetch failed: " & e.msg)
 
+comp.refuseUnconfinedReaders()
 comp.run()
