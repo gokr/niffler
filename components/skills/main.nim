@@ -595,4 +595,42 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
     except CatchableError as e:
       return errResult("failed to remove: " & e.msg)
 
+# --------------------------------------------------------------------------
+# slash commands (docs/WIRE.md — declarative UI surface)
+#
+# Namespaced by the registering component, the plugins component's
+# convention: the command namespace is global and duplicate names are
+# rejected, so a generic /skills would collide with another installed
+# package's command and the later registration would be silently dropped.
+# The plugins component's /plugins + /plugins-install + /plugins-remove
+# trio is the model — same verbs, same slot.
+
+discard comp.slashCommand("skills",
+  "List skills on this harness (load one with the model's skill_load)",
+  parseJson("""
+    [{"name": "query", "kind": "string", "default": "",
+      "description": "substring filter over name, description and tags"},
+     {"name": "source", "kind": "enum",
+      "values": ["", "project", "bundled", "home", "config"],
+      "description": "restrict to one discovery root (empty: all)"}]
+  """), tool = "skill_list")
+
+discard comp.slashCommand("skills-install",
+  "Install a skill from a git repo (copies SKILL.md trees; asks approval)",
+  parseJson("""
+    [{"name": "repo", "kind": "string",
+      "description": "owner/name, a github.com URL, or a file:// URL"},
+     {"name": "skill", "kind": "string", "default": "",
+      "description": "skill name or directory inside the repo (empty = the repo's only skill)"},
+     {"name": "global", "kind": "bool", "default": true,
+      "description": "true = ~/.niffler/skills (default); false = this project's .opencode/skills"}]
+  """), tool = "skill_install")
+
+discard comp.slashCommand("skills-remove",
+  "Remove a skill installed from a repo (asks approval; shared dirs are refused)",
+  parseJson("""
+    [{"name": "name", "kind": "string",
+      "description": "skill name (see /skills)"}]
+  """), tool = "skill_remove")
+
 comp.run()
