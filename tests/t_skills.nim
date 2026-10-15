@@ -10,7 +10,7 @@
 ## Niffler-managed dirs; the baked (compiled-in) fallback serves discovery
 ## when no bundled tree is reachable. Cleanup leaves no files behind.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, strutils, tables, times]
 import natsnim
 import helpers
 
@@ -305,6 +305,96 @@ proc main() =
   check("baked: compiled-in skills are not removable",
         not brem{"ok"}.getBool(false) and
         brem{"error"}.getStr("").contains("not Niffler-managed"), $brem)
+
+  # --- slash surface (docs/WIRE.md, declarative UI surface) ---------------
+  # The component's UI-facing commands, namespaced by component name
+  # (/skills*) like /plugins* and the MCP bridge's mcp-<server>-<prompt>: the
+  # slash namespace is global and duplicates are dropped, so a generic
+  # /install would lose to whichever package registered first. This test boots
+  # no core and no store, so the check reads the component's own reg.publish
+  # (the shape a catalog ingests: name, description, tool, params) — declared
+  # but rejected registrations are the reason both halves matter.
+  var slashSub: ptr natsSubscription
+  let slashSt = natsConnection_SubscribeSync(addr slashSub, nc.conn,
+                                             "reg.publish".cstring)
+  check("subscribe reg.publish for the slash phase", checkStatus(slashSt))
+  discard natsConnection_Flush(nc.conn)
+  let slashProc = startComponent(repoRoot / "var" / "bin" / "skills", url,
+                                 root = root,
+                                 extra = [("HOME", fakeHome)])
+  defer: stopProcess(slashProc)
+  var slashDoc = newJObject()
+  let slashDeadline = epochTime() + 15.0
+  while epochTime() < slashDeadline and slashDoc.len == 0:
+    var msg: ptr natsMsg
+    if natsSubscription_NextMsg(addr msg, slashSub, 200) == NATS_OK:
+      let payload = parseJson($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if payload{"name"}.getStr("") == "skills" and payload.hasKey("slash"):
+        slashDoc = payload
+  natsSubscription_Destroy(slashSub)
+  check("skills announces its slash surface on reg.publish", slashDoc.len > 0,
+        $slashDoc)
+  var byName = initTable[string, JsonNode]()
+  # {} on a missing key is nil and iterating nil crashes (json.nim items), so
+  # absent slash/params arrays are handled as empty lists, never iterated.
+  if slashDoc{"slash"} != nil and slashDoc{"slash"}.kind == JArray:
+    for c in slashDoc{"slash"}:
+      byName[c{"name"}.getStr("")] = c
+  check("slash /skills declared and targets skill_list",
+        byName.hasKey("skills") and
+        byName["skills"]{"tool"}.getStr("") == "skill_list", $slashDoc)
+  check("slash /skills-install declared and targets skill_install",
+        byName.hasKey("skills-install") and
+        byName["skills-install"]{"tool"}.getStr("") == "skill_install",
+        $slashDoc)
+  check("slash /skills-remove declared and targets skill_remove",
+        byName.hasKey("skills-remove") and
+        byName["skills-remove"]{"tool"}.getStr("") == "skill_remove", $slashDoc)
+  # The declared command-line surface a UI renders: /skills takes skill_list's
+  # filters, /skills-install the install switches — global as a bool, so a UI
+  # draws a toggle rather than a text field.
+  var skillParams = newSeq[string]()
+  if byName.hasKey("skills") and byName["skills"]{"params"} != nil:
+    for p in byName["skills"]{"params"}:
+      skillParams.add(p{"name"}.getStr("") & ":" & p{"kind"}.getStr(""))
+  check("/skills carries query and source params",
+        skillParams == @["query:string", "source:enum"], skillParams.join(","))
+  var installParams = newSeq[string]()
+  if byName.hasKey("skills-install") and byName["skills-install"]{"params"} != nil:
+    for p in byName["skills-install"]{"params"}:
+      installParams.add(p{"name"}.getStr("") & ":" & p{"kind"}.getStr(""))
+  check("/skills-install carries repo, skill, global",
+        installParams == @["repo:string", "skill:string", "global:bool"],
+        installParams.join(","))
+  # Every declared target must be a tool this component really registers, or a
+  # catalog drops the command silently. Pair each with the reg.publish tool
+  # list so a rename on one side cannot pass unnoticed here.
+  var toolNames = newSeq[string]()
+  if slashDoc{"tools"} != nil and slashDoc{"tools"}.kind == JArray:
+    for t in slashDoc{"tools"}:
+      toolNames.add(t{"name"}.getStr(""))
+  for cmdName in ["skills", "skills-install", "skills-remove"]:
+    check("slash /" & cmdName & " targets a registered tool",
+          byName.hasKey(cmdName) and
+          byName[cmdName]{"tool"}.getStr("") in toolNames, toolNames.join(","))
+
+  # The declared command must be invocable the way a UI drives it: build the
+  # target's arguments from the command line and call it. /skills runs the
+  # real discovery path, so a declaration that drifted from its tool's
+  # signature fails here rather than in a UI.
+  let target =
+    if byName.hasKey("skills"): byName["skills"]{"tool"}.getStr("skill_list")
+    else: "skill_list"
+  let invoked = call(nc, "skills", target,
+                     %*{"query": "projskill", "source": ""})
+  var invokedNames = newSeq[string]()
+  if invoked{"skills"} != nil and invoked{"skills"}.kind == JArray:
+    for item in invoked{"skills"}:
+      invokedNames.add(item{"name"}.getStr(""))
+  check("/skills' target tool answers with the declared filters",
+        invoked{"ok"}.getBool(false) and "projskill" in invokedNames,
+        $invoked)
 
   report("SKILLS TEST")
 
