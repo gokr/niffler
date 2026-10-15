@@ -113,15 +113,30 @@ implicitly granting access to other conversations' files or harness state.
 This is the agreed target; restoration and per-conversation integration are not
 yet implemented.
 
+## Builder — approved by the user
+
+- build and build_package require human approval on every sandboxed use.
+  Ordinary conversation auto-approval does not bypass this conditional gate.
+- Approval authorizes an unconfined build: compiler directives and build scripts
+  may execute code, access files outside conversation-approved roots and use
+  network access. The approval prompt must disclose this broader authority;
+  the result must not claim the build was confined.
+- info needs no additional sandbox approval.
+- Sandbox off retains existing behavior and approval requirements.
+
+This is the agreed target, not implemented conditional per-conversation gating.
+The experimental blanket mask-triggered refusal is to be replaced, not treated
+as the completed policy.
+
 ## Remaining per-tool review
 
 The user requested individual review of tool treatments. The filesystem group,
-bash network, LSP and fetch policies above are approved in detail. Review next:
+bash network, LSP, fetch and builder policies above are approved in detail.
+Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. builder build/build_package/info individually.
-3. observe inspection, request/publish and management tools individually.
-4. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
+2. observe inspection, request/publish and management tools individually.
+3. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
    escape paths. Undeclared new tools must not silently acquire sandbox authority;
    the default treatment still needs agreement.
 
