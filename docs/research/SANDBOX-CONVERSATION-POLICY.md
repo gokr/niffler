@@ -162,21 +162,69 @@ implementation and do not provide per-conversation approved-root enforcement.
 
 ## Git tools — approved by the user
 
-- git_status, git_diff, git_log, git_show, git_blame and review_receipt are
-  ordinary reads with no additional sandbox approval, provided they operate
-  inside an approved repository path. The repository must be within an approved
-  root; a caller-supplied repo path does not create approval.
-- Implementations must not let repository configuration execute code on these
-  reads: disable external diff drivers and textconv filters rather than
-  honoring them from repo/user gitconfig. Git hooks are not part of a read.
-- Documented limit the user accepted: history can contain content that the
-  working tree no longer has, or that deny rules hide there — a commit, patch,
-  blame range or removed file. Confining the operation to an approved
-  repository bounds WHERE git runs, not WHAT its output discloses. Results must
-  not claim deny rules were applied to history.
-- Actual mutations remain bash's business and follow bash policy.
+git_status, git_diff, git_log, git_show, git_blame and review_receipt are
+ordinary READS, treated the same as read/grep/files: scoped to approved roots,
+with no additional sandbox approval and no separate git-specific gate. If the
+repository is inside an approved root they work as they do today. A
+caller-supplied repo path does not create approval.
 
-This is the agreed target, not implemented per-conversation repository scoping.
+Two implementation requirements follow, and neither is a policy difference:
+
+- Repository/user gitconfig must not execute code during one of these reads.
+  Disable external diff drivers and textconv filters rather than honoring them;
+  git hooks are not part of a read. Otherwise a "read" inside an approved repo
+  becomes an escape path, contradicting its treatment as an ordinary read.
+- History bound, stated because it is a consequence that cannot be opted out of
+  while keeping git reads: a commit, patch, blame range or deleted file can
+  contain content that deny rules hide in the working tree. Confining git to an
+  approved repository bounds WHERE it runs, not WHAT its output discloses. Be
+  explicit in results rather than implying deny rules were applied to history.
+
+Actual mutations remain bash's business and follow bash policy.
+
+## Reaching outside the approved roots — approved by the user
+
+The user asked how this behaves when a tool or a bash command wants something
+outside the approved roots. Two tiers, because the two cases differ in what can
+be known reliably.
+
+**Default for both: refuse.** Clear message naming the policy and the path. No
+automatic retry, no automatic widening, and the refusal must not hint at another
+route to the same bytes.
+
+**File tools (read, grep, files, edit, write, replace_across, repo_map, git):**
+the refusal is precise because these tools check before acting — they know the
+exact path denied. So a human MAY be offered a scoped grant, on the same terms
+as the network grant:
+
+- The request is explicit and carries a reason; never implied by a failure and
+  never auto-issued after a refusal.
+- The human chooses Deny, Allow for this call, or Add to this conversation's
+  approved roots. One-call grants are consumed by that invocation, not reusable
+  or inherited. Conversation-wide root grants are inherited by subagents.
+- Filesystem tools can offer this choice before executing a known out-of-scope
+  operation. No operation executes on a declined or unanswered request.
+- The prompt shows the normalized path, requested read or read/write access,
+  reason and scope. Only a conversation-wide grant widens what subsequent tools
+  in that conversation can reach; a one-call grant does not change its roots.
+- Deny rules still win: granting a root must not, by itself, unmask a denied path
+  inside it. Unmasking a deny rule is a separate, operator-owned decision.
+- An agent can never approve itself; ordinary conversation auto-approve mode and
+  NIF_AUTO_APPROVE=1 must not satisfy it.
+- Read and write are separate: granting read does not grant write.
+
+**Bash:** no path-specific grant prompt derived from a failure. An EACCES/EPERM
+or a stderr string is only a *possible* denial — the path is not reliably known,
+so the design must not invent one, must not parse the error into a grant request
+and must not rerun the command. Preserve the original outcome and require an
+explicit new request (the earlier SANDBOX-PLAN wording on this is adopted here).
+A bash command CAN still be launched with an explicit, human-approved extra root
+or network grant as part of its request.
+
+**Implicit widening is never allowed.** Discovering a sibling checkout or git
+worktree does not add a root; only a human decision does. Repeated agent requests
+must not accumulate roots by persistence — a refusal is not a negotiation channel
+the agent drives.
 
 ## Escape-capable tools — approved by the user
 
