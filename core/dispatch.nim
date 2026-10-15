@@ -11,6 +11,7 @@ import yaml/tojson
 import natsnim
 import ../sdk/envelope
 import ../sdk/subjects
+import ../sdk/niffler/sandboxpolicy
 import approval
 import catalog
 import schema_validation
@@ -149,6 +150,15 @@ type
       ## once and cached here (a ref, so the cache survives CoreTools' by-value
       ## copies). Injected as private __workspace context for tools that
       ## declare the workspace policy — never the prompt, never a schema.
+      ## Human-granted roots join this set, so the SAME list feeds the write
+      ## fence (locks) and component path acceptance: a grant that only one of
+      ## them honored would be the bug where `write` is allowed but its lock
+      ## is still refused.
+    rootsKey*: string
+      ## Cache key for workspaceRoots: the primary plus the granted roots the
+      ## cached list was built from. A grant appearing or being revoked must
+      ## rebuild the set on the next call, but a store read on every dispatch
+      ## is wasted work — compare this instead.
     leases*: Table[string, NestedLease]
     ## Active session-context leases, KEYED BY LEASE ID (P2.5 B). One lease
     ## per in-flight session-context dispatch: each entry carries its own
@@ -1570,6 +1580,45 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   if partial != nil: return partial
   raise newException(IOError, timeoutError)
 
+proc grantedRootsFor*(ct: CoreTools, session: string): seq[string] =
+  ## Human-granted extra roots for a conversation, from the store.
+  ##
+  ## Why the store and not the conversation header: a grant is a security
+  ## decision, so its persistence must not share the header's best-effort
+  ## update helper (a swallowed write failure would leave the live policy and
+  ## the reloaded policy different). One document per session id; a store that
+  ## is down yields no grants, which fails closed toward the primary workspace.
+  result = @[]
+  if session.len == 0: return
+  try:
+    let item = ct.storeGetItem("grantedroot", session & ":roots")
+    if item.value == nil: return
+    let decoded = decodeSandboxPolicy(item.value)
+    for r in decoded.writeRoots:
+      if r notin result: result.add r
+  except CatchableError:
+    # Unreachable store or an unreadable/legacy record: no grants. Never widen
+    # on a parse failure, and never treat malformed data as an implicit deny of
+    # the workspace itself.
+    result = @[]
+
+proc saveGrantedRoots*(ct: CoreTools, session, workspace: string,
+                       roots: seq[string]): bool =
+  ## Persist the granted-root set for a conversation. Returns false on a store
+  ## failure so the caller refuses the grant rather than activating a live
+  ## policy that would not survive a restart.
+  if session.len == 0 or workspace.len == 0: return false
+  var policy = initialSandboxPolicy(workspace)
+  for r in roots:
+    if r notin policy.writeRoots: policy.writeRoots.add r
+    if r notin policy.readRoots: policy.readRoots.add r
+  try:
+    discard ct.storePutRev("grantedroot", session & ":roots",
+                           encodeSandboxPolicy(policy))
+    return true
+  except CatchableError:
+    return false
+
 proc workspaceRootsFor*(ct: CoreTools): seq[string] =
   ## The conversation's workspace set, cached for the runner's lifetime: the
   ## primary workspace plus the trees that belong to the same project
@@ -1577,9 +1626,19 @@ proc workspaceRootsFor*(ct: CoreTools): seq[string] =
   ## calls happen once instead of on every tool call.
   let primary = if ct.nested != nil: ct.nested.workspace else: ""
   if primary.len == 0: return @[]
-  if ct.nested.workspaceRoots.len == 0 or
-      ct.nested.workspaceRoots[0] != normalizeRoot(primary):
+  # Human grants join the set the write fence and components both consult. The
+  # cache key includes them, so a grant or revocation rebuilds the set on the
+  # next call without a store read on every dispatch.
+  var granted = grantedRootsFor(ct, if ct.nested != nil: ct.nested.session else: "")
+  var key = normalizeRoot(primary)
+  for g in granted: key.add "\n" & g
+  if ct.nested.workspaceRoots.len == 0 or ct.nested.rootsKey != key:
     ct.nested.workspaceRoots = computeWorkspaceRoots(primary)
+    for g in granted:
+      let added = addWorkspaceRoot(ct.nested.workspaceRoots, g)
+      if not added.ok:
+        echo "core: granted root not added: " & added.error
+    ct.nested.rootsKey = key
   ct.nested.workspaceRoots
 
 proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =

@@ -25,6 +25,7 @@ import attachments
 import approval
 import supervisor
 import retry
+import workspace
 
 proc sanitizeSessionId*(s: string): string
   ## Forward declaration: the per-session event publisher (ev.session.<id>.*)
@@ -234,6 +235,15 @@ type
     approvalMode*: string    ## this conversation's gate mode (/approvals):
                              ## "" or "ask" gates every x-harness.approval
                              ## tool, "auto" grants them without asking
+    grantedRoots*: seq[string]
+                             ## Human-granted extra roots for this conversation
+                             ## (session {roots: {add, remove}}). These join the
+                             ## workspace set core hands to components, so the
+                             ## write fence and every path-taking tool agree on
+                             ## what this conversation may touch. Read from the
+                             ## store (kind grantedroot) rather than trusted
+                             ## from here; this field is the in-memory view for
+                             ## the status readback.
     limitRounds*: int        ## the human's SOFT turn limits (/limit): when one
     limitTokens*: int        ## is reached the turn ASKS whether it may keep
     limitSeconds*: int       ## going (0 = unset). The scoping budgets above
@@ -3309,6 +3319,13 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # content (a control call runs no inference).
   let hasApprovals = args.kind == JObject and args.hasKey("approvals")
   let hasLimits = args.kind == JObject and args.hasKey("limits")
+  # Granted roots: the human widening this conversation's writable/readable
+  # set. Accepted on a content-less control call like the others, and applied
+  # between tool calls only. The value is an object {add, remove} of path
+  # arrays; the whole list is validated and persisted before it takes effect,
+  # and a persistence failure refuses the change rather than activating a live
+  # policy that would not survive a restart.
+  let hasRoots = args.kind == JObject and args.hasKey("roots")
   # Manual compaction (/compact): the human's explicit request for the same
   # replaceable-compactor rung the automatic ladder runs at pressure. Rides a
   # content-less control call like the other conversation controls.
@@ -3451,6 +3468,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     # may change them at any point) but must survive a runner resume, so a
     # restarted runner re-applies exactly what the human last chose.
     entry.approvalMode = header{"approvals"}.getStr("")
+    entry.grantedRoots = grantedRootsFor(ct, sessionId)
     let storedLimits = header{"limits"}
     if storedLimits != nil and storedLimits.kind == JObject:
       entry.limitRounds = storedLimits{"rounds"}.getInt(0)
@@ -3797,6 +3815,49 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       return %*{"error": "approvals must be ask or auto (empty clears)"}
     entry.approvalMode = if mode == "auto": "auto" else: ""
     ct.updateConversationHeader(sessionId, %*{"approvals": entry.approvalMode})
+  if hasRoots:
+    let raw = args{"roots"}
+    if raw.kind != JObject:
+      return %*{"error": "roots must be an object with add/remove arrays of paths"}
+    for key in raw.keys:
+      if key notin ["add", "remove"]:
+        return %*{"error": "unknown roots field " & key & " (add, remove)"}
+    let workspace = entry.workspace
+    var roots = grantedRootsFor(ct, sessionId)
+    for key in ["add", "remove"]:
+      let list = raw{key}
+      if list == nil: continue
+      if list.kind != JArray:
+        return %*{"error": "roots." & key & " must be an array of paths"}
+      for item in list:
+        if item.kind != JString or item.getStr().strip().len == 0:
+          return %*{"error": "roots." & key & " entries must be nonempty path strings"}
+        let path = item.getStr().strip()
+        if path == "/":
+          return %*{"error": "refusing to grant the filesystem root as a conversation root"}
+        if not path.isAbsolute():
+          return %*{"error": "root must be absolute (got " & path & ") — a relative path would depend on where the harness runs"}
+        # Normalize through the same helper the workspace set uses, so a grant
+        # and the fence it feeds cannot disagree about the spelling.
+        let norm = normalizeRoot(path)
+        if norm.len == 0 or not dirExists(norm):
+          return %*{"error": "root is not an existing directory: " & path}
+        if norm == normalizeRoot(workspace):
+          return %*{"error": "that path is already the primary workspace"}
+        if key == "add":
+          if norm notin roots: roots.add norm
+        else:
+          roots = roots.filterIt(it != norm)
+    let capped = roots[0 ..< min(roots.len, maxWorkspaceRoots - 1)]
+    if not ct.saveGrantedRoots(sessionId, workspace, capped):
+      return %*{"error": "could not persist the root change; the conversation's roots are unchanged (is the store reachable?)"}
+    # Rebuild the cached workspace set so the NEXT dispatch (and the write
+    # fence inside it) sees the change without a runner restart. A turn already
+    # in flight keeps the set it started with, which is the documented
+    # between-calls guarantee.
+    if ct.nested != nil: ct.nested.rootsKey = ""
+    entry.grantedRoots = capped
+    ct.updateConversationHeader(sessionId, %*{"grantedRoots": capped})
   if hasLimits:
     let raw = args{"limits"}
     if raw.kind != JObject:
@@ -3992,6 +4053,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       "model": entry.modelOverride,
       "thinkingEffort": entry.thinkingEffort,
       "approvals": entry.approvalMode,
+      "grantedRoots": entry.grantedRoots,
       "limits": %*{"rounds": entry.limitRounds, "tokens": entry.limitTokens,
                      "seconds": entry.limitSeconds},
       "cwd": entry.workspace,
