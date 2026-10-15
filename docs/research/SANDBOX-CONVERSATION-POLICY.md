@@ -1,6 +1,10 @@
 # Conversation sandbox — agreed contract and implementation sequence
 
-Status: agreed design, not implemented. This supersedes conflicting policy
+Status: agreed design; implementation has started with the pure versioned
+snapshot model (`sdk/niffler/sandboxpolicy.nim`) and its contract tests. It is
+not yet connected to session persistence, controls, dispatch or enforcement.
+Defaults, inheritance and configured/not-enforced status are model-level only.
+This supersedes conflicting policy
 choices in SANDBOX-PLAN.md and the experimental sandbox branch. The existing
 implementation status is recorded in SANDBOX-BASH-STATUS.md; it must not be
 mistaken for this contract.
