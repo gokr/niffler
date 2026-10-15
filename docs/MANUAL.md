@@ -2170,10 +2170,12 @@ Details:
   appending it, so a completion survives a component restart, an absent
   runner and a failed publish — and the same completion is never folded
   twice. `process_poll` remains for reading output, not for discovering that
-  work finished. Only `bash run_in_background` hands the owning conversation
-  over (it is the one caller that passes `session`), so a `process_start`
-  reached any other way — the model's own `discover` + `invoke`, `cli`, a
-  script — is started without an owner session and announces nothing.
+  work finished. Both `bash run_in_background` and a model's direct
+  `process_start` (including `discover` + `invoke`) carry ownership: the
+  runner injects `__session.session` using `x-harness.sessionId`, which wins
+  over an explicit internal `session` argument. Bare bus calls (`cli`, scripts)
+  have no owning conversation unless they supply `session`; their start
+  result explicitly reports that automatic notification is unavailable.
 - Tool errors carry stable codes: `E_BAD_SHAPE` (empty `command`, a
   missing `workdir`, an invalid `filter` regex), `E_NOT_FOUND` (unknown
   id — `process_list` shows the registry) and `E_LIMIT` (32 live

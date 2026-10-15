@@ -144,7 +144,7 @@ proc main() =
 
   check("start guidance discovers controls and explains wait/filter/tail",
     s1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
-    s1{"text"}.getStr("").contains("Completion is pushed") and
+    s1{"text"}.getStr("").contains("No owning session") and
     s1{"text"}.getStr("").contains("only when you need its output") and
     s1{"text"}.getStr("").contains("filter") and
     s1{"text"}.getStr("").contains("tail:\"1\""), $s1)
@@ -307,7 +307,7 @@ proc main() =
         b1{"text"}.getStr("").contains("process_kill"), $b1)
   check("bash flag teaches discovery and completion push",
         b1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
-        b1{"text"}.getStr("").contains("do not poll to wait for it"), $b1)
+        b1{"text"}.getStr("").contains("No owning session"), $b1)
   let idB = b1{"id"}.getStr("")
   check("the forwarded process emitted before the poll",
         waitForLine(idB, "via-bash line"), "no output within the deadline")
@@ -431,10 +431,11 @@ proc main() =
     defer: natsSubscription_Destroy(steerSub)
     let started = pcall("process_start",
       %*{"command": "echo notice-me", "label": "notice-fixture",
-         "session": "bgnotice"}, 20_000)
+         "session": "wrong-owner", "__session": {"session": "bgnotice"}}, 20_000)
     let ownedId = started{"id"}.getStr("")
-    check("notice: start accepted the owning session",
-          started{"error"} == nil and ownedId.len > 0, $started)
+    check("notice: injected ownership wins over explicit owner",
+          started{"error"} == nil and ownedId.len > 0 and
+          started{"text"}.getStr("").contains("Completion is pushed"), $started)
 
     var notice: JsonNode = nil
     let noticeDeadline = epochTime() + 20.0

@@ -322,6 +322,17 @@ proc main() =
     %*{"session": processParent, "peek": true}, 10_000)
   check("persisted completion acknowledged after append", inbox{"count"}.getInt() == 0)
 
+  let directOwner = "process-direct-owner"
+  let directReply = call(nc, "core", "session",
+    %*{"sessionId": directOwner, "content": "start directly"}, 120_000)
+  check("invoke process_start injects ownership and holds the busy turn",
+    directReply{"reply"}.getStr("") == "process-notice-folded", $directReply)
+  var directCount = 0
+  for m in transcript(directOwner):
+    if m{"notice"}{"kind"}.getStr("") == "process-exited": inc directCount
+  check("busy process completion folds once across steer and durable inbox",
+    directCount == 1, $directCount)
+
   report("AGENT WAKE")
 
 main()

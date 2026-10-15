@@ -340,14 +340,17 @@ proc hStart(c: Component, args: JsonNode): JsonNode =
     fail("E_LIMIT", "fork failed — cannot start background processes")
   let e = Entry(id: id, pid: pid, label: label, command: command,
                 outPath: outPath, errPath: errPath, startedAt: epochTime(),
-                session: args{"session"}.getStr(""))
+                session: args{"__session"}{"session"}.getStr(
+                  args{"session"}.getStr("")))
   gProcs[id] = e
   saveRegistry()
   return okResult(%*{"id": id, "label": label, "pid": int(pid),
     "text": "Started background process " & id & " (" & label & "). " &
             "Discover controls with discover {tools:[\"process_poll\",\"process_kill\"]}. " &
-            "Completion is pushed to this session automatically (bounded wake if idle) — " &
-            "do not poll to wait for it. " &
+            (if e.session.len > 0:
+              "Completion is pushed to this session automatically (bounded wake if idle) — do not poll to wait for it. "
+             else:
+              "No owning session: automatic completion notification is unavailable. ") &
             "Call process_poll {id:\"" & id & "\"} only when you need its output; each poll " &
             "drains new complete lines, filter keeps matching lines (all new output is still " &
             "drained), and tail:\"1\" re-reads raw recent output without advancing the cursor. " &
@@ -600,7 +603,7 @@ discard comp.tool("process_start", toolSchema(%*{
   "Start a long-running command (dev server, file watcher, database) as a detached background process and return its id immediately. Poll incremental output with process_poll (drain semantics: each poll returns only what was appended since the last one; waitMs blocks until there is new output or the process exits), stop it with process_kill. Completion automatically notifies the owning session and wakes it within the shared wake budget; do not poll just to wait for completion. Use for servers and watchers you need to interact with across turns — not for commands that finish quickly (plain bash). stdin is /dev/null. Processes die with the harness. Starting a process writes harness state — approval-gated."),
   hStart,
   %*{"approval": "always", "timeoutMs": 20000, "onDemand": true,
-     "workspace": %*{"cwdField": "workdir"}})
+     "sessionId": true, "workspace": %*{"cwdField": "workdir"}})
 
 discard comp.tool("process_poll", toolSchema(%*{
   "id": {"type": "string", "description": "Process id from process_start"},

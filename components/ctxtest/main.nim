@@ -65,6 +65,14 @@ comp.tool(%*{"hidden": true}):
     ## - anything else (t_nested): ctxecho probe, then final reply.
     let stage = chatStage.mgetOrPut(sessionId, 0)
     chatStage[sessionId] = stage + 1
+    if sessionId == "process-direct-owner":
+      if stage == 0:
+        return toolCall("start-owned", "invoke", %*{"tool": "process_start",
+          "arguments": {"command": "sleep 1; echo owned-completion"}})
+      if stage == 1:
+        sleep(2000) # completion arrives while the LLM's final reply is pending
+        return %*{"content": "process-first-reply"}
+      return %*{"content": "process-notice-folded"}
     if sessionId == "hb-busy":
       sleep(8000)
       return %*{"content": "human-turn-done"}

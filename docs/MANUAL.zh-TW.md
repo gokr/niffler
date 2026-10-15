@@ -1254,7 +1254,7 @@ bash 依設計是同步的——伺服器、監看器和測試迴圈需要不同
 - 上限：32 個並行行程。完成的項目絕不被淘汰：此元件生命週期內的每個行程都留在登錄檔中——只有*執行中*的會寫入 `registry.json`——因此 `process_list` 會持續將已完成的子行程回報為 `exited(code N)` 或 `killed(signal N)`，直到元件退出。
 - **完成的行程會通知它的會話。** 當你透過 `bash` 工具的 `run_in_background` 旗標啟動一個行程時，bash 會把擁有它的會話交給登錄檔；當該子行程退出時，`processes` 會先寫入一筆持久完成記錄，再推送至該會話（與 subagent 結算通知使用同一條通道），因此接下來的回合會以 `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes of output — read it with \`process_poll\` …` 開頭。它是個指標：輸出留在 spool 中，命令文字絕不傳遞。
 
-  因此背景工作不再需要輪詢：元件在週期性 tick（SDK 的 `onIdle`）上收割子行程，先記錄完成再宣告，並在會話閒置時要求一次有界喚醒。runner 只在成功附加後才確認記錄，因此完成能挺過元件重啟、沒有 runner 與發佈失敗，且同一完成不會被折入兩次。`process_poll` 仍用於讀取輸出，而不是發現完成。只有 `bash run_in_background` 會交出擁有它的會話（它是唯一傳遞 `session` 的呼叫者），因此以其他方式觸及的 `process_start`（模型自己的 `discover` + `invoke`、`cli`、腳本）沒有擁有者會話，也不會宣告。
+  因此背景工作不再需要輪詢：元件在週期性 tick（SDK 的 `onIdle`）上收割子行程，先記錄完成再宣告，並在會話閒置時要求一次有界喚醒。runner 只在成功附加後才確認記錄，因此完成能挺過元件重啟、沒有 runner 與發佈失敗，且同一完成不會被折入兩次。`process_poll` 仍用於讀取輸出，而不是發現完成。`bash run_in_background` 和模型直接呼叫 `process_start`（含 `discover` + `invoke`）都會攜帶所屬會話：runner 透過 `x-harness.sessionId` 注入 `__session.session`，優先於內部明確的 `session`。純匯流排呼叫（`cli`、腳本）除非傳入 `session`，否則沒有擁有者；啟動結果會明確說明無自動通知。
 - 工具錯誤帶有穩定代碼：`E_BAD_SHAPE`（空的 `command`、缺失的 `workdir`、無效的 `filter` 正規表達式）、`E_NOT_FOUND`（未知 id——`process_list` 會顯示登錄檔）和 `E_LIMIT`（32 個存活行程，或無法 fork 的子行程）。
 - `process_list` 項目帶有 `started_at`（epoch 秒），因此客戶端可以顯示某個東西已執行多久——`bg 1 (7m)` 徽章是 `niffler-tui` 外掛的狀態列，不是 core 的。
 - `workdir` 預設為會話工作區：core 會為空值或 `.` 值替換它，並對工作區（`x-harness.workspace`）解析相對路徑，而不存在的路徑會以 `E_BAD_SHAPE` 失敗。純匯流排呼叫（`cli call process_start`）會跳過該替換，因此子行程繼承元件自己的 cwd（`$NIF_ROOT`）。
