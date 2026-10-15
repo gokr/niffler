@@ -69,10 +69,29 @@ LSP servers and trafilatura are trusted infrastructure, not hostile agent shell
 commands. Do not disable them merely because a mask is configured. Trust does
 not grant direct filesystem tools permission to read outside approved roots.
 
-The user requested individual review of tool treatments. Only the filesystem
-group above is approved in detail so far. Review next:
+## Bash network — approved by the user
 
-1. bash: runtime roots, private scratch, network and background behavior.
+Sandboxed bash has network off by default. A call may explicitly request full
+network access and provide a reason. Human approval binds to the exact command,
+cwd, effective filesystem policy and that invocation only; it grants no extra
+filesystem rights and does not disable deny rules. Subagents inherit the
+network-off policy and may request the same per-call approval. Ordinary
+conversation auto-approval must not bypass this gate. Denial or an unreachable
+human starts no requested network-enabled command.
+
+Do not detect network need from an exit code and automatically rerun: the first
+attempt may already have mutated files. A request is explicit, before execution.
+On Linux, approval omits bwrap's network isolation for that launch: it exposes
+the host network, not a domain allowlist, and the prompt must state that.
+Seatbelt implementation and equivalent behavior still require Mac validation.
+This is agreed design, not implemented per-call approval support.
+
+## Remaining per-tool review
+
+The user requested individual review of tool treatments. The filesystem group
+and bash network policy above are approved in detail. Review next:
+
+1. bash: exact runtime roots, private scratch and background behavior.
 2. LSP query, registry and server-management tools individually.
 3. fetch and extraction.
 4. builder build/build_package/info individually.
