@@ -549,6 +549,12 @@ notice whose `processId` is already in its history and only acknowledges
 after a successful append, so a persistence failure leaves the record
 pending rather than dropping it.
 
+The boot sweep retains session ownership and records previously running jobs as
+`interrupted(component restart)` (exitCode -1), never as successful exits.
+PID/starttime verification still guards signals. A failed recovery write refuses
+startup without clearing the sweep file. Acknowledged completion receipts and
+spools expire seven days after acknowledgement; pending receipts never expire.
+
 Record (store kind `agentnotice`, id `<parentSession>:<zero-padded seq>`):
 
 ```json

@@ -998,6 +998,11 @@ git 工作流的只读部分，作为一等工具；写入部分（add/commit/pu
 
 ## Background processes (`processes`)
 
+完成恢复：组件崩溃后，原先运行且有所属会话的作业会产生
+`interrupted(component restart)` 通知，而非成功退出；输出仍可读取。
+已确认通知及输出在七天后过期，待处理通知保留。旧版清扫记录没有会话
+所有权，无法产生定向通知。
+
 启动结果给出精确控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<返回 id>", waitMs: 25000}` 等待输出或退出，用 `process_kill {id: "<返回 id>"}` 停止。`filter` 仍排空所有新输出但只显示匹配行；`tail: "1"` 重读最近原始输出且不推进游标。轮询用于读取输出，不用于发现完成 —— 完成会主动推送。仍运行进程的空非等待轮询，每个进程只提示一次使用等待。排空语义不变。
 
 状态：**已实现**（Nim 组件；`tests/t_processes.nim`）。

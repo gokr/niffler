@@ -1234,6 +1234,11 @@ git 工作流程的唯讀一半，作為一等工具；寫入的一半（add/com
 
 ## Background processes (`processes`)
 
+完成復原：元件崩潰後，原先執行且有所屬會話的工作會產生
+`interrupted(component restart)` 通知，而非成功退出；輸出仍可讀取。
+已確認通知及輸出在七天後到期，待處理通知保留。舊版清掃記錄沒有會話
+擁有權，無法產生定向通知。
+
 啟動結果給出精確控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<回傳 id>", waitMs: 25000}` 等待輸出或退出，用 `process_kill {id: "<回傳 id>"}` 停止。`filter` 仍排空所有新輸出但只顯示匹配行；`tail: "1"` 重讀最近原始輸出且不推進游標。輪詢用於讀取輸出，不用於發現完成 —— 完成會主動推送。仍執行行程的空非等待輪詢，每個行程只提示一次使用等待。排空語義不變。
 
 狀態：**已實作**（Nim 元件；`tests/t_processes.nim`）。

@@ -57,7 +57,7 @@ proc pollChunk(): int =
   return POLL_CHUNK
 
 type Status = enum
-  stRunning, stExited, stKilled
+  stRunning, stExited, stKilled, stInterrupted
 
 type Entry = ref object
   id: string
@@ -111,7 +111,8 @@ proc saveRegistry() =
   for e in gProcs.values:
     if e.status == stRunning:
       entries.add(%*{"id": e.id, "pid": int(e.pid),
-                     "starttime": procStarttime(e.pid)})
+                     "starttime": procStarttime(e.pid), "session": e.session,
+                     "label": e.label, "startedAt": e.startedAt})
   atomicWrite(registryPath(), (%*{"nextId": gNextId, "entries": entries}).pretty())
 
 proc bootSweep() =
@@ -131,9 +132,22 @@ proc bootSweep() =
         if want.len > 0 and procStarttime(pid) == want:
           discard posix.kill(-pid, SIGKILL)   # group kill: the whole tree
           inc killed
-        # else: pid reused or already gone — leave it alone
+        # A missing/reused PID is never signalled. Its previous owner's
+        # outcome is unknown, not a fabricated successful exit.
+        let session = e{"session"}.getStr("")
+        let id = e{"id"}.getStr("")
+        if session.len > 0 and id.len > 1 and id[0] == 'p' and
+            id[1 .. ^1].allCharsInSet({'0'..'9'}):
+          let noticePath = rootVarDir("processes") / "notices" / (id & ".json")
+          if not fileExists(noticePath):
+            atomicWrite(noticePath, $(%*{"session": session, "delivered": false,
+              "notice": {"kind": "process-exited", "processId": id,
+                "label": e{"label"}.getStr(""), "status": "interrupted(component restart)",
+                "exitCode": -1, "startedAt": e{"startedAt"}.getFloat(),
+                "endedAt": epochTime(), "outputBytes": 0}}))
     except CatchableError as e:
-      stderr.writeLine("processes: sweep read failed: " & e.msg)
+      # Do not erase recovery ownership after a failed outbox write.
+      raise newException(IOError, "processes: sweep failed: " & e.msg)
   let dir = rootVarDir("processes")
   if dirExists(dir):
     for kind, p in walkDir(dir):
@@ -179,6 +193,7 @@ proc statusText(e: Entry): string =
   of stRunning: "running"
   of stExited: "exited(code " & $e.exitCode & ")"
   of stKilled: "killed(signal " & $e.exitCode & ")"
+  of stInterrupted: "interrupted(component restart)"
 
 proc markTerminal(e: Entry) =
   if e.status != stRunning and not e.swept:
@@ -282,7 +297,8 @@ proc entryOr404(id: string): Entry =
       let notice = record["notice"]
       gProcs[id] = Entry(id: id, label: notice{"label"}.getStr(""),
         session: record{"session"}.getStr(""),
-        status: (if notice{"status"}.getStr("").startsWith("killed"): stKilled else: stExited),
+        status: (if notice{"status"}.getStr("").startsWith("interrupted"): stInterrupted
+                 elif notice{"status"}.getStr("").startsWith("killed"): stKilled else: stExited),
         exitCode: notice{"exitCode"}.getInt(),
         startedAt: notice{"startedAt"}.getFloat(), notified: true, swept: true,
         outPath: rootVarDir("processes") / (id & ".out"),
@@ -504,6 +520,7 @@ proc processNotices(args: JsonNode): JsonNode =
       notices.add(record["notice"])
       if args{"ack"}.getStr("") == record{"notice"}{"processId"}.getStr(""):
         record["delivered"] = %true
+        record["deliveredAt"] = %epochTime()
         atomicWrite(path, $record)
   %*{"count": notices.len, "notices": notices}
 
@@ -557,6 +574,19 @@ proc retryNoticeWakes(c: Component) =
       try:
         let record = parseJson(readFile(path))
         let session = record{"session"}.getStr("")
+        # Retention starts at acknowledgement, never at completion: pending
+        # notices and their output remain recoverable regardless of age.
+        let deliveredAt = record{"deliveredAt"}.getFloat(0)
+        if record{"delivered"}.getBool(false) and deliveredAt > 0 and
+            epochTime() - deliveredAt > 7 * 86400:
+          let id = path.extractFilename().changeFileExt("")
+          if id.len > 1 and id[0] == 'p' and id[1 .. ^1].allCharsInSet({'0'..'9'}):
+            if not gProcs.hasKey(id) or gProcs[id].status != stRunning:
+              removeFile(rootVarDir("processes") / (id & ".out"))
+              removeFile(rootVarDir("processes") / (id & ".err"))
+              if gProcs.hasKey(id): gProcs.del(id)
+              removeFile(path)
+          continue
         if session.len > 0 and not record{"delivered"}.getBool(false):
           sessions[session] = true
       except CatchableError as err:

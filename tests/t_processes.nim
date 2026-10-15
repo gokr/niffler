@@ -382,7 +382,8 @@ proc main() =
 
   # --- boot sweep: SIGKILLed component leaves orphans; next life kills them
   let s7 = pcall("process_start",
-                 %*{"command": "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; done"})
+                 %*{"command": "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; done",
+                    "session": "orphan-owner"})
   let id7 = s7{"id"}.getStr("")
   let regFile = tmp / "var" / "processes" / "registry.json"
   let regDoc = parseJson(readFile(regFile))
@@ -412,9 +413,12 @@ proc main() =
         "pid " & $orphanPid & " survived the boot sweep")
   check("sweep file was reset",
         parseJson(readFile(regFile)){"entries"}.len == 0)
-  # unknown ids from the previous life are a clean 404
-  check("stale ids from the previous life are not pollable",
-        pcall("process_poll", %*{"id": id7}).hasKey("error"))
+  let orphanInbox = pcall("process_notices", %*{"session": "orphan-owner"})
+  check("orphan recovery records interruption for its owner",
+    orphanInbox{"count"}.getInt() == 1 and
+    orphanInbox{"notices"}[0]{"status"}.getStr("") == "interrupted(component restart)")
+  check("orphan output remains addressable after restart",
+    not pcall("process_poll", %*{"id": id7}).hasKey("error"))
 
   # -------------------------------------------------------------------------
   # exit notices: a finished background process tells its conversation
@@ -460,11 +464,14 @@ proc main() =
             notice{"label"}.getStr("") == "notice-fixture" and
             notice{"text"} == nil, $notice)
 
-    let wake = pollEnvelope(wakeSub, 5000)
-    check("notice: exit requests a bounded session wake without polling",
-      wake.found and wake.env.tool == "session" and
-      wake.env.args{"wake"}.getBool(false) and
-      wake.env.args{"sessionId"}.getStr("") == "bgnotice")
+    var sawWake = false
+    let wakeDeadline = epochTime() + 5.0
+    while not sawWake and epochTime() < wakeDeadline:
+      let wake = pollEnvelope(wakeSub, 200)
+      sawWake = wake.found and wake.env.tool == "session" and
+        wake.env.args{"wake"}.getBool(false) and
+        wake.env.args{"sessionId"}.getStr("") == "bgnotice"
+    check("notice: exit requests a bounded session wake without polling", sawWake)
     let pending = pcall("process_notices", %*{"session": "bgnotice", "peek": true})
     check("notice: durable before wake and repeatable until ack",
       pending{"count"}.getInt() == 1 and
@@ -527,12 +534,28 @@ proc main() =
     defer: stopServer(recoveryServer)
     var recoveryNc = waitConnect(recoveryUrl)
     defer: recoveryNc.close()
+    let recoveryDir = recoveredRoot / "var" / "processes"
+    for id in ["p888881", "p888882"]:
+      writeFile(recoveryDir / "notices" / (id & ".json"), $(%*{
+        "session": "retention", "delivered": id == "p888881",
+        "deliveredAt": epochTime() - 8 * 86400,
+        "notice": {"processId": id, "endedAt": epochTime() - 30 * 86400}}))
+      writeFile(recoveryDir / (id & ".out"), "keep pending only")
     let recoveryProc = startComponent(bin, recoveryUrl, root = recoveredRoot)
     defer: stopProcess(recoveryProc)
     check("recovered component registered", waitRegistered(recoveryNc, "processes"))
     let inbox = call(recoveryNc, "processes", "process_notices",
       %*{"session": "recovered-owner", "peek": true})
     check("completion survives component restart", inbox{"count"}.getInt() == 1)
+    for attempt in 0 ..< 50:
+      if not fileExists(recoveryDir / "notices" / "p888881.json"): break
+      sleep(100)
+    check("retention removes old acknowledged receipts and output",
+      not fileExists(recoveryDir / "notices" / "p888881.json") and
+      not fileExists(recoveryDir / "p888881.out"))
+    check("retention never drops pending receipts or output",
+      fileExists(recoveryDir / "notices" / "p888882.json") and
+      fileExists(recoveryDir / "p888882.out"))
     let output = call(recoveryNc, "processes", "process_poll", %*{"id": recoveredId})
     check("completion output survives component restart",
       output{"text"}.getStr("").contains("retained output"), $output)

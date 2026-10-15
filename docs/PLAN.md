@@ -310,7 +310,10 @@ gets scheduled, and keep the rationale edits in the owning research doc.
 - **Declarative plugin bundles + skills routing metadata**
   ([CODEWHALE.md](research/CODEWHALE.md) D7–8).
 - **Lifecycle event outbox** ([CODEWHALE.md](research/CODEWHALE.md) D9;
-  overlaps *durable Fabric/agent traces* below).
+  overlaps *durable Fabric/agent traces* below). Process-completion slice is
+  implemented: durable record-before-notify, bounded wake/pull, post-append ack,
+  direct-start ownership, orphan interruption recovery and seven-day acknowledged
+  retention. Processes + retired/busy-runner contracts pass; fleet remains separate.
 - **Fleet rollout** — [step-by-step implementation plan](research/FLEET-IMPLEMENTATION.md):
   identity → persistent service → SSH install/adopt → Multipass provisioning →
   `/niffler` switching → delegation → reconnect inbox/artifacts. Step 1 is

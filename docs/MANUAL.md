@@ -2115,6 +2115,12 @@ returns exit 127 with an install hint.
 
 ## Background processes (`processes`)
 
+Completion recovery: after a component crash, previously running owned jobs
+produce `interrupted(component restart)` notices, not successful exits. Their
+output remains readable. Acknowledged notices and output expire after seven
+days; pending notices are retained. Legacy sweep records without session
+ownership cannot produce addressed notifications.
+
 Status: **implemented** (Nim component; `tests/t_processes.nim`).
 
 bash is synchronous by design — servers, watchers and test loops need a
