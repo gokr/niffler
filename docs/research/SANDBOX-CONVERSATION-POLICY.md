@@ -160,14 +160,32 @@ handler's outputs and effects.
 This is the agreed target; the existing global mask checks are only a partial
 implementation and do not provide per-conversation approved-root enforcement.
 
+## Git tools — approved by the user
+
+- git_status, git_diff, git_log, git_show, git_blame and review_receipt are
+  ordinary reads with no additional sandbox approval, provided they operate
+  inside an approved repository path. The repository must be within an approved
+  root; a caller-supplied repo path does not create approval.
+- Implementations must not let repository configuration execute code on these
+  reads: disable external diff drivers and textconv filters rather than
+  honoring them from repo/user gitconfig. Git hooks are not part of a read.
+- Documented limit the user accepted: history can contain content that the
+  working tree no longer has, or that deny rules hide there — a commit, patch,
+  blame range or removed file. Confining the operation to an approved
+  repository bounds WHERE git runs, not WHAT its output discloses. Results must
+  not claim deny rules were applied to history.
+- Actual mutations remain bash's business and follow bash policy.
+
+This is the agreed target, not implemented per-conversation repository scoping.
+
 ## Remaining per-tool review
 
 The user requested individual review of tool treatments. The filesystem group,
-bash network, LSP, fetch, builder, observe, repomap and skills policies are
+bash network, LSP, fetch, builder, observe, repomap, skills and git policies are
 approved in detail. Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. git, processes, plugins, MCP, native Fabric and remaining
+2. processes, plugins, MCP, native Fabric and remaining
    escape paths. Undeclared new tools must not silently acquire sandbox authority;
    the default treatment still needs agreement.
 
