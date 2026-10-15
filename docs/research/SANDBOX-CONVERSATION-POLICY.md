@@ -99,16 +99,29 @@ This is agreed design, not implemented per-call approval support.
 This is the agreed target, not a claim that the current experimental LSP
 implementation has already been migrated.
 
+## Fetch and extraction — approved by the user
+
+HTTP retrieval and trafilatura extraction are trusted infrastructure, with no
+additional sandbox approval. Restore trafilatura under sandboxing; the earlier
+mask-triggered extractor suppression is not the agreed policy. Existing
+protocol, SSRF and output-size restrictions remain unchanged. Generated files
+belong in managed scratch storage, not arbitrary caller-selected output paths.
+Fetch retains network access independently of bash's network-off default.
+Implementation must provide scoped access to returned scratch artifacts without
+implicitly granting access to other conversations' files or harness state.
+
+This is the agreed target; restoration and per-conversation integration are not
+yet implemented.
+
 ## Remaining per-tool review
 
-The user requested individual review of tool treatments. The filesystem group
-plus bash network and LSP policies above are approved in detail. Review next:
+The user requested individual review of tool treatments. The filesystem group,
+bash network, LSP and fetch policies above are approved in detail. Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. fetch and extraction.
-4. builder build/build_package/info individually.
-5. observe inspection, request/publish and management tools individually.
-6. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
+2. builder build/build_package/info individually.
+3. observe inspection, request/publish and management tools individually.
+4. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
    escape paths. Undeclared new tools must not silently acquire sandbox authority;
    the default treatment still needs agreement.
 
