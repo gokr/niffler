@@ -38,20 +38,23 @@ Honest limits, stated rather than implied:
 - Skills discovery/load/audit skip masked on-disk SKILL.md files; resource
   listing/loading excludes masked resources. Baked-in bundled content is not
   an on-disk read and is not erased by a runtime mask.
-- `lsp`, `observe`, `fetch` and `builder` now **refuse every tool action** with
-  `E_MASK_UNCONFINED` whenever any nonblank mask entry is configured, including
-  relative entries. This deliberately sacrifices availability rather than
-  pretending a named-file check confines an autonomous reader. No masks means
-  unchanged behavior. LSP instance creation also refuses, covering automatic
-  warmup and queued diagnostics outside ordinary tool dispatch.
-  Language servers and compilers can read transitive dependencies; fetch's
-  extraction helpers and observe's captured bus payloads also lack process
-  confinement or reliable provenance. These components remain unconfined, not
-  selectively mask-aware. Observe may still collect bus traffic internally;
-  denying tool actions is not erasure or protection from trusted operators.
-  No tool schemas or frozen prompts change; refusals enter append-only history.
-  Plugins, MCP, native Fabric and other unreviewed paths remain outside this
-  guarantee.
+- `fetch` is **not** refused under masks: HTTP retrieval keeps working, and
+  only the external trafilatura extractor is withheld (the in-process HTML
+  parser handles conversion instead). Protocol restrictions are unchanged, so
+  `file://` and other non-HTTP schemes stay rejected. A fixture-server test
+  proves real retrieval success under masks without internet access.
+- `lsp` is **not** refused wholesale either: read-only registry listings still
+  answer. Actions that would start a language server refuse with
+  `E_MASK_UNCONFINED`, because a server reads project configuration and
+  dependencies beyond the file named in the call. Masked paths are refused
+  directly with `E_MASKED`, including the user registry file.
+- `observe` and `builder` still refuse their tool actions wholesale under masks
+  (`E_MASK_UNCONFINED`). Observe exposes bus payloads rather than only files,
+  so a path check cannot redact what it already captured; builder compiles
+  source that can pull in arbitrary local inputs.
+- An earlier revision of this change refused `fetch` and all `lsp` actions too.
+  That was precautionary rather than evidence-backed — no bypass was
+  demonstrated — so it was narrowed to the actions above.
 
 ## Enable
 

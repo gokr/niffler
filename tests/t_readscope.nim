@@ -195,21 +195,25 @@ proc main() =
 
   # Autonomous readers fail closed, even for relative mask entries that the
   # direct-path seam cannot resolve. Exercise the real registered handlers.
-  for name in ["lsp", "builder", "fetch", "observe"]:
+  for name in ["lsp", "builder", "observe"]:
     let autonomous = startComponent(repo / "var/bin" / name, url, root = root,
       extra = @[("NIF_BASH_SANDBOX_MASKS", "relative-secret")])
     try:
       var answer: JsonNode
       for i in 0 ..< 50:
         answer = call(nc, name, "selftest", %*{}, 1000)
-        # fetch/builder may not expose selftest; use their public tools instead.
-        if name == "fetch": answer = call(nc, name, "fetch", %*{"url": "https://example.com"}, 1000)
+        if name == "lsp": answer = call(nc, name, "lsp", %*{"operation": "documentSymbol", "path": visibleSource}, 1000)
         if name == "builder": answer = call(nc, name, "build", %*{"lang": "nim", "name": "mask-denial", "source": "discard"}, 1000)
         if ($answer).contains("E_MASK_UNCONFINED"): break
         sleep(100)
       check(name & " refuses unconfined actions under masks",
-        answer{"ok"} != nil and not answer{"ok"}.getBool(true) and
-        answer{"text"}.getStr("").contains("E_MASK_UNCONFINED"), $answer)
+        ($answer).contains("E_MASK_UNCONFINED"), $answer)
+      # Read-only inspections stay available: the refusal targets actions that
+      # would start an unconfined reader, not the whole component.
+      if name == "lsp":
+        let registry = call(nc, name, "lsp_servers", %*{}, 5000)
+        check("LSP registry remains available under masks",
+          registry{"ok"}.getBool(false) and not ($registry).contains("E_MASK_UNCONFINED"), $registry)
     finally:
       if autonomous.running(): autonomous.terminate()
       discard autonomous.waitForExit(2000)

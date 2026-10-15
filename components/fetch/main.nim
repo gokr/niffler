@@ -84,6 +84,9 @@ proc trafilaturaExe(): string =
 proc extractWithTrafilatura(html: string): string =
   ## Trafilatura can consume stdin, but directories avoid pipe deadlocks for
   ## large input/output while still processing the response already fetched.
+  # Keep HTTP available under masks without starting an unconfined extractor.
+  # The in-process HTML parser consumes only the already-fetched response.
+  if masksConfigured(): return ""
   let executable = trafilaturaExe()
   if executable.len == 0:
     return ""
@@ -454,5 +457,4 @@ comp.tool(%*{"onDemand": true,
     except CatchableError as e:
       return errResult("fetch failed: " & e.msg)
 
-comp.refuseUnconfinedReaders()
 comp.run()

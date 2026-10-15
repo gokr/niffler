@@ -407,6 +407,26 @@ printf '%s\n' 'Trafilatura selected article text' > "$output_dir/article.txt"
         fallback{"content"}.getStr("").contains("Fallback Article") and
         fallback{"extractionMethod"}.getStr("") == "htmlparser", $fallback)
 
+  # Masks do not disable HTTP retrieval. Only the external extractor is
+  # withheld; a fixture server proves actual success without internet access.
+  stopProcess(compProc)
+  compProc = startComponent(repoRoot / "var/bin/fetch", url, root = root,
+    extra = [("NIF_TRAFILATURA", fakeTrafilatura),
+             ("NIF_FETCH_ALLOW_PRIVATE", "1"),
+             ("NIF_BASH_SANDBOX_MASKS", root / "secret")])
+  var maskedFetch: JsonNode
+  for i in 0 ..< 40:
+    maskedFetch = call(nc, "fetch", "fetch", %*{"url": base & "/page"}, 1000)
+    if maskedFetch{"ok"}.getBool(false): break
+    sleep(100)
+  check("HTTP retrieval works under masks with local HTML conversion",
+    maskedFetch{"ok"}.getBool(false) and
+    maskedFetch{"extractionMethod"}.getStr("") == "htmlparser" and
+    not maskedFetch{"content"}.getStr("").contains("Trafilatura selected"), $maskedFetch)
+  let localFile = call(nc, "fetch", "fetch", %*{"url": "file://" & root / "secret"})
+  check("masks do not weaken HTTP-only protocol restrictions",
+    not localFile{"ok"}.getBool(true) and ($localFile).contains("http"), $localFile)
+
   report("FETCH TEST")
 
 main()

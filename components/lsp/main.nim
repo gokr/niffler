@@ -35,6 +35,7 @@ import std/syncio
 import natsnim
 import niffler/sdk
 import niffler/maskedtools
+import niffler/readscope
 import roots
 import subjects   # sanitizeSessionId: the async diagnostics lane is per conversation
 
@@ -174,6 +175,7 @@ proc loadRegistry(): Table[string, ServerConf] =
     result[conf.name] = conf
   let path = registryPath()
   if not fileExists(path): return
+  if isMasked(path): fail("E_MASKED", maskRefusal(path))
   var doc: JsonNode
   try:
     doc = parseJson(readFile(path))
@@ -1006,6 +1008,7 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     if part == "..":
       fail("E_LSP_SCOPE", "path must not contain '..' components: " & rawPath)
   let path = resolvePath(rawPath, workspaceRoot)
+  if isMasked(path): fail("E_MASKED", maskRefusal(rawPath))
   for part in path.split({'/', '\\'}):
     if part == "..":
       fail("E_LSP_SCOPE", "path must not contain '..' components: " & pathN.getStr())
@@ -1184,6 +1187,7 @@ proc hLspServers(c: Component, args: JsonNode): JsonNode =
   ## the model probe this before prompting a human.
   var servers = newJArray()
   let userPath = registryPath()
+  if isMasked(userPath): fail("E_MASKED", maskRefusal(userPath))
   var userNames: seq[string]
   if fileExists(userPath):
     try:
@@ -1234,6 +1238,7 @@ proc hLspRegistry(c: Component, args: JsonNode): JsonNode =
                other & "' — remove that mapping first")
     var user: JsonNode
     let path = registryPath()
+    if isMasked(path): fail("E_MASKED", maskRefusal(path))
     if fileExists(path):
       try: user = parseJson(readFile(path))
       except ValueError as e:
@@ -1257,6 +1262,7 @@ proc hLspRegistry(c: Component, args: JsonNode): JsonNode =
     if name.len == 0:
       fail("E_BAD_SHAPE", "\"remove\" needs a \"name\"")
     let path = registryPath()
+    if isMasked(path): fail("E_MASKED", maskRefusal(path))
     var user: JsonNode = newJObject()
     if fileExists(path):
       try: user = parseJson(readFile(path))
@@ -1745,5 +1751,4 @@ discard comp.onIdle(DIAG_IDLE_MS) do (c: Component):
 
 discard comp.selfTest(hLspSelfTest)
 
-comp.refuseUnconfinedReaders()
 comp.run()
