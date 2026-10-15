@@ -41,6 +41,21 @@ proc main() =
   let plain = root / "plain.conf"
   writeFile(plain, "NOT-MASKED-CONTENT\n")
 
+  let secretSource = ws / "hidden.nim"
+  let visibleSource = ws / "visible.nim"
+  writeFile(secretSource, "proc HiddenCanarySymbol*() = discard\n")
+  writeFile(visibleSource, "proc VisibleControlSymbol*() = discard\n")
+  let hiddenSkill = root / ".agents/skills/hidden/SKILL.md"
+  let visibleSkill = root / ".agents/skills/visible/SKILL.md"
+  createDir(hiddenSkill.parentDir)
+  createDir(visibleSkill.parentDir / "references")
+  writeFile(hiddenSkill, "---\nname: hidden-canary\ndescription: HiddenSkillCanary\n---\nHiddenSkillBody\n")
+  writeFile(visibleSkill, "---\nname: visible-control\ndescription: visible\n---\nVisibleSkillBody\n")
+  let hiddenResource = visibleSkill.parentDir / "references/private.txt"
+  writeFile(hiddenResource, "HiddenResourceCanary")
+  writeFile(visibleSkill.parentDir / "references/public.txt", "VisibleResourceControl")
+  let readerMasks = [guarded, secretSource, hiddenSkill, hiddenResource].join("\n")
+
   let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
@@ -81,6 +96,44 @@ proc main() =
   check("edit registers", waitRegisteredOn(regSub, "edit"))
   check("grep registers", waitRegisteredOn(regSub, "grep"))
   natsSubscription_Destroy(regSub)
+  # Request/reply readiness avoids announcement ordering between independent peers.
+  let mapper = startComponent(repo / "var/bin/repomap", url, root = root,
+    extra = @[("NIF_BASH_SANDBOX_MASKS", readerMasks)])
+  defer:
+    if mapper.running(): mapper.terminate()
+    discard mapper.waitForExit(2000)
+    mapper.close()
+  let skills = startComponent(repo / "var/bin/skills", url, root = root,
+    extra = @[("NIF_BASH_SANDBOX_MASKS", readerMasks)])
+  defer:
+    if skills.running(): skills.terminate()
+    discard skills.waitForExit(2000)
+    skills.close()
+  var mapped, loaded: JsonNode
+  for i in 0 ..< 50:
+    mapped = call(nc, "repomap", "repo_map", %*{"workspace": ws}, 2000)
+    loaded = call(nc, "skills", "skill_load", %*{"name": "visible-control"}, 2000)
+    if mapped{"ok"}.getBool(false) and loaded{"ok"}.getBool(false): break
+    sleep(100)
+  check("repomap answers with visible source", mapped{"ok"}.getBool(false) and
+    ($mapped).contains("VisibleControlSymbol"), $mapped)
+  check("repomap excludes masked source and tags", not ($mapped).contains("hidden.nim") and
+    not ($mapped).contains("HiddenCanarySymbol"), $mapped)
+  check("skills load visible instructions", loaded{"ok"}.getBool(false) and
+    ($loaded).contains("VisibleSkillBody"), $loaded)
+  let skillList = call(nc, "skills", "skill_list", %*{})
+  check("skills discovery excludes masked instructions", skillList{"ok"}.getBool(false) and
+    not ($skillList).contains("hidden-canary"), $skillList)
+  let resources = call(nc, "skills", "skill_resources", %*{"name": "visible-control"})
+  check("resources omit masked entries", resources{"ok"}.getBool(false) and
+    ($resources).contains("public.txt") and not ($resources).contains("private.txt"), $resources)
+  let privateRead = call(nc, "skills", "skill_resource", %*{"name": "visible-control", "path": "references/private.txt"})
+  check("masked resource cannot load", not privateRead{"ok"}.getBool(true) and
+    not ($privateRead).contains("HiddenResourceCanary"), $privateRead)
+  let publicRead = call(nc, "skills", "skill_resource", %*{"name": "visible-control", "path": "references/public.txt"})
+  check("unmasked resource loads", publicRead{"ok"}.getBool(false) and
+    ($publicRead).contains("VisibleResourceControl"), $publicRead)
+
   # 1. DIRECT read of the masked path is refused, with the policy named.
   let direct = call(nc, "edit", "read", %*{"path": guarded, "__workspace": {"root": ws}})
   check("direct read of a masked path is refused",

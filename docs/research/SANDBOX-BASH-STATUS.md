@@ -32,9 +32,19 @@ Honest limits, stated rather than implied:
 - Relative mask entries are the shell guard's per-launch shorthand; a reader has
   no launch to resolve against, so it honours only absolute entries rather than
   guessing a workspace.
-- **Not yet covered**: `repomap`, `lsp`, `observe`, `fetch`, `skills` and
-  `builder` read files without consulting the policy. Anything not listed above
-  is unaffected until it is updated.
+- `repomap` omits masked files from its census and checks again before
+  cached-tag lookup or parsing. Both tool and auto-append map construction use
+  this path; previously cached source tags cannot bypass the check.
+- Skills discovery/load/audit skip masked on-disk SKILL.md files; resource
+  listing/loading excludes masked resources. Baked-in bundled content is not
+  an on-disk read and is not erased by a runtime mask.
+- **Not yet covered**: `lsp`, `observe`, `fetch` and `builder`. LSP servers and
+  compilers may read transitive inputs autonomously: checking only the named
+  source file would not protect a masked dependency. They need process-level
+  confinement or an explicit fail-closed policy, not just another `isMasked`.
+  Observe also exposes bus payloads, not just file contents; a path check cannot
+  redact previously captured secrets. Anything not listed as covered remains
+  unaffected.
 
 ## Enable
 

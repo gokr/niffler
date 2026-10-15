@@ -43,6 +43,7 @@
 import std/[algorithm, httpclient, json, os, sequtils, streams, strutils,
             tables, uri]
 import niffler/sdk
+import niffler/readscope
 import yaml
 
 let comp = newComponent("skills", "0.1.0")
@@ -131,7 +132,7 @@ proc parseSkillMarkdown(content: string, fallbackName: string): Option[Skill] =
 proc parseSkillDir(skillDir: string): Option[Skill] =
   ## Parse <skillDir>/SKILL.md into a Skill, or none on any failure.
   let path = skillDir / "SKILL.md"
-  if not fileExists(path):
+  if isMasked(path) or not fileExists(path):
     return none(Skill)
   try:
     let parsed = parseSkillMarkdown(readFile(path), skillDir.splitFile.name)
@@ -145,7 +146,7 @@ proc parseSkillDir(skillDir: string): Option[Skill] =
       let subDir = skillDir / subName
       if dirExists(subDir):
         for kind, f in walkDir(subDir):
-          if kind == pcFile:
+          if kind == pcFile and not isMasked(f):
             s.resources.add(SkillResource(kind: kindLabel,
                                           name: f.extractFilename,
                                           relPath: subName / f.extractFilename))
@@ -306,7 +307,7 @@ comp.tool(%*{"onDemand": true}):
       if not dirExists(dir):
         continue
       for path in walkDirRec(dir):
-        if path.extractFilename != "SKILL.md":
+        if path.extractFilename != "SKILL.md" or isMasked(path):
           continue
         let s = parseSkillDir(path.parentDir)
         if s.isNone:
@@ -388,6 +389,7 @@ comp.tool(%*{"onDemand": true}):
                        " — see skill_resources")
     try:
       let full = skill.rootDir / path
+      if isMasked(full): return errResult(maskRefusal(full))
       if not fileExists(full):
         return errResult("resource not on disk: " & path)
       return %*{"ok": true, "skill": name, "path": path,

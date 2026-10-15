@@ -29,6 +29,7 @@ import std/[json, os, sequtils, strutils, tables, times]
 import checksums/sha1
 import natsnim
 import niffler/sdk
+import niffler/readscope
 import tags, score, repomap
 
 const
@@ -132,6 +133,7 @@ proc census(ws: string): seq[string] =
         if name in skipDirs: continue
         stack.add(path)
       of pcFile:
+        if isMasked(path): continue
         let ext = splitFile(path).ext.toLowerAscii()
         if ext in [".nim", ".nims", ".go", ".py", ".ts", ".js", ".c", ".h",
                    ".cpp", ".hpp", ".cc", ".hh", ".cxx", ".hxx", ".rs", ".rb"]:
@@ -158,7 +160,8 @@ proc buildFor(ws: string, opts: ScoreOptions): MapStats =
   if srcFiles.len == 0: return
   var tagsOf = proc(rel: string): seq[Tag] =
     let abs = wsAbs / rel
-    if not fileExists(abs): return
+    # Check before cache lookup: cached tags can disclose the same source.
+    if isMasked(abs) or not fileExists(abs): return
     let mtime = getLastModificationTime(abs).toUnixFloat()
     var t = loadCachedTags(abs, mtime)
     if t.len == 0:
