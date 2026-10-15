@@ -145,14 +145,29 @@ This is agreed policy, not an implemented per-tool classification. Replace the
 experimental blanket refusal with these per-tool decisions after auditing each
 handler's outputs and effects.
 
+## Repomap and skills — approved by the user
+
+- repo_map enforces approved read roots and deny rules, with no additional
+  sandbox approval. Automatic map construction uses the same policy.
+- Skill listing, loading and resources have trusted read access to configured
+  skill directories outside project roots, but still respect deny rules. They
+  need no additional sandbox approval. Skill paths do not become general
+  project read/write roots merely because a skill was loaded.
+- Skill install/remove retain existing approval and managed-directory rules.
+- Instructions do not grant script execution authority: executing skill scripts
+  follows bash policy, including filesystem and network rules.
+
+This is the agreed target; the existing global mask checks are only a partial
+implementation and do not provide per-conversation approved-root enforcement.
+
 ## Remaining per-tool review
 
 The user requested individual review of tool treatments. The filesystem group,
-bash network, LSP, fetch, builder and observe policies are approved in detail.
-Review next:
+bash network, LSP, fetch, builder, observe, repomap and skills policies are
+approved in detail. Review next:
 
 1. bash: exact runtime roots, private scratch and background behavior.
-2. repomap, skills, git, processes, plugins, MCP, native Fabric and remaining
+2. git, processes, plugins, MCP, native Fabric and remaining
    escape paths. Undeclared new tools must not silently acquire sandbox authority;
    the default treatment still needs agreement.
 
