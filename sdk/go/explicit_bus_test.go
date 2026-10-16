@@ -88,8 +88,25 @@ func TestExplicitBusIsolationAndReattach(t *testing.T) {
 	}
 	check(a, "first")
 	check(b, "second")
+	recovered := make(chan struct{}, 8)
+	a.OnReconnected(func(c *Component) { _ = c.Connected(); recovered <- struct{}{} })
+	// Force ordinary nats.go reconnect without killing the private test bus.
+	if err := a.connection().ForceReconnect(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-recovered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("short reconnect hook missing")
+	}
+	check(a, "first")
 	if err := a.reattachNow(); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-recovered:
+	case <-time.After(time.Second):
+		t.Fatal("full reattach hook missing")
 	}
 	check(a, "first")
 	check(b, "second")

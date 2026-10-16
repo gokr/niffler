@@ -145,8 +145,9 @@ type Component struct {
 	ready             bool
 	// Re-attach (issue #3): callbacks for a successful post-outage re-attach;
 	// guarded so a concurrent reconnectWatch tick cannot race registration.
-	reattachedMu       sync.Mutex
-	reattachedHandlers []func(*Component)
+	reattachedMu        sync.Mutex
+	reattachedHandlers  []func(*Component)
+	reconnectedHandlers []func(*Component)
 	// Idle work (see OnIdle): registered before Connect, run by its own
 	// ticker goroutine under the serial handler lock.
 	idleEvery   time.Duration
@@ -806,7 +807,8 @@ func (c *Component) dial() (string, error) {
 	}
 	nc, err := nats.Connect(url,
 		nats.MaxReconnects(-1),
-		nats.ReconnectWait(time.Second))
+		nats.ReconnectWait(time.Second),
+		nats.ReconnectHandler(func(*nats.Conn) { c.notifyReconnected() }))
 	if err != nil {
 		return "", fmt.Errorf("connect %s: %w", url, err)
 	}
@@ -970,7 +972,8 @@ func (c *Component) reconnectNow() error {
 	for _, url := range c.reattachCandidates() {
 		nc, err := nats.Connect(url,
 			nats.MaxReconnects(-1),
-			nats.ReconnectWait(time.Second))
+			nats.ReconnectWait(time.Second),
+			nats.ReconnectHandler(func(*nats.Conn) { c.notifyReconnected() }))
 		if err != nil {
 			lastErr = fmt.Errorf("connect %s: %w", url, err)
 			continue
@@ -1077,7 +1080,37 @@ func (c *Component) reattachNow() error {
 			h(c)
 		}()
 	}
+	c.notifyReconnected()
 	return nil
+}
+
+// OnReconnected runs after any recovered connection, including short NATS
+// reconnects which do not trigger the SDK's longer re-attach grace. Clients
+// reconcile durable state here after subscribing before their initial scan.
+// Hooks run outside component locks; duplicate recovery hints are harmless.
+// Initial Connect does not call this hook. Existing subscriptions survive an
+// ordinary reconnect; a full re-attach rebuilds them before calling the hook.
+func (c *Component) OnReconnected(h func(*Component)) *Component {
+	c.reattachedMu.Lock()
+	c.reconnectedHandlers = append(c.reconnectedHandlers, h)
+	c.reattachedMu.Unlock()
+	return c
+}
+
+func (c *Component) notifyReconnected() {
+	c.reattachedMu.Lock()
+	handlers := append([]func(*Component){}, c.reconnectedHandlers...)
+	c.reattachedMu.Unlock()
+	for _, h := range handlers {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("reconnected handler panic", "component", c.Name, "panic", r)
+				}
+			}()
+			h(c)
+		}()
+	}
 }
 
 // OnReattached registers a callback for a successful re-attach after a bus
