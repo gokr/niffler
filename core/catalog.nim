@@ -161,6 +161,18 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
+      # Read-only introspection, and it MUST say so: a session runner forwards
+      # core tools through the dispatch gate, and without the read effect the
+      # WRITE default gave `discover` an opaque claim over the whole
+      # conversation workspace — a plain discovery call then refused every
+      # writer in that workspace (and was refused by them) while it ran, with
+      # the refusal naming core's own tool. Observed live: conversation A's
+      # `discover` blocked by conversation B's `bash`, both in one tree.
+      #
+      # ONLY the effect is declared: discover is a DIRECT tool (no onDemand),
+      # and adding onDemand here would drop it from every conversation's frozen
+      # toolset — a different, much larger change than this fix.
+      "x-harness": {"effect": "read"},
       "description": "Find capabilities: no query lists component routing hints; component lists tool summaries. For exact schemas use discover {tools:[name]}, then invoke.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive keywords (word-AND)"},

@@ -13,6 +13,16 @@ import natsnim
 import envelope
 import helpers
 
+proc coreToolPolicy(replyJson, tool: string): JsonNode =
+  ## The x-harness policy of one tool from a `catalog {op:schemas}` reply.
+  ## Parsed rather than grepped: the reply is one large JSON document and a
+  ## substring search could match a different tool's block.
+  try:
+    for t in parseJson(replyJson){"tools"}:
+      if t{"name"}.getStr("") == tool: return t{"schema"}{"x-harness"}
+  except CatchableError:
+    return nil
+
 proc main() =
 
   let repoRoot = getEnv("NIF_REPO_ROOT",
@@ -71,6 +81,29 @@ proc main() =
         coreDiscovery.output.contains("\"spawn\"") and
         coreDiscovery.output.contains("\"kill\"") and
         coreDiscovery.output.contains("\"remove\""), coreDiscovery.output)
+
+  # A read-only CORE tool must not claim a write lease. Regression: session
+  # runners forward core tools through the dispatch gate, so `discover` without
+  # an x-harness block inherited the WRITE default and claimed the whole
+  # conversation workspace — a plain discovery call was refused by another
+  # conversation's `bash`, with "discover" named as the holder. The check also
+  # pins that the fix did not change DISCOVERABILITY: adding onDemand would
+  # silently drop discover from every conversation's frozen toolset, which
+  # the `op:list` check above would catch only for the direct set.
+  #
+  # `op:schemas`, not `op:snapshot`: core serves its own tools through the
+  # catalog's tool index (it lists itself for progressive discovery), and does
+  # not appear as a component row in a snapshot.
+  let schemaReply = runCli(cliBin, url,
+    @["call", "catalog", """{"op":"schemas","tools":["discover"]}"""],
+    root = root)
+  let discover = coreToolPolicy(schemaReply.output, "discover")
+  check("catalog serves core's discover schema", discover != nil,
+        schemaReply.output[0 ..< min(300, schemaReply.output.len)])
+  check("discover declares the read effect (no write claim)",
+        discover != nil and discover{"effect"}.getStr("") == "read", $discover)
+  check("the read effect did not cost discover its direct exposure",
+        discover != nil and not discover{"onDemand"}.getBool(false), $discover)
 
   # tools without a component: cross-component lookup by exact name
   let cross = runCli(cliBin, url,
