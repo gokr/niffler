@@ -1827,7 +1827,72 @@ proc globClaim*(p: string): string =
   if cut <= 0: return ""   # no directory prefix: the caller uses the workspace
   p[0 ..< cut]
 
-proc writePathsFor*(schema, args: JsonNode, workspace: string): seq[string] =
+proc harnessClaimBase*(harnessRoot: string): string =
+  ## The one directory a `x-harness.writes.harness` claim may live under:
+  ## `$NIF_ROOT/var`, the harness's runtime state. Everything else under the
+  ## root is the control plane — `core/`, `components/`, `sdk/` — which a
+  ## workspace write guard must never appear to own (SANDBOX-PLAN §6: the
+  ## agent edits the harness's own source tree, and no lease over it is
+  ## meaningful). Empty when the root is unknown, which makes every harness
+  ## claim invalid rather than silently unguarded.
+  if harnessRoot.len == 0: return ""
+  normalizeRoot(harnessRoot / "var")
+
+proc harnessClaimsFor*(schema: JsonNode, harnessRoot: string): seq[string] =
+  ## The harness-state paths a call will write, from
+  ## `x-harness.writes: {"harness": ["var/plugins"]}` — paths relative to
+  ## $NIF_ROOT (WRITE-ARBITRATION proposal A, phase 2).
+  ##
+  ## Why this shape exists at all: `plugins` and `mcp` mutate harness state
+  ## (`var/plugins/<pkg>`, the MCP config), not conversation files. The two
+  ## older shapes cannot express that — a workspace `paths` value would be
+  ## refused by the fence as [E_WRITE_OUTSIDE], and the opaque root claim
+  ## names the conversation workspace, which those tools never touch: for a
+  ## client launched in a project directory (`NIF_ROOT` != workspace) the real
+  ## write went completely unguarded while the claim covered an unrelated
+  ## tree. Claiming the right directory is the whole point.
+  ##
+  ## Every entry is confined to `$NIF_ROOT/var`. An entry that escapes it (or
+  ## an unknown harness root) is refused here and reported loudly; the caller
+  ## then takes NO claim rather than the workspace-root fallback, because a
+  ## lease over a tree the tool never touches reads as protection while
+  ## guarding nothing. A declaration is static, so this cannot be corrected per
+  ## call — the warning is the signal that it needs fixing.
+  result = @[]
+  if schema == nil: return
+  let w = schema{"x-harness"}{"writes"}
+  if w == nil or w.kind != JObject: return
+  let listed = w{"harness"}
+  if listed == nil or listed.kind != JArray: return
+  let base = harnessClaimBase(harnessRoot)
+  for entry in listed:
+    let raw = entry.getStr("").strip()
+    if raw.len == 0: continue
+    if base.len == 0:
+      echo "core: refusing a harness write claim: the harness root is unknown"
+      continue
+    if raw.isAbsolute():
+      echo "core: refusing harness write claim '" & raw &
+           "' — entries are relative to $NIF_ROOT, not absolute paths"
+      continue
+    # Entries are written the way they appear in the repo — "var/plugins",
+    # relative to $NIF_ROOT — while the confinement test is against
+    # $NIF_ROOT/var. Resolving against the root (not the base) is what makes
+    # the two spellings agree.
+    let resolved = normalizeRoot(normalizeRoot(harnessRoot) / raw)
+    # normalizeRoot resolves symlinks and collapses "..", so this containment
+    # test is the real gate, not a spelling check: a "..":-laden or absolute
+    # entry cannot reach outside $NIF_ROOT/var through it. Everything past var/
+    # is the control plane the agent edits as ordinary work.
+    if resolved.len == 0 or resolved != base and
+       not resolved.startsWith(base & "/"):
+      echo "core: refusing harness write claim '" & raw &
+           "' — outside " & base & "; the harness control plane is not claimable"
+      continue
+    result.add(resolved)
+
+proc writePathsFor*(schema, args: JsonNode, workspace: string,
+                    harnessRoot: string = ""): seq[string] =
   ## The paths a call will write, from its `x-harness.writes` declaration
   ## (docs/research/WRITE-ARBITRATION.md). Path-bound writers name their file
   ## arguments — already workspace-resolved by applyWorkspace — and an opaque
@@ -1851,6 +1916,28 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string): seq[string] =
   let w = if schema != nil: schema{"x-harness"}{"writes"} else: nil
   if w == nil or w.kind != JObject: return @[workspace]
   if w{"root"}.getBool(false): return @[workspace]
+  # `{"store": true}` — the tool's durable writes go through the store (one
+  # writer by construction, row locks arbitrate: docs/MANUAL.md "Store
+  # engines") and it claims NO filesystem path. Declaring it is not a way to
+  # opt out of arbitration but the opposite: the alternative for such a tool is
+  # the opaque default, which claims the conversation workspace it never
+  # touches — an over-claim that serializes unrelated conversations while
+  # guarding nothing real. `mcp` is the case that found this: its mutating
+  # tools write store documents only.
+  if w{"store"}.getBool(false): return @[]
+  # Harness-state claims are absolute paths outside the conversation workspace
+  # and are returned on their own: the fence below accepts them only because
+  # the caller also passes harnessClaimBase as an accepted root, and only for
+  # a call that actually declared them.
+  let harness = harnessClaimsFor(schema, harnessRoot)
+  if harness.len > 0: return harness
+  # A declaration that NAMES harness paths but produced none (an escaped entry,
+  # an unknown root) must not fall through to the workspace-root claim: the
+  # call really writes harness state, and claiming the wrong tree would be
+  # worse than claiming nothing, because it reads as protection. The warning
+  # was already printed by harnessClaimsFor.
+  if w{"harness"} != nil and w{"harness"}.kind == JArray and w{"harness"}.len > 0:
+    return @[]
   result = @[]
   var claimed: seq[string] = @[]
   proc add(raw: string) =
@@ -1894,6 +1981,15 @@ proc acquireWriteLease(ct: CoreTools, tool, callId: string,
   for p in paths: arr.add(%p)
   var roots = newJArray()
   for r in workspaceRootsFor(ct): roots.add(%r)
+  # A harness-state claim lives outside the conversation's working set, so the
+  # fence would refuse it as [E_WRITE_OUTSIDE]. It is accepted here only
+  # because the call DECLARED harness paths (harnessClaimsFor already proved
+  # every one of them sits under $NIF_ROOT/var), and only for this call: the
+  # accepted-root set is per-request, never a widening of the conversation's
+  # workspace.
+  if harnessClaimsFor(ct.cat.toolSchema(tool), ct.root).len > 0:
+    let base = harnessClaimBase(ct.root)
+    if base.len > 0: roots.add(%base)
   let sessionId = if ct.nested != nil: ct.nested.session else: ""
   var r: JsonNode
   try:
@@ -2003,7 +2099,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # Acquire only after approval and timeout resolution: waiting for a human
   # must not consume the lease lifetime or prevent unrelated writers.
   let writePaths =
-    if ct.nested != nil: writePathsFor(schema, callArgs, ct.nested.workspace)
+    if ct.nested != nil: writePathsFor(schema, callArgs, ct.nested.workspace, ct.root)
     else: @[]
   let lockCallId = if writePaths.len > 0: newId() else: ""
   if writePaths.len > 0:

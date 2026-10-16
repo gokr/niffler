@@ -450,7 +450,7 @@ var/bin/fixture-compaction: tests/compaction_contract/fixture.nim $(SDK_NIM) $(N
 var/bin/fixture-mcp-server: tests/fixtures/mcp_server.nim $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) -o:$@ tests/fixtures/mcp_server.nim
 
-var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(CORE_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/$*.nim
 
 # The sandbox launcher (sandbox/) is a helper binary, not a component: it has

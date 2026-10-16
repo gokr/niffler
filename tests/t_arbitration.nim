@@ -204,6 +204,68 @@ proc main() =
   check("completed writer releases its dispatch claims",
     afterLong{"count"}.getInt(-1) == 0, $afterLong)
 
+  # Harness-state arbitration (WRITE-ARBITRATION phase 2). plugins writes
+  # $NIF_ROOT/var/plugins and var/bin — NOT the conversation workspace. Before
+  # the harness claim shape existed these tools declared nothing, so the gate
+  # fell back to the opaque workspace-root claim: for a client launched in a
+  # project directory (NIF_ROOT != workspace) the real write went unguarded
+  # while the claim covered an unrelated tree.
+  #
+  # This proves the claim PATH — which directory the gate is allowed to name —
+  # at the locks contract level. A scripted turn cannot vary NIF_ROOT from the
+  # workspace (both are the sandbox root here), so the old opaque spelling and
+  # the new one would overlap and the assertion would pass either way; the
+  # gate's own computation is covered by t_locks' pure checks instead.
+  let harnessLease = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "var" / "plugins", "roots": [root / "var", root / "ws"],
+    "paths": [root / "var" / "plugins"], "sessionId": "conv-installer",
+    "tool": "plugin_install", "callId": "install-1", "ttlMs": 120000}, 10000)
+  check("a harness-state claim is accepted under $NIF_ROOT/var",
+        harnessLease{"ok"}.getBool(false), $harnessLease)
+
+  # A second conversation installing a package is excluded — the collision the
+  # phase-2 declarations exist to prevent.
+  let secondInstall = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "var" / "plugins", "roots": [root / "var", root / "ws"],
+    "paths": [root / "var" / "plugins"], "sessionId": "conv-installer2",
+    "tool": "plugin_install", "callId": "install-2"}, 10000)
+  check("a second conversation cannot install into var/plugins concurrently",
+        not secondInstall{"ok"}.getBool(false) and
+        secondInstall{"holder"}.getStr("") == "conv-installer", $secondInstall)
+
+  # Disjoint harness state stays parallel: another var/ subtree is not blocked
+  # by the plugins claim (striping, not a global lock).
+  let otherHarness = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "var" / "models", "roots": [root / "var"],
+    "paths": [root / "var" / "models"], "sessionId": "conv-models",
+    "tool": "models_refresh", "callId": "models-1"}, 10000)
+  check("disjoint harness state stays parallel",
+        otherHarness{"ok"}.getBool(false), $otherHarness)
+  discard call(nc, "locks", "lock_release",
+               %*{"leaseId": "conv-models:models-1"})
+
+  # The control plane is not claimable through this path at all — the fence
+  # must refuse it, or a workspace write guard would appear to own the tree
+  # the agent edits (SANDBOX-PLAN §6).
+  let controlPlane = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "components", "roots": [root / "var"],
+    "paths": [root / "components"], "sessionId": "conv-control",
+    "tool": "plugin_install", "callId": "control-1"}, 10000)
+  check("the harness control plane is refused by the fence",
+        controlPlane{"error"}.getStr("").contains("E_WRITE_OUTSIDE"),
+        $controlPlane)
+
+  discard call(nc, "locks", "lock_release",
+               %*{"leaseId": "conv-installer:install-1"})
+  let freedHarness = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "var" / "plugins", "roots": [root / "var"],
+    "paths": [root / "var" / "plugins"], "sessionId": "conv-installer2",
+    "tool": "plugin_install", "callId": "install-3"}, 10000)
+  check("released harness state is claimable again",
+        freedHarness{"ok"}.getBool(false), $freedHarness)
+  discard call(nc, "locks", "lock_release",
+               %*{"leaseId": "conv-installer2:install-3"})
+
   report("ARBITRATION TEST")
 
 main()

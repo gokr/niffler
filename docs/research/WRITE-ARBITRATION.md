@@ -200,11 +200,39 @@ still run concurrently: their stripes do not overlap.
 Effort: phase 1 ≈ 2–3 days (component ≈ 1, gate + schema ≈ 1, tests ≈ ½),
 phase 2 ≈ 1 day of declarations plus tests.
 
-Phase 1 has shipped. Two gaps remain inside it, and they are the first things
-phase 2 should pick up:
+Phase 1 has shipped. Phase 2's main item has also shipped, and it turned out
+not to be "a day of declarations":
 
-- **`plugins` and `mcp` are not yet declared**, so they fall back to the opaque
-  default — safe (the root is claimed) but coarser than intended.
+- **`plugins` and `mcp` are declared** — but the two pre-existing shapes could
+  not express what they do, so a third and fourth were added:
+  `{"harness": ["var/plugins", "var/bin"]}` (paths relative to `$NIF_ROOT`,
+  confined to `$NIF_ROOT/var`) and `{"store": true}` (no filesystem claim; the
+  store is single-writer and row locks arbitrate).
+
+  The reason is worth recording, because the earlier plan was wrong about it.
+  This document said the undeclared tools were "safe (the root is claimed) but
+  coarser than intended". They were not safe: the opaque default claims the
+  **conversation workspace**, and neither component writes there. `plugins`
+  writes `$NIF_ROOT/var/plugins` + `var/bin`; `mcp` writes store documents and
+  no files at all. When `NIF_ROOT` == the workspace those coincide and the bug
+  is invisible — which is exactly how it was reviewed — but for a client
+  launched in a project directory (`NIF_ROOT` = the harness checkout,
+  workspace = the project) two conversations could install packages into one
+  `var/plugins` with **no claim on it whatsoever**, while each held a lease
+  over a project tree neither was touching. Claiming the correct directory is
+  the fix; the earlier "safe" reading was an artifact of testing where the two
+  paths overlap.
+
+  The `$NIF_ROOT/var` confinement is the load-bearing part. Everything else
+  under the root is the control plane — `core/`, `components/`, `sdk/` — which
+  the agent edits as ordinary work and which a write lease cannot meaningfully
+  own (SANDBOX-PLAN §6). A declaration naming `components` is refused with a
+  core warning and yields **no** claim rather than the workspace fallback,
+  because a claim over the wrong tree reads as protection while providing
+  none. `t_locks` pins the pure rules (resolution, confinement, escapes,
+  unknown root, `var` itself) and `t_arbitration` drives the live exclusion
+  (second installer refused and naming the first; disjoint `var/` subtrees
+  parallel; control plane `E_WRITE_OUTSIDE`).
 - **Arbitration covers the dispatch gate only.** A mutation that does not pass
   through a tool call is invisible to it — the same boundary
   `x-harness.effect` and `x-harness.approval` already live behind. A scope

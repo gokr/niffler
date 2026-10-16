@@ -984,10 +984,21 @@ keys:
   (docs/research/WRITE-ARBITRATION.md). Two shapes:
   `{"paths": ["path", "glob", "paths"]}` names the argument fields
   (single string or string array) that hold the files it will change — the
-  values are already workspace-resolved by `workspace.pathFields`; and
+  values are already workspace-resolved by `workspace.pathFields`;
   `{"root": true}` claims the conversation workspace root for a tool whose
-  reach is opaque (`bash`, `builder`, `plugins`, `mcp`), which
-  conflicts with any claim beneath it. A declared value carrying a wildcard
+  reach is opaque (`bash`, `builder`), which conflicts with any claim beneath
+  it; `{"harness": ["var/plugins"]}` names paths **relative to `$NIF_ROOT`**
+  for a tool that mutates harness state rather than conversation files
+  (`plugins` writes `var/plugins` and `var/bin`) — the claim is confined to
+  `$NIF_ROOT/var` and every entry outside it is refused with a core warning,
+  because the rest of the root is the control plane the agent edits and a lease
+  over it would be theater; and `{"store": true}` declares that a tool's
+  durable writes go through the store (one writer by construction, row locks
+  arbitrate — `mcp`'s mutating tools write store documents and no files), so it
+  takes **no** filesystem claim. The last two exist so a tool does not fall
+  back to the opaque root claim over a tree it never touches: for a client
+  launched in a project directory (`NIF_ROOT` != workspace) that claim guarded
+  nothing real while serializing unrelated conversations. A declared value carrying a wildcard
   (`*` or `?` — a `replace_across` glob) is claimed as the **base directory
   before the first wildcard**, not as the pattern text: the pattern
   `/ws/**/*.go` claims `/ws`, and `/ws/src/*.go` claims `/ws/src`. The gate does

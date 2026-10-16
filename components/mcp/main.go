@@ -95,7 +95,7 @@ func main() {
 			"enabled":     map[string]any{"type": "boolean", "description": "Spawn the bridge now (default true); false stores the config without connecting"},
 		},
 		"required":  []string{"name"},
-		"x-harness": map[string]any{"onDemand": true, "approval": "always"},
+		"x-harness": map[string]any{"onDemand": true, "approval": "always", "writes": map[string]any{"store": true}},
 	}, m.add)
 
 	comp.Tool("mcp_edit", map[string]any{
@@ -120,7 +120,7 @@ func main() {
 			"enabled":     map[string]any{"type": "boolean", "description": "false disables and removes the bridge; true respawns it"},
 		},
 		"required":  []string{"name"},
-		"x-harness": map[string]any{"onDemand": true, "approval": "always"},
+		"x-harness": map[string]any{"onDemand": true, "approval": "always", "writes": map[string]any{"store": true}},
 	}, m.edit)
 
 	comp.Tool("mcp_remove", map[string]any{
@@ -131,7 +131,7 @@ func main() {
 			"name": map[string]any{"type": "string", "description": "Server to remove"},
 		},
 		"required":  []string{"name"},
-		"x-harness": map[string]any{"onDemand": true, "approval": "always"},
+		"x-harness": map[string]any{"onDemand": true, "approval": "always", "writes": map[string]any{"store": true}},
 	}, m.remove)
 
 	comp.Tool("mcp_refresh", map[string]any{

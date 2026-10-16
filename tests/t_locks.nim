@@ -67,6 +67,53 @@ proc checkPure() =
         writePathsFor(%*{"x-harness": {"hidden": true, "runner": true}},
           %*{}, "/ws").len == 0)
 
+  # Harness-state claims (x-harness.writes.harness): a tool that mutates
+  # $NIF_ROOT/var rather than the conversation workspace. The opaque default
+  # would claim the workspace it never touches — for a client launched in a
+  # project directory (NIF_ROOT != workspace) that guarded nothing at all
+  # while serializing unrelated conversations, which is the bug this shape
+  # exists to close.
+  let harnessSchema = %*{"x-harness": {"writes": {"harness": ["var/plugins"]}}}
+  check("a harness claim resolves under $NIF_ROOT/var",
+        writePathsFor(harnessSchema, %*{}, "/ws", "/root") == @["/root/var/plugins"],
+        $writePathsFor(harnessSchema, %*{}, "/ws", "/root"))
+  check("harness claims may name several directories",
+        writePathsFor(%*{"x-harness": {"writes":
+          {"harness": ["var/plugins", "var/bin"]}}}, %*{}, "/ws", "/root") ==
+          @["/root/var/plugins", "/root/var/bin"],
+        $writePathsFor(%*{"x-harness": {"writes":
+          {"harness": ["var/plugins", "var/bin"]}}}, %*{}, "/ws", "/root"))
+  # The control plane is never claimable: SANDBOX-PLAN §6 records that the
+  # agent edits the harness's own source tree, so a lease over core/ would be
+  # theater. Escapes are refused loudly and yield NO claim rather than the
+  # workspace fallback (which would read as protection while guarding the
+  # wrong tree).
+  check("the harness control plane is not claimable",
+        writePathsFor(%*{"x-harness": {"writes": {"harness": ["components"]}}},
+          %*{}, "/ws", "/root").len == 0)
+  check("an escaping harness claim is refused",
+        writePathsFor(%*{"x-harness": {"writes":
+          {"harness": ["../etc"]}}}, %*{}, "/ws", "/root").len == 0)
+  check("an absolute harness claim is refused",
+        writePathsFor(%*{"x-harness": {"writes":
+          {"harness": ["/etc/passwd"]}}}, %*{}, "/ws", "/root").len == 0)
+  check("an unknown harness root claims nothing",
+        writePathsFor(harnessSchema, %*{}, "/ws", "").len == 0)
+  # var/ itself is allowed: it is the whole runtime-state directory.
+  check("a claim on var/ itself is allowed",
+        writePathsFor(%*{"x-harness": {"writes": {"harness": ["var"]}}},
+          %*{}, "/ws", "/root") == @["/root/var"],
+        $writePathsFor(%*{"x-harness": {"writes": {"harness": ["var"]}}},
+          %*{}, "/ws", "/root"))
+  # A store-backed writer claims no filesystem path: its durable writes go
+  # through the single-writer store.
+  check("a store-backed writer claims no path",
+        writePathsFor(%*{"x-harness": {"writes": {"store": true}}},
+          %*{}, "/ws").len == 0)
+  check("a store-backed writer is not read-effect-only",
+        writePathsFor(%*{"x-harness": {"effect": "write",
+          "writes": {"store": true}}}, %*{}, "/ws").len == 0)
+
 proc main() =
   checkPure()
 

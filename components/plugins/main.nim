@@ -879,7 +879,8 @@ comp.tool(%*{"onDemand": true}):
     return okResult(%*{"packages": pkgs})
 
 
-comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
+comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true,
+             "writes": {"harness": ["var/plugins", "var/bin"]}}):
   proc plugin_install(repo: string, version: string = ""): JsonNode =
     ## Install a community component package from GitHub: clones the repo
     ## into var/plugins (pinned to version, else the latest release tag,
@@ -919,7 +920,8 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
     return r
 
 
-comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
+comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true,
+             "writes": {"harness": ["var/plugins", "var/bin"]}}):
   proc plugin_update(package: string): JsonNode =
     ## Update an installed package. When a tag-pinned install has a newer
     ## release tag — or, on a repo that publishes no releases, a newer
@@ -998,7 +1000,8 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
                        "to": latest, "install": r})
 
 
-comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
+comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true,
+             "writes": {"harness": ["var/plugins", "var/bin"]}}):
   proc plugin_remove(package: string): JsonNode =
     ## Uninstall a package: core.remove each supervised component (they will
     ## not come back on the next boot), delete the local clone and drop the
