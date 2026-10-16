@@ -1916,15 +1916,20 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string,
   let w = if schema != nil: schema{"x-harness"}{"writes"} else: nil
   if w == nil or w.kind != JObject: return @[workspace]
   if w{"root"}.getBool(false): return @[workspace]
-  # `{"store": true}` — the tool's durable writes go through the store (one
-  # writer by construction, row locks arbitrate: docs/MANUAL.md "Store
-  # engines") and it claims NO filesystem path. Declaring it is not a way to
-  # opt out of arbitration but the opposite: the alternative for such a tool is
-  # the opaque default, which claims the conversation workspace it never
-  # touches — an over-claim that serializes unrelated conversations while
-  # guarding nothing real. `mcp` is the case that found this: its mutating
-  # tools write store documents only.
-  if w{"store"}.getBool(false): return @[]
+  # `{"none": true}` — this call takes NO write lease. It is the honest
+  # statement for a tool that mutates no filesystem path at all, and it exists
+  # because the alternative is a lie with a cost: the opaque default claims the
+  # conversation workspace, which such a tool never touches, so the lease
+  # serializes unrelated conversations while guarding nothing real. `mcp`'s
+  # mutating tools are the case that found this — they write store documents,
+  # and the store already serializes its own writers (one process, serialized
+  # handlers, `expectRev` CAS) so a filesystem lease would have been redundant
+  # as well as misdirected.
+  #
+  # Deliberately spelled "none" and not "store": the key must say what the
+  # GATE does (claim nothing), not where the tool's writes happen to land.
+  # "store" read as "claim the store", which is exactly backwards.
+  if w{"none"}.getBool(false): return @[]
   # Harness-state claims are absolute paths outside the conversation workspace
   # and are returned on their own: the fence below accepts them only because
   # the caller also passes harnessClaimBase as an accepted root, and only for

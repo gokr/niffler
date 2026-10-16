@@ -992,10 +992,11 @@ keys:
   (`plugins` writes `var/plugins` and `var/bin`) — the claim is confined to
   `$NIF_ROOT/var` and every entry outside it is refused with a core warning,
   because the rest of the root is the control plane the agent edits and a lease
-  over it would be theater; and `{"store": true}` declares that a tool's
-  durable writes go through the store (one writer by construction, row locks
-  arbitrate — `mcp`'s mutating tools write store documents and no files), so it
-  takes **no** filesystem claim. The last two exist so a tool does not fall
+  over it would be theater; and `{"none": true}` declares that the call
+  takes **no** filesystem claim at all, because it mutates no path (`mcp`'s
+  mutating tools write store documents only; the store serializes its own
+  writers, so a lease would be redundant as well as misdirected). The key names
+  what the gate does, not where the writes land. The last two exist so a tool does not fall
   back to the opaque root claim over a tree it never touches: for a client
   launched in a project directory (`NIF_ROOT` != workspace) that claim guarded
   nothing real while serializing unrelated conversations. A declared value carrying a wildcard

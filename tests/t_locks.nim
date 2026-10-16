@@ -105,14 +105,16 @@ proc checkPure() =
           %*{}, "/ws", "/root") == @["/root/var"],
         $writePathsFor(%*{"x-harness": {"writes": {"harness": ["var"]}}},
           %*{}, "/ws", "/root"))
-  # A store-backed writer claims no filesystem path: its durable writes go
-  # through the single-writer store.
-  check("a store-backed writer claims no path",
-        writePathsFor(%*{"x-harness": {"writes": {"store": true}}},
+  # `{"none": true}`: the call mutates no filesystem path. The key says what
+  # the GATE does (claim nothing), not where the tool's writes land — the store
+  # serializes its own writers, so a filesystem lease would be both redundant
+  # and misdirected (it would name the conversation workspace).
+  check("a none-declared writer claims no path",
+        writePathsFor(%*{"x-harness": {"writes": {"none": true}}},
           %*{}, "/ws").len == 0)
-  check("a store-backed writer is not read-effect-only",
+  check("none is not the read-effect shortcut",
         writePathsFor(%*{"x-harness": {"effect": "write",
-          "writes": {"store": true}}}, %*{}, "/ws").len == 0)
+          "writes": {"none": true}}}, %*{}, "/ws").len == 0)
 
 proc main() =
   checkPure()

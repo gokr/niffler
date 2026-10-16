@@ -206,8 +206,9 @@ not to be "a day of declarations":
 - **`plugins` and `mcp` are declared** — but the two pre-existing shapes could
   not express what they do, so a third and fourth were added:
   `{"harness": ["var/plugins", "var/bin"]}` (paths relative to `$NIF_ROOT`,
-  confined to `$NIF_ROOT/var`) and `{"store": true}` (no filesystem claim; the
-  store is single-writer and row locks arbitrate).
+  confined to `$NIF_ROOT/var`) and `{"none": true}` (the call takes no
+  filesystem claim at all, because it mutates no path — `mcp` writes store
+  documents, and the store already serializes its own writers).
 
   The reason is worth recording, because the earlier plan was wrong about it.
   This document said the undeclared tools were "safe (the root is claimed) but
