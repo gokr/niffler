@@ -6,6 +6,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Resident-instance identity, scoped Linux user-service lifecycle, birth-time
+  agent/persona definitions with compatible toolset naming, opt-in heartbeat,
+  and durable background-process completion delivery.
+- Optional Nim `fleet` provisioning component with approval-gated SSH/Multipass
+  install/adopt and lifecycle tools, pinned private receipts and native transport
+  contracts. Replaces the interim Python helper and Python tests. Multipass TUI
+  connections use native `cli relay`; no Python interpreter is needed for Fleet.
+  Matching TUI code ships separately; cross-instance delegation remains planned.
+
 ### Fixed
 
 - `make clean` now deletes only binaries and compiler caches, never the store,
@@ -240,6 +251,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lines go to the dispatching process's `.log` and
   `var/logs/session-<id>.log`, respectively. This replaces the
   ad-hoc `NIF_LLM_TIMING`/`NIF_TURN_TIMING` switches.
+- **Cooperative write arbitration** — the `locks` peer owns an in-memory,
+  write-through lease index (one durable store document per claim). Session
+  dispatch takes path claims for file tools and subtree claims for opaque
+  writers; wildcard paths conservatively claim their literal base directory.
+  Overlapping calls refuse with `E_WRITE_BUSY` naming the holder; disjoint
+  paths remain independent. Read-effect tools and session-context orchestration
+  take no outer claim, so Fabric/agent nested calls acquire individually.
+  Acquisition follows approval. Session leases outlive the transport timeout
+  by 60 seconds (minimum 10 minutes); terminal replies release them, while an
+  unacknowledged timeout/cancel retains them until expiry. Failed startup loads
+  are retryable and fail closed; failed durable releases retain the claim.
+  Tests cover store outages, restart recovery, nested Fabric writes, glob
+  scope and a real running writer outliving a short configured TTL. This is
+  local cooperative coordination, not filesystem fencing: direct bus calls,
+  detached jobs, native guest I/O and other harness instances are outside it.
+  Run `make test-locks` / `make test-arbitration`; the recovery fault test is
+  included in `make test-server`. Design: [WRITE-ARBITRATION.md](docs/research/WRITE-ARBITRATION.md).
+
 - **`make install-tools`** — the agent CLI toolkit for `bash`: jq, yq,
   ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip and sqlite3 in one
   idempotent, per-tool non-fatal target (apt/brew; Debian's fdfind/batcat

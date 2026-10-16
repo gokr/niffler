@@ -71,6 +71,7 @@ A one-file index of every shipped capability (not a reference) is
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
+| `fleet` | Nim | **not in the manifest** | Opt-in SSH/Multipass provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Multipass provisioning](#ssh-and-multipass-provisioning) |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
 | `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump; a *select* item ({glob|path, pattern?, word?, context?, max?}) locates-then-fetches in one call — with no pattern it lists the matched paths like find/ls, while a literal pattern returns verbatim hit regions ±context lines (grep semantics) ready to copy into `edit`'s `old_string`), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `replace_across` (sed-style literal s///g across a bounded file set in one call — `paths` and/or `glob` (`f*.go` in one directory, `**/*.go` recursively), rules applied in order like a sed pipeline with an optional `word` (\b) span, every occurrence per file and zero-match files passing like sed; a zero *total* match is refused with `E_NO_MATCH` so a mistyped needle cannot silently succeed, per-file counts come back, and each changed file gets its own undo entry that `undo_last_edit` reverts individually; bounded by a 512-file glob-accident circuit breaker and a 32 MB per-call undo pre-image budget (`E_TOO_LARGE`) — the counting pass writes nothing until every refusal has passed), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); `read`, `edit`, `replace_across` and `write` additionally carry the session-variable pipeline controls (`save_as` captures a response field, `resolve_vars: true` substitutes `$name` in that call's arguments — every other `$` stays literal; see [WIRE.md](WIRE.md) `x-harness.variables`); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
@@ -1093,9 +1094,12 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   "Provider/model pins are one selection"). A model-only call persists and
   resolves the selection without inference; presence with an empty value
   clears it.
-  `profile` names a stored tool profile resolved into the direct toolset on
-  the conversation's first call only (`NIF_PROFILE` supplies the default);
-  an unknown profile fails the call, and resumes ignore the argument.
+  `toolset` names a stored selector list resolved into the direct toolset on
+  the conversation's first call only (`NIF_TOOLSET` supplies the default).
+  An unknown toolset fails the call; resumes retain their frozen snapshot.
+  Legacy `profile`, `NIF_PROFILE` and store kind `profile` remain compatible.
+  `persona` selects prompt text; `agent` selects a technical definition (see
+  [Agent definitions](#agent-definitions)), with explicit arguments winning.
   `thinking` is the reasoning effort, one of `""`, `low`, `medium`, `high`,
   `max`; `""` is the provider default (UIs show it as "auto") and is the only
   value that clears an earlier choice. It is forwarded to the provider as
@@ -2112,6 +2116,12 @@ returns exit 127 with an install hint.
 
 ## Background processes (`processes`)
 
+Completion recovery: after a component crash, previously running owned jobs
+produce `interrupted(component restart)` notices, not successful exits. Their
+output remains readable. Acknowledged notices and output expire after seven
+days; pending notices are retained. Legacy sweep records without session
+ownership cannot produce addressed notifications.
+
 Status: **implemented** (Nim component; `tests/t_processes.nim`).
 
 bash is synchronous by design — servers, watchers and test loops need a
@@ -2120,7 +2130,7 @@ different contract: start once, poll incremental output, kill explicitly.
 | Tool | What it does |
 |---|---|
 | `process_start {command, label?, workdir?}` | Spawn the command detached (own process group, stdin from /dev/null, stdout/stderr appended to spool files under `var/processes/`) and return its id immediately. Approval-gated. A background start through the `bash` tool's `run_in_background` is approved once, on the `bash` call itself — the internal `process_start` goes straight over NATS and never passes core's approval gate, while a direct `process_start` issued through core (the model, or any tool reached via `svc.core.call`) is gated — a bus client that addresses `svc.processes.call` itself (the `cli`, a script) is not gated at all |
-| `process_poll {id, waitMs?, filter?, tail?}` | Drain output appended since the last poll — incremental, never re-injects old bytes; `waitMs` blocks until new output or exit (25 s cap); `filter` is a regex over the new lines (the drain cursor still advances past all of them); any non-empty `tail` re-reads the last ~64 KB of raw output. Read-effect |
+| `process_poll {id, waitMs?, filter?, tail?}` | Drain output appended since the last poll — incremental, never re-injects old bytes; `waitMs` blocks until new output or exit (25 s cap); `filter` is a regex over the new lines (the drain cursor still advances past all of them); any non-empty `tail` re-reads the last ~64 KB of raw output. Use it for output, not to discover completion — that is pushed. Read-effect |
 | `process_kill {id}` | Terminate the whole process group — SIGTERM, 300 ms grace, then SIGKILL. Approval-gated |
 | `process_list {}` | Show the registry — running and recently finished entries with exit codes. Read-effect |
 
@@ -2128,11 +2138,12 @@ Details:
 
 - A start result provides exact controls: first
   `discover {tools: ["process_poll", "process_kill"]}`, then
-  `process_poll {id: "<returned id>", waitMs: 25000}` to wait for output or
-  exit, and `process_kill {id: "<returned id>"}` to stop. `filter` drains all
-  new output while showing matches; `tail: "1"` re-reads recent raw output
-  without advancing cursors. An empty nonwaiting poll of a still-running
-  process gives one waiting hint per process. Drain semantics are unchanged.
+  `process_poll {id: "<returned id>"}` **when you need its output** —
+  completion itself is pushed to the owning session, so a poll is never how
+  you wait for it. `filter` drains all new output while showing matches;
+  `tail: "1"` re-reads recent raw output without advancing cursors. An empty
+  nonwaiting poll of a still-running process gives one waiting hint per
+  process. Drain semantics are unchanged.
 - The child writes append-mode to spool files (never a pipe it could
   deadlock on); the component reads from per-stream cursors, so the OS
   absorbs output bursts. A spool beyond the cap (32 MiB,
@@ -2152,22 +2163,26 @@ Details:
   `killed(signal N)` until the component exits.
 - **A finished process tells its conversation.** When you start one through
   the `bash` tool's `run_in_background` flag, bash hands the owning
-  conversation to the registry; when that child exits, `processes` publishes
-  an exit notice into it (the same lane subagent settlement notices use), so
-  the turn that follows opens with `[background process p3 (dev-server)
-  exited(code 0)] ran 412s, 8123 bytes of output — read it with
-  \`process_poll\` …`. It is a pointer: the output stays in the spool, and the
-  command text never travels.
+  conversation to the registry; when that child exits, `processes` records a
+  durable completion and pushes it into that conversation (the same lane
+  subagent settlement notices use), so the next turn opens with
+  `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes
+  of output — read it with \`process_poll\` …`. It is a pointer: the output
+  stays in the spool, and the command text never travels.
 
-  This is why a background job no longer goes unnoticed: the component reaps
-  its children on a periodic tick (the SDK's `onIdle`), not only when someone
-  polls — which also means `process_list` shows `exited(code N)` promptly
-  instead of `running` until asked. Only `bash run_in_background` hands the
-  owning conversation over (it is the one caller that passes `session`), so a
-  `process_start` reached any other way — the model's own `discover` +
-  `invoke`, `cli`, a script — is started without an owner session; a process
-  whose conversation runner has already retired is announced to nobody too.
-  Poll those.
+  This is why a background job no longer needs polling: the component reaps
+  its children on a periodic tick (the SDK's `onIdle`), records the
+  completion before announcing it, and asks for a bounded wake when the
+  conversation is idle. The runner acknowledges the record only after
+  appending it, so a completion survives a component restart, an absent
+  runner and a failed publish — and the same completion is never folded
+  twice. `process_poll` remains for reading output, not for discovering that
+  work finished. Both `bash run_in_background` and a model's direct
+  `process_start` (including `discover` + `invoke`) carry ownership: the
+  runner injects `__session.session` using `x-harness.sessionId`, which wins
+  over an explicit internal `session` argument. Bare bus calls (`cli`, scripts)
+  have no owning conversation unless they supply `session`; their start
+  result explicitly reports that automatic notification is unavailable.
 - Tool errors carry stable codes: `E_BAD_SHAPE` (empty `command`, a
   missing `workdir`, an invalid `filter` regex), `E_NOT_FOUND` (unknown
   id — `process_list` shows the registry) and `E_LIMIT` (32 live
@@ -2463,9 +2478,136 @@ hidden tools directly over NATS.
 - Dispatch, approvals, `x-harness.timeoutMs`, and component-to-component calls
   always consult the full catalog.
 
+### Instance identity
+
+`NIF_NAME` labels this instance (hostname by default). Catalog replies also
+expose a stable `instanceId` persisted in `var/instance-id`; restarts and label
+changes retain it. Preserve that file when moving an instance, but do not copy
+it when provisioning a new one. A malformed file refuses startup rather than
+silently changing identity. The ID is routing metadata, not authentication;
+matching TUI clients pin it when importing a connection receipt.
+
+### Persistent server lifecycle
+
+`bash scripts/bootstrap.sh --server <root>` builds without installing the TUI,
+PATH wrappers or optional extras. Existing checkouts are adopted without a pull;
+updating is a separate decision. Provider credentials must be configured explicitly
+in that root's `.env`; nothing is copied from another instance.
+
+On Linux, `bash scripts/server.sh install <root>` installs and enables a
+root-scoped **user** systemd unit but does not start it. Then use the same helper
+with `start`, `status`, `logs` or `stop`. Roots and HOME must use simple paths
+(letters, digits, `/`, `.`, `_`, `-`). Conflicting or symlinked units are refused,
+not overwritten. The service runs the normal manifest with explicit NIF_ROOT,
+no UI-autostart shutdown and no automatic approvals, on a core-owned isolated
+loopback NATS bus; its endpoint is `<root>/var/nats-url`. No public listener is
+installed. Disconnecting a client does not stop it.
+
+`bash scripts/server.sh linger <root>` reports linger separately. Without enabled
+linger, logout/reboot persistence is not guaranteed; ask an administrator about
+`loginctl enable-linger`. The helper never changes linger or uses sudo. These
+operations affect host lifecycle: obtain human approval before running them on
+an SSH/VM target. Tests use fake systemd commands, not the host service manager.
+
+### SSH and Multipass provisioning
+
+The optional **Nim `fleet` component** installs or adopts Linux instances over
+ordinary SSH or `multipass exec`. Fleet provisioning and the matching TUI's
+Multipass relay require **no Python interpreter**, locally or remotely. SSH,
+Bash and the target's build prerequisites remain necessary; Multipass is optional.
+
+Enable the built component explicitly (it is not in the boot manifest):
+
+```bash
+./var/bin/cli call spawn '{"name":"fleet","binary":"var/bin/fleet","policy":"on-failure"}'
+```
+
+Ask the agent to provision an approved target, or call `fleet_install` with:
+
+```json
+{"transport":"ssh","target":"ubuntu@worker","root":"/home/ubuntu/niffler","revision":"<full-published-commit-sha>","profile":"var/fleet/worker.json"}
+```
+
+For a VM use `transport:"multipass"`, a VM name as `target`, and optional `cpus`,
+`memory` and `disk`. New installations pin a full 40-character commit available
+from `gokr/niffler`; unpublished local commits cannot be provisioned this way.
+Existing built roots are adopted without pulling or rebuilding; incomplete or
+unrelated roots refuse overwrite. Provider credentials and linger must be set
+explicitly; neither is copied/enabled. New targets need git; bootstrap installs
+remaining prerequisites (possibly sudo).
+
+`fleet_install`, `fleet_start`, `fleet_stop` and `fleet_vm_stop` require the normal
+harness approval gate. The approval request names the target, root, revision and
+resources through its arguments. No second tty-consent protocol exists. Standard
+harness auto-approval policy still applies when the human explicitly selected it.
+`fleet_probe`, `fleet_status` and `fleet_logs` are read-only; lifecycle and probe
+tools take `{profile:"/absolute/path/to/receipt.json"}`. Never expose NATS publicly.
+
+SSH honors aliases, keys, ProxyJump and known_hosts with agent forwarding disabled.
+Multipass uses exec, no host mounts or key extraction. No delete/purge tool exists.
+A scoped user service keeps the instance running when clients disconnect. A
+verified, atomically written 0600 receipt pins its root and stable instanceId;
+identity drift refuses remote writes, and a missing pinned VM is never recreated.
+A failed install retains partial state for inspection, not automatic deletion.
+Stopping Niffler and stopping its VM are separate approved operations.
+
+A matching TUI can import the receipt and connect without starting a local core:
+
+```bash
+niffler-tui --instance worker --instance-import /absolute/path/to/worker.json
+niffler-tui --instance worker
+```
+
+Its `/niffler` command lists/switches registered remote instances. SSH uses native
+port forwarding; Multipass uses the remote installation's native `cli relay`
+mode. Update both ends for that relay; there is no Python fallback. Local path
+completion is disabled on remote workspaces. Client code ships separately from
+the harness. Cross-instance agent delegation and background approvals remain
+future work. `make test-fleet` uses fake transports, never real hosts or VMs.
+
+### Scheduled turns (heartbeat)
+
+Heartbeat is built by `make build` but enabled only through an approved
+`spawn {name:"heartbeat", binary:"var/bin/heartbeat", policy:"on-failure"}`.
+Use `heartbeat_set {id, session, prompt, intervalSec}` to schedule turns,
+`heartbeat_list` to inspect them and `heartbeat_remove` to remove a schedule.
+Mutating tools require approval. Busy conversations skip ticks, never queue.
+
+`NIF_HEARTBEAT=0` pauses execution; `NIF_HEARTBEAT_TICK_MS` defaults to 30000;
+`NIF_HEARTBEAT_MAX_PER_DAY` defaults to four turns per record per rolling day.
+The runner independently validates the record and records admission before
+inference. Scheduling reserves attempts before publishing, so a crash can lose
+a tick rather than duplicate work. Status reports attempts, not completion;
+results are in the conversation transcript. Heartbeats never grant approvals
+or keep a harness alive: resident servers must run without `NIF_AUTOSTART=1`.
+See [the component guide](../components/heartbeat/README.md) for limits.
+
+### Agent definitions
+
+A **persona** is text (`persona` store document: `{name, body}`). A **toolset**
+selects direct tools. An **agent** combines technical defaults, referring to both:
+
+```json
+{"persona":"reviewer", "toolset":"review", "thinking":"high", "maxCalls":60}
+```
+
+Save that value with `put {kind:"agent", id:"reviewer", value:…}`. Start a root
+conversation with `session {sessionId, agent:"reviewer", content:…}`, or delegate
+with `agent_run` / `agent_spawn {agent:"reviewer", task:…}`.
+
+Supported definition fields: `name`, `note`, `persona`, `toolset`, `model`,
+`provider`, `thinking`, `tools` (dispatch allowlist), `cwd`, `maxRounds`,
+`maxCalls`, `maxTokens`. Explicit arguments—including empty values—override
+stored defaults. Unknown definitions and malformed fields refuse explicitly.
+Definitions **cannot grant auto approvals**: approval mode remains a separate,
+human-controlled session setting. Selecting a definition is birth-only;
+subagent continuations send content only. Changes to documents never rewrite
+an existing conversation's frozen prompt or tool snapshot. `session_info`
+reports the selected agent, persona and toolset names.
+
 ### Core tools
 
-`discover` and `invoke` are direct core tools in every new conversation. `profile` is an on-demand core tool for managing named tool profiles; `session.profile` selects one when a conversation is first created. `/profile` in the web UI or TUI sets the client default used by `/new`.
+`discover` and `invoke` are direct core tools in every new conversation. `toolset` is an on-demand core tool for managing named selector lists; `session.toolset` selects one at birth. The legacy `profile` tool and `/profile` in released clients remain compatible; matching TUI clients offer `/agent` and `/toolset` pickers for new conversations.
 `session_info` (onDemand) summarizes a conversation (header fields,
 per-role message counts, cumulative completion tokens); `prompt_preview`
 (onDemand) shows composed-request provenance — where the system prompt came
@@ -2494,7 +2636,7 @@ The chat clients expose the same catalog state without requiring an LLM turn:
 
 - `/components [all|direct|discovered|undiscovered]` lists live components and filters each tool by its exposure in the current conversation. `direct` means the schema is in the request tools array; `discovered` means it is known in history and callable through `invoke`; `undiscovered` means it is live but not yet exposed to this conversation.
 - `/discover COMPONENT` or `/discover tool=NAME` performs an explicit discovery request and records the returned schemas in the conversation's durable discovery summary. It does not promote tools into the direct array; use a profile at `/new`, or `invoke` with `sticky: true`, when direct schema exposure is wanted.
-- `/profile NAME` selects a named profile for new conversations; `/profile default` clears the selection. Changing it never rewrites an existing conversation's frozen exposure.
+- `/toolset NAME` selects a named toolset for new conversations; `/toolset default` clears it. `/profile` remains an alias. `/agent` opens the saved-definition picker; `/agent NAME` selects and `/agent none` clears defaults for new conversations. Changing either never rewrites a live conversation.
 
 The web Components panel provides the same all/direct/discovered/undiscovered filters and a text search. Hidden tools remain internal and are never listed by `/discover`.
 
@@ -3740,6 +3882,7 @@ only a subset — this table is the complete list):
 | `jevshadow` | `<sessionId>:<turnId>:<kind>` (`kind` = `tools`/`skills`) | per-turn shadow observations of the advisory-discovery spike (`jev`): the candidate snapshot, raw answers, `elapsedMs`/`queueMs`, `status`/`turnClosed`. Never surfaced to the model and never written into a transcript; an absent backend writes **no** record (see [Advisory discovery](#advisory-discovery-jev-and-the-von-launcher)). Records contain task text — treat them as sensitive |
 | `edit-undo` | `<session>:<absolute path>` | the last pre-edit bytes of a file, for `undo_last_edit` (single-level, per conversation + file). Written *before* the edit; a failed write refuses the edit rather than lose undo history. Scoped to the conversation that owns it — a caller with no conversation (cli scripting) shares one `__standalone` scope. Swept by `conversation_delete` |
 | `edit-seen` | `<session>:<absolute path>` | what a conversation last observed of a file (`digest`/`bytes`/`lines`/`full`), backing the unchanged-read stub and the `E_STALE` gate. A read that only confirms what the record already says writes nothing; a correction (or any mutation) writes. An unreachable store reads as "never looked" — the safe direction (see [The store](#the-store) above). Swept by `conversation_delete` |
+| `diagnostic` | `<session>:<id>` | an asynchronous LSP verdict persisted for display/storage (`{sessionId, path, bytes, text, clean, createdAt}`). A `clean: true` whole-file verdict is UI/storage-only and never enters model history — it still delivers late while a runner is idle; other verdicts also append to the transcript. Swept by `conversation_delete` |
 | `selftest` | store self-test probe | throwaway — written and deleted by the store's own self-test roundtrip |
 
 Backend is the selected engine — SQLite at `var/store.db` by default,

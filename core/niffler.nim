@@ -21,6 +21,7 @@ import dispatch
 import supervisor
 import tty
 import uireg
+import identity
 
 const minimalComponents = ["store", "bash", "llm", "systemprompt"]
 
@@ -347,6 +348,7 @@ proc main() =
                        getEnv("NIF_NATS_URL").len > 0
   # .env from cwd and the harness root (existing env always wins)
   loadDotEnv(".env", root / ".env")
+  let instance = loadInstanceIdentity(root)
   openNatsLib()
   echo "core: Niffler " & harnessGitHash(root) & " — root " & root
 
@@ -545,6 +547,7 @@ proc main() =
   var approval = newApproval(nc, cat, isatty(stdin))
   var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval,
                      root: root, runner: false,
+                     instanceId: instance.instanceId, instanceName: instance.name,
                      pending: PendingCalls(),
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),

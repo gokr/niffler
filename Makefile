@@ -73,7 +73,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 .PHONY: help all build components components-inner run down down-here \
          test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
-        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
+        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-server-lifecycle test-fleet \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
@@ -100,7 +100,7 @@ help:
 	@echo '  ram             Show memory usage of running Niffler stacks'
 	@echo ''
 	@echo 'Verify and set up'
-	@echo '  test            Full gate: bus contracts + Go tests/vet + benchmark unit tests'
+	@echo '  test            Full gate: bus contracts + Go/vet + benchmark and fleet unit tests'
 	@echo '  test-clean      Isolated regression test for data-safe cleanup'
 	@echo '  setup           Install platform prerequisites (may use sudo/network)'
 	@echo '  doctor          Report prerequisite availability'
@@ -110,10 +110,12 @@ help:
 
 help-tests:
 	@echo 'Tests (private NATS servers and isolated runtime roots)'
-	@echo '  test / test-server   Same full gate; includes Go/vet and Node benchmark tests'
+	@echo '  test / test-server   Same full gate; includes Go/vet, Node benchmark and native Fleet tests'
 	@echo '  test-go              Go unit tests + vet; race detector on audited packages'
 	@echo '  test-bench           Node benchmark infrastructure unit tests; not a model eval'
 	@echo '  test-clean           Cleanup contract only; no full build or live store access'
+	@echo '  test-fleet           Mocked provisioning tests; no real SSH/VM mutations'
+	@echo '  test-server-lifecycle  Isolated server lifecycle contract'
 	@echo '  test-<component>     Focused contracts, e.g. test-store, test-core, test-edit'
 	@echo '  test-store-tidb       Needs NIF_STORE_TIDB_DSN pointing at a test database'
 	@echo '  live-smoke           OPT-IN: real provider calls, spends tokens'
@@ -243,6 +245,17 @@ var/bin/test_t_lsp: $(call NIM_SRCS,lsp)
 var/bin/processes: components/processes/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/processes/main.nim
 
+var/bin/heartbeat: components/heartbeat/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/heartbeat/main.nim
+
+# Provisioning is opt-in; a stock harness starts neither fleet nor heartbeat.
+var/bin/fleet: $(call NIM_SRCS,fleet) $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fleet/main.nim
+
+var/bin/test_t_fleet: $(call NIM_SRCS,fleet) var/bin/fleet
+var/bin/cli: $(call NIM_SRCS,cli)
+var/bin/test_t_relay: $(call NIM_SRCS,cli) var/bin/cli
+
 var/bin/grep: components/grep/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/grep/main.nim
 
@@ -355,7 +368,7 @@ components:
 
 components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
 	var/bin/niffler-sandbox \
-	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
+	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/heartbeat var/bin/fleet var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
@@ -549,6 +562,9 @@ test-bench:
 test-clean: var/bin/test_t_clean
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_clean
 
+test-fleet: build var/bin/test_t_fleet
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet
+
 test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
@@ -594,9 +610,7 @@ test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
 test-locks:   build var/bin/test_t_locks   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_locks
-# Two runs on purpose: the default must REFUSE (no backend here), and the
-# degraded opt-in must actually confine writes. A single run would silently
-# cover only whichever branch this host happens to take.
+# Two runs: the default must refuse and degraded opt-in must confine writes.
 test-sandbox: build var/bin/test_t_sandbox var/bin/niffler-sandbox
 	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_sandbox
 	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" NIF_SANDBOX_ALLOW_DEGRADED=1 ./var/bin/test_t_sandbox
@@ -606,6 +620,10 @@ test-vars:    build var/bin/test_t_vars    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp
 test-repomap: build var/bin/test_t_repomap_tags var/bin/test_t_repomap_score \
     var/bin/test_t_repomap ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_tags && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_score && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap
+test-server-lifecycle: var/bin/test_t_server
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_server
+
+test-heartbeat: build var/bin/ctxtest var/bin/test_t_heartbeat ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_heartbeat
 test-processes: build var/bin/test_t_processes ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_processes
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-parallel: build var/bin/test_t_parallel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_parallel
@@ -663,7 +681,7 @@ clean:
 # and Clang must exist before Nimble builds Futhark and BitBarrel.
 setup:
 	@set -e; for target in install-native-deps install-nim install-nim-deps \
-		install-go install-node; do \
+		install-go $(if $(filter 1,$(NIF_SERVER)),,install-node); do \
 		$(MAKE) --no-print-directory $$target; \
 	done
 	@echo "setup done — verify with 'make doctor', then 'make'"

@@ -296,6 +296,43 @@ proc main() =
         holdSeq == @["user", "hold-first", "notice", "notice-parent-done"],
         $holdSeq)
 
+  # Processes use the same bounded wake lane, including a retired runner.
+  let processBin = repoRoot / "var" / "bin" / "processes"
+  let processProc = startComponent(processBin, url, root = root)
+  defer: stopProcess(processProc)
+  check("processes registered", waitComponent(nc, "processes"))
+  let processParent = "process-wake-parent"
+  discard call(nc, "core", "session",
+    %*{"sessionId": processParent, "content": "hello"}, 120_000)
+  sleep(3000) # retire the original runner; completion must recreate it
+  let startedProcess = call(nc, "processes", "process_start",
+    %*{"command": "echo completed", "session": processParent}, 20_000)
+  let processId = startedProcess{"id"}.getStr("")
+  var processNotices = 0
+  for attempt in 0 ..< 120:
+    processNotices = 0
+    for m in transcript(processParent):
+      if m{"notice"}{"processId"}.getStr("") == processId: inc processNotices
+    if processNotices > 0: break
+    sleep(250)
+  check("process exit wakes a retired runner without process_poll",
+    processId.len > 0 and processNotices == 1 and
+    wakeMessages(processParent).len == 1)
+  let inbox = call(nc, "processes", "process_notices",
+    %*{"session": processParent, "peek": true}, 10_000)
+  check("persisted completion acknowledged after append", inbox{"count"}.getInt() == 0)
+
+  let directOwner = "process-direct-owner"
+  let directReply = call(nc, "core", "session",
+    %*{"sessionId": directOwner, "content": "start directly"}, 120_000)
+  check("invoke process_start injects ownership and holds the busy turn",
+    directReply{"reply"}.getStr("") == "process-notice-folded", $directReply)
+  var directCount = 0
+  for m in transcript(directOwner):
+    if m{"notice"}{"kind"}.getStr("") == "process-exited": inc directCount
+  check("busy process completion folds once across steer and durable inbox",
+    directCount == 1, $directCount)
+
   report("AGENT WAKE")
 
 main()

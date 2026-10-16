@@ -1,6 +1,11 @@
 # Remote instances, resident agents and the `/niffler` switcher
 
-> Proposal (nothing implemented). Two halves of one story.
+> Design history, with implementation status in [FLEET-IMPLEMENTATION.md](FLEET-IMPLEMENTATION.md)
+> and the [manual](../MANUAL.md#ssh-and-multipass-provisioning). Identity,
+> service lifecycle, Nim provisioning, persona/agent definitions and heartbeat
+> are implemented; matching TUI source has receipt import/switching. Native
+> `cli relay` removes the interim Python Multipass bridge. Delegation and
+> background approvals are still planned. Two halves of one story.
 >
 > **Part I (§1–§5)** — running one or several full Nifflers on remote machines
 > and driving them from another Niffler, or from a bare `niffler-tui` with no
@@ -463,6 +468,47 @@ event, labelled, without polling.
 
 ## 6. Persona: who the agent is at birth
 
+> Implementation update (`feat/fleet`): persona is text only. Technical defaults
+> now live in store kind `agent`, referencing persona and toolset. The canonical
+> selector tool is `toolset` (legacy profile remains compatible). Supported
+> defaults use flat session argument names, including cwd/maxRounds/maxCalls/
+> maxTokens. Definitions cannot grant auto approvals. Earlier alternatives below
+> are design history; the current contract is WIRE.md and MANUAL.md.
+
+
+### 6.0 Prior art: the word is established, but it names the *prompt half*
+
+Surveyed on the harness shelf (2026-10-14). "Persona" is **not** a Niffler
+coinage, and it is never the name of the whole agent: everywhere it means the
+prompt-identity contribution, inside something larger.
+
+| Harness | What it calls the whole thing | What it calls the prompt part |
+|---|---|---|
+| **dsh** (deepseek-harness) | **agent preset** (`preset.yml` + `cordis.patch.yml`, `@deepseek-ai/dsh-agent-preset`, ids `standard`/`ptc`/`minimal`/`cordis`) | **persona** — the `@deepseek-ai/dsh-persona` plugin, `personaPrefix`/`personaSuffix`, system-prompt sections named `deployment:persona-prefix` |
+| **CodeWhale** | **agent profile** — `.codewhale/agents/`, `$CODEWHALE_HOME/agents`, and `.claude/agents` (Claude Code's convention) | **`persona`** *or* `instructions.text` — the parser takes `instructions` and falls back to `persona`; the profile also carries `role_hint`/`base_role`, `loadout` (tools), `model`, `provider`, `requires` (capability requirements) |
+| **OpenHands** | agent profile / template | **`persona`**, as a *field distinct from* `system_message_suffix`: persona replaces the prompt, instructions append to it |
+| **Reasonix** | "output style" (a selectable, user-authored block) | the doc comment says it plainly: *"adds a selectable output style — a block of persona … appended to the system prompt"* |
+| **gemini-cli** | subagent (`.gemini/agents`, `subagents.md`) | prose only: *"Each subagent has its own system prompt and persona."* No field. |
+| **pi, kimi-cli, maki** | — | the word does not appear at all |
+
+Two conclusions for Niffler:
+
+1. **`persona` is the right word for what A0 shipped** — the body that becomes
+   the frozen prompt. It matches dsh's plugin, CodeWhale's field and OpenHands'
+   field.
+2. **It is the wrong word for the whole document** if that document also carries
+   tools, model and budgets — which is what §6.1 below proposes. The prior art
+   calls that an **agent profile** (CodeWhale, OpenHands) or an **agent preset**
+   (dsh). Niffler already spends *profile* on tool profiles (the `profile`
+   tool), so the collision is real and worth a deliberate decision (§6.2).
+
+CodeWhale's `.claude/agents` compatibility is the interesting interop detail:
+that convention is markdown with YAML frontmatter (`name`, `description`,
+`tools`, `model`) plus a body, read from both the project and the home
+directory — a format Niffler could read as-is (§6.2).
+
+### 6.1 The design
+
 Today a child's *identity* is whatever the task text implies: `agent_run`
 prepends a fixed `taskPreamble` ("You are a subagent…",
 `components/agent/main.nim:38-46`) and everything else — model, thinking, tool
@@ -502,12 +548,109 @@ mechanisms that already exist and freeze at that same moment:
 
 | Persona field | Existing mechanism it resolves into |
 |---|---|
-| `body` | the frozen system prompt (via `systemprompt`) |
-| `toolProfile` | the frozen direct toolset (tool `profile`, resolved at the first turn) |
-| `model`, `thinking` | the header's frozen controls |
-| `budgets` | `maxRounds` / `maxCalls` / `maxTokens` |
-| `workspace` | the conversation workspace (immutable after the first turn) |
-| `approvals` | the conversation's gate mode (`ask`/`auto`) — **the human's explicit `/approvals` setting wins**, because that gate is the security boundary |
+| Persona field | Existing mechanism it resolves into | Status |
+|---|---|---|
+| `body` | the frozen system prompt (via `systemprompt`) | **shipped** (A0) |
+| `toolProfile` | the frozen direct toolset (tool `profile`, resolved at the first turn) | planned |
+| `model`, `thinking` | the header's frozen controls | planned |
+| `budgets` | `maxRounds` / `maxCalls` / `maxTokens` | planned |
+| `workspace` | the conversation workspace (immutable after the first turn) | planned |
+| `approvals` | the conversation's gate mode (`ask`/`auto`) — **the human's explicit `/approvals` setting wins**, because that gate is the security boundary | planned |
+
+Only `body` (and the `name` used in the tag) is wired today: A0 deliberately
+shipped the prompt half first — it is the part with no existing mechanism to
+reuse, and the part the cache discipline shapes. The remaining rows are
+pass-throughs to arguments that already exist, and are better done together
+(§6.2) than one at a time.
+
+### 6.2 The naming decision
+
+Three names are in play for three different things, and the codebase has already
+half-decided two of them.
+
+**1. `persona` = the text.** Settled (A0 shipped it) and it matches the shelf's
+usage (§6.0).
+
+**2. `profile` → `toolset`.** The interesting evidence: Niffler's *identifiers*
+already call this a toolset, everywhere, while only the *surface names* say
+profile —
+
+| Says "toolset" (concept) | Says "profile" (surface) |
+|---|---|
+| `exposure.toolset`, "resolved once into a conversation's direct toolset", `if withToolset && !withSystemPrompt` semantics in tests, "frozen toolset snapshot" | the `profile` core tool, `session {profile}`, store kind `"profile"`, `NIF_PROFILE`, TUI `/profile`, `profileTokens` |
+
+So this rename is not a preference — it aligns four public surface names to the
+vocabulary the code has been using all along. Mechanical, wire-compatible in
+practice (the `session` schema's key stays readable for one release while the
+canonical spelling becomes `toolset`), and worth doing on its own merits.
+
+**3. The definition document.** The shelf's word for it is **agent**:
+opencode's `agents.mdx` defines an agent as *"specialized AI assistants …
+custom prompts, models, and tool access"* — exactly the combined document —
+with `primary`/`subagent` modes, Tab-cycling between them and `@`-mention to
+invoke; CodeWhale calls it an agent profile; dsh calls it an agent preset. The
+counter-argument to reusing `profile` here is that it makes "profile" mean two
+unrelated things permanently, and Niffler already has a *provider* profile
+surface in the TUI (`provider_list` fields, the OAuth/profile editor), so a
+third meaning would be the one with no precedent behind it.
+
+That leaves the collision to weigh: in Niffler, **`agent`** is currently the
+component name, the `agent_*` tool prefix, and the word for a running subagent.
+Using it for the definition too is a deliberate overload, and it needs a rule to
+be usable:
+
+> bare `agent` = the **definition** document · `agent_*` = the tools that run
+> one · "a subagent" = a running instance of one · the `agent` component = the
+> implementer of those tools.
+
+That reads naturally ("what agents do I have?" / "list my agents" = definitions)
+and it is what a user of opencode or Claude Code would already expect. The
+alternative — `agentdef` — is accurate but, as noted, contrived; it also loses
+the interop advantage, because the importable formats on the shelf are
+`agents.mdx`-style documents and `.claude/agents` files, both of which call the
+thing an agent.
+
+**Recommendation:** `persona` (text), `toolset` (tool visibility), `agent`
+(definition), with the overload rule above written into WIRE. If that overload is
+judged too costly, the fallback is `agentdef` — accurate, and the only cost is a
+word nobody says out loud.
+
+**What is *not* needed is new machinery.** All three fields a definition would
+set are mechanisms that already exist and freeze at birth:
+
+| Definition field | Lands in | Already exists as |
+|---|---|---|
+| `persona` | the frozen system prompt | A0 (shipped) |
+| `toolset` | the frozen direct toolset | `session {profile}`, `profile` tool |
+| `model`, `thinking` | the header's frozen controls | session args |
+| `budgets` | round/call/token caps | session args (subagents pass them per call — `components/agent/main.nim:938-945`) |
+| `workspace` | the conversation workspace | `cwd` (birth-only already) |
+| `approvals` | the gate mode | `approvals` control (human's setting wins) |
+
+So "resolve an agent" is a **resolution order**, not a subsystem: for each field,
+`explicit argument > definition field > harness default`. The work is the
+resolver plus one provenance surface — and the provenance surface is the part
+that makes it debuggable, because "which model am I actually running?" must not
+become a guessing game.
+
+**One divergence from opencode worth recording:** their agents are switchable
+mid-session (Tab) because they rebuild the prompt. Niffler's cache discipline
+forbids that — a definition is birth-only, exactly as persona proved. Switching
+identity means a new conversation (or, later, a deliberate prefix rebuild with an
+explicit `reset:agent` reason, the way `reset:tools` already works for sticky
+invokes). That is the honest cost of the frozen prefix, and it should be stated
+up front rather than discovered when someone tries to Tab between agents.
+
+### 6.3 Rules the shipped half already enforces
+
+A0 froze the three laws below in code, and its test pins each of them. Worth
+naming what the implementation does *not* do yet, so the doc cannot overclaim:
+the prompt half is complete (resolution, placement, birth-only, edits that never
+rewrite, a resume that never re-resolves, an unknown persona that degrades to the
+plain prompt with the reason on stderr), while the policy half of §6.1's table is
+absent by design.
+
+### 6.4 The laws
 
 Three laws, all consequences of the prompt-cache discipline:
 

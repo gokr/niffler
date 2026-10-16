@@ -62,6 +62,15 @@ proc main() =
       break
     sleep(200)
   check("core up", coreUp)
+  let identityList = call(nc, "core", "catalog", %*{"op": "list"})
+  let identityComponents = call(nc, "core", "catalog", %*{"op": "components"})
+  let identitySnapshot = call(nc, "core", "catalog", %*{"op": "snapshot"})
+  let instanceId = readFile(root / "var" / "instance-id").strip()
+  check("catalog views expose one stable instance identity",
+    instanceId.len == 32 and identityList{"instanceId"}.getStr() == instanceId and
+    identityComponents{"instanceId"}.getStr() == instanceId and
+    identitySnapshot{"instanceId"}.getStr() == instanceId and
+    identityList{"name"}.getStr().len > 0, $identityList)
 
   # catalog: shipped components registered, core tools exposed
   let cat = runCli(cliBin, url, @["catalog"], root = root)

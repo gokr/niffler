@@ -54,8 +54,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md), [AGENTS.md](../AGENTS.md) "What this is"
   (`setpriv --pdeathsig TERM` / `PR_SET_PDEATHSIG`) so nothing outlives its
   harness; core itself is deliberately exempt (autostarted cores must outlive
   the UI that spawned them).
-- Clone-as-instance: the checkout is the harness home (`NIF_ROOT`); `var/` is
-  disposable runtime state and the repo is the snapshot.
+- Clone-as-instance: the checkout is the harness home (`NIF_ROOT`); `var/`
+  contains durable store/benchmark data alongside builds. `make clean` removes
+  only binaries and compiler caches, never the runtime tree wholesale.
 - Language-agnostic core: language support is data (config registries) or a
   plugin component; no per-language branches in shared components.
 - Prompt-cache discipline as an invariant: a conversation's request prefix
@@ -126,7 +127,8 @@ window"; [WIRE.md](WIRE.md) "Subjects", "Approvals", "Attachments".
 - Workspace pinning (`cwd`), immutable per conversation, with a workspace set
   that includes linked git worktrees and sibling checkouts of the same origin.
 - Mid-turn steering, turn-bound advisory delivery, repo-map appends and
-  asynchronous LSP diagnostics — all folded as append-only history.
+  asynchronous LSP diagnostics — folded as append-only history (clean
+  diagnostics are display/storage-only and never enter model history).
 - Image attachments: validation (MIME allowlist, magic bytes, per-image and
   per-turn caps), metadata/pixel store split, deterministic greedy-newest
   projection, caption placeholder, delete sweep.
@@ -211,7 +213,10 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
   background hand-off, cancellation.
 - `processes` — owned long-running commands: start, incremental poll (filter
   and tail), kill the group, list; spool files, process cap, crash-safe
-  registry sweep, and exit notices delivered to the owning conversation.
+  registry sweep, and durable exit notices pushed to the owning conversation.
+- `fleet` — opt-in Nim provisioning peer: approval-gated SSH/Multipass
+  install/adopt, pinned private receipts, scoped service/VM lifecycle; native
+  Multipass `cli relay`, no Python runtime. Cross-instance delegation is planned.
 
 ### Files, search and repository inspection
 
@@ -361,8 +366,8 @@ See [WIRE.md](WIRE.md) (the single contract).
   `bad-envelope` replies, streaming frames with a terminal `done`.
 - Registration and discovery subjects, queue-grouped service calls, the
   session-runner call surface, and the full per-conversation event namespace
-  (turn, assistant, status, context, retry, token, toolcall, steer, advice,
-  notice, map, diagnostics, done).
+  (turn, assistant, status, context, retry, token, toolcall, steer, steer_sent,
+  advice, notice, map, diagnostics, done).
 - Component and system events: catalog updates, model-catalog updates,
   provider switch/change, workspace opened, SDK logs, LSP warmup, agent and
   fabric lifecycle events.

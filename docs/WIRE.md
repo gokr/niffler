@@ -4,6 +4,55 @@ One page. Versioned, boring, identical on every transport (NATS, stdio/NDJSON
 behind pipewrap, future HTTP gateway). JSON everywhere by default; codec
 upgrades are per-seam via NATS headers, never a global format.
 
+## Instance identity
+
+Catalog `list`, `components` and `snapshot` replies carry `instanceId` (128
+random bits encoded as 32 lowercase hex characters) and `name` (`NIF_NAME`,
+otherwise hostname), alongside unchanged `root` and `gitHash`. System core
+creates `var/instance-id` before spawning children; restarts preserve it and
+malformed existing files refuse startup. Backups/clones copying var copy this
+identity too: provision fresh roots without copied runtime state. This is routing
+metadata, not authentication. It contributes nothing to frozen prompts or
+append-only conversation history. Matching TUI clients pin imported receipt
+identities before forwarding and on reconnect. Provisioning belongs to the
+optional Nim `fleet` component, not core. Its approved mutation tools use the
+normal approval gate; receipts are client-local JSON, not prompt context.
+Multipass clients use the installed native `cli relay` stdio/loopback seam,
+never a Python bridge; SSH clients use standard native port forwarding.
+
+## Scheduled turns (heartbeat)
+
+The opt-in heartbeat component publishes `session {sessionId, content,
+notice:{kind:"heartbeat",id}}`. The runner requires an enabled heartbeat
+record with the same session and prompt, checks `NIF_HEARTBEAT` and the rolling
+24-hour `NIF_HEARTBEAT_MAX_PER_DAY` admission limit, and records a unique
+`heartbeatmark` before inference. Store failures decline admission. A busy
+runner refuses; scheduled turns never queue. Admitted messages carry the
+heartbeat notice marker in durable history, not in provider-visible metadata.
+Prefix effect: append-only history, unchanged system prompt and tool schemas.
+Scheduling attempts are reserved before publication; a crash may lose a tick.
+Fire-and-forget dispatch reports attempts, not completion. Results live in the
+conversation transcript. See components/heartbeat/README.md.
+
+## Agent definitions and toolsets
+
+`persona` store documents contain `{name, body}`: prompt text only. `agent`
+store documents contain technical birth defaults: `persona`, `toolset`, `model`,
+`provider`, `thinking`, `tools`, `cwd`, `maxRounds`, `maxCalls`, `maxTokens`,
+and optional `name`/`note`. `session {agent}` and fresh `agent_run`/`agent_spawn
+{agent}` resolve these with explicit arguments taking precedence, including
+explicit empty values. Unknown definitions, invalid types and unsupported
+fields refuse. Definitions cannot carry `approvals`; approval authority stays
+with human session controls. Selection is birth-only, recorded in the header;
+continuations never reapply edited documents. Prefix effect: frozen at birth.
+
+`toolset` is the canonical selector-list CRUD tool and store kind;
+`session.toolset` and `NIF_TOOLSET` select it. Legacy `profile` tool/argument,
+`NIF_PROFILE` and stored documents remain readable. New spelling wins when both
+are supplied. List replies and frozen exposure records retain legacy keys for
+released clients. The legacy tool is hidden; canonical toolset is on demand.
+Neither spelling alters an existing conversation's frozen schemas.
+
 ## Envelope
 
 ```json
@@ -108,11 +157,13 @@ svc.session.<id>.map    # fire-and-forget event envelope {workspace, conversatio
                         #   (NIF_REPOMAP_AUTOAPPEND=0 opts out;
                         #   research/REPOMAP-GATES.md); a map that never arrives
                         #   never fails a conversation
-svc.session.<id>.diag   # fire-and-forget event envelope {conversationId, path, text}
-                        #   from the lsp component: rendered diagnostics for a file
-                        #   you just edited, delivered when the server answered
-                        #   (instead of making the edit wait) and appended to history
-                        #   once. A cold or absent server yields a one-line note
+svc.session.<id>.diag   # fire-and-forget event envelope {conversationId, path, text,
+                        #   clean} from the lsp component: rendered diagnostics for a
+                        #   file you just edited, delivered when the server answered
+                        #   (instead of making the edit wait). Non-clean verdicts append
+                        #   to history once; a clean:true whole-file verdict is
+                        #   display/storage-only (kind diagnostic) and never enters
+                        #   model history. A cold or absent server yields a one-line note
 cancel.<component>     # turn-cancel side-channel (see "Cancellation"): a runner
                         #   publishes an event envelope {sessionId, tool, ts} when
                         #   it abandons an in-flight dispatch; components opt in
@@ -485,22 +536,29 @@ durable `agentnotice` record and delivers it to its **parent conversation** —
 not just to UIs (`ev.agent.done` is observe-only). Rationale and design:
 docs/research/SUBAGENTS-PLAN.md P0.1.
 
-**Background processes use the same lane** (components/processes): a tracked
-child that exits publishes a notice with `kind: "process-exited"` — and
-delivers it on exactly the same subject, so the runner folds it in as
-append-only history and nothing new is subscribed. It is a pointer too: the
+**Background processes use the same lane, plus a durable one**
+(components/processes): a tracked child that exits writes a durable outbox
+record (`var/processes/notices/<id>.json`, `delivered: false`) **before** it
+notifies, then publishes the steer notice and requests a wake
+(`svc.core.call` `session {wake: true}`). A busy parent folds the steer
+notice; an idle one is woken under the same bounded admission as a subagent
+settlement; a missed publish or an absent runner is retried by the
+component's idle tick every 10 s, so a completion cannot be lost — the
+record survives a component or core restart, and the runner acknowledges it
+through the hidden `process_notices {session, ack: processId}` tool after
+appending (peek never acknowledges). The notice is a pointer too: the
 process id, its status, how long it ran and how many bytes of output exist;
-the output itself stays in the spool for `process_poll`, and the command text
-never travels. It exists because *nothing reaped a child except a tool call*:
-an exit was invisible until someone happened to poll, so finished background
-work sat unnoticed. The reap is now periodic (the SDK's `onIdle`), which is
-what makes the notice possible — and stops `process_list` from reporting a
-finished child as running.
+the output itself stays in the spool for `process_poll`, and the command
+text never travels. One process is folded at most once: the runner skips a
+notice whose `processId` is already in its history and only acknowledges
+after a successful append, so a persistence failure leaves the record
+pending rather than dropping it.
 
-The one asymmetry with the agent's notice: no durable record backs it (the
-process entry itself is the record). A process whose owning conversation has
-no live runner, or whose runner is gone by the time it exits, is announced to
-nobody — the entry stays pollable, so the fallback is asking.
+The boot sweep retains session ownership and records previously running jobs as
+`interrupted(component restart)` (exitCode -1), never as successful exits.
+PID/starttime verification still guards signals. A failed recovery write refuses
+startup without clearing the sweep file. Acknowledged completion receipts and
+spools expire seven days after acknowledgement; pending receipts never expire.
 
 Record (store kind `agentnotice`, id `<parentSession>:<zero-padded seq>`):
 

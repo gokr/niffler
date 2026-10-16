@@ -57,7 +57,7 @@ proc pollChunk(): int =
   return POLL_CHUNK
 
 type Status = enum
-  stRunning, stExited, stKilled
+  stRunning, stExited, stKilled, stInterrupted
 
 type Entry = ref object
   id: string
@@ -111,7 +111,8 @@ proc saveRegistry() =
   for e in gProcs.values:
     if e.status == stRunning:
       entries.add(%*{"id": e.id, "pid": int(e.pid),
-                     "starttime": procStarttime(e.pid)})
+                     "starttime": procStarttime(e.pid), "session": e.session,
+                     "label": e.label, "startedAt": e.startedAt})
   atomicWrite(registryPath(), (%*{"nextId": gNextId, "entries": entries}).pretty())
 
 proc bootSweep() =
@@ -131,13 +132,29 @@ proc bootSweep() =
         if want.len > 0 and procStarttime(pid) == want:
           discard posix.kill(-pid, SIGKILL)   # group kill: the whole tree
           inc killed
-        # else: pid reused or already gone — leave it alone
+        # A missing/reused PID is never signalled. Its previous owner's
+        # outcome is unknown, not a fabricated successful exit.
+        let session = e{"session"}.getStr("")
+        let id = e{"id"}.getStr("")
+        if session.len > 0 and id.len > 1 and id[0] == 'p' and
+            id[1 .. ^1].allCharsInSet({'0'..'9'}):
+          let noticePath = rootVarDir("processes") / "notices" / (id & ".json")
+          if not fileExists(noticePath):
+            atomicWrite(noticePath, $(%*{"session": session, "delivered": false,
+              "notice": {"kind": "process-exited", "processId": id,
+                "label": e{"label"}.getStr(""), "status": "interrupted(component restart)",
+                "exitCode": -1, "startedAt": e{"startedAt"}.getFloat(),
+                "endedAt": epochTime(), "outputBytes": 0}}))
     except CatchableError as e:
-      stderr.writeLine("processes: sweep read failed: " & e.msg)
+      # Do not erase recovery ownership after a failed outbox write.
+      raise newException(IOError, "processes: sweep failed: " & e.msg)
   let dir = rootVarDir("processes")
   if dirExists(dir):
     for kind, p in walkDir(dir):
       if kind == pcFile and (p.endsWith(".out") or p.endsWith(".err")):
+        # Completion outbox pointers must retain their output across restart.
+        let id = p.extractFilename().changeFileExt("")
+        if fileExists(dir / "notices" / (id & ".json")): continue
         try: removeFile(p)
         except CatchableError: discard
   if killed > 0:
@@ -176,6 +193,7 @@ proc statusText(e: Entry): string =
   of stRunning: "running"
   of stExited: "exited(code " & $e.exitCode & ")"
   of stKilled: "killed(signal " & $e.exitCode & ")"
+  of stInterrupted: "interrupted(component restart)"
 
 proc markTerminal(e: Entry) =
   if e.status != stRunning and not e.swept:
@@ -271,6 +289,20 @@ proc applyFilter(chunk, pattern: string): tuple[matched: string, total, hits: in
 # tools
 
 proc entryOr404(id: string): Entry =
+  if not gProcs.hasKey(id) and id.len > 1 and id[0] == 'p' and
+      id[1 .. ^1].allCharsInSet({'0'..'9'}):
+    let noticePath = rootVarDir("processes") / "notices" / (id & ".json")
+    if fileExists(noticePath):
+      let record = parseJson(readFile(noticePath))
+      let notice = record["notice"]
+      gProcs[id] = Entry(id: id, label: notice{"label"}.getStr(""),
+        session: record{"session"}.getStr(""),
+        status: (if notice{"status"}.getStr("").startsWith("interrupted"): stInterrupted
+                 elif notice{"status"}.getStr("").startsWith("killed"): stKilled else: stExited),
+        exitCode: notice{"exitCode"}.getInt(),
+        startedAt: notice{"startedAt"}.getFloat(), notified: true, swept: true,
+        outPath: rootVarDir("processes") / (id & ".out"),
+        errPath: rootVarDir("processes") / (id & ".err"))
   if not gProcs.hasKey(id):
     fail("E_NOT_FOUND", "unknown process id '" & id &
          "' — process_list shows the registry")
@@ -324,16 +356,21 @@ proc hStart(c: Component, args: JsonNode): JsonNode =
     fail("E_LIMIT", "fork failed — cannot start background processes")
   let e = Entry(id: id, pid: pid, label: label, command: command,
                 outPath: outPath, errPath: errPath, startedAt: epochTime(),
-                session: args{"session"}.getStr(""))
+                session: args{"__session"}{"session"}.getStr(
+                  args{"session"}.getStr("")))
   gProcs[id] = e
   saveRegistry()
   return okResult(%*{"id": id, "label": label, "pid": int(pid),
     "text": "Started background process " & id & " (" & label & "). " &
             "Discover controls with discover {tools:[\"process_poll\",\"process_kill\"]}. " &
-            "Poll with process_poll {id:\"" & id & "\",waitMs:25000} to wait for output or exit; " &
-            "each poll drains only new complete lines. Use filter for matching lines " &
-            "(all new output is still drained), or tail:\"1\" to re-read raw recent output " &
-            "without advancing the cursor. Stop with process_kill {id:\"" & id & "\"}."})
+            (if e.session.len > 0:
+              "Completion is pushed to this session automatically (bounded wake if idle) — do not poll to wait for it. "
+             else:
+              "No owning session: automatic completion notification is unavailable. ") &
+            "Call process_poll {id:\"" & id & "\"} only when you need its output; each poll " &
+            "drains new complete lines, filter keeps matching lines (all new output is still " &
+            "drained), and tail:\"1\" re-reads raw recent output without advancing the cursor. " &
+            "Stop with process_kill {id:\"" & id & "\"}."})
 
 proc hPoll(c: Component, args: JsonNode): JsonNode =
   let id = args{"id"}.getStr("")
@@ -470,6 +507,23 @@ proc hList(c: Component, args: JsonNode): JsonNode =
 
 let comp = newComponent("processes", "0.1.0")
 
+proc processNotices(args: JsonNode): JsonNode =
+  ## Durable completion outbox, serialized with reaping. Peek never acknowledges.
+  let session = args{"session"}.getStr("")
+  var notices = newJArray()
+  let dir = rootVarDir("processes") / "notices"
+  if session.len > 0 and dirExists(dir):
+    for path in walkFiles(dir / "*.json"):
+      let record = parseJson(readFile(path))
+      if record{"session"}.getStr("") != session or
+          record{"delivered"}.getBool(false): continue
+      notices.add(record["notice"])
+      if args{"ack"}.getStr("") == record{"notice"}{"processId"}.getStr(""):
+        record["delivered"] = %true
+        record["deliveredAt"] = %epochTime()
+        atomicWrite(path, $record)
+  %*{"count": notices.len, "notices": notices}
+
 proc publishExitNotice(e: Entry) =
   ## Tell the owning conversation that a background process finished.
   ##
@@ -481,10 +535,9 @@ proc publishExitNotice(e: Entry) =
   ##
   ## Pointer, not payload: the notice names the process, its status, how much
   ## output exists and the recourse; the output stays in the spool for
-  ## process_poll. Best-effort — no session (a direct call), a failed publish
-  ## or a dead runner costs the notice, never the process.
+  ## process_poll. Persist before notifying; the inbox survives component and
+  ## runner restarts. No owning session means no autonomous notification.
   if e.session.len == 0 or e.notified: return
-  e.notified = true
   var payload = newJObject()
   payload["kind"] = %"process-exited"
   payload["processId"] = %e.id
@@ -495,11 +548,52 @@ proc publishExitNotice(e: Entry) =
   payload["endedAt"] = %epochTime()
   payload["outputBytes"] = %(spoolSize(e.outPath) + spoolSize(e.errPath))
   try:
+    # Record first; failed writes are retried by the idle seam.
+    atomicWrite(rootVarDir("processes") / "notices" / (e.id & ".json"),
+      $(%*{"session": e.session, "notice": payload, "delivered": false}))
+    e.notified = true
     comp.emit("svc.session." & sanitizeSessionId(e.session) & ".steer",
               %*{"notice": payload})
+    comp.publishCall("svc.core.call", callEnvelope("session",
+      %*{"sessionId": e.session, "wake": true}, "processes"))
   except CatchableError as err:
     stderr.writeLine(comp.name & ": exit notice for " & e.id &
                      " failed: " & err.msg)
+
+var lastNoticeWake = 0.0
+
+proc retryNoticeWakes(c: Component) =
+  ## Recover a missed publish or a runner/core outage. Wake admission owns the
+  ## turn budget; acknowledged records never wake again. One call per session.
+  if epochTime() - lastNoticeWake < 10.0: return
+  lastNoticeWake = epochTime()
+  var sessions = initTable[string, bool]()
+  let dir = rootVarDir("processes") / "notices"
+  if dirExists(dir):
+    for path in walkFiles(dir / "*.json"):
+      try:
+        let record = parseJson(readFile(path))
+        let session = record{"session"}.getStr("")
+        # Retention starts at acknowledgement, never at completion: pending
+        # notices and their output remain recoverable regardless of age.
+        let deliveredAt = record{"deliveredAt"}.getFloat(0)
+        if record{"delivered"}.getBool(false) and deliveredAt > 0 and
+            epochTime() - deliveredAt > 7 * 86400:
+          let id = path.extractFilename().changeFileExt("")
+          if id.len > 1 and id[0] == 'p' and id[1 .. ^1].allCharsInSet({'0'..'9'}):
+            if not gProcs.hasKey(id) or gProcs[id].status != stRunning:
+              removeFile(rootVarDir("processes") / (id & ".out"))
+              removeFile(rootVarDir("processes") / (id & ".err"))
+              if gProcs.hasKey(id): gProcs.del(id)
+              removeFile(path)
+          continue
+        if session.len > 0 and not record{"delivered"}.getBool(false):
+          sessions[session] = true
+      except CatchableError as err:
+        stderr.writeLine("processes: unreadable notice " & path & ": " & err.msg)
+  for session in sessions.keys:
+    c.publishCall("svc.core.call", callEnvelope("session",
+      %*{"sessionId": session, "wake": true}, c.name))
 
 # Reap on a tick: an exit must be noticed by the component, not by the next
 # caller. This is what makes the notice possible at all (the SDK's onIdle seam)
@@ -510,6 +604,9 @@ discard comp.onIdle(500) do (c: Component):
     if e.status == stRunning:
       refreshStatus(e)             # publishes the notice on transition
       markTerminal(e)
+    elif not e.notified:
+      publishExitNotice(e)
+  retryNoticeWakes(c)
   evictFinished()                  # the registry cap holds without callers
 
 discard comp.onDrain do (c: Component):
@@ -519,6 +616,13 @@ discard comp.onDrain do (c: Component):
 
 bootSweep()
 
+discard comp.tool("process_notices", toolSchema(%*{
+  "session": {"type": "string"}, "peek": {"type": "boolean"},
+  "ack": {"type": "string"}
+}, @["session"], "Runner completion inbox: read pending process notices or explicitly acknowledge a persisted processId."),
+  proc(c: Component, args: JsonNode): JsonNode = processNotices(args),
+  %*{"hidden": true, "runner": true, "effect": "read"})
+
 discard comp.tool("process_start", toolSchema(%*{
   "command": {"type": "string",
               "description": "The command line to run in the background (bash -c)"},
@@ -526,10 +630,10 @@ discard comp.tool("process_start", toolSchema(%*{
             "description": "Short human-readable name, e.g. \"dev-server\" or \"test-watcher\" (default: first command word)"},
   "workdir": {"type": "string", "description": "Working directory (default: workspace)"}
 }, @["command"],
-  "Start a long-running command (dev server, file watcher, database) as a detached background process and return its id immediately. Poll incremental output with process_poll (drain semantics: each poll returns only what was appended since the last one; waitMs blocks until there is new output or the process exits), stop it with process_kill. Use for servers and watchers you need to interact with across turns — not for commands that finish quickly (plain bash). stdin is /dev/null. Processes die with the harness. Starting a process writes harness state — approval-gated."),
+  "Start a long-running command (dev server, file watcher, database) as a detached background process and return its id immediately. Poll incremental output with process_poll (drain semantics: each poll returns only what was appended since the last one; waitMs blocks until there is new output or the process exits), stop it with process_kill. Completion automatically notifies the owning session and wakes it within the shared wake budget; do not poll just to wait for completion. Use for servers and watchers you need to interact with across turns — not for commands that finish quickly (plain bash). stdin is /dev/null. Processes die with the harness. Starting a process writes harness state — approval-gated."),
   hStart,
   %*{"approval": "always", "timeoutMs": 20000, "onDemand": true,
-     "workspace": %*{"cwdField": "workdir"}})
+     "sessionId": true, "workspace": %*{"cwdField": "workdir"}})
 
 discard comp.tool("process_poll", toolSchema(%*{
   "id": {"type": "string", "description": "Process id from process_start"},
@@ -540,7 +644,7 @@ discard comp.tool("process_poll", toolSchema(%*{
   "tail": {"type": "string",
            "description": "Any non-empty value: re-read the last ~64KB of raw output instead of draining"}
 }, @["id"],
-  "Read incremental output from a background process: each poll returns only what was appended since the previous poll, so repeated polls never repeat content. status reports running / exited(code) / killed(signal). Use filter (regex) to pull specific patterns (FAIL, error) out of chatty output, and tail to re-read the recent raw output unfiltered. Read-only."),
+  "Read incremental output from a background process: each poll returns only what was appended since the previous poll, so repeated polls never repeat content. status reports running / exited(code) / killed(signal). Use filter (regex) to pull specific patterns (FAIL, error) out of chatty output, and tail to re-read the recent raw output unfiltered. Completion is pushed to the owning session automatically; use polling only when you need output or progress, not to discover completion. Read-only."),
   hPoll,
   %*{"timeoutMs": 30000, "onDemand": true, "effect": "read"})
 

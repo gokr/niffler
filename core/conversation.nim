@@ -12,12 +12,13 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, math, monotimes, os, sequtils, strutils,
+import std/[algorithm, json, math, monotimes, os, sequtils, sets, strutils,
     tables, times, unicode]
 import checksums/sha2
 import natsnim
 import ../sdk/envelope
 import ../sdk/niffler/jsonx
+import ../sdk/niffler/agentdefs
 import catalog
 import compaction
 import dispatch
@@ -76,18 +77,25 @@ const systemPromptTimeoutMs = 8_000
   ## hiccup on a loaded machine should not degrade every conversation.
 
 proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId, cwd,
-                     firstMessage: string): string =
-  ## One request/reply attempt; "" on timeout or any failure.
+                     firstMessage: string, persona = ""): string =
+  ## One request/reply attempt; "" on timeout or any failure. `persona` is
+  ## the conversation's persona NAME at birth (docs/research/FLEET.md §6): the
+  ## systemprompt component resolves it into the prompt it returns, so the
+  ## document's text is frozen in the header like everything else in the
+  ## prefix. Continuations never reach here with one — a persona is birth-only.
   try:
+    var args = %*{"cwd": cwd, "sessionId": sessionId,
+                  "firstMessage": firstMessage}
+    if persona.len > 0:
+      args["persona"] = %persona
     let r = dispatchSubjectCall(ct, "svc.systemprompt.call", "systemprompt",
-      %*{"cwd": cwd, "sessionId": sessionId, "firstMessage": firstMessage},
-      waitMs)
+      args, waitMs)
     result = r{"systemPrompt"}.getStr("")
   except CatchableError:
     result = ""
 
 proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
-                          cwd = "", firstMessage = ""): string =
+                          cwd = "", firstMessage = "", persona = ""): string =
   ## The conversation's system prompt: ask the systemprompt component once
   ## per conversation and freeze the answer for the conversation's lifetime
   ## (the prompt prefix must stay stable so providers reuse it). Falls back
@@ -99,10 +107,10 @@ proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
   # timeout. Only when the catalog says the component IS registered do we
   # grant the full budget (covers a boot race or a slow first call).
   let promptCwd = if cwd.len > 0: cwd else: ct.root
-  result = askSystemPrompt(ct, 500, sessionId, promptCwd, firstMessage)
+  result = askSystemPrompt(ct, 500, sessionId, promptCwd, firstMessage, persona)
   if result.len == 0 and ct.cat.components.hasKey("systemprompt"):
     result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId, promptCwd,
-                             firstMessage)
+                             firstMessage, persona)
   if result.len > 200_000:
     result = result[0 ..< 200_000] &
       "\n\n[system prompt truncated at 200000 bytes]\n"
@@ -538,6 +546,55 @@ proc updateConversationHeader(ct: CoreTools, convId: string, fields: JsonNode) =
   except CatchableError as e:
     echo "core: WARNING conversation metadata persistence failed: " & e.msg
 
+proc conversationAgent*(ct: CoreTools, sessionId: string): string =
+  ## The agent a conversation was BORN with, read from the two durable places
+  ## that can hold it: the lineage doc (authoritative — written with a
+  ## compare-and-set) and the conversation header (written with the frozen
+  ## prompt). "" means the conversation has no agent identity, which is also
+  ## what a conversation born without one reports forever.
+  ##
+  ## Two readers on purpose. The header write is best-effort (`echo` on
+  ## failure) while a conversation cannot run a turn without its prompt, so a
+  ## header that lost a race would otherwise read as "born with no agent", and
+  ## the next call naming an agent would RE-BIRTH a mid-conversation session —
+  ## a fresh prompt off an established prefix, the one thing birth-only exists
+  ## to prevent.
+  try:
+    let meta = ct.storeGetItem("sessionmeta", sessionId).value
+    if meta != nil and meta.kind == JObject:
+      let named = meta{"agent"}.getStr("").strip()
+      if named.len > 0: return named
+  except CatchableError:
+    discard
+  try:
+    return loadConversationHeader(ct, sessionId){"agent"}.getStr("").strip()
+  except CatchableError:
+    return ""
+
+proc recordConversationAgent*(ct: CoreTools, sessionId, name: string) =
+  ## Stamp a conversation's birth identity durably: compare-and-set on the
+  ## lineage doc's revision (the store's own optimistic concurrency, so two
+  ## racing turns cannot interleave a read-modify-write), retried a bounded
+  ## number of times, merging into whatever the doc already holds (`parent`,
+  ## `fork`, a child's activation ledger).
+  ##
+  ## Best-effort like every other header write: a failure costs the reader its
+  ## fast path, not the conversation — the header still carries the identity,
+  ## and `conversationAgent` accepts either. It must never fail a turn.
+  if name.len == 0: return
+  for attempt in 0 ..< 5:
+    try:
+      let (value, rev) = ct.storeGetItem("sessionmeta", sessionId)
+      var doc = newJObject()
+      if value != nil and value.kind == JObject: doc = value
+      if doc{"agent"}.getStr("") == name: return
+      doc["agent"] = %name
+      discard ct.storePutRev("sessionmeta", sessionId, doc, expectRev = rev)
+      return
+    except CatchableError:
+      discard  # rev conflict or a transient outage: re-read and retry
+
+
 proc persistConversationRuntime(p: Persister, providerOverride, modelOverride, provider,
                                 model: string) =
   var fields = %*{
@@ -564,9 +621,18 @@ proc directToolSnapshot(ct: CoreTools): JsonNode =
                   "name": name, "schema": tool{"schema"}})
 
 proc exposureValue(exposure: ToolExposure): JsonNode =
+  ## The frozen exposure document. Names are the post-rename `toolset`, and the
+  ## pre-rename `profile`/`profileMissing` keys are STILL WRITTEN beside them:
+  ## a released TUI reads those fields, and the doc is a wire artifact (the
+  ## client reads it back verbatim). `loadToolExposure` prefers the new
+  ## spelling and falls back, so the pair can be dropped once the clients in
+  ## the wild have moved — the same "deprecated, not removed" rule as the tool
+  ## alias and the `session {profile}` key.
   %*{"version": 1, "direct": exposure.direct,
      "discovered": exposure.discovered,
      "initializedAt": exposure.initializedAt,
+     "toolset": exposure.profile,
+     "toolsetMissing": (if exposure.profileMissing == nil: newJArray() else: exposure.profileMissing),
      "profile": exposure.profile,
      "profileMissing": (if exposure.profileMissing == nil: newJArray() else: exposure.profileMissing),
      "updatedAt": epochTime()}
@@ -599,8 +665,12 @@ proc loadToolExposure*(ct: CoreTools, sessionId: string,
       if result.discovered == nil or result.discovered.kind != JArray:
         result.discovered = newJArray()
       result.initializedAt = value{"initializedAt"}.getFloat(epochTime())
-      result.profile = value{"profile"}.getStr("")
-      result.profileMissing = value{"profileMissing"}
+      # Post-rename key first, pre-rename key second: an exposure doc written
+      # before the rename still names its toolset.
+      result.profile = value{"toolset"}.getStr(value{"profile"}.getStr(""))
+      result.profileMissing = value{"toolsetMissing"}
+      if result.profileMissing == nil:
+        result.profileMissing = value{"profileMissing"}
       if result.profileMissing == nil or result.profileMissing.kind != JArray:
         result.profileMissing = newJArray()
       result.rev = rev
@@ -612,10 +682,16 @@ proc loadToolExposure*(ct: CoreTools, sessionId: string,
                         discovered: newJArray(),
                         initializedAt: epochTime())
   if profile.len > 0:
-    let (doc, _) = ct.storeGetItem("profile", profile)
+    # Toolsets live under store kind "toolset"; docs saved before the rename
+    # live under "profile". Read the new kind first so a harness with both
+    # prefers the current spelling, then fall back — an existing store must
+    # keep working without a migration.
+    var (doc, _) = ct.storeGetItem("toolset", profile)
+    if doc == nil:
+      (doc, _) = ct.storeGetItem("profile", profile)
     if doc == nil:
       raise newException(ValueError,
-        "profile '" & profile & "' not found — profile {\"op\": \"list\"} lists saved profiles")
+        "toolset '" & profile & "' not found — toolset {\"op\": \"list\"} lists saved toolsets")
     var selectors: seq[string]
     if doc{"tools"} != nil and doc{"tools"}.kind == JArray:
       for sel in doc{"tools"}:
@@ -735,6 +811,33 @@ proc consecutiveWakeTurns*(messages: seq[JsonNode]): int =
     if m{"role"}.getStr("") != "user": continue
     if m{"notice"} == nil: return result
     if m{"notice"}{"kind"}.getStr("") == "wake": inc result
+
+proc heartbeatMaxPerDay*(): int =
+  ## Autonomous turns one heartbeat record may run per day. 0 disables
+  ## heartbeats entirely (a scheduled-turn kill switch that leaves records and
+  ## transcripts intact). Exported for tests.
+  try: result = max(0, getEnv("NIF_HEARTBEAT_MAX_PER_DAY", "4").parseInt())
+  except CatchableError: result = 4
+
+proc heartbeatTurnsToday*(ct: CoreTools, heartbeatId: string): int =
+  ## Count admission marks for this record in the last 24 hours, paging the
+  ## entire kind prefix. Marks are separate from editable scheduling state;
+  ## a runner restart does not reset this limit. Store failure refuses admission.
+  let now = epochTime()
+  try:
+    var count = 0
+    # One record names one conversation, so every marked turn carries that
+    # record's id and the marks ARE its turn log. The mark is written at
+    # admission (below), one small doc per turn — a day of heartbeats is a
+    # handful of docs, and the page is bounded by the store's own limit.
+    for item in ct.storeListAll("heartbeatmark", heartbeatId & ":", 10_000):
+      let at = item{"value"}{"at"}.getFloat(0.0)
+      if at > 0.0 and now - at < 86_400.0: inc count
+    return count
+  except CatchableError:
+    # Unreadable: fail closed. An autonomous turn must not run when its budget
+    # cannot be verified.
+    return heartbeatMaxPerDay()
 
 proc consecutiveWakeTurnsFromStore(ct: CoreTools, sessionId: string): int =
   ## The wake budget derived from the STORED records: the in-memory
@@ -1331,7 +1434,29 @@ proc drainNotices(ct: CoreTools, p: var Persister,
   let pulled = if pending != nil: pending{"notices"} else: nil
   if pulled != nil and pulled.kind == JArray:
     for n in pulled: inbound.add(n)
+  if ct.cat.toolSchema("process_notices") != nil:
+    try:
+      let processes = ct.dispatchToolCall("process_notices",
+        %*{"session": sessionId, "peek": false}, 5_000)
+      let notices = processes{"notices"}
+      if notices != nil and notices.kind == JArray:
+        for n in notices: inbound.add(n)
+    except CatchableError:
+      discard # durable inbox remains available for the next drain
+  var seenProcesses = initHashSet[string]()
+  for m in messages:
+    if m{"notice"}{"kind"}.getStr("") == "process-exited":
+      seenProcesses.incl(m{"notice"}{"processId"}.getStr(""))
   for n in inbound:
+    if n{"kind"}.getStr("") == "process-exited":
+      let processId = n{"processId"}.getStr("")
+      if processId in seenProcesses and not p.failing:
+        try:
+          discard ct.dispatchToolCall("process_notices",
+            %*{"session": sessionId, "ack": processId}, 5_000)
+        except CatchableError: discard
+        continue
+      seenProcesses.incl(processId)
     # Two directions share the agentnotice kind (P3.9): child-settled
     # notices (a background job reached a terminal state) and parent-mail
     # (steering/questions queued while the child was between turns or
@@ -1400,6 +1525,11 @@ proc drainNotices(ct: CoreTools, p: var Persister,
     # 1:1 with the projection, and notices are runtime machinery it may
     # compact away like any other appended history (docs/research/COMPACTION.md §4.2)
     ctxAppend(p, messages, noticeMsg)
+    if n{"kind"}.getStr("") == "process-exited" and not p.failing:
+      try:
+        discard ct.dispatchToolCall("process_notices",
+          %*{"session": sessionId, "ack": n{"processId"}.getStr("")}, 5_000)
+      except CatchableError: discard
     if onEvent != nil:
       onEvent("notice", eventId)
     result += 1
@@ -3267,7 +3397,7 @@ proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: str
     return (false, "", "cwd is not a directory: " & requested)
   (true, candidate, "")
 
-proc handleSessionCall*(ct: CoreTools, args: JsonNode,
+proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                          sessions: var Table[string, Session],
                          caller = ""): JsonNode =
   ## session {sessionId, content?, model?}: run one turn or persist a model
@@ -3275,7 +3405,34 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   ## the store on first use (resume). caller is the self-declared component
   ## name from the call envelope — the interactive component driving this
   ## session; approvals raised by the turn are routed to it.
-  let sessionId = args{"sessionId"}.getStr("")
+  let sessionId = inputArgs{"sessionId"}.getStr("")
+  var args = inputArgs
+  var agentExisting = ""
+  let agentAsked = inputArgs{"agent"}.getStr("").strip()
+  let agentAttached = inputArgs.hasKey("agent") or inputArgs.hasKey("persona")
+  if agentAsked.len > 0:
+    # Birth-only, but NOT "first turn only". The header (and, locked, the
+    # lineage doc) is the durable record of the identity a conversation was
+    # born with; a client that keeps naming the same agent — the obvious
+    # shape for a picker that persists a choice — must be idempotent, not
+    # refused. Only a genuinely DIFFERENT agent is a re-birth.
+    #
+    # Read the lineage doc (the race-proof copy) and treat "unborn" as "no
+    # frozen prompt yet" — NOT as "no header". The header is created by
+    # ensureConversationHeader before any resolution runs, so testing for its
+    # existence skipped the birth path entirely and a definition's persona
+    # never reached the prompt.
+    agentExisting = conversationAgent(ct, sessionId)
+    let born = ct.storeGetItem("conversation", sessionId).value
+    if agentExisting.len == 0 and
+        (born == nil or born{"systemPrompt"}.getStr("").len == 0):
+      try:
+        args = resolveAgentDefinition(inputArgs,
+          proc(kind, id: string): JsonNode = ct.storeGetItem(kind, id).value)
+      except CatchableError as e:
+        return %*{"error": e.msg}
+    elif agentExisting.len > 0 and agentExisting != agentAsked:
+      return %*{"error": "agent is birth-only; start a new conversation"}
   let content = args{"content"}.getStr("")
   # Autonomous wake (components/agent settle path): a session call with
   # `wake: true` runs a turn whose only purpose is folding pending
@@ -3284,6 +3441,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # happens below once entry.messages is loaded; a declined wake runs no
   # turn and persists nothing.
   let isWake = args{"wake"}.getBool(false)
+  # Heartbeat (components/heartbeat, docs/research/FLEET.md §7): a scheduled
+  # turn nobody asked for in the moment. It rides its OWN marker rather than
+  # the wake lane, because a wake is admitted only when notices are pending and
+  # is bounded by NIF_AGENT_WAKES — a heartbeat has nothing pending and would
+  # be refused on its fourth tick. Same structural treatment (machinery, not
+  # something the human typed), different budget: the record's own daily one.
+  let heartbeatId = block:
+    let n = args{"notice"}
+    if n != nil and n{"kind"}.getStr("") == "heartbeat": n{"id"}.getStr("")
+    else: ""
+  # Marker present but id empty: a client tried to hand-roll one. Refuse rather
+  # than run an unbudgeted autonomous turn.
+  if args{"notice"} != nil and args{"notice"}{"kind"}.getStr("") == "heartbeat" and
+      heartbeatId.len == 0:
+    return %*{"error": "heartbeat turns need notice.id (a heartbeat record)"}
   var turnContent = content
   # Dropped-image attachments (docs/WIRE.md "Attachments"): validated here,
   # stored beside the message, and materialized into the provider content
@@ -3310,6 +3482,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasTitle = args.kind == JObject and args.hasKey("title")
   let hasCwd = args.kind == JObject and args.hasKey("cwd")
   let hasProfile = args.kind == JObject and args.hasKey("profile")
+  let hasToolset = args.kind == JObject and args.hasKey("toolset")
   let hasDiscovery = args{"discovery"} != nil and args{"discovery"}.kind == JObject
   let hasExport = args.kind == JObject and args.hasKey("export") and
                   args{"export"}.getBool(false)
@@ -3365,7 +3538,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
           # The constitution was already frozen (legacy control-call freeze):
           # re-resolve it against the corrected workspace and refresh both the
           # header and the in-memory system message.
-          let sp = resolveSystemPrompt(ct, sessionId, entry.workspace, "")
+          let birthHeader = loadConversationHeader(ct, sessionId)
+          let sp = resolveSystemPrompt(ct, sessionId, entry.workspace, "",
+                                       birthHeader{"persona"}.getStr(""))
           try:
             ct.updateConversationHeader(sessionId,
               %*{"systemPrompt": sp, "cwd": entry.workspace})
@@ -3416,6 +3591,14 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     var sp = header{"systemPrompt"}.getStr("")
     if sp.len == 0:
       sp = args{"systemPrompt"}.getStr("")
+    # Persona: the NAME the conversation was born with, recorded in the header
+    # beside the prompt it resolved into. The document is never re-read — the
+    # prompt above is the frozen answer — so an edit to the persona document
+    # changes nothing for this conversation, and the stored name is what makes
+    # that visible (a UI can point out that the persona has since changed).
+    let personaName = if header{"systemPrompt"}.getStr("").len > 0:
+                        header{"persona"}.getStr("")
+                      else: args{"persona"}.getStr("").strip()
     if sp.len == 0:
       # The first user message goes along so the systemprompt component can size
       # the request: a long one is usually a requirement list, and that is where
@@ -3423,10 +3606,19 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       # the stored prompt verbatim, and "first message" would then be the wrong
       # message.
       sp = resolveSystemPrompt(ct, sessionId, entry.workspace,
-                               args{"content"}.getStr(""))
+                               args{"content"}.getStr(""), personaName)
     try:
-      ct.updateConversationHeader(sessionId,
-        %*{"systemPrompt": sp, "cwd": entry.workspace})
+      var headerUpdate = %*{"systemPrompt": sp, "cwd": entry.workspace}
+      if personaName.len > 0:
+        headerUpdate["persona"] = %personaName
+      # The birth identity goes to BOTH records: the lineage doc (compare-and-
+      # set, hence race-proof) and the header (readable beside the frozen
+      # prompt it produced). Either alone satisfies conversationAgent, so a
+      # lost header race can never turn into a re-birth.
+      if agentAsked.len > 0:
+        headerUpdate["agent"] = %agentAsked
+        recordConversationAgent(ct, sessionId, agentAsked)
+      ct.updateConversationHeader(sessionId, headerUpdate)
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
     entry.messages = @[%*{"role": "system", "content": sp}]
@@ -3763,9 +3955,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     # toolset once, here, and frozen with the exposure doc. Resumes ignore
     # the argument entirely. An unknown profile name fails the call —
     # explicit selection must not silently fall back to the base set.
-    let profileName = args{"profile"}.getStr(getEnv("NIF_PROFILE", ""))
+    # Profile → toolset (naming): the new key wins when both are present, and
+    # NIF_PROFILE keeps its name for one more release so deployments do not
+    # have to change an env var in the same commit as the binary.
+    let profileName =
+      if hasToolset: args{"toolset"}.getStr("")
+      elif hasProfile: args{"profile"}.getStr("")
+      else: getEnv("NIF_TOOLSET", getEnv("NIF_PROFILE", ""))
     entry.exposure = loadToolExposure(ct, sessionId, profileName)
-    ct.updateConversationHeader(sessionId, %*{"profile": entry.exposure.profile})
+    # Both header keys are written for one release: the TUI reads `profile`,
+    # the new spelling is `toolset`. A reader prefers `toolset` and falls back,
+    # so dropping the old key is a later, client-driven step — the same rule as
+    # the tool alias and the exposure doc.
+    ct.updateConversationHeader(sessionId,
+      %*{"toolset": entry.exposure.profile,
+         "profile": entry.exposure.profile})
 
   # Presence of the key means "set/clear the override"; omission preserves
   # the conversation's previous selection.
@@ -3921,6 +4125,45 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # last real user input (derived from history — no counter to lose). A
   # declined/skipped wake is a normal result, never an error: the notice
   # stays pending and the parent's next real turn delivers it.
+  if heartbeatId.len > 0:
+    # Budget checked against the DURABLE record, not a counter in this process:
+    # the runner may be fresh (a retired runner resumes the conversation), and
+    # the heartbeat component's own check cannot be trusted alone — a
+    # hand-edited record must not become unbounded autonomous turns.
+    # Require a live, enabled record addressed to this conversation. The
+    # marker alone grants no scheduling authority, and stale publishes after
+    # removal must not create another turn.
+    try:
+      let record = ct.storeGetItem("heartbeat", heartbeatId).value
+      if record == nil or record.kind != JObject or
+          not record{"enabled"}.getBool(true) or
+          record{"session"}.getStr("") != sessionId or
+          record{"prompt"}.getStr("") != content:
+        return %*{"ok": true, "heartbeat": "declined", "reason": "record mismatch or disabled"}
+    except CatchableError:
+      return %*{"ok": true, "heartbeat": "declined", "reason": "record unreachable"}
+    let capTurns = heartbeatMaxPerDay()
+    if capTurns <= 0 or getEnv("NIF_HEARTBEAT", "1") == "0":
+      return %*{"ok": true, "heartbeat": "declined", "reason": "disabled"}
+    if heartbeatTurnsToday(ct, heartbeatId) >= capTurns:
+      return %*{"ok": true, "heartbeat": "declined", "reason": "budget",
+                "maxPerDay": capTurns}
+    if content.strip().len == 0:
+      return %*{"ok": true, "heartbeat": "declined", "reason": "no prompt"}
+    # Mark the admitted turn BEFORE it runs, keyed by record and time: this is
+    # the durable budget the check above reads, so a crash mid-turn cannot
+    # grant a free extra run (over-counting by one is the safe direction).
+    try:
+      discard ct.storePutRev("heartbeatmark",
+        heartbeatId & ":" & newId(),
+        %*{"id": heartbeatId, "session": sessionId, "at": epochTime()},
+        timeoutMs = 5_000)
+    except CatchableError as e:
+      # Cannot record it: refuse instead of running an unaccounted autonomous
+      # turn. The record keeps its nextAt and the component retries.
+      return %*{"ok": true, "heartbeat": "declined",
+                "reason": "cannot record the turn (" & e.msg & ")"}
+
   if isWake:
     let budget = wakeBudget()
     if budget <= 0:
@@ -3931,24 +4174,28 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
         %*{"session": sessionId, "peek": true}, 5_000)
       pendingCount = peeked{"count"}.getInt(0)
     except CatchableError:
-      # Notices unreadable (agent or store down): a wake turn with nothing
-      # to fold is pure noise, and a pending notice is delivered by the
-      # parent's next real turn anyway.
-      return %*{"ok": true, "wake": "declined",
-                "reason": "notices unreachable"}
+      pendingCount = 0 # processes may have work even when agent is absent
+    if ct.cat.toolSchema("process_notices") != nil:
+      try:
+        let peeked = ct.dispatchToolCall("process_notices",
+          %*{"session": sessionId, "peek": true}, 5_000)
+        pendingCount += peeked{"count"}.getInt(0)
+      except CatchableError:
+        discard
     if pendingCount == 0:
       return %*{"ok": true, "wake": "skipped", "reason": "nothing pending"}
     if consecutiveWakeTurnsFromStore(ct, sessionId) >= budget:
       return %*{"ok": true, "wake": "declined", "reason": "budget",
                 "budget": budget}
     if turnContent.len == 0:
-      turnContent = "[wake] background subagents settled"
+      turnContent = "[wake] background work settled"
 
   # A caption-less image drop is still a TURN: the attachments ARE the
   # content. Without this guard the call fell into the control/status branch
   # below, answered ok, and ran no turn at all — the dropped image vanished
   # while every client saw success.
-  if content.len == 0 and attachRefs.len == 0 and not isWake:
+  if content.len == 0 and attachRefs.len == 0 and not isWake and
+      heartbeatId.len == 0:
     if hasCompact:
       # Manual compaction: run the §6.3 replaceable-compactor rung now, with
       # no LLM turn and no user message. The attempt installs a checkpoint
@@ -4093,6 +4340,13 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       # human typed (the same structural lane as subagent-settled notices).
       %*{"role": "user", "content": turnContent,
          "notice": {"kind": "wake"}}
+    elif heartbeatId.len > 0:
+      # Same machinery lane, carrying the record id: the transcript shows WHO
+      # scheduled this turn, and trimming/rendering never mistake it for the
+      # human. Stamped in the same message the model sees, so a later reader
+      # (or the runner rebuilding counters from the store) can tell.
+      %*{"role": "user", "content": turnContent,
+         "notice": {"kind": "heartbeat", "id": heartbeatId}}
     elif attachRefs.len > 0:
       # The stored message keeps the text and the small refs, never the
       # base64: a `list` page carrying inline images outgrows the bus
@@ -4109,7 +4363,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     # carry their data URL, older ones an honest text marker. Deterministic
     # from the refs, so every resume rebuilds the same projection.
     materializeProjection(ct, entry.messages)
-  if entry.persister.seqNo == 1 and not hasTitle and not isWake:
+  if entry.persister.seqNo == 1 and not hasTitle and not isWake and
+      heartbeatId.len == 0:
     # first message of a fresh conversation: title it from the message so
     # session lists are descriptive instead of conv-<epoch>. An explicit
     # title on the same call wins; a later rename always overwrites.
@@ -4322,7 +4577,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
       case env.tool
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
           "session_prepare", "session_info", "prompt_preview", "doctor",
-          "conversation_delete", "profile":
+          "conversation_delete", "toolset", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))

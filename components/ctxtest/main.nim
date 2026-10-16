@@ -65,6 +65,17 @@ comp.tool(%*{"hidden": true}):
     ## - anything else (t_nested): ctxecho probe, then final reply.
     let stage = chatStage.mgetOrPut(sessionId, 0)
     chatStage[sessionId] = stage + 1
+    if sessionId == "process-direct-owner":
+      if stage == 0:
+        return toolCall("start-owned", "invoke", %*{"tool": "process_start",
+          "arguments": {"command": "sleep 1; echo owned-completion"}})
+      if stage == 1:
+        sleep(2000) # completion arrives while the LLM's final reply is pending
+        return %*{"content": "process-first-reply"}
+      return %*{"content": "process-notice-folded"}
+    if sessionId == "hb-busy":
+      sleep(8000)
+      return %*{"content": "human-turn-done"}
     if sessionId.startsWith("agent-"):
       # forced LLM failure: a task carrying the marker makes the child's
       # chat raise — the runner turns that into a turnError, and agent_run
@@ -276,6 +287,11 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_spawn",
                         %*{"task": "FAB_SLOWBASH sleep via the bridge"})
       return %*{"content": "fcs-parent-done"}
+    if sessionId in ["agt-defined-run", "agt-defined-spawn"]:
+      if stage == 0:
+        return toolCall("t1", (if sessionId.endsWith("spawn"): "agent_spawn" else: "agent_run"),
+                        %*{"agent": "reviewer", "task": "review this", "thinking": "low"})
+      return %*{"content": "agent-turn-done"}
     if sessionId == "agt-allow":
       if stage == 0:
         # allowlist scoping: the child may dispatch only session_info, so

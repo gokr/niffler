@@ -123,7 +123,7 @@ let bashSchema = toolSchema(%*{
   "timeoutMs": {"type": "integer",
                 "description": "Kill after this many ms; default 120000, max 570000."},
   "run_in_background": {"type": "boolean",
-    "description": "Return a process id at once; no timeout (default false)."},
+    "description": "Return a process id at once; no timeout (default false). The owning session is told when it finishes — do not poll to wait."},
   "cwd": {"type": "string",
           "description": "Working directory; default workspace"}
 }, required = @["command"],

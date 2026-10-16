@@ -70,6 +70,7 @@
 | `provider` | Go | 可选 | 存储支持的 LLM 提供商注册表：`provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`，订阅 OAuth 登录（`provider_oauth_start`/`complete`/`cancel`），`ev.provider.switch` 通知 |
 | `plugins` | Nim | 可选 | 生态系统前门：主题搜索 + 包的安装/更新/移除 |
 | `skills` | Nim | 可选 | Agent Skills（SKILL.md）：发现、加载、资源访问、基于 git 的安装/移除 |
+| `fleet` | Nim | **不在 manifest 中** | 显式启用的 SSH/Multipass 部署与生命周期管理；批准门、私有身份回执，无 Python 运行时依赖 |
 | `fetch` | Nim | 可选 | Web 内容检索：http/https、HTML→文本提取、带文件溢出的尺寸上限 |
 | `locks` | Nim | 可选 | 会话工具的协作式写入协调。文件工具声明路径，通配符声明其基目录，不透明写入工具声明子树。只读工具和会话编排不持有外层声明：嵌套工具分别获取。冲突返回 `E_WRITE_BUSY` 并指出持有者。审批后才获取；会话租约至少覆盖传输超时加 60 秒（最少 10 分钟）。终止回复释放租约，未知的超时或取消结果保留到期。启动恢复失败时拒绝写入并可重试；持久释放失败保留声明。内存索引写穿到每个租约一个存储文档。仅运行一个实例（不可复制）。组件缺失时不协调写入。这不是 OS 沙箱：直接总线调用、分离进程、guest 原生 I/O 和其他框架实例不在保证范围内。见 [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md)。 |
 | `edit` | Nim | 可选 | 文件工具：`read`（规范的 `reads` 数组 —— 一次调用最多 12 个文件/范围（每项 2000 行、256 KB、每行 2 KB —— 更长的行变成 `bash: sed -n …` 通知；每次调用总计 512000 字节，剩余部分报告为不使批次失败的逐项错误），可分页，单文件 `path` 语法糖；对 >1000 行的文件进行整体读取且其类型有语言服务器时，返回 lsp 符号大纲 —— 用 offset/limit 开窗，或用 `offset: 1` 无论如何整体读取，`NIF_READ_OUTLINE_LINES` 调整/禁用 —— 对本会话已完整读取过且字节完全相同的 ≥512 字节文件进行整体重读时，返回 `[unchanged] <path>: N bytes, M lines, digest <sha1>` 而不是文本；`force: true`（或任何 offset/limit 窗口）强制重新转储，窗口读取和小文件总是重新转储）、`edit`（只更改*现有*文本文件 —— 缺失路径是 `E_NOT_FOUND`，空文件是 `E_EMPTY`，两者都指向 `write` 作为创建内容的方式；接受 `{old_string, new_string, replace_all?}` 对的 `edits[]` 数组 —— 没有单独的多编辑工具 —— 全部针对*原始*文件匹配，检查重叠和无变化，然后以一次原子重命名写入；受保护的回退级联是尾随空白 → 缩进漂移 → unicode 标点 → 按 Levenshtein 相似度 ≥ 0.65 的块锚点 → 双重转义文本，每一层仍必须恰好匹配一次；陈旧门控位于匹配*之前* —— 当会话最后观察到的文件摘要与磁盘不同（外部编辑，或读取/写入后的 `bash` 变更）时，`edit` 以 `E_STALE` 拒绝，而不是匹配模型从未见过的文本：重新读取并重做。无会话调用者（`cli`、其他组件）不被跟踪并跳过门控）、`write`（原子整体文件：创建父目录、跟随符号链接、保留目标权限、将载荷上限设为 `NIF_WRITE_MAX_BYTES` = 900000）、`undo_last_edit`（每文件单级 —— 仅上一次编辑，不是栈 —— 跨重启持久化并以绝对路径为键，精确还原内容、BOM 和行尾；当文件在编辑后被修改或删除时以 `E_UNDO_STALE` 拒绝，此时陈旧记录被*丢弃*（重新读取并向前编辑）；撤销记录在文件之前写入，因此存储失败会以 `E_UNDO_UNAVAILABLE` 拒绝编辑，而不是失去还原能力；审批门控的变更）；锚定块移动位于 [niffler-hashline](https://github.com/gokr/niffler-hashline) 插件中 |
@@ -998,7 +999,12 @@ git 工作流的只读部分，作为一等工具；写入部分（add/commit/pu
 
 ## Background processes (`processes`)
 
-启动结果给出精确控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<返回 id>", waitMs: 25000}` 等待输出或退出，用 `process_kill {id: "<返回 id>"}` 停止。`filter` 仍排空所有新输出但只显示匹配行；`tail: "1"` 重读最近原始输出且不推进游标。仍运行进程的空非等待轮询，每个进程只提示一次使用等待。排空语义不变。
+完成恢复：组件崩溃后，原先运行且有所属会话的作业会产生
+`interrupted(component restart)` 通知，而非成功退出；输出仍可读取。
+已确认通知及输出在七天后过期，待处理通知保留。旧版清扫记录没有会话
+所有权，无法产生定向通知。
+
+启动结果给出精确控制方式：先 `discover {tools: ["process_poll", "process_kill"]}`，再用 `process_poll {id: "<返回 id>", waitMs: 25000}` 等待输出或退出，用 `process_kill {id: "<返回 id>"}` 停止。`filter` 仍排空所有新输出但只显示匹配行；`tail: "1"` 重读最近原始输出且不推进游标。轮询用于读取输出，不用于发现完成 —— 完成会主动推送。仍运行进程的空非等待轮询，每个进程只提示一次使用等待。排空语义不变。
 
 状态：**已实现**（Nim 组件；`tests/t_processes.nim`）。
 
@@ -1007,7 +1013,7 @@ bash 按设计是同步的 —— 服务器、监视器和测试循环需要不�
 | 工具 | 作用 |
 |---|---|
 | `process_start {command, label?, workdir?}` | 以分离方式生成命令（自己的进程组，stdin 来自 /dev/null，stdout/stderr 追加到 `var/processes/` 下的 spool 文件）并立即返回其 id。受审批门控制。通过 `bash` 工具的 `run_in_background` 进行的后台启动只在 `bash` 调用本身上审批一次 —— 内部的 `process_start` 直接走 NATS，从不经过 core 的审批门，而通过 core 发出的直接 `process_start`（模型，或任何经 `svc.core.call` 到达的工具）则受门控 —— 自己寻址 `svc.processes.call` 的总线客户端（`cli`、脚本）完全不受门控 |
-| `process_poll {id, waitMs?, filter?, tail?}` | 排空自上次轮询以来追加的输出 —— 增量，从不重新注入旧字节；`waitMs` 阻塞直到有新输出或退出（上限 25 秒）；`filter` 是对新行的正则（排空游标仍会越过所有行前进）；任何非空 `tail` 会重新读取原始输出的最后约 64 KB。读取效应 |
+| `process_poll {id, waitMs?, filter?, tail?}` | 排空自上次轮询以来追加的输出 —— 增量，从不重新注入旧字节；`waitMs` 阻塞直到有新输出或退出（上限 25 秒）；`filter` 是对新行的正则（排空游标仍会越过所有行前进）；任何非空 `tail` 会重新读取原始输出的最后约 64 KB。用于读取输出，而不是发现完成 —— 完成会主动推送。读取效应 |
 | `process_kill {id}` | 终止整个进程组 —— SIGTERM，300 毫秒宽限，然后 SIGKILL。受审批门控制 |
 | `process_list {}` | 显示注册表 —— 运行中和最近完成的条目及其退出码。读取效应 |
 
@@ -1016,9 +1022,9 @@ bash 按设计是同步的 —— 服务器、监视器和测试循环需要不�
 - 子进程以追加模式写入 spool 文件（绝不是可能死锁的管道）；组件从每流游标读取，因此操作系统会吸收输出突发。超过上限（32 MiB，`NIF_PROCESSES_SPOOL_CAP`）的 spool 会在下一次轮询时截断到其尾部 —— 保留最后 2 MiB，或当上限更小时保留上限的一半，并且截断的轮询会追加 `[spool truncated to its tail — the cap was reached]`；一次轮询每流最多返回 `NIF_PROCESSES_POLL_CHUNK` 个新字节（默认 64 KiB）。
 - 每个工具带有自己的调度预算 `x-harness.timeoutMs` —— `process_start` 20 秒，`process_poll` 30 秒，`process_kill` 15 秒，`process_list` 10 秒 —— 与 `process_poll` 内部的 `waitMs` 上限分开。
 - 上限：32 个并发进程。已完成的条目从不被淘汰：该组件生命周期内的每个进程都留在注册表中 —— 只有 *运行中* 的才会写入 `registry.json` —— 因此 `process_list` 会持续将已完成的子进程报告为 `exited(code N)` 或 `killed(signal N)`，直到组件退出。
-- **已完成的进程会告知其会话。** 当你通过 `bash` 工具的 `run_in_background` 标志启动一个进程时，bash 会将所属会话交给注册表；当该子进程退出时，`processes` 会向其发布退出通知（与 subagent 结算通知使用同一通道），因此接下来的回合会以 `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes of output — read it with \`process_poll\` …` 开头。它是一个指针：输出留在 spool 中，命令文本从不传递。
+- **已完成的进程会告知其会话。** 当你通过 `bash` 工具的 `run_in_background` 标志启动一个进程时，bash 会将所属会话交给注册表；当该子进程退出时，`processes` 会先写入一条持久完成记录，再推送到该会话（与 subagent 结算通知使用同一通道），因此接下来的回合会以 `[background process p3 (dev-server) exited(code 0)] ran 412s, 8123 bytes of output — read it with \`process_poll\` …` 开头。它是一个指针：输出留在 spool 中，命令文本从不传递。
 
-  这就是后台作业不再被忽视的原因：组件在周期性 tick（SDK 的 `onIdle`）上回收其子进程，而不仅仅是在有人轮询时 —— 这也意味着 `process_list` 会及时显示 `exited(code N)`，而不是在被询问前一直显示 `running`。只有 `bash run_in_background` 会移交所属会话（它是唯一传递 `session` 的调用者），因此以任何其他方式到达的 `process_start` —— 模型自己的 `discover` + `invoke`、`cli`、脚本 —— 启动时没有所有者会话；会话运行器已退役的进程也不会向任何人宣告。轮询这些进程。
+  因此后台作业不再需要轮询：组件在周期性 tick（SDK 的 `onIdle`）上回收子进程，先记录完成再宣告，并在会话空闲时请求一次有界唤醒。runner 只在成功追加后才确认记录，因此完成能熬过组件重启、无 runner 和发布失败，且同一完成不会被并入两次。`process_poll` 仍用于读取输出，而不是发现完成。`bash run_in_background` 和模型直接调用 `process_start`（含 `discover` + `invoke`）都会携带所属会话：runner 通过 `x-harness.sessionId` 注入 `__session.session`，优先于内部显式 `session`。裸总线调用（`cli`、脚本）除非传入 `session`，否则没有所有者；启动结果会明确说明无自动通知。
 - 工具错误带有稳定的代码：`E_BAD_SHAPE`（空 `command`、缺失 `workdir`、无效的 `filter` 正则）、`E_NOT_FOUND`（未知 id —— `process_list` 会显示注册表）和 `E_LIMIT`（32 个活动进程，或无法 fork 的子进程）。
 - `process_list` 条目带有 `started_at`（epoch 秒），因此客户端可以显示某物已运行多久 —— `bg 1 (7m)` 徽章是 `niffler-tui` 插件的状态行，不是 core 的。
 - `workdir` 默认为会话工作区：core 会为空或 `.` 值替换它，并针对工作区（`x-harness.workspace`）解析相对路径，不存在的路径会以 `E_BAD_SHAPE` 失败。裸总线调用（`cli call process_start`）会跳过该替换，因此子进程继承组件自己的 cwd（`$NIF_ROOT`）。
@@ -1195,6 +1201,89 @@ Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小
   直接投影。它不是现有会话的工具集。
 - 派发、审批、`x-harness.timeoutMs` 以及组件到组件的调用
   始终查询完整目录。
+
+### Instance identity
+
+`NIF_NAME` 是实例标签（默认主机名）。catalog 还返回稳定的 `instanceId`，
+保存在 `var/instance-id`；重启和改名不改变 ID。迁移实例时保留此文件，
+创建新实例时不要复制。文件损坏会拒绝启动，不会静默更换身份。
+ID 是路由元数据，不是身份认证；匹配的 TUI 在导入回执与重连时固定并验证身份。
+
+### Persistent server lifecycle
+
+`bash scripts/bootstrap.sh --server <root>` 构建服务器，不安装 TUI、PATH
+包装器或可选附加项。已有检出只采用，不执行 pull；更新另行决定。
+提供商凭据须在该根目录的 `.env` 中明确配置，不从其他实例复制。
+
+Linux 上用 `bash scripts/server.sh install <root>` 安装并启用根目录专属的
+用户 systemd 单元，但不启动。随后用同一助手的 `start`、`status`、`logs`、
+`stop` 操作。根目录和 HOME 只允许字母、数字、`/`、`.`、`_`、`-`。
+冲突或符号链接单元会被拒绝，不覆盖。服务运行正常 manifest，明确设置
+NIF_ROOT，禁用 UI 自动退出和自动批准，使用核心拥有的隔离回环 NATS；
+地址写入 `<root>/var/nats-url`。不安装公共监听器，客户端断开不会停止服务。
+
+`bash scripts/server.sh linger <root>` 单独报告 linger。未启用时无法保证
+注销或重启后持续运行；请向管理员询问 `loginctl enable-linger`。助手不修改
+linger，也不使用 sudo。在 SSH/VM 目标执行这些生命周期操作前须取得人类
+批准。测试使用假的 systemd 命令，不操作主机服务管理器。
+
+### SSH and Multipass provisioning
+
+可选 **Nim `fleet` 组件**通过普通 SSH 或 `multipass exec` 安装或采用 Linux
+实例。本地和远端均不需要 Python。SSH、Bash 和目标构建依赖仍是必要条件；
+Multipass 为可选依赖。组件由 `make build` 构建，不自动启动。明确启用后，
+将下列 JSON 传给 `fleet_install`：
+
+```bash
+./var/bin/cli call spawn '{"name":"fleet","binary":"var/bin/fleet","policy":"on-failure"}'
+```
+
+```json
+{"transport":"ssh","target":"ubuntu@worker","root":"/home/ubuntu/niffler","revision":"<full-published-commit-sha>","profile":"var/fleet/worker.json"}
+```
+
+VM 使用 `transport:"multipass"`，target 为 VM 名，可设置 cpus、memory、disk。
+新安装须固定 `gokr/niffler` 已发布的完整 40 位提交。已有完整安装只采用，
+不拉取或重建；无关或不完整根目录拒绝覆盖。目标需要 git；bootstrap 安装
+其余依赖，可能需要 sudo。提供商凭据和 linger 均须明确配置，不自动复制或启用。
+
+fleet_install、fleet_start、fleet_stop、fleet_vm_stop 通过标准 harness 批准门，
+目标、根目录、版本和资源由参数展示。不再使用独立 tty 批准协议；人类明确
+选择的标准自动批准策略仍适用。fleet_probe、fleet_status、fleet_logs 为只读，
+使用 `{profile:"/absolute/path/to/receipt.json"}`。不要公开 NATS 监听器。
+
+SSH 保留别名、密钥、ProxyJump 和 known_hosts，禁用 agent 转发。Multipass
+不挂载主机、不提取密钥。无删除或 purge 工具。0600 原子回执固定 root 和
+instanceId，身份变化拒绝写入；固定 VM 消失时不自动重建。失败保留部分状态。
+停止 Niffler 与停止 VM 是分别批准的操作，客户端断开不会停止常驻服务。
+
+匹配的 TUI 可用 `niffler-tui --instance worker --instance-import /path/to/worker.json`
+导入回执，然后 `niffler-tui --instance worker` 连接。/niffler 列出或切换远端。
+SSH 使用原生转发；Multipass 使用远端原生 cli relay，须更新两端，无 Python
+回退。远端禁用本地路径补全。TUI 独立发布；跨实例代理委派与后台批准尚未实现。
+make test-fleet 使用假传输，不操作真实主机或 VM。
+
+### Scheduled turns (heartbeat)
+
+heartbeat 由 `make build` 构建，仅通过获批的 `spawn` 启用，不自动启动。
+用 `heartbeat_set {id, session, prompt, intervalSec}` 设置，`heartbeat_list`
+查看，`heartbeat_remove` 删除计划。修改需要批准；忙碌对话跳过触发，不排队。
+`NIF_HEARTBEAT=0` 暂停；轮询默认 30000 毫秒；`NIF_HEARTBEAT_MAX_PER_DAY`
+默认每条记录滚动 24 小时内四次。runner 独立验证记录并在推理前记录准入。
+发布前预留尝试，崩溃可能漏掉一次但不会重复执行。状态只表示尝试，不表示完成；
+结果在对话记录中。heartbeat 不授予批准权限，也不维持 harness 存活。
+服务器常驻运行时不要设置 `NIF_AUTOSTART=1`。详见组件指南。
+
+### Agent definitions
+
+persona 是提示文本（persona 存储文档：{name, body}）。agent 是技术定义，
+引用 persona 和 toolset，并可提供 model、provider、thinking、tools、cwd、
+maxRounds、maxCalls、maxTokens 默认值。通过 put {kind:"agent", id:"reviewer",
+value:…} 保存；新对话用 session {agent:"reviewer"}，新子代理用
+agent_run / agent_spawn {agent:"reviewer", task:…}。显式参数（包括空值）优先。
+定义仅在创建时解析；续接不重新应用。定义不能设置 approvals，自动批准仍须
+人类明确选择。toolset 是原 profile 工具的新名称；旧工具、参数、NIF_PROFILE
+及存储文档仍兼容。匹配的 TUI 已支持 /agent、/toolset，新选择仅用于新对话；/profile 保留兼容。
 
 ### Core tools
 
@@ -2090,6 +2179,7 @@ make build
 | `jevshadow` | `<sessionId>:<turnId>:<kind>`（`kind` = `tools`/`skills`） | 建议式发现实验（`jev`）的每回合影子观测：候选快照、原始答案、`elapsedMs`/`queueMs`、`status`/`turnClosed`。绝不向模型暴露，也绝不写入转录；后端缺席时**不**写任何记录（见[建议式发现](#advisory-discovery-jev-and-the-von-launcher)）。记录包含任务文本——按敏感数据处理 |
 | `edit-undo` | `<session>:<绝对路径>` | 文件的最后编辑前字节，供 `undo_last_edit` 使用（单级，按会话 + 文件）。在编辑*之前*写入；写入失败会拒绝编辑，而不是丢失撤销历史。作用域限于拥有它的会话——没有会话的调用方（cli 脚本）共享一个 `__standalone` 作用域。由 `conversation_delete` 清理 |
 | `edit-seen` | `<session>:<绝对路径>` | 会话最后观察到的文件状态（`digest`/`bytes`/`lines`/`full`），支撑未更改读取存根和 `E_STALE` 门控。仅确认记录已有内容的读取不写入；更正（或任何修改）才写入。store 不可达时读取结果为"从未查看"——这是安全的方向（见上文[存储](#the-store)）。由 `conversation_delete` 清理 |
+| `diagnostic` | `<session>:<id>` | 为显示/存储而持久化的异步 LSP 判定（`{sessionId, path, bytes, text, clean, createdAt}`）。`clean: true` 的整文件判定仅供界面/存储使用，绝不进入模型历史——它在运行器空闲时仍会迟到传递；其他判定还会追加到转录。由 `conversation_delete` 清理 |
 | `selftest` | store 自检探针 | 一次性——由 store 自身的自检往返写入并删除 |
 
 后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，或 DSN 共享的 TiDB 引擎（`NIF_STORE_BACKEND=tidb`，`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。

@@ -1,0 +1,51 @@
+## Opt-in Fleet provisioning, using the ordinary harness approval gate.
+import std/json
+import niffler/sdk
+import provision
+
+let comp = newComponent("fleet", "0.1.0")
+proc schema(properties: JsonNode, required: seq[string], description: string): JsonNode =
+  %*{"type": "object", "properties": properties, "required": required,
+    "additionalProperties": false, "description": description}
+proc handler(name: string): ToolHandler =
+  result = proc(c: Component, args: JsonNode): JsonNode =
+    var logs: seq[string]
+    let runner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+      result = nativeRunner(argv, input, timeoutMs)
+      logs.add(result.logPath)
+    try:
+      result = if name == "install": install(runner, args)
+        else: action(runner, name, args{"profile"}.getStr())
+      result["privateLogs"] = %logs
+    except CatchableError as e:
+      return errResult(e.msg, "fleet-refused")
+let profile = %*{"type": "string", "description": "Local private version-1 receipt path; mutations require human approval."}
+let installProps = %*{
+  "profile": profile, "transport": {"type": "string", "enum": ["ssh", "multipass"]},
+  "target": {"type": "string", "description": "SSH alias/user@host or Multipass VM name"},
+  "root": {"type": "string", "description": "Dedicated canonical absolute target installation root"},
+  "revision": {"type": "string", "description": "Full lowercase 40-character SHA; existing installs never update"},
+  "cpus": {"type": "integer", "minimum": 1, "maximum": 64},
+  "memory": {"type": "string", "description": "VM memory, default 4G"},
+  "disk": {"type": "string", "description": "VM disk, default 20G"}}
+discard comp.tool("fleet_install", schema(installProps,
+  @["profile", "transport", "target", "root", "revision"],
+  "Install a pinned new Niffler server or adopt an existing installation without updating it; optionally create Ubuntu 24.04 in Multipass. No agent forwarding, credentials, host mounts, implicit linger or VM deletion. Save a verified private receipt; provider setup remains explicit."),
+  handler("install"), %*{"onDemand": true, "approval": "always", "effect": "write",
+    "timeoutMs": 4400000, "writes": {"paths": ["profile"]}, "workspace": {"pathFields": ["profile"]}})
+for name in ["probe", "status", "logs", "start", "stop", "vm_stop"]:
+  let readOnly = name in ["probe", "status", "logs"]
+  let description = case name
+    of "probe": "Read and verify the live remote catalog against its receipt identity and root."
+    of "status": "Read identity-guarded remote Niffler user-service status."
+    of "logs": "Read the last 100 remote service journal lines. Application logs can contain sensitive output; do not share publicly."
+    of "start": "Start the pinned service, checking durable identity before writes even when the bus is down."
+    of "stop": "Stop the pinned Niffler service only, leaving the host and VM running."
+    else: "Stop a verified Multipass VM separately from Niffler service stop. Requires reachable identity; never deletes VMs."
+  var extensions = %*{"onDemand": true, "effect": (if readOnly: "read" else: "write"),
+    "timeoutMs": 250000, "workspace": {"pathFields": ["profile"]}}
+  if not readOnly:
+    extensions["approval"] = %"always"
+    extensions["writes"] = %*{"none": true}
+  discard comp.tool("fleet_" & name, schema(%*{"profile": profile}, @["profile"], description), handler(name), extensions)
+comp.run()

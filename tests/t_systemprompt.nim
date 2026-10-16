@@ -8,6 +8,10 @@
 ##   by the stub LLM echoing messages[0] back as its reply;
 ## - the frozen constitution survives a runner restart AND component death
 ##   (persisted in the conversation header, never re-resolved);
+## - persona (docs/research/FLEET.md §6): a named identity document resolves
+##   into the prompt exactly once, at birth — an unknown name degrades to the
+##   plain prompt, and editing the document afterwards changes nothing for a
+##   conversation already born.
 ## - a fresh conversation after the component died degrades to core's
 ##   minimal fallback;
 ## - direct service surface: candidate priority, shadowing.
@@ -275,6 +279,153 @@ proc main() =
                       %*{"cwd": root}, 10_000){"systemPrompt"}.getStr("")
       check("context file above the harness root never leaks",
             not leak.contains("MUST NOT LEAK"), leak)
+
+  # --- persona: birth-only identity (docs/research/FLEET.md §6) --------------
+  # While systemprompt is alive: resolution is a service-surface behaviour.
+  # Baseline for the comparisons below: directPrompt was captured before the
+  # prompt_hint registrations above, and those ride in every later prompt.
+  let plainNow = call(nc, "systemprompt", "systemprompt",
+                      %*{"cwd": root}, 10_000){"systemPrompt"}.getStr("")
+  let putPersona = call(nc, "store", "put",
+    %*{"kind": "persona", "id": "reviewer",
+       "value": {"name": "reviewer",
+                 "body": "You review changes as this repo reviews them."}},
+    10_000)
+  check("persona document stored", putPersona{"ok"}.getBool(false), $putPersona)
+  let personaPrompt = call(nc, "systemprompt", "systemprompt",
+                           %*{"cwd": root, "persona": "reviewer"},
+                           10_000){"systemPrompt"}.getStr("")
+  check("persona body resolves into the prompt",
+        personaPrompt.contains("<persona name=\"reviewer\">") and
+        personaPrompt.contains("You review changes as this repo reviews them."),
+        personaPrompt)
+  check("persona sits right after the product prompt, above project context",
+        personaPrompt.find("self-extending") <
+        personaPrompt.find("<persona name=") and
+        personaPrompt.find("<persona name=") <
+        personaPrompt.find("<project_context>"), personaPrompt)
+  check("the plain prompt is unchanged when no persona is asked for",
+        plainNow.len > 0 and
+        call(nc, "systemprompt", "systemprompt", %*{"cwd": root},
+             10_000){"systemPrompt"}.getStr("") == plainNow,
+        "asking for no persona altered the prompt")
+
+  # An unknown persona degrades to the plain prompt (never a half-prompt, and
+  # never a failed conversation), and an unusable document renders nothing.
+  let unknownPrompt = call(nc, "systemprompt", "systemprompt",
+                           %*{"cwd": root, "persona": "no-such-persona"},
+                           10_000){"systemPrompt"}.getStr("")
+  check("an unknown persona degrades to the plain prompt",
+        unknownPrompt == plainNow, $unknownPrompt.len)
+  discard call(nc, "store", "put",
+    %*{"kind": "persona", "id": "empty",
+       "value": {"name": "empty", "body": "   "}}, 10_000)
+  check("a persona with no body renders nothing",
+        call(nc, "systemprompt", "systemprompt",
+             %*{"cwd": root, "persona": "empty"},
+             10_000){"systemPrompt"}.getStr("") == plainNow,
+        "an empty persona body leaked into the prompt")
+
+  discard call(nc, "store", "put", %*{"kind": "agent", "id": "reviewer",
+    "value": {"persona": "reviewer", "thinking": "high", "maxCalls": 20}})
+  let defined = call(nc, "core", "session", %*{"sessionId": "sp-defined",
+    "content": "go", "agent": "reviewer", "thinking": "low"}, 120_000)
+  check("agent definition starts a conversation", defined{"error"} == nil, $defined)
+  let definedHeader = call(nc, "store", "get", %*{"kind": "conversation",
+    "id": "sp-defined"}){"value"}
+  check("agent definition supplies persona and records provenance",
+    definedHeader{"agent"}.getStr() == "reviewer" and
+    definedHeader{"systemPrompt"}.getStr().contains("You review changes"), $definedHeader)
+  check("explicit controls override definition defaults",
+    definedHeader{"thinkingEffort"}.getStr() == "low", $definedHeader)
+  # The identity is stamped in TWO places, and the lineage doc is the one that
+  # survives a header-write loss: it is written with a compare-and-set, so a
+  # racing turn cannot interleave a read-modify-write and leave the
+  # conversation looking unborn (which would re-birth it mid-conversation).
+  let lineage = call(nc, "store", "get",
+    %*{"kind": "sessionmeta", "id": "sp-defined"})
+  check("the birth identity is recorded durably in the lineage doc",
+    lineage{"value"}{"agent"}.getStr("") == "reviewer", $lineage)
+  # A client that keeps naming the SAME agent — what a picker that persists a
+  # choice does — must be idempotent, not refused: this is the resume path
+  # after a runner retirement.
+  let sameAgent = call(nc, "core", "session", %*{
+    "sessionId": "sp-defined", "content": "again", "agent": "reviewer"},
+    120_000)
+  check("re-sending the same agent is idempotent",
+    sameAgent{"error"} == nil, $sameAgent)
+  let stillSame = call(nc, "store", "get", %*{"kind": "conversation",
+    "id": "sp-defined"}){"value"}
+  check("the frozen prompt survives a redundant agent call",
+    stillSame{"systemPrompt"}.getStr("") == definedHeader{"systemPrompt"}.getStr(""),
+    "a redundant agent call re-resolved the constitution")
+  # A DIFFERENT agent is still a re-birth, and refuses.
+  let reborn = call(nc, "core", "session", %*{
+    "sessionId": "sp-defined", "agent": "other"}, 120_000)
+  check("a different agent on a born conversation is refused",
+    reborn{"error"}.getStr("").contains("birth-only"), $reborn)
+  discard call(nc, "store", "del", %*{"kind": "sessionmeta", "id": "sp-defined"})
+  let afterCookie = call(nc, "core", "session", %*{
+    "sessionId": "sp-defined", "agent": "other"}, 120_000)
+  check("the header alone still holds the identity when the doc is gone",
+    afterCookie{"error"}.getStr("").contains("birth-only"), $afterCookie)
+
+  for parent in ["agt-defined-run", "agt-defined-spawn"]:
+    let delegated = call(nc, "core", "session", %*{"sessionId": parent,
+      "content": "go"}, 120_000)
+    check(parent & " completed", delegated{"error"} == nil, $delegated)
+    var child = ""
+    for item in call(nc, "store", "list", %*{"kind": "sessionmeta"}){"items"}:
+      if item{"value"}{"parent"}.getStr() == parent: child = item{"id"}.getStr()
+    var childHeader: JsonNode
+    for attempt in 0 ..< 50:
+      childHeader = call(nc, "store", "get", %*{"kind": "conversation", "id": child}){"value"}
+      if childHeader{"systemPrompt"}.getStr().len > 0: break
+      sleep(100)
+    check(parent & " used the definition", child.len > 0 and
+      childHeader{"agent"}.getStr() == "reviewer" and
+      childHeader{"systemPrompt"}.getStr().contains("You review changes"), $childHeader)
+
+  # Birth-only, proven through the store rather than the reply: a conversation
+  # born with the persona records the name AND the resolved prompt in its
+  # header; editing the document afterwards changes neither.
+  let born = call(nc, "core", "session",
+                  %*{"sessionId": "sp-persona", "content": "go",
+                     "persona": "reviewer"}, 120_000)
+  check("a conversation can be born with a persona",
+        born{"error"} == nil, $born)
+  let bornHeader = call(nc, "store", "get",
+                        %*{"kind": "conversation", "id": "sp-persona"},
+                        10_000){"value"}
+  check("the header records the persona name",
+        bornHeader{"persona"}.getStr("") == "reviewer", $bornHeader)
+  let bornPrompt = bornHeader{"systemPrompt"}.getStr("")
+  check("the header froze the resolved prompt",
+        bornPrompt.contains("You review changes as this repo reviews them."),
+        bornPrompt)
+  discard call(nc, "store", "put",
+    %*{"kind": "persona", "id": "reviewer",
+       "value": {"name": "reviewer", "body": "REWRITTEN IDENTITY"}}, 10_000)
+  let afterEdit = call(nc, "store", "get",
+                       %*{"kind": "conversation", "id": "sp-persona"},
+                       10_000){"value"}
+  check("editing the persona document never rewrites a live conversation",
+        afterEdit{"systemPrompt"}.getStr("") == bornPrompt and
+        not afterEdit{"systemPrompt"}.getStr("").contains("REWRITTEN IDENTITY"),
+        "a persona edit reached a born conversation")
+  # A resume re-reads the stored prompt verbatim, so the edit stays invisible
+  # even after a new turn.
+  let resumed = call(nc, "core", "session",
+                     %*{"sessionId": "sp-persona", "content": "again",
+                        "persona": "reviewer"}, 120_000)
+  check("a resume with the persona argument stays on the frozen prompt",
+        resumed{"error"} == nil, $resumed)
+  let resumedHeader = call(nc, "store", "get",
+                           %*{"kind": "conversation", "id": "sp-persona"},
+                           10_000){"value"}
+  check("a resume did not re-resolve the persona",
+        resumedHeader{"systemPrompt"}.getStr("") == bornPrompt,
+        "resume re-resolved the constitution")
 
   # --- conversation 1: constitution from the component -----------------------
   let sid = "sp-live"

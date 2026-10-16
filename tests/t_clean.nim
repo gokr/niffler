@@ -13,7 +13,9 @@ proc main() =
     "var/store.db.lock", "var/barrel-db/data", "var/bench/results/run.json",
     "var/logs/core.log", "var/plugins/example/source.nim",
     "var/build/custom.nim", "var/build/custom/main.go",
-    "var/nats-url", "var/processes/registry.json", "var/unknown/future-state",
+    "var/nats-url", "var/instance-id", "var/fleet/worker.json",
+    "var/processes/registry.json", "var/processes/notices/p1.json",
+    "var/unknown/future-state",
     ".env"]
   let artifacts = ["var/bin/niffler", "var/bin/.mode",
     "var/nimcache/core/object.o", "nimcache/object.o"]

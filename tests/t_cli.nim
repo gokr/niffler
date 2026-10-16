@@ -49,6 +49,39 @@ proc main() =
     sleep(200)
   check("core up", coreUp)
 
+  # --- --bus beats the environment, in BOTH spellings ----------------------
+  # Two bugs the space form hid (found driving a remote instance, not by the
+  # suite — every other test spells its options `--x=y`):
+  #  1. `cli call/catalog/wait` never read --bus at all; only `cli run` did,
+  #     so `cli --bus <other> catalog` answered from NIF_NATS_URL — the
+  #     accidental cross-attachment the identity rules exist to prevent.
+  #  2. The parser captured the option NAME after consuming the value, so
+  #     every space-separated flag was filed under its own value and dropped.
+  # A bus that cannot be reached is the proof: with the env pointing at the
+  # live test bus, `--bus <dead>` must FAIL rather than quietly succeed.
+  let fleetBus = runCli(cliBin, url, @["catalog"], root = root)
+  let explicitEq = runCli(cliBin, url, @["--bus=nats://127.0.0.1:9", "catalog"],
+                          root = root)
+  let explicitSpace = runCli(cliBin, url,
+                             @["--bus", "nats://127.0.0.1:9", "catalog"],
+                             root = root)
+  check("cli catalog without --bus uses NIF_NATS_URL",
+        fleetBus.code == 0 and fleetBus.output.contains("plugins"),
+        fleetBus.output)
+  check("cli --bus=<dead> is honoured", explicitEq.code != 0 and
+        explicitEq.output.contains("cannot connect"), explicitEq.output)
+  check("cli --bus <dead> (space form) is honoured too",
+        explicitSpace.code != 0 and explicitSpace.output.contains("cannot connect"),
+        explicitSpace.output)
+  # The space form must also still carry a REAL value through: same bus, both
+  # spellings, same harness identity line.
+  let sameEq = runCli(cliBin, url, @["--bus=" & url, "catalog"], root = root)
+  let sameSpace = runCli(cliBin, url, @["--bus", url, "catalog"], root = root)
+  check("both --bus spellings reach the same harness",
+        sameEq.code == 0 and sameSpace.code == 0 and
+        sameEq.output.splitLines()[0] == sameSpace.output.splitLines()[0],
+        sameEq.output & "|" & sameSpace.output)
+
   # --- catalog -------------------------------------------------------------
   let cat = runCli(cliBin, url, @["catalog"], root = root)
   check("cli catalog exits 0", cat.code == 0, "code=" & $cat.code)

@@ -167,16 +167,18 @@ gets scheduled, and keep the rationale edits in the owning research doc.
 
 ### Agents, delegation and model policy
 
-- **Agent persona** — a `persona` store document resolved once into the frozen
-  prompt at a conversation's birth (birth-only, like `fork`; editing it never
-  rewrites a live conversation), carrying the tool profile, model, budgets and
-  workspace it also freezes ([FLEET.md](research/FLEET.md) §6; the gap is the
-  `persona`/`toolFilter` row in [SUBAGENTS.md](research/SUBAGENTS.md)).
-- **Heartbeat (scheduled turns)** — an idle-seam component plus durable
-  `heartbeat` records that start turns nobody asked for, on a machinery-marked
-  admission lane of its own with per-day budgets; the wake lane cannot carry it
-  (a wake is admitted only when notices are pending) and must not
-  ([FLEET.md](research/FLEET.md) §7).
+- **Agent definitions — implemented**: persona stays text;
+  `agent` store documents supply technical birth defaults (persona, toolset,
+  model/thinking, workspace and budgets) for roots and spawned children.
+  Explicit arguments win; definitions cannot grant approval authority.
+  `toolset` is canonical with legacy profile compatibility. Matching TUI source has `/agent` and `/toolset` pickers;
+  definition-management editing UI remains pending. See
+  [MANUAL.md](MANUAL.md#agent-definitions) and [FLEET.md](research/FLEET.md) §6.
+- **Heartbeat — implemented**: opt-in idle-seam scheduler,
+  durable schedules and runner admission marks, rolling daily turn caps,
+  busy-turn skips and append-only machinery-marked history. Completion delivery,
+  cron expressions, daily token accounting and ledger retention remain pending.
+  See [components/heartbeat/README.md](../components/heartbeat/README.md).
 - **Resident instances + fleet delegation** — a server-hosted harness in manual
   mode with an identity, a persona and a heartbeat, driven from any client;
   `fleet_*` delegates a task to a *conversation on another instance* over the
@@ -336,7 +338,26 @@ gets scheduled, and keep the rationale edits in the owning research doc.
 - **Declarative plugin bundles + skills routing metadata**
   ([CODEWHALE.md](research/CODEWHALE.md) D7–8).
 - **Lifecycle event outbox** ([CODEWHALE.md](research/CODEWHALE.md) D9;
-  overlaps *durable Fabric/agent traces* below).
+  overlaps *durable Fabric/agent traces* below). Process-completion slice is
+  implemented: durable record-before-notify, bounded wake/pull, post-append ack,
+  direct-start ownership, orphan interruption recovery and seven-day acknowledged
+  retention. Processes + retired/busy-runner contracts pass; fleet remains separate.
+- **Fleet rollout** — [step-by-step implementation plan](research/FLEET-IMPLEMENTATION.md):
+  identity → persistent service → SSH install/adopt → Multipass provisioning →
+  `/niffler` switching → delegation → reconnect inbox/artifacts. Step 1 is
+  implemented: persisted instanceId plus NIF_NAME in catalog.
+  Step 2 adds server-only bootstrap and a root-scoped user-service helper with
+  conflict refusal and separate linger reporting (fake-systemd contract tests).
+  Steps 3–4 add the opt-in Nim `fleet` component: approved SSH/Multipass
+  install/adopt, pinned catalog receipts and separate service/VM stop. Native
+  transport contracts replace the interim Python helper/tests; the matching TUI
+  uses remote `cli relay` for Multipass without an interpreter.
+  Approved Multipass smoke passed: Ubuntu 24.04, 2 CPUs/4G/20G, source-only
+  snapshot build, user-service start/restart, stable identity and loopback-only
+  listeners. Linger stayed off; no credentials/TUI copied. Published-revision
+  download and real SSH smoke remain pending. Matching TUI source implements
+  receipt import, pinned reconnect and remote switching; installed clients must
+  be updated separately.
 - **Remote paths** — first-class Chetter support and/or a native fleet over
   NATS leaf nodes + a shared TiDB scope; shared prerequisites are `NIF_NAME`
   identity, bus auth and provisioning

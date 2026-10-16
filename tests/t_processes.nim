@@ -144,7 +144,8 @@ proc main() =
 
   check("start guidance discovers controls and explains wait/filter/tail",
     s1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
-    s1{"text"}.getStr("").contains("waitMs:25000") and
+    s1{"text"}.getStr("").contains("No owning session") and
+    s1{"text"}.getStr("").contains("only when you need its output") and
     s1{"text"}.getStr("").contains("filter") and
     s1{"text"}.getStr("").contains("tail:\"1\""), $s1)
 
@@ -304,9 +305,9 @@ proc main() =
   check("bash flag teaches the follow-up verbs",
         b1{"text"}.getStr("").contains("process_poll") and
         b1{"text"}.getStr("").contains("process_kill"), $b1)
-  check("bash flag teaches discovery and bounded waiting",
+  check("bash flag teaches discovery and completion push",
         b1{"text"}.getStr("").contains("discover {tools:[\"process_poll\",\"process_kill\"]}") and
-        b1{"text"}.getStr("").contains("waitMs:25000"), $b1)
+        b1{"text"}.getStr("").contains("No owning session"), $b1)
   let idB = b1{"id"}.getStr("")
   check("the forwarded process emitted before the poll",
         waitForLine(idB, "via-bash line"), "no output within the deadline")
@@ -381,7 +382,8 @@ proc main() =
 
   # --- boot sweep: SIGKILLed component leaves orphans; next life kills them
   let s7 = pcall("process_start",
-                 %*{"command": "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; done"})
+                 %*{"command": "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; done",
+                    "session": "orphan-owner"})
   let id7 = s7{"id"}.getStr("")
   let regFile = tmp / "var" / "processes" / "registry.json"
   let regDoc = parseJson(readFile(regFile))
@@ -411,9 +413,12 @@ proc main() =
         "pid " & $orphanPid & " survived the boot sweep")
   check("sweep file was reset",
         parseJson(readFile(regFile)){"entries"}.len == 0)
-  # unknown ids from the previous life are a clean 404
-  check("stale ids from the previous life are not pollable",
-        pcall("process_poll", %*{"id": id7}).hasKey("error"))
+  let orphanInbox = pcall("process_notices", %*{"session": "orphan-owner"})
+  check("orphan recovery records interruption for its owner",
+    orphanInbox{"count"}.getInt() == 1 and
+    orphanInbox{"notices"}[0]{"status"}.getStr("") == "interrupted(component restart)")
+  check("orphan output remains addressable after restart",
+    not pcall("process_poll", %*{"id": id7}).hasKey("error"))
 
   # -------------------------------------------------------------------------
   # exit notices: a finished background process tells its conversation
@@ -424,14 +429,17 @@ proc main() =
   # noticed when a tool call happened to reap it, so finished background work
   # sat unseen.
   block exitNotice:
+    let wakeSub = openSub(nc, "svc.core.call")
+    defer: natsSubscription_Destroy(wakeSub)
     let steerSub = openSub(nc, "svc.session.bgnotice.steer")
     defer: natsSubscription_Destroy(steerSub)
     let started = pcall("process_start",
       %*{"command": "echo notice-me", "label": "notice-fixture",
-         "session": "bgnotice"}, 20_000)
+         "session": "wrong-owner", "__session": {"session": "bgnotice"}}, 20_000)
     let ownedId = started{"id"}.getStr("")
-    check("notice: start accepted the owning session",
-          started{"error"} == nil and ownedId.len > 0, $started)
+    check("notice: injected ownership wins over explicit owner",
+          started{"error"} == nil and ownedId.len > 0 and
+          started{"text"}.getStr("").contains("Completion is pushed"), $started)
 
     var notice: JsonNode = nil
     let noticeDeadline = epochTime() + 20.0
@@ -455,6 +463,24 @@ proc main() =
       check("notice: it is a pointer (label, not the output itself)",
             notice{"label"}.getStr("") == "notice-fixture" and
             notice{"text"} == nil, $notice)
+
+    var sawWake = false
+    let wakeDeadline = epochTime() + 5.0
+    while not sawWake and epochTime() < wakeDeadline:
+      let wake = pollEnvelope(wakeSub, 200)
+      sawWake = wake.found and wake.env.tool == "session" and
+        wake.env.args{"wake"}.getBool(false) and
+        wake.env.args{"sessionId"}.getStr("") == "bgnotice"
+    check("notice: exit requests a bounded session wake without polling", sawWake)
+    let pending = pcall("process_notices", %*{"session": "bgnotice", "peek": true})
+    check("notice: durable before wake and repeatable until ack",
+      pending{"count"}.getInt() == 1 and
+      pcall("process_notices", %*{"session": "bgnotice"}){"count"}.getInt() == 1)
+    check("notice: other sessions cannot drain completion",
+      pcall("process_notices", %*{"session": "foreign", "ack": ownedId}){"count"}.getInt() == 0)
+    discard pcall("process_notices", %*{"session": "bgnotice", "ack": ownedId})
+    check("notice: explicit acknowledgement deduplicates delivery",
+      pcall("process_notices", %*{"session": "bgnotice", "peek": true}){"count"}.getInt() == 0)
 
     # exactly once: further reaps, polls and listings must not repeat it
     var strays = 0
@@ -484,6 +510,55 @@ proc main() =
     while epochTime() < unownedUntil:
       if pollEnvelope(steerSub, 100).found: inc unowned
     check("notice: no owner session means no notice", unowned == 0, $unowned)
+
+  block completionRecovery:
+    # A previously durable exit survives component restart, including output.
+    let recoveredId = "p999999"
+    let noticesDir = tmp / "var" / "processes" / "notices"
+    createDir(noticesDir)
+    writeFile(noticesDir / (recoveredId & ".json"), $(%*{
+      "session": "recovered-owner", "delivered": false,
+      "notice": {"kind": "process-exited", "processId": recoveredId,
+        "label": "recovered", "status": "exited(code 0)", "exitCode": 0}}))
+    writeFile(spoolPath(tmp, recoveredId, "out"), "retained output\n")
+    writeFile(spoolPath(tmp, recoveredId, "err"), "")
+    # Existing component doesn't own this synthesized record; a separate root
+    # exercises the boot path without disturbing the original process fixture.
+    let recoveredRoot = tempRoot("process-recovered")
+    defer: removeDir(recoveredRoot)
+    createDir(recoveredRoot / "var" / "processes" / "notices")
+    copyFile(noticesDir / (recoveredId & ".json"),
+      recoveredRoot / "var" / "processes" / "notices" / (recoveredId & ".json"))
+    copyFile(spoolPath(tmp, recoveredId, "out"), spoolPath(recoveredRoot, recoveredId, "out"))
+    let (recoveryServer, recoveryUrl) = startNats()
+    defer: stopServer(recoveryServer)
+    var recoveryNc = waitConnect(recoveryUrl)
+    defer: recoveryNc.close()
+    let recoveryDir = recoveredRoot / "var" / "processes"
+    for id in ["p888881", "p888882"]:
+      writeFile(recoveryDir / "notices" / (id & ".json"), $(%*{
+        "session": "retention", "delivered": id == "p888881",
+        "deliveredAt": epochTime() - 8 * 86400,
+        "notice": {"processId": id, "endedAt": epochTime() - 30 * 86400}}))
+      writeFile(recoveryDir / (id & ".out"), "keep pending only")
+    let recoveryProc = startComponent(bin, recoveryUrl, root = recoveredRoot)
+    defer: stopProcess(recoveryProc)
+    check("recovered component registered", waitRegistered(recoveryNc, "processes"))
+    let inbox = call(recoveryNc, "processes", "process_notices",
+      %*{"session": "recovered-owner", "peek": true})
+    check("completion survives component restart", inbox{"count"}.getInt() == 1)
+    for attempt in 0 ..< 50:
+      if not fileExists(recoveryDir / "notices" / "p888881.json"): break
+      sleep(100)
+    check("retention removes old acknowledged receipts and output",
+      not fileExists(recoveryDir / "notices" / "p888881.json") and
+      not fileExists(recoveryDir / "p888881.out"))
+    check("retention never drops pending receipts or output",
+      fileExists(recoveryDir / "notices" / "p888882.json") and
+      fileExists(recoveryDir / "p888882.out"))
+    let output = call(recoveryNc, "processes", "process_poll", %*{"id": recoveredId})
+    check("completion output survives component restart",
+      output{"text"}.getStr("").contains("retained output"), $output)
 
   report("t_processes")
 
