@@ -4,7 +4,7 @@
 ## matches, line numbers, gitignore/hidden handling, globs, case folding,
 ## regex errors, result caps, and the files tool.
 
-import std/[json, os, osproc, strutils]
+import std/[algorithm, json, os, osproc, strutils, times]
 import natsnim
 import helpers
 
@@ -183,6 +183,47 @@ proc main() =
   drain(nc)
   sleep(700)
   check("grep drains and exits", not gProc.running())
+
+  # grep and files READ; neither may take a write claim. Regression: both
+  # declared a `workspace` but no effect, so the gate applied the WRITE default
+  # and each claims the whole tree it merely searched — a grep in one
+  # conversation then blocked (and was blocked by) an edit in another, and the
+  # refusal named grep as the holder.
+  #
+  # The schemas come from the component's own reg.publish, which is what core
+  # ingests; asserted by PARSING so a rename cannot make this pass vacuously.
+  var policySub: ptr natsSubscription
+  discard natsConnection_SubscribeSync(addr policySub, nc.conn,
+                                       "reg.publish".cstring)
+  discard natsConnection_Flush(nc.conn)
+  let g2 = startComponent(bin, url, root = tmp)
+  var published = false
+  var readOK = true
+  var seen: seq[string]
+  let deadline = epochTime() + 10.0
+  while epochTime() < deadline and not published:
+    var msg: ptr natsMsg
+    if natsSubscription_NextMsg(addr msg, policySub, 200) == NATS_OK:
+      let doc = parseJson($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if doc{"name"}.getStr("") != "grep": continue
+      published = true
+      for t in doc{"tools"}:
+        let name = t{"name"}.getStr("")
+        if name notin ["grep", "files"]: continue
+        let policy = t{"schema"}{"x-harness"}
+        let effect = if policy == nil: "" else: policy{"effect"}.getStr("")
+        seen.add(name & ":" & effect)
+        if effect != "read": readOK = false
+  natsSubscription_Destroy(policySub)
+  if g2.running():
+    g2.terminate()
+    discard g2.waitForExit(2000)
+  g2.close()
+  check("grep republishes its tool schemas", published, $seen)
+  seen.sort()
+  check("grep and files declare the read effect (no write claim)",
+        readOK and seen == @["files:read", "grep:read"], $seen)
 
   report("GREP TEST")
 

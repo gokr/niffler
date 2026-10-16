@@ -58,6 +58,11 @@ proc finish(code: int, output: string, maxResults: int): JsonNode =
                 hint = "narrow pattern/path/glob for the missing part")}
 
 comp.tool(%*{"timeoutMs": 60000, "parallel": true,
+              # Read-only: grep never mutates a path, so it must take no
+              # write claim. Without this the gate applied the WRITE default
+              # and claimed the whole workspace, so a search refused every
+              # writer (and was refused by them) for as long as it ran.
+              "effect": "read",
               "workspace": {"pathFields": ["path"],
                            "defaultPathFields": ["path"]}}):
   proc grep(pattern: string, path: string = ".", glob: string = "",
@@ -101,6 +106,8 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
     return finish(code, output, min(max(1, max_results), 10_000))
 
 comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
+              # Read-only, like grep: a listing must not hold a write claim.
+              "effect": "read",
               "workspace": {"pathFields": ["path"],
                            "defaultPathFields": ["path"]}}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,
