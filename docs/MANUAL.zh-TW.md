@@ -43,7 +43,7 @@
 | `sdk/` | Nim SDK（`sdk/niffler`）＋`sdk/go`（Go）＋`sdk/ts`（TypeScript/Node.js，npm 套件 `niffler-sdk`）；`sdk/envelope.nim` 中的信封是產物 |
 | `docs/` | 本手冊、線路規格（`WIRE.md`）、設定設計（`research/SETTINGS.md`）、core 邊界理由（`ARCHITECTURE.md`）、fabric 使用者指南（`FABRIC_GUIDE.md`）、待辦工作（`PLAN.md`）及 `research/`（設計歷史） |
 | `manifest.yaml` | 啟動 manifest：core 生成哪些元件、重啟原則，以及選用的無狀態 `replicas` 數量；`--minimal` 將其篩選為 `store`、`bash` 和 `llm` |
-| `var/` | **執行時狀態，gitignored，可丟棄** — 儲存庫是快照 |
+| `var/` | **執行時狀態與建置產物，gitignored** — 包含持久儲存和基準資料，不可整體刪除 |
 | `var/bin/` | 建置的二進位檔（系統 core ＋會話執行器＋元件），加上 `builder.build` 編譯的一切 — 代理建置的元件也落在此處，與系統元件並列。由 `make build` 重建 |
 | `var/store.db` | 儲存的資料檔（SQLite 是唯一檔案型引擎）— **單一寫入者**：恰好一個 `store` 行程可以開啟它，並鎖定 `var/store.db.lock`（flock，行程崩潰時由核心釋放）。0.4.0 之前的 `var/barrel-db` 會在啟動時被拒絕，絕不會被覆寫 |
 | `var/nats-url` | 最後生成的匯流排的匯流排位址；UI 橋接讀取它以找到 core |
@@ -53,8 +53,8 @@
 | `var/approval-sources/`、`var/mcp-results/`、`var/review-receipts/`、`var/fabric-cache/`、`var/plugins/` | 核准提示負載、MCP 橋接結果、`review_receipt` 指紋、已編譯的 fabric 程式和已安裝的外掛複製 — 全部可丟棄 |
 | `var/models/`、`var/processes/`、`var/repomap-tags/`、`var/fetch/` | 元件狀態：models.dev 目錄快取、背景程序記錄、repomap 標籤快取、溢出的 fetch 主體 |
 | `var/nats-pid` | 生成的匯流排 core 的 pid（僅用於崩潰清理 — 執行中的 core 在退出時停止自己的匯流排） |
-| `var/build/` | 代理建置元件的原始碼檔案（builder 的暫存目錄）：Nim 為一個 `<name>.nim`，Go 和 TypeScript 為整個專案目錄（`go.mod`、`package.json`/`tsconfig.json`、`node_modules/`、`dist/`）。它是代理建置元件原始碼的**唯一**副本 — 持久化的 `component` 記錄不攜帶任何原始碼，因此 `make clean` 會使其成為孤兒 |
-| `nimcache/` | 建置產物；`make clean` 移除它們（連同 `var/`） |
+| `var/build/` | 代理建置元件的原始碼檔案（builder 的暫存目錄）：Nim 為一個 `<name>.nim`，Go 和 TypeScript 為整個專案目錄（`go.mod`、`package.json`/`tsconfig.json`、`node_modules/`、`dist/`）。它是代理建置元件原始碼的**唯一**副本 — 持久化的 `component` 記錄不攜帶任何原始碼，因此 `make clean` 保留此目錄（僅刪除編譯後的二進位檔） |
+| `var/nimcache/`、`nimcache/` | 編譯快取；`make clean` 僅刪除這些目錄和 `var/bin/`，保留儲存、基準結果、日誌、外掛和代理建置的原始碼 |
 
 ### Shipped components
 
@@ -2183,8 +2183,8 @@ make von-down      # disable again (stops it, deletes the record)
 
 ## Recovery
 
-儲存庫是快照；`var/` 是可丟棄的建置輸出——以 `make clean` 刪除建置
-輸出，絕不要用裸的 `rm -rf var`；而一個拒絕啟動的 `store` 意味著另一個行程仍持有鎖
+`var/` 包含持久儲存與基準資料。`make clean` 僅刪除
+`var/bin/`、`var/nimcache/` 和 `nimcache/`，絕不要整體刪除 `var/`；而一個拒絕啟動的 `store` 意味著另一個行程仍持有鎖
 （`var/store.db.lock`），而非一個過期檔案：`make down`
 或殺掉過期的 store，核心便會釋放它。如果 agent
 （或某個 bug）弄壞了隨附元件——覆寫了 `var/bin` 中的二進位檔、
@@ -2296,7 +2296,7 @@ make test-bash      # ... or just one — `make help` lists every target
 harness 並行——`scripts/run-tests.sh` 正是靠這點來池化整套件。儲存庫
 建置寫入（`make build`、`make clean`）由 `scripts/with-build-lock.sh`
 序列化；執行時的 `builder.build` 不取該鎖，因此在第二個終端機的
-`make clean` 會在執行中的建置底下刪除 `var/bin` 和 `var/build`。
+`make clean` 會在執行中的建置底下刪除 `var/bin`（但保留 `var/build` 原始碼）。
 代理建置的測試元件使用沙箱本地的 Nim 快取。
 
 有幾個測試帶有自己的 fixture，而非真正的模型：
@@ -2413,7 +2413,7 @@ make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
 make down-here      # stop this checkout's harness, components and spawned bus
                     # only — bench worktrees and other clones survive
-make clean          # remove all build artifacts (var/, nimcache/)
+make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve data
 ```
 
 - **無頭服務模式**（無 tty，供 UI／自動化使用）：

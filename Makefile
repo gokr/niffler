@@ -81,29 +81,74 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
         install-node install-native-deps install-nim-deps check-nim-deps \
         install-tools install-lsp install-jev von-up von-down
 
+.PHONY: help-tests help-advanced build-release stop stop-all test-go
+
 help:
-	@echo 'make all       build core + components (default)'
-	@echo 'make build     same, explicit target'
-	@echo 'make install    put niffler/niffler-cli (+ niffler-tui on request) on PATH'
-	@echo 'make install-tui  same, installing the niffler-tui client without asking'
-	@echo 'make uninstall  remove those PATH entries again (WITH_TUI=1 to preinstall)'
-	@echo '                overrides: NIF_BIN_DIR=~/bin  WITH_TUI=1  FORCE=1'
-	@echo 'make run       run the harness in the terminal (admin shell)'
-	@echo 'make ram       RAM of running niffler stacks (harness + components + nats + clients)'
-	@echo 'make down      stop any running harness, components and nats-server'
-	@echo 'make down-here stop only THIS checkout: harness, components and bus'
-	@echo 'make test      full gate: core, components and the bus-contract suite'
-	@echo 'make test-server  bus-contract suite only (no TypeScript toolchain)'
-	@echo 'make setup     install prerequisites for this platform'
-	@echo 'make doctor    check prerequisites and report what is missing'
-	@echo 'make install-lsp  install the lsp component language servers'
-	@echo 'make install-tools  agent CLI toolkit: jq, yq, ripgrep, fd, fzf, bat, tree, ...'
-	@echo 'make install-jev  install the Von runtime for the jev component (opt-in, ~5.4 GB)'
-	@echo 'make von-up      enable the supervised Von launcher (persists across boots)'
-	@echo 'make von-down    disable it again (spawn record removed)'
-	@echo 'make clean     remove all build artifacts'
-	@echo 'make recover   stop everything, rebuild shipped binaries, wipe spawned'
-	@echo '               component records, restart interactively (--recover)'
+	@echo 'Niffler — everyday commands (default: build)'
+	@echo ''
+	@echo 'Build and install'
+	@echo '  build           Debug binaries; incremental, no dependency installation'
+	@echo '  build-release   Optimized local binaries; NOT a tag or GitHub release'
+	@echo '  install         Build + PATH wrappers; optionally install the TUI'
+	@echo '  uninstall       Remove PATH wrappers; keep data and installed plugins'
+	@echo '  clean           Delete ONLY var/bin/, var/nimcache/, nimcache/'
+	@echo '                  Store, benchmarks, logs, plugins and var/build/ survive'
+	@echo ''
+	@echo 'Run and inspect'
+	@echo '  run             Build + interactive admin shell (not the chat UI)'
+	@echo '  stop            Stop THIS checkout and its bus; preserve all data'
+	@echo '  ram             Show memory usage of running Niffler stacks'
+	@echo ''
+	@echo 'Verify and set up'
+	@echo '  test            Full gate: bus contracts + Go tests/vet + benchmark unit tests'
+	@echo '  test-clean      Isolated regression test for data-safe cleanup'
+	@echo '  setup           Install platform prerequisites (may use sudo/network)'
+	@echo '  doctor          Report prerequisite availability'
+	@echo ''
+	@echo 'More: make help-tests | make help-advanced'
+	@echo 'Compatibility aliases remain available: all, release, down-here, gotest.'
+
+help-tests:
+	@echo 'Tests (private NATS servers and isolated runtime roots)'
+	@echo '  test / test-server   Same full gate; includes Go/vet and Node benchmark tests'
+	@echo '  test-go              Go unit tests + vet; race detector on audited packages'
+	@echo '  test-bench           Node benchmark infrastructure unit tests; not a model eval'
+	@echo '  test-clean           Cleanup contract only; no full build or live store access'
+	@echo '  test-<component>     Focused contracts, e.g. test-store, test-core, test-edit'
+	@echo '  test-store-tidb       Needs NIF_STORE_TIDB_DSN pointing at a test database'
+	@echo '  live-smoke           OPT-IN: real provider calls, spends tokens'
+	@echo '  smoke               Legacy alias for test-smoke'
+	@echo ''
+	@echo 'Overrides: TEST_JOBS=N (bus pool), CORES=N (default pool sizing)'
+	@echo 'Contract logs: var/test-logs/. Most focused targets also build shipped binaries.'
+
+help-advanced:
+	@echo 'Optional installation (network access; some targets need privileges)'
+	@echo '  install-tui          install WITH_TUI=1'
+	@echo '  install-lsp          Language servers (ALL=1 for unattended installation)'
+	@echo '  install-tools        Optional agent CLI toolkit'
+	@echo '  install-jev          Optional Von runtime (~5.4 GB); not part of setup'
+	@echo '  install-sandbox-profile / uninstall-sandbox-profile'
+	@echo '                       Optional AppArmor configuration for bubblewrap'
+	@echo '  install-go / install-nim / install-node / install-native-deps / install-nim-deps'
+	@echo '                       Individual prerequisite installers used by setup'
+	@echo '  von-up / von-down    Persist/remove supervised Von launcher (live harness needed)'
+	@echo ''
+	@echo 'Disruptive operations — not cleanup'
+	@echo '  recover              Rebuild, restart interactively, DELETE spawned-component'
+	@echo '                       records; conversations survive (legacy UI stop is global)'
+	@echo '  stop-all             GLOBAL: stop harnesses and NATS across checkouts'
+	@echo '                       Legacy alias: down. Prefer stop for normal use.'
+	@echo ''
+	@echo 'Install overrides: NIF_BIN_DIR=~/bin WITH_TUI=1 FORCE=1'
+	@echo 'Build internals: components, components-inner, check-nim-deps; prefer build.'
+	@echo 'Aliases: all=build, release=build-release, down-here=stop, gotest=test-go.'
+
+# Clear public names; retain historical spellings for scripts and CI.
+build-release: release
+stop: down-here
+stop-all: down
+test-go: gotest
 
 all: build
 
@@ -500,6 +545,10 @@ test-bench:
 	@mkdir -p var
 	node --test bench/tests/*.test.mjs
 
+.PHONY: test-clean
+test-clean: var/bin/test_t_clean
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_clean
+
 test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
@@ -595,16 +644,17 @@ gotest:
 	cd components/store-tidb && go test ./... && go vet ./...
 	cd components/nats && go test ./... && go vet ./...
 
-# recover: back to factory shape. The repo is the snapshot; var/ is
-# disposable build output. Core's --recover rebuilds binaries from source
-# and wipes store component records (conversations survive).
+# recover: rebuild binaries and wipe spawned-component records only.
+# var/ also contains durable data (including conversations), not just builds.
 recover: build
 	@pkill -f "niffler-ui" 2>/dev/null; \
 	 pkill -f "$(ROOT)/var/bin/niffler$$" 2>/dev/null; sleep 1; true
 	./var/bin/niffler --recover
 
+# Explicit build-output allowlist: never remove var/ itself. Preserve the
+# store (including WAL/SHM/lock files), runtime state and var/build sources.
 clean:
-	$(BUILD_LOCK) rm -rf var nimcache
+	$(BUILD_LOCK) rm -rf var/bin var/nimcache nimcache
 
 # ---------------------------------------------------------------------------
 # prerequisites

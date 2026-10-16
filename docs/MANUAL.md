@@ -44,7 +44,7 @@ A one-file index of every shipped capability (not a reference) is
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual, the wire spec (`WIRE.md`), the settings design (`research/SETTINGS.md`), the core-boundary rationale (`ARCHITECTURE.md`), the fabric user guide (`FABRIC_GUIDE.md`), open work (`PLAN.md`) and `research/` (design history) |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, `llm`, and `systemprompt` |
-| `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
+| `var/` | **runtime state and build output, gitignored** — contains durable store and benchmark data; never delete wholesale |
 | `var/bin/` | built binaries (system core + session runner + components), plus everything `builder.build` compiles — agent-built components land here too, beside the system ones. Rebuilt by `make build` |
 | `var/store.db` | the store's data file (SQLite is the only file-backed engine) — **single-writer**: exactly one `store` process may open it, and it locks `var/store.db.lock` (flock, kernel-released on crash). A pre-0.4.0 `var/barrel-db` is refused at boot, never overwritten |
 | `var/nats-url` | bus address of the last spawned bus; the UI bridge reads it to find core |
@@ -54,8 +54,8 @@ A one-file index of every shipped capability (not a reference) is
 | `var/approval-sources/`, `var/mcp-results/`, `var/review-receipts/`, `var/fabric-cache/`, `var/plugins/` | approval prompt payloads, MCP bridge results, `review_receipt` fingerprints, compiled fabric programs and installed plugin clones — all disposable |
 | `var/models/`, `var/processes/`, `var/repomap-tags/`, `var/fetch/` | component state: the models.dev catalog cache, background-process records, the repomap tag cache, spilled fetch bodies |
 | `var/nats-pid` | pid of the bus core spawned (crash cleanup only — a live core stops its own bus on exit) |
-| `var/build/` | source files of agent-built components (builder's scratch dir): one `<name>.nim` for Nim, a whole project directory for Go and TypeScript (`go.mod`, `package.json`/`tsconfig.json`, `node_modules/`, `dist/`). It is the **only** copy of an agent-built component's source — the persisted `component` record carries none, so `make clean` orphans it |
-| `nimcache/` | build artifacts; `make clean` removes them (together with `var/`) |
+| `var/build/` | source files of agent-built components (builder's scratch dir): one `<name>.nim` for Nim, a whole project directory for Go and TypeScript (`go.mod`, `package.json`/`tsconfig.json`, `node_modules/`, `dist/`). It is the **only** copy of an agent-built component's source — the persisted `component` record carries none, so `make clean` preserves this directory (but removes its compiled binaries) |
+| `var/nimcache/`, `nimcache/` | compiler caches; `make clean` removes only these and `var/bin/`, preserving all other runtime state, benchmark results, logs, plugins and agent-built sources |
 
 ### Shipped components
 
@@ -654,7 +654,7 @@ read: it is consulted only when `nats` is neither on `PATH` nor in
 `NIF_REPO_ROOT`. `NIF_LSP_BIN` and `NIF_LSP_BIN_DIRS` are runtime variables and
 stay in the table above. The lock only covers `make`: `builder.build` runs
 outside it, so a runtime component build can race `make build` — and `make clean`
-deletes `var/bin` and `var/build` under it. Stop the harness while an agent is
+deletes `var/bin` (but preserves `var/build` sources) under it. Stop the harness while an agent is
 building a component.
 
 Every Niffler variable carries the `NIF_` prefix, so the harness never
@@ -3665,8 +3665,9 @@ arguments…}` — approval-gated, like every `spawn`.
 
 ## Recovery
 
-The repo is the snapshot; `var/` is disposable build output — delete build
-output with `make clean`, never a bare `rm -rf var`; and a `store` that
+`var/` contains durable store and benchmark data alongside build output.
+`make clean` deletes only `var/bin/`, `var/nimcache/` and `nimcache/`;
+never delete `var/` wholesale; and a `store` that
 refuses to start means another process still holds the lock
 (`var/store.db.lock`), not a stale file: `make down`
 or kill the stale store and the kernel releases it. If the agent
@@ -3799,7 +3800,7 @@ with each other and a live development harness — `scripts/run-tests.sh`
 relies on exactly that to pool the suite. Repository build writes
 (`make build`, `make clean`) are serialized by `scripts/with-build-lock.sh`;
 a runtime `builder.build` does not take that lock, so a `make clean` in a
-second terminal deletes `var/bin` and `var/build` under a running build.
+second terminal deletes `var/bin` (but preserves `var/build` sources) under a running build.
 Agent-built test components use sandbox-local Nim caches.
 
 Several tests carry their own fixtures instead of a real model:
@@ -3932,7 +3933,7 @@ make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
 make down-here      # stop this checkout's harness, components and spawned bus
                     # only — bench worktrees and other clones survive
-make clean          # remove all build artifacts (var/, nimcache/)
+make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve data
 ```
 
 - **Headless service mode** (no tty, for UIs/automation):

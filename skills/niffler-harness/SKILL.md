@@ -9,8 +9,11 @@ Niffler is a self-extending harness: a system core plus one process per
 component, speaking JSON envelopes over NATS. This skill covers operating and
 debugging that machinery; `niffler-tools` is the which-tool-for-the-job map
 and `niffler-fabric` is how to program tools. The repo snapshot is the source
-of truth; `var/` is disposable runtime state (remove artifacts with
-`make clean`, never a bare `rm -rf var`).
+of truth for code; `var/` also holds durable store and benchmark data.
+`make clean` removes only `var/bin/`, `var/nimcache/` and `nimcache/`;
+never delete `var/` wholesale. Use `make help`, `make help-tests` and
+`make help-advanced` for grouped commands; `make stop` is checkout-scoped,
+while `make stop-all` (legacy `down`) is global.
 
 ## Docs map
 

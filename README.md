@@ -124,7 +124,9 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 | `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
 | `make test-<name>` | one component's contract test, e.g. `make test-fetch` |
 | `make gotest` | Go unit tests and vet (`-race` where it matters) |
-| `make clean` | remove build artifacts (never `rm -rf var` by hand) |
+| `make clean` | remove binaries/compiler caches only; preserve store, benchmarks and runtime data |
+| `make help` / `make help-tests` / `make help-advanced` | grouped everyday, test and advanced commands |
+| `make stop` / `make stop-all` | stop this checkout / all checkouts (legacy: `down-here` / `down`) |
 | `make down` | stop stray harnesses, components and bus processes anywhere on the machine |
 | `make down-here` | the same, scoped to this checkout — bench worktrees and other clones survive |
 | `make recover` | stop everything, rebuild the shipped binaries, wipe spawned-component records, restart |

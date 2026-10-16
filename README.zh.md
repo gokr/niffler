@@ -72,7 +72,9 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make test-server` | 总线契约测试套件（每个测试自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 单个组件的契约测试，例如 `make test-fetch` |
 | `make gotest` | Go 单元测试与 vet（重要模块带 `-race`） |
-| `make clean` | 清除构建产物（不要手工 `rm -rf var`） |
+| `make clean` | 仅删除二进制文件和编译缓存；保留存储、基准结果和运行时数据 |
+| `make help` / `make help-tests` / `make help-advanced` | 按日常、测试和高级操作分组的命令 |
+| `make stop` / `make stop-all` | 停止当前检出 / 所有检出（旧名：`down-here` / `down`） |
 | `make down` | 停止机器上散落的 harness、组件和总线进程 |
 | `make down-here` | 同上，但只限本 checkout（bench worktree 和其他 clone 不受影响） |
 | `make recover` | 全部停止、重新构建、清理已 spawn 的组件记录、重新启动 |

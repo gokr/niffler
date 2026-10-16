@@ -14,6 +14,11 @@ of this file.
 
 ## Recent reliability slices
 
+- **Data-safe cleanup + Make command discovery** — `clean` has an explicit
+  build-output allowlist; an isolated contract preserves store sidecars,
+  benchmarks and unknown runtime state. Help separates everyday, test and
+  advanced/disruptive operations; historical command names remain aliases.
+
 - **Tool diet + result routing** — implemented on `feat/tool-diet-results`:
   retain eight direct tools; concise prompt/schema routing, raw-string result
   projection, workspace-relative/bounded file text, conditional recovery hints,

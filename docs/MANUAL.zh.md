@@ -43,7 +43,7 @@
 | `sdk/` | Nim SDK（`sdk/niffler`）+ `sdk/go`（Go）+ `sdk/ts`（TypeScript/Node.js，npm 包 `niffler-sdk`）；`sdk/envelope.nim` 中的信封就是产物 |
 | `docs/` | 本手册、线协议规范（`WIRE.md`）、设置设计（`research/SETTINGS.md`）、核心边界理由（`ARCHITECTURE.md`）、fabric 用户指南（`FABRIC_GUIDE.md`）、待办工作（`PLAN.md`）以及 `research/`（设计历史） |
 | `manifest.yaml` | 引导清单：core 生成哪些组件、重启策略，以及可选的无状态 `replicas` 数量；`--minimal` 将其过滤为 `store`、`bash` 和 `llm` |
-| `var/` | **运行时状态，已 gitignore，可丢弃** —— 仓库才是快照 |
+| `var/` | **运行时状态与构建产物，已 gitignore** —— 包含持久存储和基准数据，不可整体删除 |
 | `var/bin/` | 构建出的二进制文件（系统核心 + 会话运行器 + 组件），以及 `builder.build` 编译的一切 —— agent 构建的组件也落在这里，与系统组件并列。由 `make build` 重建 |
 | `var/store.db` | 存储的数据文件（SQLite 是唯一基于文件的引擎）—— **单写入者**：恰好一个 `store` 进程可以打开它，并锁定 `var/store.db.lock`（flock，进程崩溃时由内核释放）。0.4.0 之前的 `var/barrel-db` 会在启动时被拒绝，绝不会被覆盖 |
 | `var/nats-url` | 最后生成的总线的总线地址；UI 桥读取它以找到 core |
@@ -53,8 +53,8 @@
 | `var/approval-sources/`、`var/mcp-results/`、`var/review-receipts/`、`var/fabric-cache/`、`var/plugins/` | 审批提示载荷、MCP 桥结果、`review_receipt` 指纹、编译后的 fabric 程序和已安装的插件克隆 —— 全部可丢弃 |
 | `var/models/`、`var/processes/`、`var/repomap-tags/`、`var/fetch/` | 组件状态：models.dev 目录缓存、后台进程记录、repomap 标签缓存、溢出的 fetch 正文 |
 | `var/nats-pid` | 生成的 bus core 的 pid（仅用于崩溃清理 —— 存活的 core 在退出时会停止自己的总线） |
-| `var/build/` | agent 构建组件的源文件（builder 的暂存目录）：Nim 为一个 `<name>.nim`，Go 和 TypeScript 为整个项目目录（`go.mod`、`package.json`/`tsconfig.json`、`node_modules/`、`dist/`）。它是 agent 构建组件源码的**唯一**副本 —— 持久化的 `component` 记录不携带任何源码，因此 `make clean` 会使其成为孤儿 |
-| `nimcache/` | 构建产物；`make clean` 会删除它们（连同 `var/`） |
+| `var/build/` | agent 构建组件的源文件（builder 的暂存目录）：Nim 为一个 `<name>.nim`，Go 和 TypeScript 为整个项目目录（`go.mod`、`package.json`/`tsconfig.json`、`node_modules/`、`dist/`）。它是 agent 构建组件源码的**唯一**副本 —— 持久化的 `component` 记录不携带任何源码，因此 `make clean` 保留此目录（仅删除编译后的二进制文件） |
+| `var/nimcache/`、`nimcache/` | 编译缓存；`make clean` 仅删除这些目录和 `var/bin/`，保留存储、基准结果、日志、插件和代理构建的源码 |
 
 ### Shipped components
 
@@ -343,7 +343,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | `NIF_LOG_RETENTION_DAYS` | core 在清扫前保留子进程日志的天数 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在新组件于目录中注册之前等待多久才使调用失败（钳制 250–120000）；当目录记录拒绝时等待提前结束，因此该旋钮仅约束静默组件 | `5000` |
 
-**构建和脚本旋钮**——由 harness 周围的脚本读取，组件从不读取：`NIF_BIN_DIR`（`scripts/install.sh` 将 PATH 条目链接到的 bin 目录）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 加 flock 的锁文件——构建时排他，测试运行时共享）、`NIF_NATS_CLI`（`examples/dialog/dialog.sh` 驱动的 nats CLI——此处唯一一个组件确实读取的条目：仅当 `nats` 既不在 `PATH` 上也不在 `$HOME/go/bin` 中时才查询它）、`NIF_CONF_KEEP`，加上测试辅助 `NIF_STORE_BIN` 和 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 和 `NIF_LSP_BIN_DIRS` 是运行时变量，留在上表中。锁仅覆盖 `make`：`builder.build` 在其之外运行，因此运行时组件构建可能与 `make build` 竞争——而 `make clean` 在其下删除 `var/bin` 和 `var/build`。当 agent 正在构建组件时停止 harness。
+**构建和脚本旋钮**——由 harness 周围的脚本读取，组件从不读取：`NIF_BIN_DIR`（`scripts/install.sh` 将 PATH 条目链接到的 bin 目录）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 加 flock 的锁文件——构建时排他，测试运行时共享）、`NIF_NATS_CLI`（`examples/dialog/dialog.sh` 驱动的 nats CLI——此处唯一一个组件确实读取的条目：仅当 `nats` 既不在 `PATH` 上也不在 `$HOME/go/bin` 中时才查询它）、`NIF_CONF_KEEP`，加上测试辅助 `NIF_STORE_BIN` 和 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 和 `NIF_LSP_BIN_DIRS` 是运行时变量，留在上表中。锁仅覆盖 `make`：`builder.build` 在其之外运行，因此运行时组件构建可能与 `make build` 竞争——而 `make clean` 在其下删除 `var/bin`（但保留 `var/build` 源码）。当 agent 正在构建组件时停止 harness。
 
 每个 Niffler 变量都带有 `NIF_` 前缀，因此 harness 从不与使用裸约定的工具（`NATS_URL`、`OPENAI_API_KEY`）冲突。
 
@@ -2031,8 +2031,8 @@ make von-down      # disable again (stops it, deletes the record)
 
 ## Recovery
 
-仓库是快照；`var/` 是一次性构建输出——用 `make clean` 删除构建
-输出，绝不要裸 `rm -rf var`；而一个拒绝启动的 `store` 意味着另一个进程仍持有锁
+`var/` 包含持久存储与基准数据。`make clean` 仅删除
+`var/bin/`、`var/nimcache/` 和 `nimcache/`，绝不要整体删除 `var/`；而一个拒绝启动的 `store` 意味着另一个进程仍持有锁
 （`var/store.db.lock`），而不是一个陈旧文件：`make down`
 或杀死陈旧的 store，内核会释放它。如果 agent
 （或一个 bug）破坏了随附组件——覆盖了 `var/bin` 中的二进制、
@@ -2113,7 +2113,7 @@ make test-bash      # ... or just one — `make help` lists every target
 
 每个测试都会启动真实的组件二进制（Nim、Go *和* TypeScript——信封就是产物，因此一个 harness 测试所有 SDK），并在每个测试自己启动的私有 nats-server 上驱动它们（`NIF_NATS_SPAWN` 式隔离）。
 此门是自包含的：不需要浏览器、Wails 或前端工具链。（实验性的桌面 UI 位于 [gokr/niffler-ui](https://github.com/gokr/niffler-ui)，在那里运行它自己的检查。）
-基于核心的测试会将其所需二进制快照到唯一的临时 `NIF_ROOT`；插件克隆、生成的组件、日志和缓存因此都被隔离。各个 `make test-*` 目标可以彼此并发运行，也可以与活动的开发 harness 并发运行——`scripts/run-tests.sh` 正是依赖这一点来池化套件。仓库构建写入（`make build`、`make clean`）由 `scripts/with-build-lock.sh` 串行化；运行时的 `builder.build` 不获取该锁，因此在第二个终端中执行 `make clean` 会在正在运行的构建之下删除 `var/bin` 和 `var/build`。
+基于核心的测试会将其所需二进制快照到唯一的临时 `NIF_ROOT`；插件克隆、生成的组件、日志和缓存因此都被隔离。各个 `make test-*` 目标可以彼此并发运行，也可以与活动的开发 harness 并发运行——`scripts/run-tests.sh` 正是依赖这一点来池化套件。仓库构建写入（`make build`、`make clean`）由 `scripts/with-build-lock.sh` 串行化；运行时的 `builder.build` 不获取该锁，因此在第二个终端中执行 `make clean` 会在正在运行的构建之下删除 `var/bin`（但保留 `var/build` 源码）。
 代理构建的测试组件使用沙箱本地的 Nim 缓存。
 
 若干测试自带夹具，而不是使用真实模型：
@@ -2167,7 +2167,7 @@ make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
 make down-here      # stop this checkout's harness, components and spawned bus
                     # only — bench worktrees and other clones survive
-make clean          # remove all build artifacts (var/, nimcache/)
+make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve data
 ```
 
 - **无头服务模式**（无 tty，用于 UI/自动化）：

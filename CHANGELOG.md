@@ -8,6 +8,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `make clean` now deletes only binaries and compiler caches, never the store,
+  benchmark results, logs, plugins or agent-built sources. Added an isolated
+  cleanup regression contract. Grouped Make help by purpose, with explicit
+  `stop`, `stop-all`, `build-release` and `test-go` names; old names still work.
+
 - LSP server disposal now reaps the child after SIGKILL before closing its
   handles. Unreaped server PIDs stayed visible to grandchild client-PID
   watchdogs, leaking nimsuggest processes after timeouts and LRU eviction.
