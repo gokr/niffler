@@ -105,6 +105,11 @@ type Component struct {
 	// registered, exiting when the last one departs.
 	Client bool
 
+	// explicitURL is frozen by NewWithURL. Re-attach must never adopt another
+	// instance through process-global environment or local discovery fallback.
+	explicitURL string
+	explicitBus bool
+
 	nc            *nats.Conn
 	tools         []Tool
 	slash         []SlashCommand
@@ -171,6 +176,17 @@ func New(name, version string) *Component {
 		dispatchDone:    make(chan struct{}),
 	}
 	c.owner = c
+	return c
+}
+
+// NewWithURL creates an explicitly addressed component for a multi-instance
+// client. Its bus choice never reads or changes process-global environment;
+// re-attach retries only this URL. Use New for ordinary discovery-based peers.
+// An empty URL is refused at Connect, not treated as local discovery.
+func NewWithURL(name, version, url string) *Component {
+	c := New(name, version)
+	c.explicitURL = strings.TrimSpace(url)
+	c.explicitBus = true
 	return c
 }
 
@@ -629,8 +645,11 @@ func (c *Component) RequestOK(component, tool string, args any, timeout time.Dur
 // Connect, do your thing, call Close. Run() = Connect + block on signal +
 // Close.
 func (c *Component) Connect() error {
-	// .env from cwd and the harness root (existing env always wins)
-	LoadDotEnv(".env", filepath.Join(os.Getenv("NIF_ROOT"), ".env"))
+	// Ordinary peers inherit local configuration. Explicitly addressed clients
+	// must not load local dotenv into process-global state between connections.
+	if !c.explicitBus {
+		LoadDotEnv(".env", filepath.Join(os.Getenv("NIF_ROOT"), ".env"))
+	}
 
 	url, err := c.dial()
 	if err != nil {
@@ -733,7 +752,13 @@ func (c *Component) Connect() error {
 // (explicit always wins), the harness root's var/nats-url discovery file
 // (a restarted core usually binds a new port), then the well-known port.
 func (c *Component) dial() (string, error) {
-	url := os.Getenv("NIF_NATS_URL")
+	if c.explicitBus && c.explicitURL == "" {
+		return "", fmt.Errorf("explicit bus URL must not be empty")
+	}
+	url := c.explicitURL
+	if url == "" {
+		url = os.Getenv("NIF_NATS_URL")
+	}
 	if url == "" {
 		if r := os.Getenv("NIF_ROOT"); r != "" {
 			if data, err := os.ReadFile(filepath.Join(r, "var", "nats-url")); err == nil {
@@ -810,6 +835,12 @@ func (c *Component) resubscribe() error {
 // first: the env URL (the same bus may simply have returned), the discovery
 // file (a restarted core usually binds a new port), the well-known port.
 func (c *Component) reattachCandidates() []string {
+	if c.explicitBus {
+		if c.explicitURL == "" {
+			return nil
+		}
+		return []string{c.explicitURL}
+	}
 	var urls []string
 	seen := map[string]bool{}
 	add := func(u string) {
@@ -933,7 +964,13 @@ func (c *Component) reconnectNow() error {
 
 // Connected reports whether the component is connected to the bus.
 func (c *Component) Connected() bool {
-	return c.nc != nil && c.nc.IsConnected()
+	owner := c
+	if c.owner != nil {
+		owner = c.owner
+	}
+	owner.contractMu.RLock()
+	defer owner.contractMu.RUnlock()
+	return owner.nc != nil && owner.nc.IsConnected()
 }
 
 // Close announces departure, drains subscriptions and closes the connection.
