@@ -339,6 +339,41 @@ proc main() =
   check("recovered claim releases", releaseRecovered{"released"}.getInt(0) == 1,
         $releaseRecovered)
 
+  # ── a tool that reads must not take a write claim ──
+  # The class of bug this pins, observed live: a read-only tool that declares
+  # no `x-harness` at all inherits the WRITE default and claims the whole
+  # conversation workspace. Core's own `discover` was then refused by another
+  # conversation's `bash` ("[E_WRITE_BUSY] ... discover"), and grep/files —
+  # which declare a `workspace` but no effect — claimed every tree they merely
+  # searched, serializing unrelated conversations on a read.
+  #
+  # Checked here against THIS sandbox's catalog (store + locks), which is the
+  # point: the rule is a property of every registered tool, so the check names
+  # no tool and cannot rot when one is renamed. The specific regressions live
+  # in the components' own tests (t_core for discover, t_grep for grep/files),
+  # where those tools are actually registered.
+  let snap = call(nc, "core", "catalog", %*{"op": "snapshot"}, 10_000)
+  var inspected = 0
+  var claimants: seq[string]
+  for comp in snap{"components"}:
+    for t in comp{"tools"}:
+      inc inspected
+      let tool = comp{"name"}.getStr("") & "." & t{"name"}.getStr("")
+      let policy = t{"schema"}{"x-harness"}
+      if policy == nil: continue
+      # The two ways a tool states "I take no write claim": the read effect
+      # (scheduling *and* ownership) and the explicit none.
+      if policy{"effect"}.getStr("") == "read" or
+         policy{"writes"}{"none"}.getBool(false):
+        let claim = writePathsFor(t{"schema"}, %*{}, ws)
+        if claim.len > 0:
+          claimants.add(tool & " -> " & $claim)
+  check("catalog snapshot carries tools to inspect", inspected >= 8, $inspected)
+  # Since lock_status declares effect:read, a regression here would show up as
+  # the locks component's own read tool holding the workspace.
+  check("no read/none tool computes a write claim", claimants.len == 0,
+        claimants.join("; "))
+
   report("LOCKS TEST")
 
 main()
