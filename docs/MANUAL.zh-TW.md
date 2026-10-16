@@ -12,6 +12,16 @@
 > 章節標題保留英文，以便跨文檔錨點保持有效。
 > 本檔案於 2026-09-23 由英文版（docs/MANUAL.md）完整重新生成。
 
+## Human completion activity
+
+互動用戶端可訂閱 `ev.activity`，並透過隱藏的唯讀工具
+`activity_list {after?,limit?}` 補齊錯過的完成通知。這是用戶端介面，不向模型顯示。
+每次重新連線都應完整分頁讀取每個對話的最新完成快照；游標是對話 ID，不是完成時間戳。
+先訂閱再讀取，依每個對話的 `seq` 合併去重。離線期間的多個回合合併為一個未讀對話。
+人類已讀標記由用戶端儲存，與代理通知確認分離；讀取清單不確認任何通知。
+被終止的回合或持久化失敗可能沒有回執，這代表未知而非成功。結果狀態、當機視窗和
+對話 ID 不可重用限制見 [WIRE.md](WIRE.md#human-completion-activity)。
+
 ## Contents
 
 - [Layout of a running system](#layout-of-a-running-system)

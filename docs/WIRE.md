@@ -20,6 +20,45 @@ normal approval gate; receipts are client-local JSON, not prompt context.
 Multipass clients use the installed native `cli relay` stdio/loopback seam,
 never a Python bridge; SSH clients use standard native port forwarding.
 
+## Human completion activity
+
+Hidden read-only core tool `activity_list {after?:string,limit?:1..1000}`
+(default 100) returns `{items,hasMore,nextAfter}`. Each item is
+`{id,sessionId,turnId,seq,outcome,at}`: `id` equals `sessionId`, `seq` is a
+positive per-session completion counter, `at` is Unix seconds, and `outcome`
+is `done`, `failed`, `cancelled`, or `needs-attention` (hard/soft budget
+endings). This is the **latest completion per conversation**, not a log of
+all turns. Several offline completions intentionally collapse into one unread
+conversation. Store kind `activity` is keyed by session ID; deletion of a
+conversation deletes its activity too. Session IDs must not be reused after
+deletion if a client retains old seen markers.
+
+Subscribe to `ev.activity` before listing: its event-envelope payload is the
+same persisted item, published only after the completion receipt commits and
+only if this turn had no failed transcript writes. Persisted receipts survive
+runner/core restarts; a crash after receipt commit but before publish is
+recovered by listing. A crash before receipt commit (including killed mid-turn),
+a lost transcript write, or a store outage can leave no receipt: absence is
+**unknown**, never success. There is no atomic transcript/receipt transaction
+and no guaranteed completion for a killed runner. Unexpected exceptions may
+also have only the legacy terminal event, without a durable receipt.
+
+On connect/reconnect, page the **entire snapshot from empty `after`**. `after`
+and `nextAfter` are lexically ordered session-ID page cursors, NOT incremental
+completion/time cursors. Pages are not a frozen snapshot: a new session inserted
+before the cursor is seen through the live subscription or the next full scan.
+Different runner commit order cannot cause a permanent time-watermark skip.
+Merge push and snapshot by `(instanceId,sessionId)` keeping the largest `seq`;
+deduplicate repeated `turnId`/`seq`. Human seen markers are client-local and
+must advance only when that conversation is read, never by listing. They are
+independent of agent settlement-notice acknowledgements. No activity data enters
+the frozen system/tool prefix or conversation history.
+
+The Go SDK's `NewWithURL(name, version, url)` pins one component to an explicit
+bus without changing environment or loading dotenv; empty URLs are refused and
+re-attachment retries only the pinned endpoint. This permits in-process clients
+for multiple instances without process-global endpoint mutation.
+
 ## Scheduled turns (heartbeat)
 
 The opt-in heartbeat component publishes `session {sessionId, content,

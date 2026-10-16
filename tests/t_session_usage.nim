@@ -31,6 +31,7 @@ type
     server: Process
     nc: NatsConnection
     core: Process
+    url: string
 
 proc waitComponent(nc: NatsConnection, name: string, secs = 25): bool =
   ## Membership comes from core's authoritative catalog snapshot; a raw
@@ -42,6 +43,11 @@ proc waitComponent(nc: NatsConnection, name: string, secs = 25): bool =
     sleep(200)
   false
 
+proc componentPid(nc: NatsConnection, name: string): int =
+  let snap = call(nc, "core", "catalog", %*{"op": "snapshot"})
+  for item in snap{"components"}:
+    if item{"name"}.getStr() == name: return item{"pid"}.getInt()
+
 proc startProbe(tag: string, extra: seq[(string, string)]): Probe =
   ## Sandbox core (store + bash + llm) with the mock LLM in the llm slot.
   let repoRoot = getEnv("NIF_REPO_ROOT",
@@ -51,6 +57,7 @@ proc startProbe(tag: string, extra: seq[(string, string)]): Probe =
                      prebuiltName = "fixture-mock-llm")
   let (server, url) = startNats()
   result.server = server
+  result.url = url
   result.nc = waitConnect(url)
   # The gate must be live (the soft-limit case relies on a question nobody
   # answers resolving to a denial), whatever the ambient environment says.
@@ -96,7 +103,7 @@ proc callerOf(env: Envelope): JsonNode =
 
 proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
                cancelAfterToolcalls = -1,
-               timeoutMs = 120_000, steerContent = ""): JsonNode =
+               timeoutMs = 120_000, steerContent = "", outagePid = 0): JsonNode =
   ## Run one session call while watching the conversation's frames. With
   ## cancelAfterToolcalls >= 0 the __cancel control is published to the steer
   ## channel once that many toolcall-start frames have been seen (the scripted
@@ -122,9 +129,17 @@ proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
   var startedToolcalls = 0
   var cancelled = false
   var steered = false
+  var suspendedAt = 0.0
+  var resumed = false
+  defer:
+    if suspendedAt > 0 and not resumed:
+      discard execCmd("kill -CONT " & $outagePid)
   var reply: JsonNode = nil
   let deadline = epochTime() + timeoutMs.float / 1000.0
   while reply == nil and epochTime() < deadline:
+    if suspendedAt > 0 and not resumed and epochTime() - suspendedAt >= 22.0:
+      discard execCmd("kill -CONT " & $outagePid)
+      resumed = true
     var polled = pollEnv(turns, 0)
     while polled.found:
       frames.add(("turn", polled.env.payload))
@@ -132,6 +147,9 @@ proc driveTurn(p: Probe, sid: string, args: JsonNode, frames: var seq[Frame],
     polled = pollEnv(toolcalls, 0)
     while polled.found:
       frames.add(("toolcall", polled.env.payload))
+      if polled.env.payload{"phase"}.getStr() == "start" and outagePid > 0 and suspendedAt == 0:
+        discard execCmd("kill -STOP " & $outagePid)
+        suspendedAt = epochTime()
       if polled.env.payload{"phase"}.getStr("") == "start" and
           steerContent.len > 0 and not steered:
         steered = true
@@ -204,10 +222,26 @@ proc main() =
     let nc = p.nc
     let sid = "usage-" & $int(epochTime())
 
+    let activities = openSub(nc, "ev.activity")
+    defer: natsSubscription_Destroy(activities)
     var frames: seq[Frame] = @[]
     let turn1 = p.driveTurn(sid, %*{"sessionId": sid, "content": "count me"}, frames)
     check("turn 1 completes", turn1{"error"} == nil and
           turn1{"turnError"}.getStr("") == "", $turn1)
+    let activityPage = call(nc, "core", "activity_list", %*{"limit": 1})
+    let activity = activityPage{"items"}[0]
+    check("completion is durable and keyed by session", activity{"sessionId"}.getStr() == sid and
+      activity{"turnId"} == turn1{"turnId"} and activity{"seq"}.getInt() == 1 and
+      activity{"outcome"}.getStr() == "done", $activityPage)
+    let pushed = pollEnv(activities, 2000)
+    check("activity push matches durable snapshot after commit",
+      pushed.found and pushed.env.payload == activity)
+    check("snapshot cursor is not a completion watermark",
+      call(nc, "core", "activity_list", %*{"after": sid}){"items"}.len == 0)
+    check("snapshot reread is idempotent",
+      call(nc, "core", "activity_list", %*{}){"items"}[0] == activity)
+    check("invalid activity page size refused",
+      call(nc, "core", "activity_list", %*{"limit": 0}){"error"} != nil)
     # Late clean diagnostics must be stored/displayed while idle without a
     # model activation or message record. This is a real runner/bus probe.
     let diagnostics = openSub(nc, "ev.session." & sid & ".diagnostics")
@@ -277,12 +311,26 @@ proc main() =
               $f.payload)
     check("the turn emitted one done frame", doneFrames == 1, $doneFrames)
 
+    # A killed idle runner loses no receipt; the fresh runner resumes the
+    # transcript and increments the durable per-session completion counter.
+    let runnerPid = componentPid(nc, "session-" & sid)
+    if runnerPid > 0:
+      discard execCmd("kill -KILL " & $runnerPid)
+      sleep(1500)
+    check("receipt replays after runner crash",
+      call(nc, "core", "activity_list", %*{}){"items"}[0] == activity)
+
+    check("crash test found the runner", runnerPid > 0)
     # ---- 2. resume: only this turn's usage ------------------------------
     var frames2: seq[Frame] = @[]
     let turn2 = p.driveTurn(sid, %*{"sessionId": sid, "content": "again"}, frames2)
     check("resumed turn completes and succeeds",
           turn2{"error"} == nil and turn2{"outcome"}.getStr("") == "success",
           $turn2)
+    let latest = call(nc, "core", "activity_list", %*{}){"items"}
+    check("latest snapshot collapses completed turns with increasing sequence",
+      latest.len == 1 and latest[0]{"seq"}.getInt() == 2 and
+      latest[0]{"turnId"} == turn2{"turnId"}, $latest)
     check("a resumed turn reports only its own activation",
           num(turn2, "providerResponses") == 3 and
           num(turn2, "toolCalls") == 2 and
@@ -310,6 +358,15 @@ proc main() =
           num(budget, "responsesWithUsage") == 1 and
           num(budget, "cacheWriteTokens") == 100, $budget{"usage"})
 
+    let firstPage = call(nc, "core", "activity_list", %*{"limit": 1})
+    let secondPage = call(nc, "core", "activity_list",
+      %*{"limit": 1, "after": firstPage{"nextAfter"}.getStr()})
+    check("activity snapshot pages without duplicates",
+      firstPage{"hasMore"}.getBool() and secondPage{"items"}.len == 1 and
+      firstPage{"items"}[0]{"sessionId"} != secondPage{"items"}[0]{"sessionId"} and
+      call(nc, "core", "activity_list", %*{"after": secondPage{"nextAfter"}.getStr()}){"items"}.len == 0,
+      $firstPage & $secondPage)
+
     # ---- 4. a human soft limit nobody answers ---------------------------
     let limitSid = "usage-limit-" & $int(epochTime())
     let setLimit = call(nc, "core", "session",
@@ -325,6 +382,27 @@ proc main() =
     check("the limit turn reports the rounds it ran",
           num(limited, "providerResponses") == 1 and
           num(limited, "toolCalls") == 1, $limited{"usage"})
+    let beforeRestart = call(nc, "core", "activity_list", %*{})
+    let storePid = componentPid(nc, "store")
+    check("outage test found store", storePid > 0)
+    if storePid > 0:
+      discard execCmd("kill -STOP " & $storePid)
+      let unavailable = call(nc, "core", "activity_list", %*{}, 15_000)
+      discard execCmd("kill -CONT " & $storePid)
+      check("store outage is an error, not an empty activity snapshot",
+        unavailable{"error"} != nil, $unavailable)
+    stopProcess(p.core)
+    p.core = startComponent(p.sandbox.sandboxBin("niffler"), p.url,
+      root = p.sandbox.root, extra = @[("NIF_AUTO_APPROVE", "1")])
+    doAssert waitComponent(p.nc, "store")
+    check("core restart replays identical durable completion snapshot",
+      call(nc, "core", "activity_list", %*{}) == beforeRestart)
+    let deletion = call(nc, "core", "conversation_delete", %*{"sessionId": sid})
+    check("conversation deletion removes its completion receipt",
+      deletion{"error"} == nil and
+      call(nc, "store", "get", %*{"kind": "activity", "id": sid}){"code"}.getStr() == "not-found",
+      $deletion)
+
 
   # -------------------------------------------------------------------------
   # 5. cancellation after some usage: the round that completed is still
@@ -390,6 +468,15 @@ proc main() =
         inc sent
     check("folded steer acknowledged once at next model dispatch",
           reply{"error"} == nil and sent == 1, $frames.len & " frames, sent=" & $sent)
+    let pushed = openSub(p.nc, "ev.activity")
+    defer: natsSubscription_Destroy(pushed)
+    var lostFrames: seq[Frame]
+    let lostSid = sid & "-lost"
+    discard p.driveTurn(lostSid, %*{"sessionId": lostSid, "content": "store outage"},
+      lostFrames, outagePid = componentPid(p.nc, "store"))
+    check("lost transcript write suppresses completion receipt even after recovery",
+      call(p.nc, "store", "get", %*{"kind": "activity", "id": lostSid}){"code"}.getStr() == "not-found")
+    check("lost transcript write never emits confirmed activity", not pollEnv(pushed, 200).found)
   report("SESSION-USAGE")
 
 main()

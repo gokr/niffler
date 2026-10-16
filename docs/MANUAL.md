@@ -10,6 +10,19 @@ reference chapters for the shipped components. Design rationale lives in
 [COMPACTION.md](COMPACTION.md); open work is consolidated in
 [PLAN.md](PLAN.md).
 
+## Human completion activity
+
+Interactive clients can subscribe to `ev.activity` and reconcile missed finishes
+using hidden read-only `activity_list {after?,limit?}`. This is client plumbing,
+not a model-visible tool. Page the entire latest-per-conversation snapshot on
+every reconnect; the cursor is a session ID, never a completion timestamp.
+Subscribe before listing and merge by per-session `seq` to suppress duplicates.
+Several offline turns collapse into one unread conversation. Human read markers
+are client-local, separate from agent notice acknowledgement; listing acknowledges
+nothing. A killed turn or persistence failure may have no receipt, which means
+unknown rather than success. See [WIRE.md](WIRE.md#human-completion-activity) for
+outcomes, crash windows and the session-ID reuse restriction.
+
 ## Contents
 
 - [Layout of a running system](#layout-of-a-running-system)

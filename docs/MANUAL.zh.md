@@ -12,6 +12,16 @@
 > 章节标题保留英文，以便跨文档锚点保持有效。
 > 本文件于 2026-09-23 由英文版（docs/MANUAL.md）完整重新生成。
 
+## Human completion activity
+
+交互客户端可订阅 `ev.activity`，并通过隐藏的只读工具
+`activity_list {after?,limit?}` 补齐错过的完成通知。这是客户端接口，不向模型显示。
+每次重连都应完整分页读取每个会话的最新完成快照；游标是会话 ID，不是完成时间戳。
+先订阅再读取，按每个会话的 `seq` 合并去重。离线期间的多个回合合并为一个未读会话。
+人类已读标记由客户端保存，与代理通知确认分离；读取列表不确认任何通知。
+被终止的回合或持久化失败可能没有回执，这意味着未知而非成功。结果状态、崩溃窗口和
+会话 ID 不可复用限制见 [WIRE.md](WIRE.md#human-completion-activity)。
+
 ## Contents
 
 - [Layout of a running system](#layout-of-a-running-system)

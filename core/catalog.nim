@@ -259,6 +259,16 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "required": ["sessionId"],
       "x-harness": {"hidden": true}
     }))
+  coreReg.tools.add(ToolReg(name: "activity_list", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Latest durable completion per conversation. Page the entire snapshot on reconnect; after is a session-id page cursor, NOT an incremental completion cursor. No acknowledgement side effects.",
+      "properties": {
+        "after": {"type": "string"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 1000}
+      },
+      "x-harness": {"hidden": true, "effect": "read"}
+    }))
   coreReg.tools.add(ToolReg(name: "session_prepare", component: "core",
     schema: %*{
       "type": "object",

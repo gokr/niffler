@@ -178,6 +178,7 @@ type
     ct: CoreTools
     convId*: string
     seqNo*: int
+    persistenceFailures*: int ## Monotonic in this runner; completion cannot hide a lost message.
     promptTokens*: int   ## model-reported prompt tokens of the last chat request
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
     ctxSize*: int        ## catalog model context window
@@ -361,6 +362,7 @@ proc persistMsg*(p: var Persister, value: JsonNode,
       p.failing = false
       echo "core: store reachable again — persistence resumed"
   except CatchableError as e:
+    inc p.persistenceFailures
     if not p.failing:
       p.failing = true
       echo "core: WARNING persistence down (messages not saved): " & e.msg
@@ -4357,6 +4359,7 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
          "attachments": %attachRefs, "attachmentCount": attachRefs.len}
     else:
       %*{"role": "user", "content": turnContent}
+  let failuresBeforeTurn = entry.persister.persistenceFailures
   ctxAppend(entry.persister, entry.messages, userMsg)
   if attachRefs.len > 0:
     # Materialize into the projection: the newest images within the budget
@@ -4393,6 +4396,25 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
                       entry.limitRounds, entry.limitTokens, entry.limitSeconds,
                       entry.allowlist, turnError)
+  # Separate human unread state from agent notices and provider history. A
+  # failed transcript write suppresses this receipt even if the store recovered.
+  if entry.persister.persistenceFailures == failuresBeforeTurn:
+    try:
+      let (previous, rev) = ct.storeGetItem("activity", sessionId)
+      if previous{"turnId"}.getStr("") != turnAcct.turnId:
+        let outcome = case turnAcct.outcome
+          of "success": "done"
+          of "cancelled": "cancelled"
+          of "budget-exhausted", "limit-exhausted": "needs-attention"
+          else: "failed"
+        let activity = %*{"id": sessionId, "sessionId": sessionId,
+          "turnId": turnAcct.turnId, "seq": previous{"seq"}.getInt(0) + 1,
+          "outcome": outcome, "at": epochTime()}
+        discard ct.storePutRev("activity", sessionId, activity, expectRev = rev)
+        ct.nc.publish("ev.activity",
+          Envelope(v: 1, id: newId(), kind: ekEvent, payload: activity).encode())
+    except CatchableError as e:
+      echo "core: WARNING completion receipt not confirmed: " & e.msg
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
   # drivers (agent_run) report child LLM failures as failures, not text.
@@ -4576,7 +4598,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     try:
       case env.tool
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
-          "session_prepare", "session_info", "prompt_preview", "doctor",
+          "session_prepare", "session_info", "activity_list", "prompt_preview", "doctor",
           "conversation_delete", "toolset", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:

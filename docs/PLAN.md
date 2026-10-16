@@ -14,6 +14,13 @@ of this file.
 
 ## Recent reliability slices
 
+- **Human completion reconciliation** — on `feat/fleet-ux`, hidden
+  `activity_list` and `ev.activity` expose latest durable completion per session
+  with a per-session sequence. Reconnect scans page by session ID, never a
+  cross-runner timestamp watermark. Human seen markers remain client-local and
+  independent of agent notices; no prompt/history contribution. Crash windows
+  and latest-only semantics are explicit in WIRE.md.
+
 - **Data-safe cleanup + Make command discovery** — `clean` has an explicit
   build-output allowlist; an isolated contract preserves store sidecars,
   benchmarks and unknown runtime state. Help separates everyday, test and

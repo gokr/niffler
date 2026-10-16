@@ -339,6 +339,20 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     if not ct.approval.ask(tool, args):
       return %*{"error": "approval denied for " & tool}
   case tool
+  of "activity_list":
+    ## Latest durable completion per conversation, not a time-ordered log.
+    let limit = args{"limit"}.getInt(100)
+    if limit < 1 or limit > 1000:
+      raise newException(ValueError, "activity_list limit must be 1..1000")
+    let page = dispatchSubjectCall(ct, "svc.store.call", "list",
+      %*{"kind": "activity", "after": args{"after"}.getStr(""), "limit": limit}, 5000)
+    if not page{"ok"}.getBool(false):
+      raise newException(IOError, "activity store list failed")
+    var items = newJArray()
+    if page{"items"} != nil:
+      for item in page["items"]: items.add(item["value"])
+    return %*{"items": items, "hasMore": page{"hasMore"}.getBool(false),
+              "nextAfter": page{"nextAfter"}.getStr("")}
   of "ui":
     ## Numbered interactive clients with renewable leases (core/uireg.nim).
     ## UIs claim conversations so a second TUI is told who owns one instead
@@ -607,6 +621,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       echo "core: warning — conversation attachments not deleted: " & e.msg
     for rec in [("session", sessionId & ":tools"),
+                ("activity", sessionId),
                 ("sessionmeta", sessionId)]:
       try:
         discard ct.dispatchToolCall("del",
@@ -2078,7 +2093,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
-              "session_info", "prompt_preview", "doctor", "ui",
+              "session_info", "activity_list", "prompt_preview", "doctor", "ui",
               "conversation_delete", "toolset", "profile"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)

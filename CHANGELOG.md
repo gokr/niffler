@@ -8,6 +8,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Human completion reconciliation: hidden read-only `activity_list` pages the
+  latest durable completion per conversation; `ev.activity` pushes confirmed
+  receipts with per-session sequences. Human unread state stays client-local,
+  separate from agent notice acknowledgements; reconnect cursors are session
+  IDs, not unsafe cross-runner timestamp watermarks. Persistence/crash gaps
+  remain explicitly unknown, never fabricated success.
+
 - Resident-instance identity, scoped Linux user-service lifecycle, birth-time
   agent/persona definitions with compatible toolset naming, opt-in heartbeat,
   and durable background-process completion delivery.
