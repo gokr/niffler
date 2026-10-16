@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,7 +102,27 @@ func TestExplicitBusIsolationAndReattach(t *testing.T) {
 	if !a.Connected() {
 		t.Fatal("connected component reported offline")
 	}
+	// Requests and status observers remain live during re-attach/close.
+	var work sync.WaitGroup
+	work.Add(1)
+	go func() {
+		defer work.Done()
+		for i := 0; i < 20; i++ {
+			_ = a.Connected()
+			_ = a.Emit("ev.explicit.test", map[string]int{"i": i})
+			_, _ = a.Request("marker", "where", map[string]any{}, 100*time.Millisecond)
+		}
+	}()
+	for i := 0; i < 3; i++ {
+		if err := a.reattachNow(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	a.Close()
+	work.Wait()
+	if err := a.Emit("ev.explicit.test", nil); err == nil {
+		t.Fatal("closed publish succeeded")
+	}
 	if a.Connected() {
 		t.Fatal("closed component reported online")
 	}

@@ -475,6 +475,19 @@ func (c *Component) OnDrain(h func(*Component)) *Component {
 	return c
 }
 
+// connection snapshots the owning connection without retaining the lock across
+// I/O. nats.Conn methods are concurrency-safe, including a concurrent Close;
+// reconnect may replace this pointer while client requests remain in flight.
+func (c *Component) connection() *nats.Conn {
+	owner := c
+	if c.owner != nil {
+		owner = c.owner
+	}
+	owner.contractMu.RLock()
+	defer owner.contractMu.RUnlock()
+	return owner.nc
+}
+
 // Emit publishes a fire-and-forget event.
 func (c *Component) Emit(subject string, payload any) error {
 	e := Envelope{V: 1, ID: NewID(), Kind: KindEvent}
@@ -487,7 +500,11 @@ func (c *Component) Emit(subject string, payload any) error {
 	if err != nil {
 		return err
 	}
-	return c.nc.Publish(subject, data)
+	nc := c.connection()
+	if nc == nil {
+		return errors.New("component is not connected")
+	}
+	return nc.Publish(subject, data)
 }
 
 // PublishEnvelope publishes any pre-built envelope to any subject.
@@ -496,7 +513,11 @@ func (c *Component) PublishEnvelope(subject string, env Envelope) error {
 	if err != nil {
 		return err
 	}
-	return c.nc.Publish(subject, data)
+	nc := c.connection()
+	if nc == nil {
+		return errors.New("component is not connected")
+	}
+	return nc.Publish(subject, data)
 }
 
 // RequestEnvelope performs a request/reply with a pre-built envelope on an
@@ -506,7 +527,11 @@ func (c *Component) RequestEnvelope(subject string, env Envelope, timeout time.D
 	if err != nil {
 		return Envelope{}, err
 	}
-	msg, err := c.nc.Request(subject, data, timeout)
+	nc := c.connection()
+	if nc == nil {
+		return Envelope{}, errors.New("component is not connected")
+	}
+	msg, err := nc.Request(subject, data, timeout)
 	if err != nil {
 		return Envelope{}, fmt.Errorf("request %s: %w", subject, err)
 	}
@@ -565,7 +590,11 @@ func shouldLog(level, threshold string) (bool, error) {
 // component mutex — intended for side channels a blocking tool handler
 // needs while it runs (e.g. cancellation).
 func (c *Component) Subscribe(pattern string, h func(subject string, payload json.RawMessage)) (func(), error) {
-	sub, err := c.nc.Subscribe(pattern, func(m *nats.Msg) {
+	nc := c.connection()
+	if nc == nil {
+		return nil, errors.New("component is not connected")
+	}
+	sub, err := nc.Subscribe(pattern, func(m *nats.Msg) {
 		env := ParseEnvelope(m.Data)
 		h(m.Subject, env.Payload)
 	})
@@ -595,7 +624,11 @@ func (c *Component) RequestContext(ctx context.Context, component, tool string, 
 		return nil, err
 	}
 	subject := "svc." + component + ".call"
-	msg, err := c.nc.RequestWithContext(ctx, subject, data)
+	nc := c.connection()
+	if nc == nil {
+		return nil, errors.New("component is not connected")
+	}
+	msg, err := nc.RequestWithContext(ctx, subject, data)
 	if err != nil {
 		return nil, fmt.Errorf("request %s: %w", subject, err)
 	}
@@ -964,13 +997,8 @@ func (c *Component) reconnectNow() error {
 
 // Connected reports whether the component is connected to the bus.
 func (c *Component) Connected() bool {
-	owner := c
-	if c.owner != nil {
-		owner = c.owner
-	}
-	owner.contractMu.RLock()
-	defer owner.contractMu.RUnlock()
-	return owner.nc != nil && owner.nc.IsConnected()
+	nc := c.connection()
+	return nc != nil && nc.IsConnected()
 }
 
 // Close announces departure, drains subscriptions and closes the connection.
@@ -1193,6 +1221,12 @@ func (c *Component) announceLocked(subject string) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
+	}
+	// Caller already holds contractMu (read for announce, write for reattach).
+	// Do not route through connection(): taking RLock beneath the write lock
+	// deadlocks initial registration and recovery.
+	if c.nc == nil {
+		return errors.New("component is not connected")
 	}
 	return c.nc.Publish(subject, data)
 }
