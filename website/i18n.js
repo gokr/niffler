@@ -132,7 +132,7 @@
 
       "cl.kicker": "Clients, not containers",
       "cl.h2": "The harness<br><em>isn't a UI.</em>",
-      "cl.body": "Niffler runs headless as a shared local service: the agent, its tools, background jobs and history live in the <em>instance</em> — not in a window. Clients are thin attachers over the bus; several can share one running instance at once. A client boots the harness on demand, an autostarted core turns itself off when the last client leaves — and closing your terminal mid-task loses nothing: background jobs keep running and wake the conversation when they settle.",
+      "cl.body": "Niffler runs headless as a shared local service: the agent, its tools, background jobs and history live in the <em>instance</em> — not in a window. Clients are thin attachers over the bus; several can share one running instance at once. A client boots the harness on demand, an autostarted core turns itself off when the last client leaves — and closing your terminal mid-task loses nothing: background jobs keep running and wake the conversation when they settle. Completion receipts are durable per conversation, so a client reconnecting after a gap reconciles the finishes it missed — a turn with no receipt reads as unknown, never as success.",
       "cl.tui.p": "the terminal chat client — a plugin that boots the harness on demand",
       "cl.cli.p": "the headless driver: call tools, install packages, run whole turns from a script or CI",
       "cl.console.p": "subscribes the bus and renders every envelope live — better than <code>nats sub</code>",
@@ -285,7 +285,7 @@
 
       "cl.kicker": "客户端，不是容器",
       "cl.h2": "框架<br><em>不是界面。</em>",
-      "cl.body": "Niffler 以无头方式作为共享的本地服务运行：智能体、它的工具、后台任务和历史都住在<em>实例</em>里——不在某个窗口里。客户端是透过总线接入的薄壳；好几个可以同时共享同一个运行中的实例。客户端按需启动框架，自动启动的核在最后一个客户端离开后自行退出——任务进行到一半关掉终端也毫无损失：后台任务继续运行，并在完成时唤醒对话。",
+      "cl.body": "Niffler 以无头方式作为共享的本地服务运行：智能体、它的工具、后台任务和历史都住在<em>实例</em>里——不在某个窗口里。客户端是透过总线接入的薄壳；好几个可以同时共享同一个运行中的实例。客户端按需启动框架，自动启动的核在最后一个客户端离开后自行退出——任务进行到一半关掉终端也毫无损失：后台任务继续运行，并在完成时唤醒对话。完成回执按对话持久保存，因此中断后重新接入的客户端能补齐错过的完成——没有回执的一轮只算「未知」，绝不会被当成成功。",
       "cl.tui.p": "终端聊天客户端——按需启动框架的插件",
       "cl.cli.p": "无头驱动：从脚本或 CI 调用工具、安装包、跑完整轮次",
       "cl.console.p": "订阅总线并实时渲染每个 envelope——比 <code>nats sub</code> 好读",
@@ -438,7 +438,7 @@
 
       "cl.kicker": "用戶端，不是容器",
       "cl.h2": "框架<br><em>不是介面。</em>",
-      "cl.body": "Niffler 以無頭方式作為共享的本機服務執行：代理、它的工具、背景工作和歷史都住在<em>實例</em>裡——不在某個視窗裡。用戶端是透過匯流排接入的薄殼；好幾個可以同時共享同一個執行中的實例。用戶端按需啟動框架，自動啟動的核在最後一個用戶端離開後自行退出——任務進行到一半關閉終端也毫無損失：背景工作繼續執行，並在完成時喚醒對話。",
+      "cl.body": "Niffler 以無頭方式作為共享的本機服務執行：代理、它的工具、背景工作和歷史都住在<em>實例</em>裡——不在某個視窗裡。用戶端是透過匯流排接入的薄殼；好幾個可以同時共享同一個執行中的實例。用戶端按需啟動框架，自動啟動的核在最後一個用戶端離開後自行退出——任務進行到一半關閉終端也毫無損失：背景工作繼續執行，並在完成時喚醒對話。完成回執按對話持久保存，因此中斷後重新接入的用戶端能補齊錯過的完成——沒有回執的一輪只算「未知」，絕不會被當成成功。",
       "cl.tui.p": "終端聊天用戶端——按需啟動框架的外掛",
       "cl.cli.p": "無頭驅動：從指令稿或 CI 呼叫工具、安裝套件、跑完整輪次",
       "cl.console.p": "訂閱匯流排並即時渲染每個 envelope——比 <code>nats sub</code> 好讀",
