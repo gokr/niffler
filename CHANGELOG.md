@@ -15,6 +15,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   IDs, not unsafe cross-runner timestamp watermarks. Persistence/crash gaps
   remain explicitly unknown, never fabricated success.
 
+- **The Go SDK can pin one component to one bus.** `NewWithURL` addresses a
+  component explicitly for multi-instance clients: it never reads or mutates
+  process-global environment (no `.env` load, no `NIF_NATS_URL` or discovery
+  fallback), re-attach retries only the given URL, and an empty URL is refused
+  at `Connect` rather than silently treated as local discovery. `OnReconnected`
+  fires after any recovered connection — including short NATS reconnects that
+  stay inside the client's own reconnect budget and never trigger the longer
+  re-attach grace — so a client can reconcile durable state from the hook; hooks
+  run outside component locks and an initial `Connect` does not call them.
+  Covered by `sdk/go/explicit_bus_test.go`.
+
+- **Write arbitration takes the claim a tool actually needs.** Two new
+  `x-harness.writes` shapes replace the opaque root claim for tools that never
+  touch the conversation workspace: `{"harness": ["var/plugins"]}` claims paths
+  relative to `$NIF_ROOT`, confined to `$NIF_ROOT/var` (an entry outside it is
+  refused with a warning), and `{"none": true}` takes no filesystem claim at
+  all. A declaration naming harness paths that resolves to none takes no claim
+  rather than the workspace fallback, whose lease read as protection while
+  guarding nothing for a client launched outside its root. The accepted-root
+  set stays per-request, so a harness claim never widens the conversation's own
+  workspace. `t_locks` pins the pure rules and `t_arbitration` the live
+  exclusion.
+
 - Resident-instance identity, scoped Linux user-service lifecycle, birth-time
   agent/persona definitions with compatible toolset naming, opt-in heartbeat,
   and durable background-process completion delivery.
@@ -25,6 +48,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Matching TUI code ships separately; cross-instance delegation remains planned.
 
 ### Fixed
+
+- **A re-attach can no longer race in-flight Go SDK calls.** Connection use now
+  goes through a locked snapshot of the connection instead of reading `c.nc`
+  directly, so a reconnect that replaces the pointer while a request, emit or
+  subscribe is in flight cannot observe a torn value; a nil connection returns
+  an explicit "not connected" error instead of panicking. `Connected()` follows
+  the owning component, and `announceLocked` publishes under the lock it already
+  holds rather than re-acquiring it, which deadlocked initial registration and
+  recovery. Covered by `sdk/go/explicit_bus_test.go`.
+
+- **Read-only tools no longer hold a write lease.** `grep`, its `files` listing
+  and core's `discover` did not declare a read effect, so the write default
+  claimed the whole conversation workspace for the duration of a search or an
+  introspection call — refusing every writer in that workspace (and being
+  refused by them), with the refusal naming the reader's own tool. All three now
+  declare `effect: read` and take no outer claim. A test-build rule that did not
+  depend on core sources had also let the arbitration tests run stale code.
 
 - `make clean` now deletes only binaries and compiler caches, never the store,
   benchmark results, logs, plugins or agent-built sources. Added an isolated
@@ -170,6 +210,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sizes; `make test-bench` joins the full gate.
 
 ### Benchmarks
+
+- Two bench helpers. `scripts/kill-run.sh` stops exactly one run's processes by
+  matching that run's own directory under `var/bench/results` (cwd or
+  executable, as an exact path component) and repeats until none remain, because
+  a supervisor revives its children once — unlike `make down`, whose patterns
+  also match other runs' worktrees and take unrelated runs down with them. And
+  `bench/lib/task-container.mjs` keeps one persistent offline (`--network none`)
+  container per live cell, mounting `/app` and the host path as the same bind
+  rather than two copies, and preserving image-installed toolchains under a
+  writable `HOME` with no host home or credentials mounted.
 
 - **The DeepSWE lane now runs the agent in its task's prepared environment.**
   `NIF_BASH_SANDBOX_MAP` makes every `bash` call run as
