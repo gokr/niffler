@@ -152,8 +152,8 @@ max_results? (default 200), timeoutMs? (default 30000)}` 返回 `path:line:match
 行；`files {path?, glob?, hidden?, max_results? (default 500), timeoutMs?}`
 返回排序的路径。`max_results` 上限为 10000 行，文本上限为 32 KB（保留头部和尾部，并带有说明切掉多少的标记），超过 300 列的行被省略为 `[Omitted long matching line]`（rg 的 `--max-columns 300`）。`exit_code` 是契约：0 匹配，1 无（`[no
 matches]`/`[no files]`），2 坏正则，124 超时，127 rg 缺失。`grep`
-声明 `parallel: true` 而 `files` 不声明，且两者都不声明
-`x-harness.effect` —— fabric 批处理主机将两者都按写入调度。四个无状态清单副本通过一个队列组为它们服务。
+声明 `parallel: true` 而 `files` 不声明；两者都声明
+`x-harness.effect: read`，因此 fabric 批处理主机将它们按读取而非写入调度，且两者都不持有写入声明。四个无状态清单副本通过一个队列组为它们服务。
 
 ### Minimal boot profile (`--minimal`)
 
@@ -368,7 +368,7 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`；SDK 先加载当前目录的 `.env`，再加载 harness 根目录的，键的首次定义优先。基于 Wails 的客户端以相反顺序加载它们（harness 根目录，然后 cwd），因此那里根文件优先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
+加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`；SDK 先加载当前目录的 `.env`，再加载 harness 根目录的，键的首次定义优先。Go SDK 的 `NewWithURL` 客户端是例外：它固定一个显式总线 URL，不读取任何环境或发现回退，也不加载 `.env`，因此为另一实例创建的同进程客户端绝不触碰进程全局端点状态（见 [WIRE.md](WIRE.md)）。基于 Wails 的客户端以相反顺序加载它们（harness 根目录，然后 cwd），因此那里根文件优先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
 
 仓库根目录中的 `.env.example` 是参考副本——每个变量都被注释掉，其默认值作为注释值——但它在两个方向上都不详尽（上表中的少数条目在其中缺失，且它携带 harness 在正常操作中不读取的测试/工具变量）；该表是权威。
 
@@ -1861,6 +1861,12 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component
 
 ```go
 func (c *Component) OnReattached(h func(*Component)) *Component
+```
+
+Go SDK 还提供 `OnReconnected`，它在**任何**连接恢复后运行：既包括未达到重新接入宽限期的短暂 NATS 重连，也包括完整重新接入（在其订阅重建之后）。当客户端必须在短暂间歇后也协调持久状态时使用它。初始 `Connect` 不会调用它，现有订阅在普通重连后依然存活，重复的恢复提示无害。Nim 和 TypeScript SDK 没有等价的钩子。
+
+```go
+func (c *Component) OnReconnected(h func(*Component)) *Component
 ```
 
 #### Idle work (`onIdle`)

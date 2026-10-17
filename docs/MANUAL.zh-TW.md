@@ -154,8 +154,8 @@ max_results? (default 200), timeoutMs? (default 30000)}` 返回 `path:line:match
 返回排序的路徑。`max_results` 上限為 10000 行，文字上限為
 32 KB（保留頭部和尾部，並附標記說明切掉了多少），且長於 300 欄的行被省略為 `[Omitted long matching line]`（rg 的 `--max-columns 300`）。`exit_code` 是契約：0 匹配，1 無（`[no
 matches]`/`[no files]`），2 錯誤正則，124 逾時，127 rg 缺失。`grep`
-宣告 `parallel: true` 而 `files` 不宣告，且兩者都不宣告
-`x-harness.effect` — fabric 批次主機將兩者排程為寫入。四個
+宣告 `parallel: true` 而 `files` 不宣告；兩者都宣告
+`x-harness.effect: read`，因此 fabric 批次主機將它們排程為讀取而非寫入，且兩者都不持有寫入聲明。四個
 無狀態 manifest 副本透過一個佇列群組服務它們。
 
 ### Minimal boot profile (`--minimal`)
@@ -374,7 +374,7 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。以 Wails 為基礎的用戶端以相反順序載入它們（harness root，然後 cwd），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
+載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。Go SDK 的 `NewWithURL` 用戶端是例外：它固定一個明確的匯流排 URL，不讀取任何環境或探索後備，也不載入 `.env`，因此為另一實例建立的同行程用戶端絕不觸碰行程全域端點狀態（見 [WIRE.md](WIRE.md)）。以 Wails 為基礎的用戶端以相反順序載入它們（harness root，然後 cwd），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
 
 repo root 的 `.env.example` 是參考副本——每個變數都被註解掉，其預設值作為註解值——但它在兩個方向上都不完整（上表有少數項目不在其中，而它帶有 harness 在正常運作中不會讀取的測試/工具變數）；表格才是權威。
 
@@ -2014,6 +2014,12 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component
 
 ```go
 func (c *Component) OnReattached(h func(*Component)) *Component
+```
+
+Go SDK 另提供 `OnReconnected`，它在**任何**連線恢復後執行：既包括未達重新接入寬限期的短暫 NATS 重連，也包括完整重新接入（在其訂閱重建之後）。當用戶端必須在短暫間歇後也協調持久狀態時使用它。初始 `Connect` 不會呼叫它，現有訂閱在一般重連後依然存活，重複的恢復提示無害。Nim 與 TypeScript SDK 沒有對等的鉤子。
+
+```go
+func (c *Component) OnReconnected(h func(*Component)) *Component
 ```
 
 #### Idle work (`onIdle`)

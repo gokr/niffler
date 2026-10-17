@@ -282,9 +282,10 @@ returns sorted paths. `max_results` is capped at 10000 lines and the text at
 longer than 300 columns is omitted as `[Omitted long matching line]` (rg's
 `--max-columns 300`). `exit_code` is the contract: 0 match, 1 none (`[no
 matches]`/`[no files]`), 2 bad regex, 124 timeout, 127 rg missing. `grep`
-declares `parallel: true` and `files` does not, and neither declares
-`x-harness.effect` — the fabric batch host schedules both as writes. Four
-stateless manifest replicas serve them through one queue group.
+declares `parallel: true` and `files` does not; both declare
+`x-harness.effect: read`, so the fabric batch host schedules them as reads
+rather than writes, and neither holds a write claim. Four stateless manifest
+replicas serve them through one queue group.
 
 ### Minimal boot profile (`--minimal`)
 
@@ -688,8 +689,12 @@ NIF_OPENAI_MODEL=deepseek-chat
 Loading rules (same in the Nim, Go and TypeScript SDKs): existing shell
 environment **always wins** over `.env`; the SDKs load the current
 directory's `.env` first and the harness root's second, first definition of
-a key wins. A Wails-hosted client loads them in the opposite order (harness
-root, then cwd), so there the root file wins. So
+a key wins. The Go SDK's `NewWithURL` client is the exception: it pins an
+explicit bus URL, reads no environment or discovery fallback, and loads no
+`.env` at all, so an in-process client for another instance never touches
+process-global endpoint state (see [WIRE.md](WIRE.md)). A Wails-hosted
+client loads them in the opposite order (harness root, then cwd), so there
+the root file wins. So
 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
 `unset NIF_OPENAI_API_KEY` before starting if you want the file value.
 `.env` must be a plain regular file: a symlinked or hardlinked copy is
@@ -3397,6 +3402,18 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component
 
 ```go
 func (c *Component) OnReattached(h func(*Component)) *Component
+```
+
+The Go SDK also exposes `OnReconnected`, which runs after **any** recovered
+connection: a short NATS reconnect that never reaches the re-attach grace, and
+a full re-attach (after its subscriptions are rebuilt). Use it when a client
+must reconcile durable state after a brief gap as well as a long one. Initial
+`Connect` does not call it, existing subscriptions survive an ordinary
+reconnect, and duplicate recovery hints are harmless. The Nim and TypeScript
+SDKs have no equivalent hook.
+
+```go
+func (c *Component) OnReconnected(h func(*Component)) *Component
 ```
 
 #### Idle work (`onIdle`)
