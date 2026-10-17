@@ -365,6 +365,15 @@ gets scheduled, and keep the rationale edits in the owning research doc.
   download and real SSH smoke remain pending. Matching TUI source implements
   receipt import, pinned reconnect and remote switching; installed clients must
   be updated separately.
+- **Fleet update** — implemented with `fleet_update` plus ref resolution for
+  install. An install/adopt rerun still never updates; update is its own approved
+  action that verifies identity first, refuses locally-modified or unrelated
+  checkouts, rebuilds with `make build` (never `bootstrap.sh`, which could prompt
+  for sudo over a non-interactive SSH session), reinstalls and restarts the
+  service, and advances the receipt's pinned revision only after the updated
+  instance verifies. `revision` accepts a ref, resolved to a pinned commit before
+  any remote write. Covered by `make test-fleet` with fake transports; a real SSH
+  update smoke against a published revision remains pending.
 - **Remote paths** — first-class Chetter support and/or a native fleet over
   NATS leaf nodes + a shared TiDB scope; shared prerequisites are `NIF_NAME`
   identity, bus auth and provisioning
@@ -401,7 +410,17 @@ These were previously tracked here as plans and are now part of `main`:
 
 - Context ledger, deterministic prune/trim, replaceable compaction, durable
   projections and recall, bounded provider-overflow recovery and a manual
-  `/compact` trigger; see [research/COMPACTION.md](research/COMPACTION.md).
+  `/compact` trigger; see [research/COMPACTION.md](research/COMPACTION.md). A
+  transient compactor failure is now replayed once (`compact:retry`) before the
+  lossy rung; a lossy trim records which compaction attempts failed plus a
+  `context_recall` pointer, durably; and the trim itself cuts the measured
+  smallest whole-turn prefix that fits instead of jumping to its structural
+  floor (which had been discarding history the model still had room for).
+- **Context status surface** — still missing: `compaction_propose` is hidden and
+  runner-only, and nothing reports window/used/trim line/`trimThrough`/notice ids
+  or the retained snapshot's id to an operator. A read-effect `context_status`
+  (with an explicit retry of a retained failed snapshot) would let a
+  mid-conversation repair replace what is currently a one-way loss.
 - Continuable and forked subagents, settlement notices (including the bounded
   autonomous wake that tells an idle parent its children finished), `agent_list`
   and the subagent model-tier ladder; see

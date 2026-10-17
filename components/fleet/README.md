@@ -5,10 +5,12 @@ manifest autostart. All tools are on-demand. No interpreter dependency; SSH and
 remote Bash are required for SSH targets, and Multipass for VM targets.
 
 `fleet_install` requires `transport` (`ssh` or `multipass`), `target`, `root`,
-full lowercase 40-character `revision`, and local receipt `profile`. Optional
-VM resources: `cpus` (2), `memory` (4G), `disk` (20G). `fleet_probe`,
-`fleet_status`, `fleet_logs`, `fleet_start`, `fleet_stop`, `fleet_vm_stop` take
-`profile`. Mutations use the enforced normal harness approval gate, never a
+`revision` (full lowercase 40-character SHA, or a ref resolved to one by
+`git ls-remote` before any remote write and recorded as the pinned revision), and
+local receipt `profile`. Optional VM resources: `cpus` (2), `memory` (4G),
+`disk` (20G). `fleet_probe`, `fleet_status`, `fleet_logs`, `fleet_start`,
+`fleet_stop`, `fleet_vm_stop` take `profile`; `fleet_update` takes `profile` and
+`revision`. Mutations use the enforced normal harness approval gate, never a
 terminal prompt. Profile paths are workspace-resolved; approved absolute paths
 are allowed. Installation leases claim `profile`; lifecycle actions declare no
 receipt writes. Separate aliases for one remote resource are not distributed locking.
@@ -17,7 +19,12 @@ SSH uses fixed argv, BatchMode=yes, ForwardAgent=no, ConnectTimeout=15 and
 ordinary SSH config/known_hosts verification. Multipass uses exec, never mounts
 or key extraction. New installations verify a pinned SHA before bootstrap;
 complete existing installations are adopted without updates, rebuilds or
-provider setup. Incomplete and symlinked roots refuse. Linger remains explicit.
+provider setup. `fleet_update` moves an adopted installation forward: it verifies
+identity over the live catalog first, refuses a symlinked, unrelated or
+locally-modified checkout, fetches and checks out the resolved commit, runs
+`make build` in place (never `bootstrap.sh`), reinstalls and restarts the service,
+and advances the receipt's pinned `gitHash` only after the updated instance
+verifies. A failed update leaves the receipt at the last verified revision. Incomplete and symlinked roots refuse. Linger remains explicit.
 No credentials are sent.
 
 Receipts are atomic mode-0600 JSON compatible with the TUI version-1 schema:

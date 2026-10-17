@@ -310,6 +310,119 @@ proc main() =
           getDoc(nc, "context_projection", truncatedConv) == nil)
     check("truncated compaction cleans its settled snapshot",
           listDocs(nc, "compaction_input", truncatedConv & ":").len == 0)
+
+  # §6.3 one replay of a transiently failing compactor. The mock fails its
+  # first compaction call and succeeds on the next, so the turn must commit a
+  # checkpoint — not fall through to the lossy trim. Before this, a single
+  # transient component error cost the whole span (the measured case: a
+  # verified snapshot sat on disk while trim dropped 1402 messages and
+  # recorded no reason).
+  block transientCompactionFailure:
+    coreProc.stopHard()
+    var failFirstExtra = extra
+    failFirstExtra.add(("NIF_MOCK_FAIL_COMPACTION", "first"))
+    coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = failFirstExtra,
+      logFile = root / "var" / "test-logs" / "core-compaction-retry.log")
+    doAssert waitComponent(nc, "store"), "store did not register for retry fixture"
+    doAssert waitComponent(nc, "llm"), "llm did not register for retry fixture"
+    doAssert waitComponent(nc, "compaction"),
+      "compaction did not register for retry fixture"
+    let retryConv = "conv-compaction-retry-" & $int(epochTime())
+    putDoc(nc, "conversation", retryConv,
+      %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt",
+         "title": "retry compact fixture"})
+    discard seedMessages(nc, retryConv, 1, 8, 2200, markFirst = false)
+    # Both the replay announcement and the commit it produces ride the
+    # `context` stream, so one subscription sees the whole story.
+    let retryContext = subscribeEvents(nc,
+      "ev.session." & retryConv & ".context")
+    defer: discard natsSubscription_Unsubscribe(retryContext)
+    let retried = call(nc, "core", "session",
+      %*{"sessionId": retryConv, "content": "RETRY-AFTER-TRANSIENT"}, 180_000)
+    check("a transient compactor failure does not fail the turn",
+          retried{"turnError"}.getStr("").len == 0, $retried)
+    check("the failed compactor is replayed and commits its checkpoint",
+          getDoc(nc, "context_projection", retryConv) != nil,
+          "no projection for " & retryConv)
+    var sawRetryFrame = false
+    var sawCommitFrame = false
+    for ev in drainEvents(retryContext):
+      case ev{"reason"}.getStr("")
+      of "compact:retry": sawRetryFrame = true
+      of "reset:compact": sawCommitFrame = true
+      else: discard
+    check("the replay is announced on the wire", sawRetryFrame)
+    check("the replay reports the commit it produced", sawCommitFrame)
+    # The replay's own snapshot is settled by its commit. The FIRST attempt's
+    # snapshot deliberately stays: it is kept for a still-unwinding timed-out
+    # reader and removed by the grace-period sweep, so exactly one meta remains.
+    var pendingMetas = 0
+    for item in listDocs(nc, "compaction_input", retryConv & ":"):
+      if ":p" notin item{"id"}.getStr(""): inc pendingMetas
+    check("the replay settles its own snapshot, leaving the failed one to the sweep",
+          pendingMetas == 1, "pending metas=" & $pendingMetas)
+    coreProc.stopHard()
+    coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = extra,
+      logFile = root / "var" / "test-logs" / "core-compaction-after-retry.log")
+    doAssert waitComponent(nc, "store"), "store did not re-register after retry fixture"
+    doAssert waitComponent(nc, "llm"), "llm did not re-register after retry fixture"
+    doAssert waitComponent(nc, "compaction"), "compaction did not re-register after retry fixture"
+
+  # §6.3 durable attribution: when every compaction attempt fails and the
+  # ladder must trim, the omission notice names the failure, the header keeps
+  # it across a restart, and the notice still points at canonical history.
+  block attritionAfterExhaustedCompaction:
+    coreProc.stopHard()
+    var alwaysFailExtra = extra
+    # The compactor is present and registered — it FAILS, which is the case the
+    # attribution exists for. (Disabling it would take the `casUnavailable`
+    # exit, which never reaches the ladder's failure accounting.)
+    alwaysFailExtra.add(("NIF_MOCK_FAIL_COMPACTION", "1"))
+    coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = alwaysFailExtra,
+      logFile = root / "var" / "test-logs" / "core-compaction-attrition.log")
+    doAssert waitComponent(nc, "store") and waitComponent(nc, "llm")
+    let attritionConv = "conv-compaction-attrition-" & $int(epochTime())
+    putDoc(nc, "conversation", attritionConv,
+      %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt",
+         "title": "attrition fixture"})
+    discard seedMessages(nc, attritionConv, 1, 8, 2200, markFirst = false)
+    let attrition = call(nc, "core", "session",
+      %*{"sessionId": attritionConv,
+         "content": "ATTRITION-AFTER-NO-COMPACTOR"}, 180_000)
+    check("with no compactor the ladder still completes the turn",
+          attrition{"turnError"}.getStr("").len == 0, $attrition)
+    let attritionHeader = getDoc(nc, "conversation", attritionConv)
+    check("an exhausted compactor is recorded in the header",
+          attritionHeader != nil and
+          attritionHeader{"compactFailures"}.getInt(0) > 0 and
+          attritionHeader{"compactReason"}.getStr("").startsWith("compact:"),
+          $attritionHeader)
+    coreProc.stopHard()
+    coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = extra,
+      logFile = root / "var" / "test-logs" / "core-compaction-attrition-reload.log")
+    doAssert waitComponent(nc, "store") and waitComponent(nc, "llm") and
+      waitComponent(nc, "compaction")
+    let attritionExport = call(nc, "core", "session",
+      %*{"sessionId": attritionConv, "export": true}, 60_000)
+    let attritionRequest = $(attritionExport{"request"})
+    check("the reloaded notice names why compaction did not commit",
+          attritionRequest.contains("compaction attempt") and
+          attritionRequest.contains("compact:"),
+          attritionRequest[0 .. min(400, attritionRequest.len - 1)])
+    check("the reloaded notice still points at canonical history",
+          attritionRequest.contains("context_recall"),
+          attritionRequest[0 .. min(400, attritionRequest.len - 1)])
+    coreProc.stopHard()
+    coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = extra,
+      logFile = root / "var" / "test-logs" / "core-compaction-after-attrition.log")
+    doAssert waitComponent(nc, "store"), "store did not re-register after attrition fixture"
+    doAssert waitComponent(nc, "llm"), "llm did not re-register after attrition fixture"
+    doAssert waitComponent(nc, "compaction"), "compaction did not re-register after attrition fixture"
     coreProc.stopHard()
     coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
       root = root, extra = extra,

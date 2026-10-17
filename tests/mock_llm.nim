@@ -75,6 +75,13 @@ let mockCompactionSleepMs = block:
   try: parseInt(getEnv("NIF_MOCK_COMPACTION_SLEEP_MS", "0"))
   except CatchableError: 0
 let mockCompactionLength = getEnv("NIF_MOCK_COMPACTION_LENGTH", "").len > 0
+# Failure injection for the compaction rung (§6.3). "1" fails every
+# compaction call; "first" fails only the first one, so a contract test can
+# prove that a transient compactor failure is replayed instead of costing
+# history. Both surface to core as a dispatch error — the class the runner
+# retries once, because it says nothing about the history.
+let mockFailCompaction = getEnv("NIF_MOCK_FAIL_COMPACTION", "")
+var mockCompactionCalls = 0
 var currentSessionId = ""
 var currentCancelId = ""
 var currentEmitTokens = true
@@ -192,6 +199,11 @@ proc(c: Component, args: JsonNode): JsonNode =
   logRequest(providerCount, false, "", messages, args{"tools"})
   if currentPurpose == "compaction" and mockCompactionSleepMs > 0:
     sleep(mockCompactionSleepMs)
+  if currentPurpose == "compaction" and mockFailCompaction.len > 0:
+    inc mockCompactionCalls
+    if mockFailCompaction != "first" or mockCompactionCalls == 1:
+      raise newException(ValueError,
+        "mock compaction failure injected (call " & $mockCompactionCalls & ")")
   var last = ""
   if messages != nil and messages.kind == JArray and messages.len > 0:
     last = messages[^1]{"content"}.getStr("")

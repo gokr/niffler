@@ -69,6 +69,26 @@ proc checked(run: CommandRunner, argv: seq[string], input = "", timeoutMs = 6000
   r.output
 
 proc hex(s: string, size: int): bool = s.len == size and s.allCharsInSet({'0'..'9', 'a'..'f'})
+
+proc resolveRevision*(run: CommandRunner, refspec: string): string =
+  ## Accept either a full lowercase 40-character SHA (used verbatim, no network)
+  ## or a git ref (`main`, `v0.4.0`) resolved to one through `git ls-remote`.
+  ## Resolution is the operator's typing convenience ONLY: the resolved SHA is
+  ## what the receipt records and what the remote checkout verifies, so pinning
+  ## is preserved in fact — nothing downstream ever sees a moving ref.
+  if hex(refspec, 40): return refspec
+  if refspec.len == 0 or refspec[0] == '-' or
+      not refspec.allCharsInSet({'a'..'z','A'..'Z','0'..'9','/','.','_','-','+'}):
+    refuse("invalid revision")
+  let patterns = @[refspec, "refs/heads/" & refspec, "refs/tags/" & refspec,
+                   "refs/tags/" & refspec & "^{}"]
+  let output = checked(run,
+    @["git", "ls-remote", "https://github.com/gokr/niffler.git"] & patterns,
+    timeoutMs = 60000)
+  for line in output.splitLines():
+    let parts = line.split(Whitespace)
+    if parts.len == 2 and hex(parts[0], 40): return parts[0]
+  refuse("cannot resolve revision '" & refspec & "' to a pinned commit")
 proc validateRoot*(root: string) =
   if root.len < 2 or root[0] != '/' or not root.allCharsInSet({'a'..'z','A'..'Z','0'..'9','_','.','/','-'}): refuse("invalid root")
   for part in root[1..^1].split('/'):
@@ -184,6 +204,32 @@ bash "$root/scripts/server.sh" install "$root"
 bash "$root/scripts/server.sh" start "$root"
 """
 
+proc updateScript*(root, revision: string): string =
+  ## Refresh an EXISTING pinned installation to a new revision. Never clones and
+  ## never adopts: a missing, unrelated, symlinked or locally-modified root is a
+  ## refusal, and the caller has already verified durable identity before any
+  ## write reaches the host.
+  validateRoot(root)
+  if not hex(revision, 40): refuse("full 40-character pinned revision required")
+  result = "root=" & quoteShell(root) & "\nrevision=" & revision & "\n" & """
+export PATH="$HOME/.nimble/bin:/usr/local/bin:$PATH"
+[[ ! -L "$root" ]] || { echo 'symlinked root: refusing' >&2; exit 1; }
+[[ -f "$root/niffler.nimble" && -x "$root/var/bin/niffler" && -f "$root/scripts/server.sh" ]] || { echo 'not a Niffler installation: refusing' >&2; exit 1; }
+# Local modifications are the operator's work, not ours to discard.
+[[ -z "$(git -C "$root" status --porcelain)" ]] || { echo 'installation has local changes: refusing to update' >&2; exit 1; }
+git -C "$root" fetch --tags origin "$revision"
+git -C "$root" checkout --detach "$revision"
+[[ "$(git -C "$root" rev-parse HEAD)" == "$revision" ]] || { echo 'checkout did not reach the requested revision' >&2; exit 1; }
+cd "$root"
+# make build, never bootstrap: an update must not run prerequisite installation
+# (a sudo prompt over a non-interactive SSH session would hang). A missing
+# prerequisite fails loudly here instead.
+make build
+""" & serviceEnv & """
+bash "$root/scripts/server.sh" install "$root"
+bash "$root/scripts/server.sh" start "$root"
+"""
+
 proc vmInfo(run: CommandRunner, target: string): JsonNode =
   try:
     let data = parseJson(checked(run, @["multipass", "list", "--format", "json"]))
@@ -199,7 +245,10 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
   let transport = args{"transport"}.getStr()
   let target = args{"target"}.getStr()
   let root = args{"root"}.getStr()
-  let revision = args{"revision"}.getStr()
+  # A ref resolves to a pinned commit BEFORE anything is written anywhere: the
+  # receipt and the remote checkout both carry the resolved SHA, so "install
+  # main" still produces a receipt that proves exactly what is installed.
+  let revision = resolveRevision(run, args{"revision"}.getStr())
   validateTarget(transport, target); validateRoot(root)
   if not hex(revision, 40): refuse("full 40-character pinned revision required")
   let cpus = args{"cpus"}.getInt(2)
@@ -241,6 +290,53 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
   if not verified: refuse("service did not verify; profile not saved")
   saveReceipt(path, p)
   %*{"profile": path, "receipt": p, "text": "Verified receipt saved; provider configuration and linger remain explicit."}
+
+proc update*(run: CommandRunner, args: JsonNode): JsonNode =
+  ## Move ONE verified pinned installation to a new revision. The receipt is the
+  ## authority: update never installs, never adopts an unrelated root and never
+  ## touches provider credentials. Identity is proven over the live catalog
+  ## BEFORE any remote write, and the receipt's pinned revision is advanced only
+  ## after the UPDATED instance verifies — a botched update leaves the receipt
+  ## describing what was actually proven, not what was attempted.
+  let path = receiptPath(args{"profile"}.getStr())
+  let p = loadReceipt(path)
+  if p == nil: refuse("verified receipt required; install first")
+  if p["transport"].getStr() == "multipass":
+    # The pre-update identity probe needs a running instance. Start a stopped
+    # pinned VM — never a missing one, and never a recreated one: VM creation
+    # belongs to install, and adopting a different VM would be a silent
+    # re-point of the receipt.
+    let vm = vmInfo(run, p["target"].getStr())
+    if vm == nil: refuse("pinned VM is missing; refusing to update")
+    if vm{"state"}.getStr() != "Running":
+      discard checked(run, @["multipass", "start", p["target"].getStr()],
+                      timeoutMs = 180000)
+  let revision = resolveRevision(run, args{"revision"}.getStr())
+  let before = probe(run, p)
+  let fromHash = before{"gitHash"}.getStr()
+  if fromHash == revision:
+    return %*{"profile": path, "receipt": p, "changed": false,
+              "text": "Already at the requested revision; nothing to do."}
+  discard remote(run, p, guard(p) & updateScript(p["root"].getStr(), revision),
+                 3600000)
+  var verified = false
+  for attempt in 0..<30:
+    try:
+      let identity = probe(run, p)
+      if identity{"gitHash"}.getStr() == revision:
+        p["expect"] = identity
+        verified = true
+        break
+    except Refusal as e:
+      if "mismatch" in e.msg or "invalid catalog" in e.msg: raise
+    if attempt < 29: sleep(1000)
+  if not verified:
+    refuse("updated service did not verify at " & revision &
+           "; receipt left at " & fromHash)
+  saveReceipt(path, p)
+  %*{"profile": path, "receipt": p, "changed": true, "from": fromHash,
+     "to": revision,
+     "text": "Updated and verified; the receipt now pins " & revision & "."}
 
 proc action*(run: CommandRunner, name, profile: string): JsonNode =
   let p = loadReceipt(receiptPath(profile))

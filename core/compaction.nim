@@ -50,12 +50,29 @@ type
     status*: CompactionStatus
     reason*: string
     detail*: string
+    snapshotRetained*: bool
+      ## True when the attempt failed before settlement and deliberately left
+      ## its verified paged snapshot in the store. That is exactly the replay
+      ## payload `retryableCompactionFailure` needs: the failure happened
+      ## before a candidate was obtained, so a retry re-reads the same surface
+      ## instead of re-summarizing.
 
   CompactionConfig* = object
     tool*: string            ## "" = summarization disabled; the guard still runs
     timeoutMs*: int
     maxLlmCalls*: int
     maxSummaryTokens*: int
+
+proc retryableCompactionFailure*(a: CompactionAttempt): bool =
+  ## §6.3: which non-commit outcome earns one bounded retry before the
+  ## irreversible lossy rung. Only a `casFailed` that settled nothing and kept
+  ## its snapshot: a dispatch error, a timeout, or a component error before its
+  ## reply — the class where the failure says nothing about the history. A
+  ## decline is a verdict about the history (`no-useful-cut`,
+  ## `input-budget-exceeded`), an invalid answer failed validation, and
+  ## `casUnavailable` means no component is registered at all; repeating any of
+  ## those would produce the same verdict and only delay the ladder.
+  a.status == casFailed and a.snapshotRetained
 
 proc compactionConfigFromEnv*(): CompactionConfig =
   ## Harness-level configuration (§4.1). Session overrides persisting in

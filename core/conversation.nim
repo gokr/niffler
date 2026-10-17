@@ -203,6 +203,18 @@ type
     trimThrough*: int    ## highest canonical seqNo dropped by a lossy trim
                          ## (the watermark the resume honors — §6.3)
     ctxWarned*: bool     ## warned once per session until the next trim
+    ## §6.3 attribution: why the replaceable compactor did not commit, kept
+    ## so the lossy fallback can name the route it took. `compactFailures`
+    ## counts non-commit attempts since the last commit (reset to 0 by one);
+    ## `compactReason` is the stable `compact:*` name plus detail of the last
+    ## of them, "" when the last attempt committed. Both are persisted with
+    ## the trim watermark, so a restart rebuilds the same notice instead of a
+    ## range-honest placeholder with no explanation.
+    compactReason*: string
+    compactFailures*: int
+    lastCompaction*: CompactionAttempt
+      ## The last replaceable-compactor outcome of this run: whether the lossy
+      ## rung still owes one replay of a failed compactor (retryableCompactionFailure).
     ## A3 cache economics: cumulative prompt tokens across the conversation,
     ## split by what the provider served from its prompt cache. The miss
     ## ratio (cacheMiss / cachePrompt) is the measurable waste signal —
@@ -985,8 +997,39 @@ proc latestUserIndex(p: Persister, messages: seq[JsonNode]): int =
       return i
   -1
 
+proc omissionNoticeText(rangeText: string, compactFailures: int,
+                         compactReason: string, recallId = ""): string =
+  ## The one body a dropped span leaves behind — shared by the live trim, the
+  ## projection-reload path and the ordinary reload path so all three say the
+  ## same thing. `rangeText` names the dropped span in the form the call site
+  ## can prove (exact ids for a live cut, a seq bound for a reload).
+  ##
+  ## §6.3 attribution: a lossy trim that follows a failed compactor must name
+  ## that route. Without it the notice says only "omitted" while an intact
+  ## replayable snapshot sat on disk and the reason existed solely on a live
+  ## event stream nobody recorded. `compactFailures == 0` renders the plain
+  ## notice the older callers produced — nothing else about it changes.
+  ##
+  ## The recall pointer is emitted only when the caller knows the first
+  ## dropped canonical id: a notice that loses the most history is the one
+  ## that most needs a way back.
+  var body = "[history omitted without summary: " & rangeText &
+    " to fit the model window"
+  if compactFailures > 0:
+    body.add("; " & $compactFailures & " compaction attempt" &
+      (if compactFailures == 1: "" else: "s") & " failed first (" &
+      compactReason & ") — a compacted checkpoint would have kept more of " &
+      "this span")
+  body.add(" — the originals remain in canonical history")
+  if recallId.len > 0:
+    body.add("; recall the dropped span with context_recall " &
+      "{\"ref\": {\"source\": \"canonical\", \"id\": \"" & recallId &
+      "\"}}")
+  body.add("]")
+  body
+
 proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
-                keepTurns: int): int =
+                keepTurns: int, cutoffIdx = -1): int =
   ## §6.3 trim: drop the oldest complete turns from the projection, keeping
   ## the system node, the newest `keepTurns` user requests and everything
   ## after them (whole-turn drops keep tool_call_id pairs intact), with an
@@ -994,6 +1037,13 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
   ## ids. Messages and the node ledger move in lockstep; canonicalHigh is
   ## untouched (canonical docs are unaffected — the notice is a projection
   ## edit, and recall-canonical still reaches what was dropped).
+  ##
+  ## `cutoffIdx` (a projection index, exclusive) stops the drop at a MEASURED
+  ## boundary: the caller found the smallest prefix that brings the request
+  ## under the target, so the rung stops taking history there instead of
+  ## falling through to its structural floor. `keepTurns` remains the floor
+  ## when no measured cutoff is supplied (or when the scan found none).
+  ##
   ## The cut is DURABLE: the highest dropped canonical seqNo is recorded in
   ## the header (trimThrough) and the ordinary resume path honors it, so a
   ## restart rebuilds the trimmed projection instead of re-inflating to the
@@ -1006,30 +1056,59 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
         messages[i]{"role"}.getStr("") == "user":
       users.add(i)
   if users.len <= keepTurns: return 0
-  let dropEnd = users[users.len - keepTurns]   # first kept user request
+  let dropEndFloor = users[users.len - keepTurns]   # first kept user request
   # A committed checkpoint is the durable summary of an earlier range and
   # must survive the no-summary fallback rung (§6.3). Trim only the retained
   # canonical span after it; without a checkpoint the removable span begins
   # immediately after the system node as before.
   let dropStart = if p.nodes.len > 1 and
                        p.nodes[1].source == nsCheckpoint: 2 else: 1
+  var dropEnd = dropEndFloor
+  if cutoffIdx > dropStart and cutoffIdx < dropEnd:
+    # Snap the measured boundary outward to a whole-turn boundary: dropping
+    # mid-turn would strand a tool_call without its result. The user index at
+    # or before the cutoff is where history may actually end.
+    var snapped = -1
+    for i in 0 .. dropEndFloor:
+      if users[i] >= cutoffIdx:
+        snapped = users[i]
+        break
+    if snapped > dropStart: dropEnd = snapped
   if dropEnd <= dropStart: return 0
+  # The head of the span about to leave, read BEFORE the delete shifts the
+  # ledger: it is the canonical address `context_recall` takes, and the only
+  # pointer the notice can honestly offer — `coveredFrom` may name a notice or
+  # checkpoint from an earlier reduction, which is not addressable.
+  var recallId = ""
+  for i in dropStart ..< dropEnd:
+    if p.nodes[i].source == nsCanonical:
+      recallId = p.nodes[i].id
+      break
   let coveredFrom = p.nodes[dropStart].id
   let coveredTo = p.nodes[dropEnd - 1].id
   messages.delete(dropStart ..< dropEnd)
   p.nodes.delete(dropStart ..< dropEnd)
   result = dropEnd - dropStart
   # Persist the cut immediately (not at turn end): the whole point of the
-  # watermark is surviving a restart, whenever it comes.
+  # watermark is surviving a restart, whenever it comes. The compaction
+  # attribution travels with it — the notice a restart rebuilds is rebuilt
+  # from the header, so the *why* has to be there too (§6.3).
+  var headerFields = newJObject()
+  var changed = false
   let cutSeq = canonicalSeqOf(coveredTo)
   if cutSeq > p.trimThrough:
     p.trimThrough = cutSeq
-    p.ct.updateConversationHeader(p.convId,
-                                 %*{"trimThrough": %p.trimThrough})
-  let notice = %*{"role": "system", "content":
-    "[history omitted without summary: dropped " & $result &
-    " earlier messages (" & coveredFrom & " .. " & coveredTo &
-    ") to fit the model window — the originals remain in canonical history]"}
+    headerFields["trimThrough"] = %p.trimThrough
+    changed = true
+  if p.compactFailures > 0:
+    headerFields["compactFailures"] = %p.compactFailures
+    headerFields["compactReason"] = %p.compactReason
+    changed = true
+  if changed:
+    p.ct.updateConversationHeader(p.convId, headerFields)
+  let notice = %*{"role": "system", "content": omissionNoticeText(
+    "dropped " & $result & " earlier messages (" & coveredFrom & " .. " &
+      coveredTo & ")", p.compactFailures, p.compactReason, recallId)}
   messages.insert(notice, dropStart)
   p.nodes.insert(CtxNode(source: nsNotice,
                          id: p.convId & "#omit-" & $p.canonicalHigh &
@@ -1154,14 +1233,103 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
   if used <= target: return ""
   "pressure:" & contextPressureDetail(p, messages, used, target, toolTokens)
 
+proc trimCutoffFor*(p: Persister, messages: seq[JsonNode],
+                    toolTokens: int): int =
+  ## The smallest whole-turn prefix whose removal brings the candidate under the
+  ## hard target — the measurement that turns trim from a cliff into a
+  ## proportional cut.
+  ##
+  ## Why this exists (§6.3, prod finding conv-d3a5be6c05be): the rung used to
+  ## jump straight to keeping only the latest user request, discarding whatever
+  ## that happened to be. Measured on the live loss (provider-counted, from the
+  ## header): the request was ~689k tokens against a 458,752 target, so a ~33%
+  ## reduction was required — the rung took 59%, landing 179,550 tokens BELOW
+  ## the line it had to reach. One oversized turn decided the boundary, so the
+  ## result was a cliff rather than a trim.
+  ##
+  ## Returns 0 when no boundary is needed (already under target) or when the
+  ## structural floor is already reached; the caller then keeps its floor.
+  ##
+  ## The scan measures the span the caller will ACTUALLY drop — from `dropStart`,
+  ## never from 0. Counting the system prompt and any checkpoint as removable
+  ## overstates the saving and returns a boundary that still does not fit (the
+  ## 16k-window fixture caught exactly that).
+  result = 0
+  let target = p.contextTarget()
+  if target <= 0: return 0
+  var users: seq[int]
+  for i, n in p.nodes:
+    if n.source == nsCanonical and i < messages.len and
+        messages[i]{"role"}.getStr("") == "user":
+      users.add(i)
+  if users.len <= minKeepTurns: return 0
+  let floorIdx = users[users.len - minKeepTurns]
+  let dropStart = if p.nodes.len > 1 and p.nodes[1].source == nsCheckpoint: 2
+                  else: 1
+  # Aim slightly under the hard target: a cut that lands exactly ON it would
+  # re-trim a turn later, and each trim rebuilds the provider prompt prefix
+  # (§6.3 cache economics). The headroom costs ~1% of the budget and buys a
+  # margin instead of a second rebuild.
+  let aim = target - target div 100
+  let totalTokens = estimateTokens(messages)
+  # Already inside the window: no proportional cut is warranted, whoever asks.
+  # The rung only consults this under pressure, but making the function total
+  # keeps "0 = nothing to do" true on its own terms — otherwise a caller with
+  # headroom would be handed a boundary that drops history for no reason.
+  if totalTokens + toolTokens + p.calib <= target: return 0
+  var removed = 0
+  for i in dropStart ..< messages.len:
+    removed += estimateTokens(@[messages[i]])
+    if totalTokens + toolTokens + p.calib - removed <= aim:
+      # The first boundary that suffices: the user turn starting at or after
+      # this index, never past the structural floor. A LATER boundary only drops
+      # more, so it still fits. When no such boundary exists the floor itself is
+      # already past this point, and dropping only to the floor would leave the
+      # candidate over the target — that is the caller's floor to keep, not a
+      # proportional cut, so report nothing.
+      var snapped = -1
+      for u in users:
+        if u >= i + 1 and u <= floorIdx:
+          snapped = u
+          break
+      if snapped <= dropStart: return 0
+      return snapped
+  result = 0
+
 proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
                   toolTokens: int,
                   onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
                   turnId = "") =
   ## The final lossy rung (§6.3), deliberately separate from admission so a
   ## replaceable compactor always gets the first chance after lossless prune.
+  ##
+  ## It cuts PROPORTIONALLY, not absolutely: it first measures the smallest
+  ## whole-turn prefix that brings the request under the target and drops exactly
+  ## that much, only falling back to its structural floor (keep the newest user
+  ## request) when no measured boundary exists. The old jump straight to the
+  ## floor discarded history the model still had room for: on the live case the
+  ## request needed a ~34% reduction and the floor took 59%, landing 179,550
+  ## tokens below the line it had to reach. The fallback matters for the
+  ## opposite case too — when only a few tokens have to go, the floor would take
+  ## almost everything to save almost nothing.
   let target = p.contextTarget()
   var used = estimateTokens(messages) + toolTokens + p.calib
+  if used > target:
+    let cutoff = trimCutoffFor(p, messages, toolTokens)
+    if cutoff > 0:
+      let dropped = p.trimTurns(messages, minKeepTurns, cutoff)
+      if dropped > 0:
+        if onEvent != nil:
+          onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                                "promptTokens": p.promptTokens,
+                                "usedTokens": used, "context": p.ctxSize,
+                                "trimAt": trimThreshold(p),
+                                "reserveTokens": outputReserve(p),
+                                "trimmed": dropped,
+                                "proportional": true,
+                                "reason": "reset:trim",
+                                "note": "partial history reset — the smallest whole-turn prefix that fits; the next request rebuilds the provider prompt cache from the remaining prefix"})
+        return
   for keep in [minKeepTurns, 1]:
     if used <= target: break
     let dropped = p.trimTurns(messages, keep)
@@ -2076,6 +2244,24 @@ proc resolveCoveredEndpoint(nodes: seq[CtxNode], ids: openArray[string],
     of nsSystem:
       return
 
+proc compactionReasonName*(a: CompactionAttempt): string =
+  ## The stable `compact:*` name for an attempt's terminal outcome — the same
+  ## vocabulary the live `context` event carries (docs/WIRE.md "Context
+  ## events"), so a recorded reason and a watched one read alike.
+  case a.status
+  of casCompacted: "reset:compact"
+  of casDeclined: "compact:declined"
+  of casUnavailable: "compact:unavailable"
+  of casFailed: "compact:failed"
+
+proc attemptReason*(a: CompactionAttempt): string =
+  ## `name` plus the attempt's own reason/detail: the notice has to carry the
+  ## *why*, not just the fact that something failed.
+  result = compactionReasonName(a)
+  if a.reason.len > 0:
+    result.add(": " & a.reason)
+    if a.detail.len > 0: result.add(" (" & a.detail & ")")
+
 proc attemptCompaction*(ct: CoreTools, p: var Persister,
                         messages: var seq[JsonNode],
                         frozenTools: JsonNode,
@@ -2239,8 +2425,35 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     result.detail = e.msg
     return
   var settled = false
+  var replayable = true
+  # §6.3 durable attribution: every exit below already publishes its
+  # `compact:*` reason on the live event stream, but a run with no listener
+  # recorded nothing — the ladder then trimmed and the loss was inexplicable
+  # afterwards. Record the outcome on the persister, where trimTurns folds it
+  # into the omission notice, the header carries it across a restart, and
+  # runTrimRung reads whether one replay is owed before the history is lost.
+  let failuresBefore = p.compactFailures
   defer:
-    if settled: cleanupSnapshot(ct, metaId, pages.len)
+    if settled:
+      cleanupSnapshot(ct, metaId, pages.len)
+    elif replayable:
+      # Failed before settlement: the snapshot is deliberately kept for
+      # timed-out readers — that is also what `retryableCompactionFailure`
+      # replays once before the lossy rung.
+      result.snapshotRetained = true
+    p.lastCompaction = result
+    if result.status == casCompacted:
+      p.compactReason = ""
+      p.compactFailures = 0
+      if failuresBefore > 0:
+        # The attribution belonged to the trim that consumed it; a commit
+        # supersedes that route, so a later reload must not report a failure
+        # that no longer describes the projection.
+        p.ct.updateConversationHeader(p.convId,
+          %*{"compactFailures": 0, "compactReason": ""})
+    else:
+      p.compactReason = attemptReason(result)
+      inc p.compactFailures
 
   let request = %*{
     "version": 1, "sessionId": p.convId, "attemptId": attemptId,
@@ -2270,6 +2483,11 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     # The component can still be unwinding after our request deadline. Leave
     # its pages for the startup/next-attempt grace-period sweep rather than
     # deleting input under a timed-out reader.
+    # A cancellation is NOT replayable: the turn was stopped, and re-running a
+    # long auxiliary summary during a cancelled turn would ignore the human.
+    # A timeout or transport error is replayable — it says nothing about the
+    # history, which is what the one bounded replay is for.
+    if e.msg.contains("cancel"): replayable = false
     compactionEvent("compact:failed", e.msg)
     result.reason = "compactor call failed"
     result.detail = e.msg
@@ -2752,6 +2970,24 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         drainDiagnostics(ct, p, messages, onEvent)
         discard drainAdvisories(ct, p, messages, onEvent, turnId)
         verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
+        if verdict.startsWith("pressure:") and
+            retryableCompactionFailure(p.lastCompaction):
+          # §6.3: the compactor failed in a way that says nothing about the
+          # history (a dispatch error or timeout — the measured case: a
+          # transient component error cost 1402 messages while an intact
+          # replayable snapshot sat in the store). This is its last chance
+          # before the loss becomes irreversible, so replay it ONCE. A
+          # decline or an invalid answer is a verdict, not a mishap, and
+          # goes straight to the rung.
+          if onEvent != nil:
+            onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                                  "reason": "compact:retry",
+                                  "detail": p.lastCompaction.reason})
+          discard attemptCompaction(ct, p, messages, promptToolsJson, onEvent,
+                                    turnId, "pressure", resolvedProvider,
+                                    selectedModel, ccfg)
+          discard drainSteer(ct, p, messages, onEvent, turnId)
+          verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
       if verdict.startsWith("pressure:"):
         runTrimRung(p, messages, toolTokens, onEvent, turnId)
         verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
@@ -2874,6 +3110,21 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               discard drainAdvisories(ct, p, messages, onEvent, turnId)
               overflowVerdict =
                 checkContext(p, messages, onEvent, turnId, toolTokens)
+              if overflowVerdict.startsWith("pressure:") and
+                  retryableCompactionFailure(p.lastCompaction):
+                # The provider already refused this request: the rung below is
+                # lossy, so a compactor that failed without a verdict gets its
+                # single replay first (§6.3).
+                if onEvent != nil:
+                  onEvent("context", %*{"sessionId": p.convId,
+                                        "turnId": turnId,
+                                        "reason": "compact:retry",
+                                        "detail": p.lastCompaction.reason})
+                discard attemptCompaction(ct, p, messages, promptToolsJson,
+                                          onEvent, turnId, "overflow",
+                                          resolvedProvider, selectedModel, ccfg)
+                overflowVerdict =
+                  checkContext(p, messages, onEvent, turnId, toolTokens)
             if overflowVerdict.startsWith("pressure:"):
               runTrimRung(p, messages, toolTokens, onEvent, turnId)
               overflowVerdict =
@@ -3725,6 +3976,12 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # AFTER a projection commit, so both the retained loop below and the
     # prune-replay block further down must honor the same value.
     let trimThrough = header{"trimThrough"}.getInt(0)
+    # §6.3 the attribution travels with the watermark: the reload rebuilds the
+    # notice from the header, so the *why* has to be here too — otherwise a
+    # restart downgrades a refusal-specific notice into a range-honest one with
+    # no explanation.
+    let compactFailures = header{"compactFailures"}.getInt(0)
+    let compactReason = header{"compactReason"}.getStr("")
     let projectedHigh = if projection != nil:
                           projection{"canonicalHigh"}.getInt(0)
                         else: 0
@@ -3796,10 +4053,13 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         if noticeSeq == 0 and appended.nodes.len > 0:
           noticeSeq = appended.nodes[0].canonicalSeq
         if noticeSeq > 0:
-          stored.insert(%*{"role": "system", "content":
-            "[history omitted without summary: earlier messages (canonical " &
-            "seq < " & $noticeSeq & ") were dropped to fit the model " &
-            "window — the originals remain in canonical history]"}, 0)
+          # The reload knows no exact dropped id, but it does know the drop is a
+          # contiguous prefix of canonical history — so `:000001` is always a
+          # true address for "the start of what is missing". A notice that
+          # survives restarts should carry a way back too.
+          stored.insert(%*{"role": "system", "content": omissionNoticeText(
+            "earlier messages (canonical seq < " & $noticeSeq & ")",
+            compactFailures, compactReason, sessionId & ":000001")}, 0)
           storedNodes.insert(CtxNode(source: nsNotice,
                                      id: sessionId & "#omit-reload",
                                      projectionIndex: 0), 0)
@@ -3849,10 +4109,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           # canonical seq); trimTurns' exact coveredFrom/coveredTo pair
           # lives in the live run only, so the reload notice is range-honest
           # rather than byte-identical.
-          let notice = %*{"role": "system", "content":
-            "[history omitted without summary: earlier messages (canonical " &
-            "seq < " & $firstKeptSeq & ") were dropped to fit the model " &
-            "window — the originals remain in canonical history]"}
+          let notice = %*{"role": "system", "content": omissionNoticeText(
+            "earlier messages (canonical seq < " & $firstKeptSeq & ")",
+            compactFailures, compactReason, sessionId & ":000001")}
           keptM.insert(notice, 0)
           keptN.insert(CtxNode(source: nsNotice,
                                id: sessionId & "#omit-reload",
@@ -3875,6 +4134,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       promptTokens: pt, contextUsed: used, ctxSize: cs,
       cachePrompt: header{"cachePrompt"}.getInt(0),
       cacheRead: header{"cacheRead"}.getInt(0),
+      compactFailures: compactFailures,
+      compactReason: compactReason,
       generation: (if projection != nil:
                      projection{"generation"}.getInt(0) else: 0))
     # Seed the calibration offset from stored usage: the last assistant

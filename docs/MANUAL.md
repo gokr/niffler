@@ -1251,6 +1251,32 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   `generation`, `covered`, `beforeTokens` and `afterTokens`. The threshold
   warning (`warn:threshold`) carries `trimAt` — the effective rung in tokens —
   so a UI can name the same percentage core prints instead of inventing one.
+- A lossy trim removes the **measured smallest** whole-turn prefix that fits,
+  not its structural floor: `reset:trim` carries `proportional: true` for such a
+  cut. One indivisible step from the trim line to "keep only the newest user
+  request" made whichever turn sat at the boundary decide the outcome — one step
+  between "trim a little" and "discard almost everything". On the live case the
+  projection was ~698k tokens against a 458,752 target: the floor kept 525
+  messages at 279,202 tokens (179,550 below the line it had to reach) while the
+  measured cut keeps 1271 at 458,196 tokens — 746 more messages retained. A
+  boundary that would save under 5% of the budget is skipped instead (the
+  prompt-cache rebuild would not pay for itself), and the cut always lands on a
+  user-turn boundary so `tool_call_id` pairs stay whole.
+- The rung also reports `compact:retry` when it replays a failed compactor. A
+  `casFailed` outcome that kept its verified snapshot (a dispatch error or
+  timeout — a failure that says nothing about the history) is replayed **once**
+  before the lossy rung; a decline, an invalid answer or an absent component is
+  a verdict about the history and is never retried. The commit the replay
+  produces is an ordinary `reset:compact`.
+- A lossy trim is attributed, not just announced. The omission notice names the
+  failed compaction route (`", N compaction attempts failed first
+  (compact:failed: …) — a compacted checkpoint would have kept more of this
+  span"`) and carries a `context_recall` pointer to the first dropped canonical
+  id, so the one notice that loses the most history is also the one that says
+  why and how to get it back. The count and the last reason travel in the
+  conversation header (`compactFailures`, `compactReason`) alongside
+  `trimThrough`, so a restart rebuilds the same notice instead of a
+  range-honest placeholder with no explanation; a later commit clears both.
 - A boundary is only offered to the compactor when it resolves to canonical
   history. A covered span that starts at an omission notice (the projection a
   lossy trim leaves behind) resolves its `covered.from` to the first canonical
@@ -2538,8 +2564,14 @@ Enable the built component explicitly (it is not in the boot manifest):
 Ask the agent to provision an approved target, or call `fleet_install` with:
 
 ```json
-{"transport":"ssh","target":"ubuntu@worker","root":"/home/ubuntu/niffler","revision":"<full-published-commit-sha>","profile":"var/fleet/worker.json"}
+{"transport":"ssh","target":"ubuntu@worker","root":"/home/ubuntu/niffler","revision":"main","profile":"var/fleet/worker.json"}
 ```
+
+`revision` takes a full 40-character commit or a ref (`main`, `v0.4.0`). A ref is
+resolved with `git ls-remote` **before any remote write** and the resolved commit
+is what the receipt records and the remote checkout verifies — pinning is
+preserved, only the typing gets easier. An update requires the full SHA that
+`fleet_update` resolved, or the same ref form.
 
 For a VM use `transport:"multipass"`, a VM name as `target`, and optional `cpus`,
 `memory` and `disk`. New installations pin a full 40-character commit available
@@ -2549,12 +2581,33 @@ unrelated roots refuse overwrite. Provider credentials and linger must be set
 explicitly; neither is copied/enabled. New targets need git; bootstrap installs
 remaining prerequisites (possibly sudo).
 
-`fleet_install`, `fleet_start`, `fleet_stop` and `fleet_vm_stop` require the normal
-harness approval gate. The approval request names the target, root, revision and
-resources through its arguments. No second tty-consent protocol exists. Standard
-harness auto-approval policy still applies when the human explicitly selected it.
-`fleet_probe`, `fleet_status` and `fleet_logs` are read-only; lifecycle and probe
-tools take `{profile:"/absolute/path/to/receipt.json"}`. Never expose NATS publicly.
+#### Updating a provisioned instance
+
+`fleet_install` never updates: a rerun adopts. Moving an existing instance
+forward is its own approved action:
+
+```json
+{"profile":"var/fleet/worker.json","revision":"main"}
+```
+
+`fleet_update` verifies instance identity over the live catalog first (starting a
+stopped pinned VM, never creating one), resolves the ref, and then on the host
+refuses a symlinked, unrelated or **locally-modified** checkout — uncommitted
+work on an instance is the operator's, not something an update discards.
+Otherwise it fetches, checks out the resolved commit, runs `make build` in place
+(never `bootstrap.sh`: an update must not ask for sudo over a non-interactive
+SSH session), reinstalls and restarts the user service, and only then probes the
+**updated** instance and advances the receipt's pinned `gitHash`. A failed update
+leaves the receipt describing what was last actually verified. Updating to the
+revision already pinned reports `changed: false` and touches nothing.
+
+`fleet_install`, `fleet_update`, `fleet_start`, `fleet_stop` and `fleet_vm_stop`
+require the normal harness approval gate. The approval request names the target,
+root, revision and resources through its arguments. No second tty-consent
+protocol exists. Standard harness auto-approval policy still applies when the
+human explicitly selected it. `fleet_probe`, `fleet_status` and `fleet_logs` are
+read-only; lifecycle and probe tools take
+`{profile:"/absolute/path/to/receipt.json"}`. Never expose NATS publicly.
 
 SSH honors aliases, keys, ProxyJump and known_hosts with agent forwarding disabled.
 Multipass uses exec, no host mounts or key extraction. No delete/purge tool exists.

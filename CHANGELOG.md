@@ -23,8 +23,41 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   contracts. Replaces the interim Python helper and Python tests. Multipass TUI
   connections use native `cli relay`; no Python interpreter is needed for Fleet.
   Matching TUI code ships separately; cross-instance delegation remains planned.
+- `fleet_update` and ref resolution for `fleet_install.revision`: an install or
+  adopt rerun still never updates, while update is its own approval-gated action
+  that verifies identity first, refuses unrelated or locally-modified checkouts,
+  rebuilds in place with `make build` (never `bootstrap.sh`), restarts the service
+  and advances the receipt's pinned revision only after the updated instance
+  verifies. A `main`/`v0.4.0` style ref resolves to a pinned commit before any
+  remote write, so the receipt still proves exactly what is installed.
 
 ### Fixed
+
+- A transient compaction failure no longer costs history silently. The fallback
+  ladder replays a failed replaceable compactor **once** (announced as
+  `compact:retry`) when its outcome kept the verified snapshot — a dispatch
+  error or timeout, i.e. a failure that says nothing about the history. A
+  decline, an invalid candidate or an absent component stays a verdict and is
+  never retried. Measured case: one component error before any LLM call made the
+  ladder trim 1402 messages while an intact, replayable snapshot sat in the
+  store; replayed by hand it produced a valid candidate in 42s.
+- A lossy trim now cuts **proportionally**. The rung used to jump straight to
+  its structural floor (keep only the newest user request) in one indivisible
+  step, so whichever turn happened to be the boundary decided the cut — one step
+  between "trim a little" and "discard almost everything". On the live case the
+  projection was ~698k tokens against a 458,752 target: the floor dropped 1408
+  messages and kept 525 at 279,202 tokens, landing 179,550 tokens below the line
+  it had to reach, while the measured cut drops through seq 708 and keeps 1271
+  messages at 458,196 tokens — **746 more messages retained** (+142%). `reset:trim`
+  now carries `proportional: true` for such a cut; the boundary is snapped to a
+  user turn so tool-call pairs stay whole, and a cut that would save under 5% of
+  the budget is skipped rather than paying a prompt-cache rebuild for nothing.
+- Lossy trims are attributed. The omission notice names the failed compaction
+  route and carries a `context_recall` pointer to the first dropped canonical
+  id; `compactFailures`/`compactReason` persist in the conversation header
+  beside `trimThrough`, so a restart rebuilds the same notice instead of a
+  range-honest one with no explanation. A later commit clears the pair, and
+  `compactFailures == 0` renders exactly the previous notice.
 
 - `make clean` now deletes only binaries and compiler caches, never the store,
   benchmark results, logs, plugins or agent-built sources. Added an isolated

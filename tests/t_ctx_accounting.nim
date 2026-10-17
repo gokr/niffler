@@ -127,6 +127,83 @@ proc main() =
       if not paired: pairs = false
   check("tool_call_id pairs stay intact", pairs)
 
+  # --- §6.3 proportional trim -------------------------------------------
+  # The rung must take the smallest whole-turn prefix that fits, not jump
+  # straight to its floor. Measured on the live loss (conv-d3a5be6c05be): the
+  # request needed a ~33% reduction and the floor took 59%, landing 179,550
+  # tokens below the line it had to reach — history the model still had room
+  # for, discarded because one oversized turn decided the boundary.
+  block proportionalTrim:
+    proc bigMsgs(turns, body: int): seq[JsonNode] =
+      result.add(%*{"role": "system", "content": "sys"})
+      for t in 0 ..< turns:
+        result.add(%*{"role": "user", "content": "u" & $t & " " & repeat("x", body)})
+        result.add(%*{"role": "assistant", "content": "a" & $t & " " & repeat("y", body)})
+
+    proc ledger(msgs: seq[JsonNode]): Persister =
+      result.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+      for i in 1 ..< msgs.len:
+        result.nodes.add(CtxNode(source: nsCanonical,
+                                 id: "c:" & align($i, 6, '0'),
+                                 canonicalSeq: i, projectionIndex: i))
+
+    # 10 turns x ~2KB; a window that requires dropping well over half but not
+    # everything. The measured cutoff must land short of the floor.
+    let many = bigMsgs(10, 4000)
+    var pp = ledger(many)
+    pp.ctxSize = 12000
+    pp.ctxOutput = 0
+    pp.trimThrough = 0
+    putEnv("NIF_CTX_RESERVE", "0")
+    let target = pp.contextTarget()
+    let cutoff = pp.trimCutoffFor(many, 0)
+    delEnv("NIF_CTX_RESERVE")
+    check("a measured cutoff exists when the floor would overshoot",
+          cutoff > 0, "cutoff=" & $cutoff & " target=" & $target)
+    # The floor keeps only the latest user request; the measured cutoff keeps more.
+    var floorIdx = 0
+    for i in countdown(many.len - 1, 0):
+      if pp.nodes[i].source == nsCanonical and
+          many[i]{"role"}.getStr("") == "user":
+        floorIdx = i
+        break
+    check("the measured cutoff keeps more turns than the floor",
+          cutoff < floorIdx, "cutoff=" & $cutoff & " floor=" & $floorIdx)
+    var pm = many
+    let pcut = pp.trimTurns(pm, minKeepTurns, cutoff)
+    check("the proportional cut drops fewer messages than the floor would",
+          pcut > 0 and pcut < floorIdx - 1,
+          "cut=" & $pcut & " floor=" & $(floorIdx - 1))
+    check("the trimmed request now fits the target",
+          estimateTokens(pm) <= target,
+          "used=" & $estimateTokens(pm) & " target=" & $target)
+    check("the proportional cut still keeps whole turns and the ledger 1:1",
+          pm.len == pp.nodes.len and
+          pm[pm.len - 1]{"role"}.getStr("") == "assistant")
+
+    # No cutoff when no boundary is needed: the request already fits, so the
+    # rung must leave the projection alone. (The caller only consults the scan
+    # after admission reports pressure, so this is the "nothing to do" case.)
+    var small = bigMsgs(3, 100)
+    var ps = ledger(small)
+    putEnv("NIF_CTX_RESERVE", "0")
+    ps.ctxSize = 1_000_000
+    check("a fitting request reports no cutoff",
+          ps.trimCutoffFor(small, 0) == 0,
+          "cutoff=" & $ps.trimCutoffFor(small, 0) &
+          " used=" & $estimateTokens(small) & " target=" & $ps.contextTarget())
+    # The structural floor is reached: even keeping only the newest user request
+    # leaves the candidate over the target, so there is nothing measured to
+    # prefer — the caller must keep its floor.
+    var tight = bigMsgs(3, 100)
+    putEnv("NIF_CTX_RESERVE", "0")
+    ps.ctxSize = 100
+    check("a candidate still over target at the floor reports no cutoff",
+          ps.trimCutoffFor(tight, 0) == 0,
+          "cutoff=" & $ps.trimCutoffFor(tight, 0) &
+          " used=" & $estimateTokens(tight) & " target=" & $ps.contextTarget())
+    delEnv("NIF_CTX_RESERVE")
+
   # --- A3: cache hit-rate arithmetic ---------------------------------------
   # The runner accumulates Σprompt and Σcached across responses reporting
   # details, then reports hitRate = read*100/prompt (1 decimal). Verify the

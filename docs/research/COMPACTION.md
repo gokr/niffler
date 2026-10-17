@@ -661,11 +661,25 @@ In order, all deterministic, all bounded:
 
 1. **Prune** (§5.2) — tool results only, whole-result boundaries, bytes
    preserved in `spill` docs first.
-2. **Trim** — drop the oldest complete tool groups from the **projection**
+2. **Compactor replay** — one retry, only for a `casFailed` that kept its
+   verified snapshot (a dispatch error or timeout: a failure that says nothing
+   about the history, so re-reading the same surface is not a second guess). A
+   decline, an invalid candidate, a stale boundary or an absent component is a
+   verdict about the history and is never retried here. Announced as
+   `compact:retry`.
+3. **Trim** — drop the oldest complete tool groups from the **projection**
    (keeping the checkpoint, the latest user request, and a valid tail), with an
    explicit "history omitted without summary" notice naming covered ids.
-   `reset:trim` attribution stays, distinguished from `reset:compact`.
-3. **Error** — if the frozen prefix, the latest request, or the newest
+   `reset:trim` attribution stays, distinguished from `reset:compact`. The cut is
+   **proportional**: the rung first measures the smallest whole-turn prefix that
+   brings the candidate under the hard target and drops exactly that much
+   (`proportional: true` in the event), stopping at a whole-turn boundary so
+   tool-call pairs stay intact. It falls back to its structural floor (keep only
+   the latest user request) only when no measured boundary exists — which covers
+   the small-overshoot case too, where the floor would otherwise take almost the
+   whole conversation to save a handful of tokens. The scan aims ~1% under the
+   target so a boundary lands with margin rather than re-trimming next turn.
+4. **Error** — if the frozen prefix, the latest request, or the newest
    indivisible tool group alone cannot fit, return `context-recovery-required`
    with cause, known sizes, attempt counts and the available actions (larger
    context model, another compactor, explicit continuation from selected
@@ -682,6 +696,45 @@ the moment of the cut) and the ordinary resume path excludes canonical
 messages at or below it. Dropped turns remain in canonical history for
 `context_recall`; a later committed compaction supersedes the watermark
 entirely (the projection path ignores it).
+
+**Attribution addendum (implemented 2026-10-17, prod finding
+conv-d3a5be6c05be):** the ladder's non-commit outcomes were published on the
+live `context` event stream and nowhere else. A session with no listener
+therefore trimmed 1402 messages — while a verified, replayable compaction
+snapshot sat in the store and the failure (a component error *before* any
+LLM call) was transient: replayed by hand, the same request produced a valid
+candidate in 42s. Nothing in the surviving transcript said a lossless rung had
+been tried, or why it failed. Two changes close that:
+
+- **One replay.** A `casFailed` that retained its snapshot is retried once
+  immediately before the lossy rung (`compact:retry`). The snapshot's
+  retention is the signal — it means the component never settled, so the
+  failure carries no information about the history.
+- **Durable attribution.** `compactFailures`/`compactReason` join `trimThrough`
+  in the conversation header at cut time, and the omission notice names the
+  failed route plus a `context_recall` pointer to the first dropped canonical
+  id. A restart rebuilds the attributed notice; a later commit clears the pair.
+  `compactFailures == 0` renders exactly the old plain notice.
+
+**Proportional-trim addendum (implemented 2026-10-17, same finding):** the rung
+used to jump straight to its floor in one indivisible step — `[minKeepTurns, 1]`,
+where the second iteration keeps only the newest user request. Which turn that
+happened to be therefore decided the cut, and a trim became a cliff: one step
+between "trim a little" and "discard almost everything". Measured on the live
+loss (provider-counted; the estimate is scaled by the 0.738 offset measured on
+the retained tail): the projection was ~698k tokens against a 458,752 target, so
+~34% had to go. The floor dropped through seq 1408, keeping 525 messages at
+279,202 tokens — **179,550 tokens below** the line it had to reach. The measured
+cutoff instead drops through seq 708 (snapped to user boundary 710), keeping
+**1271 messages at 458,196 tokens**: 746 more messages retained (+142%) and a
+556-token margin instead of a 179,550-token one. `trimCutoffFor` now walks the
+projection accumulating per-message cost and returns that first whole-turn
+boundary, so the rung removes what it must and no more. The scan measures the span the caller actually drops (from the first
+removable index, never from 0: counting the system prompt and a checkpoint as
+removable overstates the saving and yields a boundary that still does not fit),
+and aims ~1% under the target so a boundary lands with margin instead of
+triggering another trim next turn. The result is always snapped to a user-turn
+boundary so `tool_call_id` pairs stay whole.
 
 **Calibration addendum (same finding):** the ladder's trigger measures
 candidates with a chars/4 estimate that can lag a denser tokenizer by ~4-5%

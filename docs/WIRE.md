@@ -313,7 +313,14 @@ ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens
                        #   line; `trimAt` is that line in tokens), `reset:prune`,
                        #   `reset:trim`, `reset:compact`, and EVERY compaction
                        #   refusal (`compact:unavailable|failed|declined|invalid|
-                       #   stale`) with a human-readable `detail`. Only the
+                       #   stale`) with a human-readable `detail`, plus
+                       #   `compact:retry` when the runner replays a failed
+                       #   compactor once before the lossy rung (a
+                       #   decline/invalid/absent compactor is a verdict and is
+                       #   never retried). A `reset:trim` may carry
+                       #   `proportional: true`: the rung dropped the measured
+                       #   smallest whole-turn prefix that fits rather than
+                       #   falling through to its structural floor. Only the
                        #   reset:* reasons rebuild the provider prompt prefix
 ev.session.<id>.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
                        #   a transient LLM failure is being retried after delayMs
