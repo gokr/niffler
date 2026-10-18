@@ -4,8 +4,9 @@
 > for the user-agreed per-conversation design and per-tool review sequence.
 > The historical status and first-release scope below are not current promises.
 
-Status: **revised plan; nothing implemented**. The historical sandbox branch
-and worktree are not part of the current checkout. This revision supersedes the
+Status: **historical plan, superseded**. An opt-in Linux guard and partial mask
+checks are now on `main`; see [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md).
+The conversation policy is not yet integrated. This revision superseded the
 implementation decisions
 in [SANDBOX.md](SANDBOX.md) and the original version of this plan. The research
 is useful background, not an implementation specification. Open work has one

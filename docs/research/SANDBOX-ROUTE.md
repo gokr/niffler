@@ -1,8 +1,10 @@
 # SANDBOX-ROUTE — system bubblewrap, not home-grown namespaces
 
-Status: **selected design; privileged installation and full-backend enforcement
-not yet validated on this host**. Implementation lives on
-`feat/sandbox-implementation`. No change to the live harness yet.
+Status: **backend decision record; acceptance statements below are historical**.
+The system-bwrap helper and opt-in bash integration are now on `main`.
+See [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md) for current checks and limits,
+and [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md) for the target.
+This note does not certify the current host's privileged setup or live binary.
 
 ## Decision
 
@@ -50,7 +52,7 @@ commands as host root to work around sandbox prerequisites.
 The installer is intentionally separate from `make build` and `make setup`:
 
 ```bash
-cd ~/git/niffler-sandbox
+cd /path/to/niffler
 bash scripts/install-sandbox-profile.sh --dry-run
 make install-sandbox-profile SUDO=1
 ./var/bin/niffler-sandbox probe

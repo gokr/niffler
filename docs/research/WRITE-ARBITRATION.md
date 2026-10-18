@@ -1,6 +1,8 @@
 # Write arbitration and the evidence ledger — two proposals
 
-> Status: **A phase 1 complete; B remains a proposal.** Two related holes, one ordering:
+> Status: **A phases 1 and main phase-2 declarations implemented; B remains a proposal.**
+> Restart/outage/TTL contracts are implemented too; worktree ownership and OS
+> fencing are not. Two related holes, one ordering:
 > A is a correctness fix, B is what makes A's receipts useful, and the eval
 > harness (PLAN.md "Current priorities") is what stops either being asserted
 > rather than measured. Open work has one home — [../PLAN.md](../PLAN.md).
@@ -40,8 +42,9 @@ are declared reach, **not receipts proving a file was actually written**.
 
 ## The one-paragraph statement of both
 
-Nothing arbitrates filesystem writes: several conversations can share one
-workspace, parallel dispatch is shipped, and `core/workspace.nim` declares a
+At the proposal baseline, nothing arbitrated filesystem writes: several
+conversations could share one workspace, parallel dispatch was shipped, and
+`core/workspace.nim` declared a
 working *set* (primary + worktrees + same-origin siblings). Two session runners
 can therefore edit one file and the only artifact of the collision is whichever
 write landed last. Separately, a subagent settles with **prose**: the completion
@@ -280,9 +283,11 @@ transcript walk `resolveStale` and `lastTranscript` already perform produces
 them; once the child transcript is read for the verdict, the receipts fall out of
 the same pass.
 
-With Proposal A in place, `mutation paths` becomes **authoritative** rather than
-inferred — the lock service knows exactly which paths a call claimed. The two
-proposals compose: A produces the receipts B needs.
+With Proposal A in place, **claimed scope** is authoritative: the lock service
+knows which paths a call claimed. It does not prove those files were written,
+which bytes changed, or whether a successful command met its intended contract.
+Actual-mutation receipts need additional observed evidence; the adjudication
+proposal must not promote a lease into that evidence.
 
 ### B.2.2 A child may make a structured claim (optional; appends nothing to the parent)
 

@@ -154,25 +154,16 @@ installed plugins are listed by `/help` under their own heading.
 
 ## Keyboard shortcuts
 
-Web UI (desktop app and browser):
-
-| Keys | Where | What |
-|---|---|---|
-| `Enter` / `Esc` | composer | send the message (`Esc` first dismisses an open completion popup) |
-| `Shift+Enter` | composer | newline instead of sending |
-| `↑` / `↓` | composer | walk command history; the unsent draft is preserved |
-| `Tab` / `Shift+Tab` | `/…` in the composer | open slash completion / cycle the candidates |
-| `Enter` / `Esc` | completion popup | accept the highlighted command / dismiss the popup |
-| `Ctrl+T` | anywhere | cycle the reasoning display: full → brief → off |
-| `Ctrl+E` | anywhere | cycle tool cards: brief → full → off |
-| `Ctrl+G` | anywhere | cycle the thinking effort |
-| `Enter` / `Esc` | approval prompt | approve / deny a gated tool call |
-
-The admin shell follows the terminal instead: `↑`/`↓` line history, `Tab`
-completion, `Ctrl-D` (or `exit`/`quit`) to leave, `Ctrl-C` to interrupt.
-`niffler-tui` keeps the same `Ctrl+T` / `Ctrl+E` / `Ctrl+G` display cycles.
+Use the client's `/help` for current commands and keybindings; the supported
+terminal client is [niffler-tui](https://github.com/gokr/niffler-tui).
+Client-specific keyboard tables belong there rather than in the harness README.
+The admin shell uses `↑`/`↓` history, `Tab` completion, `Ctrl-D` (or
+`exit`/`quit`) to leave, and `Ctrl-C` to interrupt.
 
 ## Documentation
+
+[Documentation index](docs/README.md) — choose operating instructions, protocol,
+current feature status or historical design notes without mixing their roles.
 
 - [Manual](docs/MANUAL.md) — installation details, configuration, tools,
   providers, UIs, recovery, testing and troubleshooting (also
@@ -183,7 +174,8 @@ completion, `Ctrl-D` (or `exit`/`quit`) to leave, `Ctrl-C` to interrupt.
   separate, and the invariants contributors must preserve.
 - [Features](docs/FEATURES.md) — the complete capability inventory (an
   index, not a reference).
-- [Open work](docs/PLAN.md) — current deferred work.
+- [Open work](docs/PLAN.md) — write arbitration, sandbox and fleet status,
+  recommended next slices and acceptance gates.
 - [Research index](docs/research/README.md) — design history and prior-art
   studies; research notes are not operating instructions.
 - [Fabric guide](docs/FABRIC_GUIDE.md) — programmable orchestration and

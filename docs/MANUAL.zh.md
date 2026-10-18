@@ -229,7 +229,7 @@ core: move that history with an older Niffler (0.3.x shipped
 
 ## State and configuration
 
-Niffler 没有单一的配置文件。状态分布在五个地方，按生命周期选择：启动决策是环境，身份/选择是存储，每对话选择是对话头，显示是浏览器，一切派生的东西都在 `var/`（可重新生成——删除它并执行 `make build` + 一次启动即可重建整个世界）——**但 agent 构建的组件除外**：`builder.build` 仅将其源码保存在 `var/build/` 下，仅将其二进制保存在 `var/bin/` 下，持久化的 `component` 记录两者都不存储，因此当这些输出消失而存储仍在时，下次启动会警告 `stored component <name> has missing binary` 并跳过它。用 `builder.build` + `core.spawn` 重建它，或用 `core.remove` 删除该记录。
+Niffler 没有单一配置文件。环境用于启动决策，存储文档和会话标头保存持久选择，用户/项目文件保存可编辑配置，客户端保存显示状态。`var/` 同时包含持久数据和可再生成的输出：**绝不要整体删除**。`make clean` 只删除二进制文件和编译器缓存，保留数据库、实例标识、基准结果、插件和 `var/build/` 中的智能体源码。清理后需用 `builder.build` + `core.spawn` 重建智能体组件；不再需要的记录可用 `core.remove` 删除。
 
 | Where | What | Lifetime |
 |---|---|---|
@@ -238,7 +238,7 @@ Niffler 没有单一的配置文件。状态分布在五个地方，按生命周
 | **Conversation header**（`conversation` kind） | 每对话选择：provider、providerOverride、model、modelOverride、thinking、profile、title、预算/token 计量——通过 `session` 调用设置（UI 中的 `/model`、`/effort`），并在轮次结果中回显 | 每对话 |
 | **Home / project files** | skills 树（项目 `.agents|.claude|.opencode/skills` > 内置 `skills/` > home `~/.niffler/skills` + agent 标准目录 > `~/.config/opencode/skills`，最后是编译进二进制的树作为最后手段）；LSP 注册表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，用户可编辑 |
 | **Edit undo + seen state** | 不再是主目录文件：每个（对话，文件）一个 **store 文档** —— 类型 `edit-undo`（上次编辑前的字节，供 `undo_last_edit` 使用）和 `edit-seen`（已观察的摘要/大小/行数，用于未更改读取存根和 `E_STALE` 门控），id 为 `<session>:<绝对路径>`。作用域限于拥有它们的对话，并随对话一起删除（`conversation_delete` 会清理这两种类型）。它们曾共用一个 `$XDG_CONFIG_HOME/niffler-edit/undo.json`，每次修改都整体重写——机器全局、无上限，也是 27 文件批量替换曾占用 edit 组件泵 53 秒的原因。删除这些文档只会丢失撤销历史和读取存根，绝不丢失文件内容 | 持久，store 支撑 |
-| **`var/`**（gitignored） | `bin/` 构建的二进制，`logs/` 总线 JSONL 和每组件 JSONL（`.1`…`.N` 轮转）加上子进程日志，`models/` 目录缓存，`nats-url`/`nats-pid` 总线认领，`processes/` 假脱机（每次启动的 `pN.out`/`pN.err`，启动时清空；id 从持久化计数器继续，而不是从 `p1` 重新开始），`repomap-tags/` 每文件标签缓存（以绝对路径的 sha1 为键的 `{mtime, tags}` JSON；空结果从不缓存），`fetch/`、`captures/`、`store.db`（SQLite 引擎的文件，也是唯一基于文件的引擎）加上其 `.lock`，同一时间只能有一个 `store` 进程持有 | 运行时，可重新生成 |
+| **`var/`**（gitignored） | `bin/` 构建的二进制，`logs/` 总线 JSONL 和每组件 JSONL（`.1`…`.N` 轮转）加上子进程日志，`models/` 目录缓存，`nats-url`/`nats-pid` 总线认领，`processes/` 假脱机（每次启动的 `pN.out`/`pN.err`，启动时清空；id 从持久化计数器继续，而不是从 `p1` 重新开始），`repomap-tags/` 每文件标签缓存（以绝对路径的 sha1 为键的 `{mtime, tags}` JSON；空结果从不缓存），`fetch/`、`captures/`、`store.db`（SQLite 引擎的文件，也是唯一基于文件的引擎）加上其 `.lock`，同一时间只能有一个 `store` 进程持有 | 持久数据与可再生成输出混合；绝不要整体删除 |
 | **Browser localStorage** | 仅显示：推理/工具卡详情级别、locale（`niffler-think`、`niffler-tools`） | 每浏览器 |
 | **Repo files** | `manifest.yaml`（随附的组件注册表）、`skills/`（内置 skills）、构建文件（`config.nims`、`*.nimble`、`Makefile`） | 版本化 |
 

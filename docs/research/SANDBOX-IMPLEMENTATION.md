@@ -1,6 +1,11 @@
 # SANDBOX-IMPLEMENTATION — an ordered plan
 
-Status: **launcher prototype implemented; not integrated with bash.**
+Status: **historical execution plan, superseded as a delivery checklist.**
+The opt-in synchronous bash guard and partial reader mask checks are on `main`.
+Current behavior: [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md).
+Current target and implementation sequence:
+[SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md).
+The phase text below preserves earlier decisions and must not be read as status.
 **Current Linux route is authoritative in [SANDBOX-ROUTE.md](SANDBOX-ROUTE.md):
 use system bubblewrap, with an opt-in direct system-bwrap AppArmor grant where
 needed.** The earlier Phase 0 claims below about mandatory wrapper profiling

@@ -1,9 +1,10 @@
 # Bash guard + read scope — current status
 
-Implemented on `feat/sandbox-implementation`, not merged or enabled by default.
-Linux bwrap integration plus tool read-scope enforcement for `read` and `grep`;
-Seatbelt remains unimplemented. This is a scoped opt-in increment, not
-completion of the plan.
+Status: implemented on `main`, opt-in and off by default. Linux bwrap integration
+and partial tool mask checks are experimental behavior, not completion of the
+[conversation-policy target](SANDBOX-CONVERSATION-POLICY.md). Seatbelt remains
+unimplemented. This file owns current behavior; older sandbox plans are history.
+A configured mask is not approved-root read confinement.
 
 ## Read scope (tools, not just commands)
 
@@ -143,15 +144,16 @@ Self-check writes use a random owned workspace directory, never a fixed user
 filename. Status records also use a private random directory, not predictable
 shared-temp filenames.
 
-Remaining before calling Phase 2/3 complete: guarded background integration
-decision, concurrent alias/race hardening, read-scope coverage for the
-in-process readers listed above, actual macOS implementation. Seatbelt has no
+Remaining before calling the target complete: persisted conversation policy,
+uniform propagation and approved-root enforcement, migration of the experimental
+mask-triggered refusals to the agreed per-tool policy, guarded background
+integration, concurrent alias/race hardening and actual macOS implementation. Seatbelt has no
 implementation at all yet. Guarded background execution still refuses pending
 lifecycle integration.
 
-No blanket whole-harness protection: `read` and `grep` are covered; the readers
-listed as not yet covered, plus native Fabric, plugins and MCP, still bypass all
-of it.
+No blanket whole-harness protection: the checks itemized above are partial
+mask coverage, not a complete read boundary. Native Fabric, plugins, MCP and
+other unconfined paths remain outside this guard.
 
 Prompt effect: existing direct schemas and frozen system prefix unchanged.
 The new status tool is on-demand; discovery adds append-only history. Private

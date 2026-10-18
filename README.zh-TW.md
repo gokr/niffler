@@ -100,30 +100,16 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 ## Keyboard shortcuts
 
-Web UI（桌面應用和瀏覽器）：
+請使用客戶端的 `/help` 查看目前命令與快捷鍵；受支援的終端客戶端是 [niffler-tui](https://github.com/gokr/niffler-tui)。客戶端鍵位表應由客戶端儲存庫維護。管理 shell 使用 `↑`/`↓` 瀏覽歷史、`Tab` 補全、`Ctrl-D`（或 `exit`/`quit`）離開、`Ctrl-C` 中斷。
 
-| 按鍵 | 位置 | 作用 |
-|---|---|---|
-| `Enter` / `Esc` | 輸入框 | 送訊（補全彈窗開啟時 `Esc` 先關閉它） |
-| `Shift+Enter` | 輸入框 | 換行而不送訊 |
-| `↑` / `↓` | 輸入框 | 瀏覽命令歷史，未送出的草稿會保留 |
-| `Tab` / `Shift+Tab` | 輸入框中的 `/…` | 開啟斜線補全 / 在候選項間循環 |
-| `Enter` / `Esc` | 補全彈窗 | 接受反白命令 / 關閉彈窗 |
-| `Ctrl+T` | 全域 | 循環切換推理顯示：full → brief → off |
-| `Ctrl+E` | 全域 | 循環切換工具卡片：brief → full → off |
-| `Ctrl+G` | 全域 | 循環切換思考強度 |
-| `Enter` / `Esc` | 審核提示 | 核准 / 拒絕被門控的工具呼叫 |
+## Documentation
 
-管理 shell 跟隨終端：`↑`/`↓` 行歷史、`Tab` 補全、`Ctrl-D`（或 `exit`/`quit`）
-離開、`Ctrl-C` 中斷。`niffler-tui` 保持同樣的 `Ctrl+T` / `Ctrl+E` / `Ctrl+G`
-顯示循環。
-
-## 文件
+[文件索引](docs/README.md) — 區分操作說明、協定、目前狀態與歷史設計。
 
 - [手冊](docs/MANUAL.md) — 安裝細節、設定、工具、供應商、UI、復原、測試與疑難排解（另有[简体中文](docs/MANUAL.zh.md) · [繁體中文](docs/MANUAL.zh-TW.md)）。
 - [線路協定](docs/WIRE.md) — JSON 封套、主體、錯誤、取消與會話上下文。
 - [架構](docs/ARCHITECTURE.md) — 為何核心、元件與 NATS 是分開的，以及貢獻者必須保留的不變條件。
-- [開放工作](docs/PLAN.md) — 目前延後的工作。
+- [開放工作](docs/PLAN.md) — 寫入仲裁、沙箱與 fleet 的狀態、下一步建議與驗收門檻。
 - [研究索引](docs/research/README.md) — 設計歷史與先前技術研究；研究筆記不是操作指示。
 - [Fabric 指南](docs/FABRIC_GUIDE.md) — 可程式化協調與子代理。
 - [模型來源外掛](docs/MODEL_SOURCES.md) — 目錄修正元件的實作範例。

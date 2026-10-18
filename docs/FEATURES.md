@@ -510,9 +510,10 @@ See [MANUAL.md](MANUAL.md) "State and configuration", "Environment variables".
   shadow records).
 - Single-writer discipline for the file-backed store and its lock; no
   cross-engine data movement.
-- Disposable-vs-durable separation: `var/` is regenerable, the build cache and
-  agent-built component sources live there too, and a durable barrier refuses
-  to boot over removed storage formats.
+- Disposable-vs-durable separation: `var/` mixes durable data and build output;
+  `make clean` removes binaries/compiler caches only. Store, instance identity,
+  benchmarks and agent-built sources survive. A durable barrier refuses to boot
+  over removed storage formats.
 
 ## Operations: build, test, bench, docs
 
@@ -557,4 +558,8 @@ work lives in [PLAN.md](PLAN.md); proposals live in
 - Compilation-free JavaScript execution for TypeScript components.
 - `fabric {api: true}` declarations and teammate-style collaboration.
 - Automatic thinking/model escalation and de-escalation.
-- Landlock/Seatbelt shell sandboxing.
+- Completed per-conversation sandbox enforcement and macOS Seatbelt support.
+  The opt-in Linux shell guard and partial mask checks are implemented; see
+  [current limits](research/SANDBOX-BASH-STATUS.md).
+- Cross-instance task delegation and a durable fleet-job/artifact surface;
+  SSH/Multipass provisioning and lifecycle are already implemented.

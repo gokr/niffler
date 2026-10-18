@@ -1,12 +1,32 @@
 # Fleet implementation — delivery plan
 
-Worktrees: `niffler-fleet` and `niffler-tui-fleet`, branch `feat/fleet`.
+Status: provisioning/lifecycle merged into `main`; task delegation is not yet
+implemented. The harness fleet worktrees have been removed after merge.
+TUI code and installed/released client versions must be checked in their own repo.
+
 Identity, persistent service lifecycle, birth-time agent definitions and opt-in
 heartbeat are implemented. Provisioning is the optional Nim `fleet` component;
 Python provisioner/tests were replaced with native code/contracts. The matching
 TUI has receipt import, switching and native Multipass relay through remote
 `cli relay`. No Python runtime is needed for Fleet. Cross-instance delegation
 and background approvals remain planned. Each step is independently tested.
+
+## Delivery checklist
+
+| Slice | Source status / remaining acceptance |
+|---|---|
+| 1–2 identity and persistent service | Implemented; service contracts use fake systemd; recorded real Multipass smoke passed |
+| 3–4 SSH/Multipass install/adopt/update | Implemented in Nim; real SSH and published-revision install/update smoke still pending |
+| 5 client switching | Matching TUI source implemented; verify/release separately; background approvals remain open |
+| 6 cross-instance delegation | Not implemented |
+| 7 reconnect inbox/artifacts | Local durable human completion feed implemented; remote jobs and artifact transfer remain open |
+
+The recorded Multipass smoke used Ubuntu 24.04, 2 CPUs/4G/20G and a source-only
+snapshot build. Identity survived service restart; listeners stayed loopback;
+linger stayed off; no credentials or TUI were copied. That is not acceptance
+of published-revision download or ordinary SSH. `fleet_update` and ref-to-SHA
+resolution have fake-transport contracts; rerunning install still only adopts.
+See [the active plan](../PLAN.md) for the next bounded acceptance work.
 
 ## 1. Instance identity
 

@@ -235,7 +235,7 @@ core: move that history with an older Niffler (0.3.x shipped
 
 ## State and configuration
 
-Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選擇：開機決定是環境，身分/選擇是儲存，每段對話的選擇是對話標頭，顯示是瀏覽器，而所有衍生的東西都在 `var/`（可重新產生——刪除它並執行 `make build` 加上一次開機即可重建整個世界）——**除了 agent 建置的元件**：`builder.build` 只將其原始碼保留在 `var/build/` 下、其二進位檔只保留在 `var/bin/` 下，而持久化的 `component` 記錄兩者皆不儲存，因此當那些輸出消失而儲存仍存活時，下次開機會警告 `stored component <name> has missing binary` 並略過它。用 `builder.build` + `core.spawn` 重建它，或用 `core.remove` 刪除該記錄。
+Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話標頭保存持久選擇，使用者/專案檔案保存可編輯設定，客戶端保存顯示狀態。`var/` 同時包含持久資料與可重新產生的輸出：**絕不要整體刪除**。`make clean` 只刪除二進位檔與編譯器快取，保留資料庫、執行個體識別、基準結果、外掛與 `var/build/` 中的代理原始碼。清理後需用 `builder.build` + `core.spawn` 重建代理元件；不再需要的記錄可用 `core.remove` 刪除。
 
 | Where | What | Lifetime |
 |---|---|---|
@@ -244,7 +244,7 @@ Niffler 沒有單一設定檔。狀態分散於五個地方，依生命週期選
 | **Conversation header**（`conversation` kind） | 每對話選擇：provider、providerOverride、model、modelOverride、thinking、profile、title、預算/token 計量——透過 `session` 呼叫設定（UI 中的 `/model`、`/effort`），並在回合結果中回顯 | 每對話 |
 | **Home / project files** | skills 樹（專案 `.agents|.claude|.opencode/skills` > 內附 `skills/` > home `~/.niffler/skills` + agent 標準目錄 > `~/.config/opencode/skills`，然後是最後手段、編譯進二進位檔的樹）；LSP 註冊表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，使用者可編輯 |
 | **Edit undo + seen state** | 不再是家目錄檔案：每個（對話，檔案）一個 **store 文件** —— 類型 `edit-undo`（上次編輯前的位元組，供 `undo_last_edit` 使用）與 `edit-seen`（已觀察的摘要/大小/行數，用於未變更讀取 stub 與 `E_STALE` 閘門），id 為 `<session>:<絕對路徑>`。作用域限於擁有它們的對話，並隨對話一併刪除（`conversation_delete` 會清理這兩種類型）。它們曾共用一個 `$XDG_CONFIG_HOME/niffler-edit/undo.json`，每次修改都整體重寫——機器全域、無上限，也是 27 檔案批次替換曾佔用 edit 元件泵 53 秒的原因。刪除這些文件只會失去 undo 歷史與讀取 stub，絕不會失去檔案內容 | 持久，store 支撐 |
-| **`var/`**（gitignored） | `bin/` 建置的二進位檔、`logs/` 匯流排 JSONL 與各元件 JSONL（`.1`…`.N` 輪替）加上子行程日誌、`models/` 目錄快取、`nats-url`/`nats-pid` 匯流排認領、`processes/` spool（每次啟動的 `pN.out`/`pN.err`，開機時清空；id 從持久化計數器繼續，而非從 `p1` 重新開始）、`repomap-tags/` 每檔案標籤快取（以絕對路徑的 sha1 為鍵的 `{mtime, tags}` JSON；空結果永不快取）、`fetch/`、`captures/`、`store.db`（SQLite 引擎的檔案）加上其 `.lock`，同一時間只能由一個 `store` 行程持有 | 執行時，可重新產生 |
+| **`var/`**（gitignored） | `bin/` 建置的二進位檔、`logs/` 匯流排 JSONL 與各元件 JSONL（`.1`…`.N` 輪替）加上子行程日誌、`models/` 目錄快取、`nats-url`/`nats-pid` 匯流排認領、`processes/` spool（每次啟動的 `pN.out`/`pN.err`，開機時清空；id 從持久化計數器繼續，而非從 `p1` 重新開始）、`repomap-tags/` 每檔案標籤快取（以絕對路徑的 sha1 為鍵的 `{mtime, tags}` JSON；空結果永不快取）、`fetch/`、`captures/`、`store.db`（SQLite 引擎的檔案）加上其 `.lock`，同一時間只能由一個 `store` 行程持有 | 持久資料與可重新產生輸出混合；絕不要整體刪除 |
 | **Browser localStorage** | 僅顯示：reasoning/工具卡詳細程度、locale（`niffler-think`、`niffler-tools`） | 每瀏覽器 |
 | **Repo files** | `manifest.yaml`（隨附的元件註冊表）、`skills/`（內附 skills）、建置檔（`config.nims`、`*.nimble`、`Makefile`） | 版本化 |
 

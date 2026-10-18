@@ -509,16 +509,17 @@ old file yourself.
 
 ## State and configuration
 
-Niffler has no single config file. State is spread across five places,
-chosen by lifetime: boot decisions are environment, identity/selection is
-the store, per-conversation choice is the conversation header, display is
-the browser, and everything derived is `var/` (regenerable — delete it and
-`make build` + a boot rebuilds the world) — **except agent-built components**:
-`builder.build` keeps their source only under `var/build/` and their binary only
-under `var/bin/`, and the persisted `component` record stores neither, so when
-those outputs are gone while the store survives, the next boot warns `stored
-component <name> has missing binary` and skips it. Rebuild it with `builder.build`
-+ `core.spawn`, or drop the record with `core.remove`.
+Niffler has no single config file. State is separated by lifetime: environment
+for boot decisions, store documents and conversation headers for durable choices,
+user/project files for editable configuration, and client-local display state.
+`var/` mixes durable data with derived output: **never delete it wholesale**.
+`make clean` removes only binaries and compiler caches, preserving the database,
+instance identity, benchmark results, plugin trees and agent-built source.
+
+`builder.build` keeps agent-built source under `var/build/` and binaries under
+`var/bin/`; the persisted `component` record stores neither. After cleaning,
+missing binaries are skipped at boot with a warning. Rebuild them with
+`builder.build` + `core.spawn`, or drop obsolete records with `core.remove`.
 
 | Where | What | Lifetime |
 |---|---|---|
@@ -527,7 +528,7 @@ component <name> has missing binary` and skips it. Rebuild it with `builder.buil
 | **Conversation header** (`conversation` kind) | per-conversation choice: provider, providerOverride, model, modelOverride, thinking, profile, title, budgets/token meters — set through the `session` call (`/model`, `/effort` in UIs) and echoed in turn results | per conversation |
 | **Home / project files** | skills trees (project `.agents|.claude|.opencode/skills` > bundled `skills/` > home `~/.niffler/skills` + agent-standard dirs > `~/.config/opencode/skills`, then the tree compiled into the binary as the last resort); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
 | **Edit undo + seen state** | Not a home file any more: one **store document per (conversation, file)** — kinds `edit-undo` (last pre-edit bytes, for `undo_last_edit`) and `edit-seen` (observed digest/size/lines, for unchanged-read stubs and the `E_STALE` gate), ids `<session>:<absolute path>`. Scoped to the conversation that owns them and deleted with it (`conversation_delete` sweeps both kinds). They used to share `$XDG_CONFIG_HOME/niffler-edit/undo.json`, rewritten in full on every mutation — machine-global, unbounded, and the reason a 27-file bulk replacement once held the edit component's pump for 53 s. Deleting the documents loses only undo history and read stubs, never file content | durable, store-backed |
-| **`var/`** (gitignored) | `bin/` built binaries, `logs/` bus JSONL and per-component JSONL (`.1`…`.N` rotations) plus child logs, `models/` catalog cache, `nats-url`/`nats-pid` bus claiming, `processes/` spools (`pN.out`/`pN.err` per start, wiped at boot; ids continue from the persisted counter instead of restarting at `p1`), `repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached), `fetch/`, `captures/`, `store.db` (the SQLite engine's file — the only file-backed engine) plus its `.lock`, which exactly one `store` process may hold at a time | runtime, regenerable |
+| **`var/`** (gitignored) | `bin/` built binaries, `logs/` bus JSONL and per-component JSONL (`.1`…`.N` rotations) plus child logs, `models/` catalog cache, `nats-url`/`nats-pid` bus claiming, `processes/` spools (`pN.out`/`pN.err` per start, wiped at boot; ids continue from the persisted counter instead of restarting at `p1`), `repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached), `fetch/`, `captures/`, `store.db` (the SQLite engine's file — the only file-backed engine) plus its `.lock`, which exactly one `store` process may hold at a time | mixed durable state and regenerable output; never delete wholesale |
 | **Browser localStorage** | display only: reasoning/tool-card detail levels, locale (`niffler-think`, `niffler-tools`) | per browser |
 | **Repo files** | `manifest.yaml` (shipped component registry), `skills/` (bundled skills), build files (`config.nims`, `*.nimble`, `Makefile`) | versioned |
 
