@@ -981,6 +981,11 @@ proc main() =
   for item in listDocs(nc, "message", trimReloadId & ":"):
     trimReloadNextSeq = max(trimReloadNextSeq, seqOf(item{"id"}.getStr("")) + 1)
   discard seedMessages(nc, trimReloadId, trimReloadNextSeq, 6, 4000)
+  # Watch the rung itself: the unit test covers trimCutoffFor, but "did the RUNG
+  # cut proportionally" is the property an operator depends on.
+  let trimReloadContext = subscribeEvents(nc,
+    "ev.session." & trimReloadId & ".context")
+  defer: discard natsSubscription_Unsubscribe(trimReloadContext)
   let trimmedAfterCompact = call(nc, "core", "session",
     %*{"sessionId": trimReloadId, "content": "TRIM-AFTER-CHECKPOINT"}, 180_000)
   let trimReloadHeader = getDoc(nc, "conversation", trimReloadId)
@@ -990,6 +995,15 @@ proc main() =
         trimmedAfterCompact{"turnError"}.getStr("").len == 0 and
         trimThrough > 0,
         $trimmedAfterCompact & " / trimThrough=" & $trimThrough)
+  var trimFrames = 0
+  var proportionalFrames = 0
+  for ev in drainEvents(trimReloadContext):
+    if ev{"reason"}.getStr("") == "reset:trim":
+      inc trimFrames
+      if ev{"proportional"}.getBool(false): inc proportionalFrames
+  check("the rung trimmed proportionally, not to its floor",
+        trimFrames > 0 and proportionalFrames == trimFrames,
+        "reset:trim frames=" & $trimFrames & " proportional=" & $proportionalFrames)
   var droppedRetained: seq[string]
   if trimReloadProjection != nil:
     for idNode in trimReloadProjection{"retained"}:
