@@ -574,7 +574,12 @@ proc main() =
       ("NIF_MOCK_ROUNDS", "1"),
       ("NIF_MOCK_TOOLCMD", "head -c 4000 /dev/zero | tr '\\0' 'x'"),
       ("NIF_MOCK_LOG", logPath),
-      ("NIF_CTX_RESERVE", "400")]
+      ("NIF_CTX_RESERVE", "400"),
+      # This fixture exists to test the TRIM path (its watermark, its
+      # durability across a restart). Tier 2 would now spare these `bash`
+      # results — that substitution is asserted separately below, so the
+      # destructive tier is switched off here to keep exercising trim.
+      ("NIF_STUB_DERIVABLE", "0")]
     let sessionId = "conv-trimdur-" & $int(epochTime())
     var trimThrough = 0
     # --- phase 1: build history until the ladder trims -------------------

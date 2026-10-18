@@ -131,6 +131,15 @@ let bashSchema = toolSchema(%*{
 bashSchema["x-harness"] = %*{"approval": "always",
                              "timeoutMs": BASH_CALL_TIMEOUT_MS,
                              "sessionId": true,
+                             # §6.3 tier 2: a command's output is reproducible
+                             # by re-running it, so an old result may be
+                             # elided when the window is tight. This is the
+                             # case `effect` cannot express: bash is a WRITE
+                             # effect (it can mutate anything), yet `git log`
+                             # output is trivially re-obtainable. Declared
+                             # here so an operator can revoke it per tool
+                             # (docs/WIRE.md x-harness.derivable).
+                             "derivable": true,
                              # Opaque writer: a command can touch anything under
                              # the workspace, so it claims the root and excludes
                              # any path-bound writer inside it (WRITE-ARBITRATION).

@@ -265,7 +265,7 @@ proc main() =
     for i in 1 ..< msgs.len:
       sp.nodes.add(CtxNode(source: nsCanonical, id: "c:" & align($i, 6, '0'),
                            canonicalSeq: i, projectionIndex: i))
-    let saved = sp.stubStaleReads(msgs)
+    let saved = sp.stubResults(msgs)
     check("a read superseded by a later write is stubbed",
           msgs[3]{"content"}.getStr("").startsWith(stubTag),
           msgs[3]{"content"}.getStr(""))
@@ -287,7 +287,7 @@ proc main() =
     check("the stub is recorded for replay",
           sp.prunes.len == 1 and sp.prunes[0].full and
           sp.prunes[0].id == "c:000003", $sp.prunes.len)
-    check("stubbing is idempotent", sp.stubStaleReads(msgs) == 0)
+    check("stubbing is idempotent", sp.stubResults(msgs) == 0)
 
     # Nothing stale at all: the rung is a no-op.
     var msgs2 = @[
@@ -302,7 +302,7 @@ proc main() =
     for i in 1 ..< msgs2.len:
       sp2.nodes.add(CtxNode(source: nsCanonical, id: "d:" & align($i, 6, '0'),
                             canonicalSeq: i, projectionIndex: i))
-    check("no stale reads means no stubs", sp2.stubStaleReads(msgs2) == 0)
+    check("no stale reads means no stubs", sp2.stubResults(msgs2) == 0)
 
     # The last few messages are protected: the immediate working set (a tool
     # call and its result). Everything older that was superseded is fair game —
@@ -335,7 +335,7 @@ proc main() =
     for i in 1 ..< msgs3.len:
       sp3.nodes.add(CtxNode(source: nsCanonical, id: "e:" & align($i, 6, '0'),
                             canonicalSeq: i, projectionIndex: i))
-    let saved3 = sp3.stubStaleReads(msgs3)
+    let saved3 = sp3.stubResults(msgs3)
     check("an older superseded read is stubbed",
           msgs3[3]{"content"}.getStr("").startsWith(stubTag),
           msgs3[3]{"content"}.getStr(""))
@@ -398,6 +398,158 @@ proc main() =
           saved >= body.len - msgs[3]{"content"}.getStr("").len and
           msgs[3]{"content"}.getStr("").startsWith(stubTag),
           "saved=" & $saved & " content=" & msgs[3]{"content"}.getStr("")[0 .. 60])
+
+  # --- §6.3 tier 2: declared derivable results ----------------------------
+  # The destructive tier: a non-stale result may be elided only (a) when the
+  # tool DECLARED it derivable and (b) at the trim line, never at the ordinary
+  # trigger. Both halves are asserted, because (b) is a policy the unit seam
+  # cannot show — it lives in pruneContext's default versus checkContext's
+  # escalation.
+  block derivableTier:
+    proc schemaFor(tool: string): JsonNode =
+      case tool
+      of "read": %*{"x-harness": {"effect": "read", "derivable": true}}
+      of "fetch": %*{"x-harness": {"effect": "read"}}          # no declaration
+      of "api": %*{"x-harness": {"effect": "write", "derivable": true}}
+      of "edit": %*{"x-harness": {"effect": "write",
+                                  "writes": {"paths": ["path"]}}}
+      else: %*{"x-harness": {"effect": "write"}}
+    var cat = Catalog(components: initTable[string, ComponentReg](),
+                      toolIndex: initTable[string, string]())
+    for tool in ["read", "fetch", "api", "edit"]:
+      let owner = if tool == "edit": "edit" else: tool
+      cat.toolIndex[tool] = owner
+      if owner notin cat.components:
+        cat.components[owner] = ComponentReg(name: owner)
+      cat.components[owner].tools.add(
+        ToolReg(name: tool, component: owner, schema: schemaFor(tool)))
+    let body = repeat("x", 4000)
+    proc fixture(): seq[JsonNode] =
+      result = @[
+        %*{"role": "system", "content": "sys"},
+        %*{"role": "user", "content": "old request"},
+        %*{"role": "assistant", "content": "",
+           "tool_calls": [%*{"id": "r1", "type": "function",
+                             "function": {"name": "read", "arguments": "{}"}}]},
+        %*{"role": "tool", "tool_call_id": "r1", "name": "read",
+           "content": body},
+        %*{"role": "assistant", "content": "",
+           "tool_calls": [%*{"id": "f1", "type": "function",
+                             "function": {"name": "fetch", "arguments": "{}"}}]},
+        %*{"role": "tool", "tool_call_id": "f1", "name": "fetch",
+           "content": body},
+        %*{"role": "assistant", "content": "",
+           "tool_calls": [%*{"id": "a1", "type": "function",
+                             "function": {"name": "api", "arguments": "{}"}}]},
+        %*{"role": "tool", "tool_call_id": "a1", "name": "api",
+           "content": body},
+        %*{"role": "user", "content": "the current turn"},
+        %*{"role": "assistant", "content": "working"},
+        %*{"role": "user", "content": "tail"},
+        %*{"role": "assistant", "content": "done"},
+      ]
+    proc persist(): Persister =
+      result = persisterForCatalog(cat)
+      result.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+      for i in 1 ..< 12:
+        result.nodes.add(CtxNode(source: nsCanonical,
+                                 id: "t:" & align($i, 6, '0'),
+                                 canonicalSeq: i, projectionIndex: i))
+    # Tier 1 alone: nothing is stale here, so nothing may be elided — even
+    # though `read` and `api` declared themselves derivable.
+    var t1 = fixture()
+    var p1 = persist()
+    check("tier 1 does not elide a merely derivable result",
+          p1.stubResults(t1, smStale) == 0)
+    # Tier 2: the declared ones go; the undeclared read-effect one does not.
+    var t2 = fixture()
+    var p2 = persist()
+    let saved2 = p2.stubResults(t2, smDerivable)
+    check("tier 2 elides a declared-derivable result",
+          t2[3]{"content"}.getStr("").startsWith(stubTag) and
+          saved2 > 0, "content=" & t2[3]{"content"}.getStr("")[0 .. 40])
+    check("tier 2 leaves an UNDECLARED read-effect result alone",
+          t2[5]{"content"}.getStr("").len == body.len,
+          "fetch len=" & $t2[5]{"content"}.getStr("").len)
+    check("tier 2 elides a declared result even at write effect",
+          t2[7]{"content"}.getStr("").startsWith(stubTag),
+          "api content=" & t2[7]{"content"}.getStr("")[0 .. 40])
+    # `edit` declares no `derivable`, so even at tier 2 its own result stays.
+    var t3 = fixture()
+    var p3 = persist()
+    t3.insert(%*{"role": "assistant", "content": "",
+                 "tool_calls": [%*{"id": "w1", "type": "function",
+                                   "function": {"name": "edit",
+                                                "arguments": "{\"path\": \"x\"}"}}]}, 8)
+    t3.insert(%*{"role": "tool", "tool_call_id": "w1", "name": "edit",
+                 "content": body}, 9)
+    p3.nodes.insert(CtxNode(source: nsCanonical, id: "t:000008b",
+                            canonicalSeq: 108, projectionIndex: 8), 8)
+    p3.nodes.insert(CtxNode(source: nsCanonical, id: "t:000009b",
+                            canonicalSeq: 109, projectionIndex: 9), 9)
+    discard p3.stubResults(t3, smDerivable)
+    check("a write tool that declares nothing is never elided by tier 2",
+          t3[9]{"content"}.getStr("").len == body.len,
+          "edit len=" & $t3[9]{"content"}.getStr("").len)
+    check("tier 2 preserves the recall ref and machine fields",
+          t2[3]{"content"}.getStr("").contains("t:000003") and
+          t2[3]{"content"}.getStr("").contains("context_recall") and
+          t2[3]{"tool_call_id"}.getStr("") == "r1")
+    check("tier 2 is idempotent", p2.stubResults(t2, smDerivable) == 0)
+
+  # --- §6.3 tier 2 substitutes for trim -----------------------------------
+  # The behavior change the ctxcompact fixture's substitution exposed: when the
+  # window is tight and results are declared re-obtainable, the stub tier frees
+  # the room and the DESTRUCTIVE rung no longer runs — no turns are dropped and
+  # no trim watermark is written. That is the whole point of the tier, so it is
+  # asserted directly rather than inferred from a fixture's side effects.
+  block tier2SparesTurns:
+    proc schemaFor(tool: string): JsonNode =
+      %*{"x-harness": {"effect": "write", "derivable": true}}
+    var cat = Catalog(components: initTable[string, ComponentReg](),
+                      toolIndex: initTable[string, string]())
+    cat.toolIndex["bash"] = "bash"
+    cat.components["bash"] = ComponentReg(name: "bash", tools: @[
+      ToolReg(name: "bash", component: "bash", schema: schemaFor("bash"))])
+    let body = repeat("x", 4000)
+    proc fixture(): seq[JsonNode] =
+      result = @[%*{"role": "system", "content": "sys"}]
+      for t in 1 .. 6:
+        result.add(%*{"role": "user", "content": "turn " & $t})
+        result.add(%*{"role": "assistant", "content": "",
+                      "tool_calls": [%*{"id": "b" & $t, "type": "function",
+                                        "function": {"name": "bash",
+                                                     "arguments": "{}"}}]})
+        result.add(%*{"role": "tool", "tool_call_id": "b" & $t,
+                      "name": "bash", "content": body})
+    proc persist(): Persister =
+      result = persisterForCatalog(cat)
+      result.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+      for i in 1 ..< 19:
+        result.nodes.add(CtxNode(source: nsCanonical,
+                                 id: "d:" & align($i, 6, '0'),
+                                 canonicalSeq: i, projectionIndex: i))
+    # With the tier available, the derivable results go and trim is not needed.
+    var m1 = fixture()
+    var p1 = persist()
+    p1.ctxSize = 4000
+    putEnv("NIF_CTX_RESERVE", "0")
+    let before = estimateTokens(m1)
+    let regained = p1.stubResults(m1, smDerivable)
+    check("tier 2 frees room without dropping a turn",
+          regained > 0 and m1.len == 19 and
+          estimateTokens(m1) < before and p1.trimThrough == 0,
+          "regained=" & $regained & " msgs=" & $m1.len &
+          " trimThrough=" & $p1.trimThrough)
+    var usersKept = 0
+    for m in m1:
+      if m{"role"}.getStr("") == "user": inc usersKept
+    check("every user turn survived the substitution", usersKept == 6,
+          "users kept=" & $usersKept)
+    check("the tool results were stubbed, not deleted",
+          m1.len == 19 and m1[3]{"content"}.getStr("").startsWith(stubTag) and
+          m1[3]{"tool_call_id"}.getStr("") == "b1")
+    delEnv("NIF_CTX_RESERVE")
 
   # --- A3: cache hit-rate arithmetic ---------------------------------------
   # The runner accumulates Σprompt and Σcached across responses reporting

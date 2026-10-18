@@ -1863,6 +1863,12 @@ discard comp.tool("read", toolSchema(%*{
      # spells out why losing one is a hint loss, never a correctness loss) and
      # (b) the undo store that `edit`/`write` own anyway.
      "effect": "read",
+     # §6.3 tier 2: the result is a verbatim file read, so it is re-obtainable by
+     # calling this tool again — the only cost is a re-read. That makes it safe
+     # to elide once a superseded or stale result is not enough (see
+     # x-harness.derivable in docs/WIRE.md). It is declared, not inferred: a
+     # component that cannot guarantee re-obtainability simply omits it.
+     "derivable": true,
      "workspace": {"pathFields": ["path", "glob"],
                    "pathArrayFields": ["paths"],
                    "pathObjectArrayFields": [{"field": "reads",

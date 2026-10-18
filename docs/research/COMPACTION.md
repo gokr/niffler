@@ -22,6 +22,10 @@ specific.
 
 ## 1. Decision
 
+The ladder as a whole is model-free except for rung 2: only compaction calls an
+LLM, and if no compactor is registered the remaining rungs still reduce the
+request — they simply give up more (see §6.3).
+
 Ship a `compaction` peer component with two hidden tools:
 
 - `compaction_propose` — returns a **candidate** (structured checkpoint + cut).
@@ -486,7 +490,11 @@ explicit:
 ### 5.2 Model-free prune (deterministic, no LLM)
 
 Before any summarization, and as the fallback when summarization fails, the
-runner itself can prune:
+runner itself can prune. This rung is where the whole availability story is
+anchored: it is deterministic, needs no component and **cannot fail**, so the
+ladder always has a rung to fall back on. Everything else in §6.3 is either
+more expensive (compaction calls a model) or more destructive (trim deletes
+turns the human wrote):
 
 - Applies to **tool results only**. Reasoning is replayed from the transcript
   into requests, and providers do not accept a *modified* reasoning field on
@@ -498,9 +506,18 @@ runner itself can prune:
 - The marker states the omission **and** the recall path, e.g.
   `[tool result middle pruned: 41,203 bytes omitted — recall original with context_recall {ref: {"source":"canonical","id":"conv-…:000090"}}]`.
 - Pruning is a **projection edit**, recorded in the projection record as a list
-  of `{ref, bytesBefore, bytesAfter}`, and re-applied on load. It never rewrites
-  `message` docs. This is what makes it safe: a prune can be "undone" by
-  reloading from canonical, and a wrongly-pruned result costs one recall call.
+  of `{ref, bytesBefore, bytesAfter, full}`, and re-applied on load. It never
+  rewrites `message` docs. This is what makes it safe: a prune can be "undone"
+  by reloading from canonical, and a wrongly-pruned result costs one recall call.
+- `full: true` marks a **stub** rather than a middle-prune: the whole result body
+  was replaced (see §6.3a/§6.3b), so the reload re-applies the recorded edit from
+  the byte counts instead of re-deriving it. Content becomes one line plus a
+  `context_recall` ref, with `role`, `tool_call_id`, `name` and every machine
+  field preserved exactly, so tool-call pairing and the ledger are untouched.
+- The same pass tombstones **past-turn reasoning** (all assistant messages but
+  the last): providers discard prior-turn thinking on replay anyway, but the
+  meter counted it, so the 90% line fired ahead of the provider's real window.
+  It re-derives from position on every rebuild, so no records are kept.
 
 ### 5.3 `context_recall` (on-demand tool)
 
@@ -605,7 +622,7 @@ now atomic on the default one). Content:
   "checkpoint": { … structured fields … },
   "covered": {"from": "…:000001", "to": "…:000123"},
   "retained": ["…:000124", "…:000187"],
-  "prunes": [{"ref": {"source":"spill","id":"…:000130"}, "bytesBefore": 51234, "bytesAfter": 4096}],
+  "prunes": [{"ref": {"source":"spill","id":"…:000130"}, "bytesBefore": 51234, "bytesAfter": 4096, "full": false}],
   "measurements": {"promptTokensBefore": 91000, "promptTokensAfter": 22000},
   "provenance": {"tool": "compaction_propose", "model": "…", "llmCalls": 1}
 }
@@ -655,136 +672,186 @@ A corrupt/unresolvable projection produces an explicit recoverable error
 (`context-recovery-required`) naming what is wrong — never a silent fall back
 to replaying the covered span into a request that will be rejected.
 
-### 6.3 Fallback ladder (no component required)
+### 6.3 Fallback ladder
 
-In order, all deterministic, all bounded:
+One question decides the whole design: **when the window fills, what does the
+harness give up first?** The answer is ordered by how recoverable the content
+is, and the ladder stops at the first rung that works.
 
-1. **Prune** (§5.2) — tool results only, whole-result boundaries, bytes
-   preserved in `spill` docs first. This step now includes the **tier-1 stub**
-   (§6.3a): tool results whose files a LATER write touched are elided whole,
-   before the size-gated middle-prune runs.
-2. **Compactor replay** — one retry, only for a `casFailed` that kept its
-   verified snapshot (a dispatch error or timeout: a failure that says nothing
-   about the history, so re-reading the same surface is not a second guess). A
-   decline, an invalid candidate, a stale boundary or an absent component is a
-   verdict about the history and is never retried here. Announced as
-   `compact:retry`.
-3. **Trim** — drop the oldest complete tool groups from the **projection**
-   (keeping the checkpoint, the latest user request, and a valid tail), with an
-   explicit "history omitted without summary" notice naming covered ids.
-   `reset:trim` attribution stays, distinguished from `reset:compact`. The cut is
-   **proportional**: the rung first measures the smallest whole-turn prefix that
-   brings the candidate under the hard target and drops exactly that much
-   (`proportional: true` in the event), stopping at a whole-turn boundary so
-   tool-call pairs stay intact. It falls back to its structural floor (keep only
-   the latest user request) only when no measured boundary exists — which covers
-   the small-overshoot case too, where the floor would otherwise take almost the
-   whole conversation to save a handful of tokens. The scan aims ~1% under the
-   target so a boundary lands with margin rather than re-trimming next turn.
-4. **Error** — if the frozen prefix, the latest request, or the newest
-   indivisible tool group alone cannot fit, return `context-recovery-required`
-   with cause, known sizes, attempt counts and the available actions (larger
-   context model, another compactor, explicit continuation from selected
-   history).
+| # | Rung | What it gives up | Needs a model? | Can it fail? | Announced as |
+|---|---|---|---|---|---|
+| 0 | **Prune** | the middle of *large* tool results (>8 KB), head+tail kept | no | no | `reset:prune` |
+| 1 | **Tier-1 stub** | whole tool results a LATER write superseded (stale) | no | no | part of `reset:prune` |
+| 2 | **Compaction** | a covered span, summarized into one checkpoint | **yes** | **yes** | `reset:compact` / `compact:*` |
+| 3 | **Compactor replay** | nothing new — retries rung 2 once | **yes** | yes | `compact:retry` |
+| 4 | **Tier-2 stub** | whole results whose tool declares them re-obtainable | no | no | `reset:prune` + `derivable: true` (kill switch `NIF_STUB_DERIVABLE=0`) |
+| 5 | **Trim** | whole turns, oldest first, including user requests | no | no | `reset:trim` |
+| 6 | **Error** | nothing — reports `context-recovery-required` | no | — | error record |
 
-**Durability addendum (implemented 2026-09-16, prod finding
-conv-b33207f94a47):** the trim cut was originally in-memory only — a runner
-restart rebuilt the full pre-trim projection from canonical history while the
-meter restored post-trim usage from the last assistant message, so admission
-under-reported the real candidate by the trimmed amount and could wave a
-doomed request straight to the provider. The trim now records the highest
-dropped canonical seqNo in the conversation header (`trimThrough`, written at
-the moment of the cut) and the ordinary resume path excludes canonical
-messages at or below it. Dropped turns remain in canonical history for
-`context_recall`; a later committed compaction supersedes the watermark
-entirely (the projection path ignores it).
+Rungs 0 and 1 run inside admission (`checkContext`), which executes before
+**every** provider request — not just at user-turn entry, because a single turn
+with 40 tool rounds must be able to compact mid-turn. Admission returns
+`pressure:` only when those rungs were insufficient, which is what starts the
+expensive half.
 
-**Attribution addendum (implemented 2026-10-17, prod finding
-conv-d3a5be6c05be):** the ladder's non-commit outcomes were published on the
-live `context` event stream and nowhere else. A session with no listener
-therefore trimmed 1402 messages — while a verified, replayable compaction
-snapshot sat in the store and the failure (a component error *before* any
-LLM call) was transient: replayed by hand, the same request produced a valid
-candidate in 42s. Nothing in the surviving transcript said a lossless rung had
-been tried, or why it failed. Two changes close that:
+The ordering principle is **give up the least recoverable thing last**, and the
+two model-free tiers sit on opposite sides of the model call for a reason:
 
-- **One replay.** A `casFailed` that retained its snapshot is retried once
-  immediately before the lossy rung (`compact:retry`). The snapshot's
-  retention is the signal — it means the component never settled, so the
-  failure carries no information about the history.
-- **Durable attribution.** `compactFailures`/`compactReason` join `trimThrough`
-  in the conversation header at cut time, and the omission notice names the
-  failed route plus a `context_recall` pointer to the first dropped canonical
-  id. A restart rebuilds the attributed notice; a later commit clears the pair.
-  `compactFailures == 0` renders exactly the old plain notice.
+- **Tier 1 is a repair, so it runs first.** A read whose file a later
+  `edit`/`write`/`replace_across` changed is not merely rechargeable, it is
+  *stale* — the model may reason from a version that no longer exists. Removing
+  it fixes a hazard, and does so even when the window is fine.
+- **Tier 2 is a trade, so it runs last.** Those results are NOT stale, only
+  large and cheap to obtain again, so the harness only spends them once a
+  compactor — which would have kept the whole span, tool results included — has
+  already declined or failed, and turns are next. Eliding a re-runnable result
+  is strictly better than deleting a turn the human wrote.
 
-**Proportional-trim addendum (implemented 2026-10-17, same finding):** the rung
-used to jump straight to its floor in one indivisible step — `[minKeepTurns, 1]`,
-where the second iteration keeps only the newest user request. Which turn that
-happened to be therefore decided the cut, and a trim became a cliff: one step
-between "trim a little" and "discard almost everything". Measured on the live
-loss (provider-counted; the estimate is scaled by the 0.738 offset measured on
-the retained tail): the projection was ~698k tokens against a 458,752 target, so
-~34% had to go. The floor dropped through seq 1408, keeping 525 messages at
-279,202 tokens — **179,550 tokens below** the line it had to reach. The measured
-cutoff instead drops through seq 708 (snapped to user boundary 710), keeping
-**1271 messages at 458,196 tokens**: 746 more messages retained (+142%) and a
-556-token margin instead of a 179,550-token one. `trimCutoffFor` now walks the
-projection accumulating per-message cost and returns that first whole-turn
-boundary, so the rung removes what it must and no more. The scan measures the span the caller actually drops (from the first
-removable index, never from 0: counting the system prompt and a checkpoint as
-removable overstates the saving and yields a boundary that still does not fit),
-and aims ~1% under the target so a boundary lands with margin instead of
-triggering another trim next turn. The result is always snapped to a user-turn
-boundary so `tool_call_id` pairs stay whole.
+What each rung needs to know comes from the components themselves, never from
+core naming a tool: `effect: read` (eligibility for tier 1),
+`workspace.{pathFields,pathArrayFields}` (the paths a call named),
+`writes.paths` (the paths a call changed), and `derivable: true` (the explicit
+tier-2 opt-in — see §6.3b).
 
-**§6.3a Tier-1 stub (implemented 2026-10-17, same finding):** prune reaches only
-tool results over 8192 characters — on the live case 8% of them (52 of 637),
-covering 43% of the reduction needed — and the next rung was compaction, which
-can fail. What remained was trim, which deletes whole turns including the
-human's own requests. Measured on that conversation: stubbing tool results
-wholesale would have reclaimed ~265k tokens against the ~230k needed, keeping
-every user and assistant message (746 more messages than the floor trim kept).
+A successful projection emits `reset:compact`; model-free reduction emits
+`reset:prune`; the lossy rung emits `reset:trim`. These are the only
+intentional prompt-prefix rebuilds and make cache misses attributable. Every
+non-commit compaction outcome is reported — `compact:unavailable|failed|
+declined|invalid|stale` with a human-readable `detail` — and none of them
+rebuilds the prefix.
 
-Tier 1 implements the safest half of that ordering rule, and needs no new
-declarations: a read whose declared path a LATER `edit`/`write`/`replace_across`
-declared it would change is **stale** — the model may reason from a file version
-that no longer exists — and one `context_recall` away. On the live conversation
-that is 104 results / ~52k tokens (22% of the needed reduction), no user turns,
-and nothing to configure.
+#### Measured on the finding (conv-d3a5be6c05be)
 
-Rules, all derived from existing data (`effect: read` for eligibility,
-`x-harness.workspace.pathFields` for the paths a read named,
-`x-harness.writes.paths` for the paths a call changed):
+The conversation that motivated the current shape needed ~230k tokens to leave a
+458,752-token target:
+
+| Rung | Reclaimed | Notes |
+|---|---|---|
+| Prune | ~145k | only 8% of results were eligible (52 of 637) |
+| Tier-1 stub | ~52k | 104 superseded reads, no user turns |
+| Tier-2 stub | ~128k | 95 reads + 31 greps the tools declare re-obtainable |
+| **total** | **~325k** | vs ~230k needed; ~141k of write results never touched |
+
+Before tier 1 existed, prune's shortfall fell straight through to trim, which
+deleted 1402 messages — including 89 user requests — while 688 KB of small tool
+output sat untouched because no rung addressed it.
+
+#### 6.3a Tier-1 stub — superseded reads
+
+A tool result whose declared path a LATER write changed is elided whole (content
+replaced by one line plus a `context_recall` ref), keeping `role`,
+`tool_call_id`, `name` and every machine field exactly as prune does. Rules:
 
 - A write tool's own result is never stubbed: it records what the agent DID.
 - The last `stubProtectRecent` messages are untouched. Protecting the whole
-  current turn was the first attempt and it was wrong — a long agentic turn
+  current turn was the first attempt and it was WRONG — a long agentic turn
   accumulates all of its own tool history after the latest user message, which
-  is where the pressure is, so the rung offered nothing exactly when it was
-  needed (the autonomous fixture measured 0 elisions across 16 requests).
-- Path comparison is deliberately conservative: a missed match means no stub
-  (no loss), so an absolute and a relative spelling do not match.
-- The stub keeps `role`, `tool_call_id`, `name` and every machine field, exactly
-  as prune does, so pairing and the ledger are untouched.
-- Recorded as a prune record with `full: true` and replayed on projection
-  reload from the recorded byte counts — the classification reads the
-  projection's contents, so it cannot be re-derived positionally without
-  risking a different answer than the committed one.
+  is where the pressure is, so the rung offered nothing when it was needed (the
+  autonomous fixture measured 0 elisions across 16 requests).
+- Path comparison is deliberately conservative: a missed match means no stub (no
+  loss), so an absolute and a relative spelling do not match.
+- Recorded as a prune record with `full: true` and replayed on reload from the
+  recorded byte counts. The classification reads the projection's contents, so
+  it cannot be re-derived positionally without risking a different answer than
+  the committed one; replay proves byte-identity and treats a mismatch as drift.
 
-Tier 2 (old reads that were never superseded, plus non-path-derived results) is
-deliberately not implemented: on the live case it is what closes the remaining
-gap to ~79% of the needed reduction, but it evicts content that is *not* stale,
-so it wants its own slice and its own review.
+#### 6.3b Tier-2 stub — declared re-obtainable results
 
-**Calibration addendum (same finding):** the ladder's trigger measures
-candidates with a chars/4 estimate that can lag a denser tokenizer by ~4-5%
-of the window (observed: ~22k tokens on a 524K window), which turns the 90%
-line into a ~99% line and lets requests the provider refuses leave the door.
-Every successful response re-measures an offset (reported `prompt_tokens`
-minus the estimate of the same request); admission, warnings and the ladder
-price candidates as estimate + offset. Model-scoped, resume-seeded, clamped
-to `[0, window]`, never persisted.
+Components opt in per tool with `x-harness.derivable: true`. It is deliberately a
+declaration and not an inference: `effect: read` answers *"is this call safe to
+schedule concurrently?"* while `derivable` answers *"may the model lose this body
+and get it back?"*, and the two disagree exactly where it matters. `bash` is the
+proof — a write effect whose `git log` output is trivially re-obtainable — and
+the converse is the danger: a read-effect tool could return something no second
+call reproduces. Only the component can answer the second question, and an
+operator can revoke it by deleting one line.
+
+Opted in so far: `read`, `grep`, `files`, `repo_map`, `lsp`, `bash`. Results
+from `edit`/`write` never are — they are the record of what changed.
+
+#### 6.3c Trim — proportional, not a cliff
+
+The last lossy rung keeps the system node, the newest user requests and
+everything after them, with an explicit "history omitted without summary" notice
+naming the covered ids. `reset:trim` attribution stays, distinguished from
+`reset:compact`.
+
+The cut is **proportional**: the rung first measures the smallest whole-turn
+prefix that brings the candidate under the hard target and drops exactly that
+much (`proportional: true` in the event), stopping at a whole-turn boundary so
+tool-call pairs stay intact. It falls back to its structural floor (keep only
+the latest user request) only when no measured boundary exists — which also
+covers the small-overshoot case, where the floor would otherwise take almost the
+whole conversation to save a handful of tokens. The scan aims ~1% under the
+target so a boundary lands with margin rather than re-trimming next turn, and it
+measures only the span the caller actually drops: counting the system prompt or
+a checkpoint as removable overstates the saving and yields a boundary that still
+does not fit.
+
+**Notices are attributed.** A trim that follows a failed compactor names that
+route (`", N compaction attempts failed first (compact:failed: …)"`) and carries
+a `context_recall` pointer to the first dropped canonical id. The count and the
+last reason travel in the conversation header (`compactFailures`,
+`compactReason`) beside `trimThrough`, so a restart rebuilds the same notice
+instead of a range-honest placeholder with no explanation; a later commit clears
+both. `compactFailures == 0` renders the previous plain notice byte-for-byte.
+
+#### 6.3d Error — when nothing fits
+
+If the frozen prefix, the latest request, or the newest indivisible tool group
+alone cannot fit, the runner returns `context-recovery-required` with the cause,
+known sizes, attempt counts and the available actions (larger context model,
+another compactor, explicit continuation from selected history).
+
+#### Implementation log
+
+These are the production findings that shaped the ladder above; each was a real
+incident, kept in order so the reasoning behind a rule is traceable.
+
+**Durability (2026-09-16, conv-b33207f94a47):** the trim cut was originally
+in-memory only — a runner restart rebuilt the full pre-trim projection from
+canonical history while the meter restored post-trim usage from the last
+assistant message, so admission under-reported the real candidate by the trimmed
+amount and could wave a doomed request straight to the provider. The trim now
+records the highest dropped canonical seqNo in the conversation header
+(`trimThrough`, written at the moment of the cut) and the ordinary resume path
+excludes canonical messages at or below it. Dropped turns remain in canonical
+history for `context_recall`; a later committed compaction supersedes the
+watermark entirely (the projection path ignores it).
+
+**Attribution and replay (2026-10-17, conv-d3a5be6c05be):** the ladder's
+non-commit outcomes were published on the live `context` event stream and
+nowhere else. A session with no listener therefore trimmed 1402 messages while a
+verified, replayable compaction snapshot sat in the store, and the failure (a
+component error *before* any LLM call) was transient: replayed by hand, the same
+request produced a valid candidate in 42s. Nothing in the surviving transcript
+said a lossless rung had been tried, or why it failed. Two changes closed that:
+a `casFailed` that retained its snapshot is retried once immediately before the
+lossy rung, and the attribution above became durable.
+
+**Proportional trim (2026-10-17, same finding):** the rung used to jump straight
+to its floor in one indivisible step — `[minKeepTurns, 1]` — so whichever turn
+happened to sit at the boundary decided the cut. The projection was ~698k tokens
+against a 458,752 target (~34% had to go); the floor dropped through seq 1408,
+keeping 525 messages at 279,202 tokens, **179,550 below** the line it had to
+reach. The measured cutoff instead drops through seq 708, keeping 1271 messages
+at 458,196 tokens: 746 more retained.
+
+**Stubs (2026-10-17, same finding):** prune reaches only results over 8 KB — 8%
+of them, 43% of the reduction needed — and the next rung was compaction, which
+can fail. Eliding tool results wholesale would have covered ~265k tokens against
+the ~230k needed while keeping every user and assistant message. Tier 1 shipped
+the stale half (a repair, so it runs early); tier 2 the declared-re-obtainable
+half (a trade, so it runs last).
+
+**Calibration (same finding):** the ladder's trigger measures candidates with a
+chars/4 estimate that can lag a denser tokenizer by ~4-5% of the window
+(observed ~22k tokens on a 524K window), turning the 90% line into a ~99% line
+and letting requests the provider refuses leave the door. Every successful
+response re-measures an offset (reported `prompt_tokens` minus the estimate of
+the same request); admission, warnings and the ladder price candidates as
+estimate + offset. Model-scoped, resume-seeded, clamped to `[0, window]`, never
+persisted.
 
 ### 6.4 Store contract addition — paged read
 
@@ -956,6 +1023,12 @@ component's multi-call path possible.
   projection record rather than a new message role; Octo's "resume exactly where
   you left off" framing becomes the runner-owned renderer template; Pi's file-op
   tracking is a checkpoint field (`files`).
+- **Ladder reshaped by a production loss** (2026-10-17, §6.3): one rung was
+  added either side of the model call (tier-1 stale stub early, tier-2 declared
+  derivable stub last), the compactor gained one bounded replay, trim became
+  proportional and attributed, and every non-commit outcome became durable
+  rather than live-event-only. The measurements that drove each change are in
+  §6.3's implementation log.
 - **Three corrections from review** (2026-09-13): the allowlist exemption is
   generalized to `x-harness.runner` instead of a hardcoded name list (§4.1);
   the compactor reaches `chat` by calling `svc.llm.call` **directly** (it is

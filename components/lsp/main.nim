@@ -1333,6 +1333,9 @@ discard comp.tool("lsp", toolSchema(%*{
   "Query a language server for precise, semantic code intelligence. Prefer grep/read for ordinary navigation; use lsp when textual matches are ambiguous, or before an edit needs exact ground truth: diagnostics shows compiler/lint errors for a file (no test run needed), documentSymbol maps an unfamiliar file's outline (names, kinds, positions) so a big file can be read selectively, workspaceSymbol finds where a symbol is defined across the whole workspace without grep noise, goToDefinition/findReferences/goToImplementation resolve symbols text search cannot, hover gives type documentation. Positions are one-based line and character (UTF-16). The server's root defaults to the file's nearest module marker, and a server command missing from PATH is also looked for in ~/go/bin and ~/.nimble/bin. findReferences always includes the declaration. Falls back with a clear error when no language server is configured for the file's extension."),
   hLsp,
   %*{"timeoutMs": 90000, "onDemand": true, "effect": "read",
+     # §6.3 tier 2: diagnostics/symbols answer from the server's index, which a
+     # repeat call re-reads — the result is re-obtainable.
+     "derivable": true,
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("lsp_servers", toolSchema(%*{}, @[],

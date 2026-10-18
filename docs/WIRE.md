@@ -1086,6 +1086,18 @@ keys:
   schedules items (reads fill the concurrency cap together, writes run
   exclusively). Not to be confused with `writes` below: `effect` is
   *scheduling*, `writes` is *ownership*.
+- `derivable`: `true` declares that this tool's RESULT is re-obtainable by
+  calling it again, which is what licenses the runner to elide an old result
+  when the context window is tight (`docs/research/COMPACTION.md` §6.3 tier 2).
+  It is deliberately a declaration and not an inference: `effect: read`
+  answers *"is this call safe to schedule concurrently?"*, while `derivable`
+  answers *"may the model lose this body and get it back?"* — and the two
+  disagree where it matters. `bash` is a write effect yet `git log` output is
+  trivially re-obtainable, while a read-effect tool could return something no
+  second call reproduces. Only the component can answer the second question,
+  so it opts in and an operator can revoke it per tool by removing the line.
+  An elided result always keeps `role`, `tool_call_id` and `name` and carries
+  a `context_recall` pointer, so pairing stays intact and nothing is lost.
 - `writes`: the tool mutates files, so the dispatch gate takes a write lease
   over them from the `locks` component before the call runs
   (docs/research/WRITE-ARBITRATION.md). Two shapes:

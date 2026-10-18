@@ -264,6 +264,8 @@ discard comp.tool("repo_map", toolSchema(%*{
 }, @[],
   "A ranked map of a workspace: the load-bearing files and their key definitions, in ~1KB. Use it to orient in an unfamiliar repo or to re-orient after a big refactor — it answers what the repo contains and what matters, before any grep or read. Pass focus (files you are working on) to rank around your work; pass mentionedIdents for symbols the task names. The map is a snapshot: it does not track your edits — call again for a fresh one. The workspace-open auto-append is gated, so do not rely on seeing it: call this when you need orientation."), hRepoMap,
   %*{"timeoutMs": 300000, "onDemand": true, "effect": "read",
+     # §6.3 tier 2: the map is a snapshot of the tree, re-derivable on demand.
+     "derivable": true,
      "workspace": {"pathFields": ["workspace"]}})
 
 # ---------------------------------------------------------------------------

@@ -97,7 +97,7 @@ A one-file index of every shipped capability (not a reference) is
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches — parameters, caps, exit codes and the effect classification are in [`grep` in detail](#grep-in-detail) |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
-| `compaction` | Nim | optional | default replaceable `compaction_propose` implementation: verifies runner-owned paged snapshots, chooses a permitted cut, and returns a structured checkpoint candidate; the runner alone validates and commits projections — the tool itself is `hidden` + `x-harness.runner: true` (read-effect, 120 s), so no model ever sees it and only a runner or another component calls it; with the component absent or killed, summarization is off and the deterministic ladder (lossless prune, then the lossy fallback rung) still runs |
+| `compaction` | Nim | optional | default replaceable `compaction_propose` implementation: verifies runner-owned paged snapshots, chooses a permitted cut, and returns a structured checkpoint candidate; the runner alone validates and commits projections — the tool itself is `hidden` + `x-harness.runner: true` (read-effect, 120 s), so no model ever sees it and only a runner or another component calls it; with the component absent or killed, summarization is off and the deterministic rungs (prune, both stub tiers, proportional trim) still run — the ladder degrades, it does not stop |
 | `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a ranked search over the conversation's whole canonical history (trimmed/compacted-away messages included) through the store's search index, with a substring-grep fallback when the store cannot search; `scope: "all"` widens to every conversation but is refused for session calls (a cross-conversation disclosure — direct bus callers only, issue #51) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) and the headless turn driver (`run` — attach to a home or `--own` one, stream or `--quiet`, optional `--export` transcript) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
@@ -303,7 +303,7 @@ This filters the manifest boot set to exactly four service components:
 - `systemprompt` — the conversation constitution (product prompt + project
   context chain); without it every conversation would degrade to core's
   baked-in minimal fallback prompt. `compaction` is deliberately not in the
-  profile: the runner's deterministic prune/trim ladder needs no component.
+  profile: the runner's deterministic prune/stub/trim rungs need no component.
 
 Core and NATS still run, and the first conversation starts its normal ephemeral
 `var/bin/session <id>` runner. `builder`, `plugins`, `skills`, `fetch`,
@@ -1182,9 +1182,12 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   warns once at 75% of the way to the effective line
   (`ev.session.<id>.context {reason: "warn:threshold"}`); at it — never later
   than 90% of the window — core executes a bounded ladder: deterministic
-  prune (tool results and past-turn reasoning) → configured compactor →
-  oldest complete-turn trim →
-  explicit `context-recovery-required`. On the wire the `llm` component
+  prune (tool results and past-turn reasoning) + the stale-read stub →
+  configured compactor (one replay if it fails without a verdict) →
+  derivable-result stub (`NIF_STUB_DERIVABLE=0` disables it) → proportional
+  oldest-complete-turn trim → explicit `context-recovery-required`. Only the compactor needs a component
+  or a model; every other rung is deterministic and cannot fail, which is what
+  guarantees the ladder always terminates. On the wire the `llm` component
   additionally clamps the requested output to the headroom the serialized
   prompt (messages plus tool schemas) leaves, so estimation drift in either
   layer cannot push a fitting prompt over the provider's limit. It never

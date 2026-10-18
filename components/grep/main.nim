@@ -63,6 +63,10 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
               # and claimed the whole workspace, so a search refused every
               # writer (and was refused by them) for as long as it ran.
               "effect": "read",
+              # §6.3 tier 2: same pattern, same files, same matches — a search
+              # result is re-obtainable, so an old one may be elided when the
+              # window is tight (docs/WIRE.md x-harness.derivable).
+              "derivable": true,
               "workspace": {"pathFields": ["path"],
                            "defaultPathFields": ["path"]}}):
   proc grep(pattern: string, path: string = ".", glob: string = "",
@@ -108,6 +112,8 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
 comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
               # Read-only, like grep: a listing must not hold a write claim.
               "effect": "read",
+              # §6.3 tier 2: a directory listing is re-obtainable.
+              "derivable": true,
               "workspace": {"pathFields": ["path"],
                            "defaultPathFields": ["path"]}}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,

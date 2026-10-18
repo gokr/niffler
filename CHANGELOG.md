@@ -41,6 +41,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never retried. Measured case: one component error before any LLM call made the
   ladder trim 1402 messages while an intact, replayable snapshot sat in the
   store; replayed by hand it produced a valid candidate in 42s.
+- The stub rung gains a second, opt-in tier: results whose producing tool
+  declares `x-harness.derivable` may be elided too, but only at the trim line
+  (where the next rung would delete whole turns) and only where the component
+  opted in. `derivable` is deliberately a declaration, not an inference from
+  `effect: read` — `effect` answers "is this safe to schedule concurrently?",
+  `derivable` answers "may the model lose this body and get it back?", and the
+  two disagree where it matters (`bash` is a write effect whose output is
+  re-runnable; a read-effect tool may return something no second call
+  reproduces). Opted in so far: `read`, `grep`, `files`, `repo_map`, `lsp`,
+  `bash`. Measured on the incident's conversation the two tiers plus prune cover
+  the ~230k-token reduction it needed (~145k + ~52k + ~128k) while every write
+  result stays.
 - Tool results superseded by a later write are elided before anything is
   summarized or trimmed (tier-1 stub, part of the lossless prune rung). A read
   whose declared file a later `edit`/`write`/`replace_across` changed is not

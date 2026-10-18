@@ -1014,6 +1014,19 @@ proc declaredWritePaths(schema, args: JsonNode): seq[string] =
         if item.kind == JString and item.getStr("").len > 0:
           result.add(normDeclPath(item.getStr("")))
 
+proc derivableOf*(schema: JsonNode): bool =
+  ## May this tool's RESULT be discarded and re-obtained on demand? Declared by
+  ## the component itself (`x-harness.derivable: true`), never inferred.
+  ##
+  ## `effect: read` deliberately does not answer this: it is a SCHEDULING hint
+  ## (reads fill the fabric concurrency cap, writes run exclusively) and the two
+  ## questions disagree where it matters — `bash` is write-effect yet its `ls`
+  ## output is trivially re-runnable, while a read-effect tool could return
+  ## something no second call reproduces. Tier 2 evicts content that is NOT
+  ## stale, so it takes an explicit opt-in and an operator can revoke it per
+  ## tool by removing one line from that component.
+  schema != nil and schema{"x-harness"}{"derivable"}.getBool(false)
+
 proc stubBody(id, toolName: string): string =
   ## The whole body a stubbed result leaves behind. Deterministic from the node
   ## id and tool name alone, so a restart reproduces it byte-identically.
@@ -1044,6 +1057,15 @@ proc persisterForCatalog*(cat: Catalog): Persister =
   ## a unit test can pin its rules without booting anything.
   result = Persister(ct: CoreTools(cat: cat))
 
+proc derivableStubEnabled*(): bool =
+  ## Operational kill switch for the tier-2 (declared-derivable) stub — the one
+  ## rung that elides content which is NOT stale. Default on: a component must
+  ## still declare `x-harness.derivable` for anything of its own to qualify, so
+  ## the tier is already opt-in per tool; this turns it off globally for an
+  ## operator who would rather pay the window pressure than lose re-runnable
+  ## results. `NIF_STUB_DERIVABLE=0` disables it.
+  getEnv("NIF_STUB_DERIVABLE", "1") != "0"
+
 const stubProtectRecent* = 4
   ## Messages at the very end of the projection the stub rung never touches:
   ## the immediate working set (a tool call and its result). It is deliberately
@@ -1054,27 +1076,37 @@ const stubProtectRecent* = 4
   ## for (the autonomous fixture proved it: 0 results elided across 16
   ## requests). Four messages still covers read → edit → re-read in flight.
 
-proc stubStaleReads*(p: var Persister, messages: var seq[JsonNode],
-                     live = true): int =
-  ## §6.3 tier-1 stub rung: elide whole tool results whose files were WRITTEN
-  ## LATER. Every stale read it can prove is stubbed, oldest first, and the
-  ## rung is idempotent (a stubbed result is skipped on the next pass).
+type StubMode* = enum
+  smNone      ## rung off (a caller that wants only the ordinary prune)
+  smStale     ## tier 1: only results a LATER write superseded
+  smDerivable ## tier 2: also results whose producer declares them derivable
+
+proc stubResults*(p: var Persister, messages: var seq[JsonNode],
+                  mode = smStale, live = true): int =
+  ## §6.3 the stub rung, in two tiers, idempotent.
+  ##
+  ## Tier 1 (`smStale`): elide a result whose declared path a LATER
+  ## `edit`/`write`/`replace_across` changed. Such a read is STALE — the model
+  ## may reason from a file version that no longer exists — and one
+  ## `context_recall` away, so removing it is a repair as much as a saving.
+  ##
+  ## Tier 2 (`smDerivable`): additionally elide results whose producing tool
+  ## declares `x-harness.derivable` — an API result from ten turns ago that
+  ## nothing has changed since. Those are NOT stale, only large and cheap to
+  ## obtain again, so they are taken only at the trim line (see pruneContext)
+  ## and only where the component itself opted in.
   ##
   ## Why this exists (prod finding conv-d3a5be6c05be): prune only reaches tool
   ## results over 8192 chars — 8% of that conversation's results, covering 43%
   ## of the reduction it needed — and the next rung was compaction, which can
   ## fail (it did). What was left was trim, which deletes whole turns including
-  ## the human's own requests.
+  ## the human's own requests. Measured on that conversation, the two tiers
+  ## together cover the gap: prune ~145k tokens + tier 1 ~52k + tier 2 ~128k
+  ## against the ~230k that had to go, while write results (~141k) stay.
   ##
-  ## The ordering rule is not size but DERIVABILITY-AND-STALENESS: a read whose
-  ## path a later `edit`/`write`/`replace_across` touched does not merely cost
-  ## bytes, it is out of date — the model may reason about a file version that
-  ## no longer exists — and its content is one `context_recall` away. Editing
-  ## that result out is therefore a repair, not merely a saving.
-  ##
-  ## Needs no new declarations and no component names: `effect: read` says the
-  ## result is re-obtainable, `x-harness.workspace` says which arguments are
-  ## paths, and `x-harness.writes.paths` says what a call changed.
+  ## Rules come from each component's own declarations — `effect: read`,
+  ## `workspace.{pathFields,pathArrayFields}`, `writes.paths`, and for tier 2
+  ## `derivable: true`. Core names no tool and no field.
   ##
   ## `live = false` re-applies recorded stubs on projection reload without
   ## re-classifying (the classification depends on the projection's contents).
@@ -1124,16 +1156,18 @@ proc stubStaleReads*(p: var Persister, messages: var seq[JsonNode],
       if name.len == 0: continue
       let schema = p.ct.cat.toolSchema(name)
       if schema == nil: continue
-      # Re-derivable only: a write tool's own result records what the agent DID
-      # and is never stubbed here.
-      if schema{"x-harness"}{"effect"}.getStr("write") != "read": continue
+      # A write tool's own result records what the agent DID, so it is never
+      # stubbed — an unconditional rule, not a tier.
+      let readEffect = schema{"x-harness"}{"effect"}.getStr("write") == "read"
+      let declared = derivableOf(schema)
+      if not readEffect and not declared: continue
       var args: JsonNode
       try: args = parseJson(tc{"function"}{"arguments"}.getStr("[BAD]"))
       except CatchableError: continue
       var stale = false
       for path in declaredPathValues(schema, args):
         if lastWrite.getOrDefault(path, -1) > i: stale = true; break
-      if not stale: continue
+      if not (stale or (mode == smDerivable and declared)): continue
       let saved = applyStub(p, messages, i)
       if saved > 0 and live:
         p.prunes.add(PruneRec(id: p.nodes[i].id, bytesBefore: content.len,
@@ -1174,16 +1208,22 @@ proc tombstoneReasoning(p: var Persister, messages: var seq[JsonNode]): int =
     messages[i]["reasoning"] = %stub
     result += reasoning.len - stub.len
 
-proc pruneContext*(p: var Persister, messages: var seq[JsonNode]): int =
+proc pruneContext*(p: var Persister, messages: var seq[JsonNode],
+                   stubMode = smStale): int =
   ## §5.2 model-free prune: tool results and past-turn reasoning, at
   ## whole-artifact boundaries. Role, pairing and machine fields stay
   ## intact; canonical history is never rewritten. Returns measured bytes
   ## saved and is idempotent.
+  ##
+  ## `stubMode` is `smStale` wherever prune runs on its own, and `smDerivable`
+  ## only where the lossy trim rung is next (`runTrimRung`). The derivable tier
+  ## trades information — a non-stale result the model can still re-run — for
+  ## room, which is not worth spending while a compactor, which would keep that
+  ## content, has not had its turn.
   result += p.tombstoneReasoning(messages)
-  # §6.3 tier-1 stub, ahead of the agent's own checks: a stale read is both the
-  # safest thing to remove (it is out of date anyway, and one recall away) and
-  # the cheapest, because it needs no model and cannot fail.
-  result += p.stubStaleReads(messages)
+  # §6.3 the stub rung runs ahead of the size-gated agent checks: it needs no
+  # model, cannot fail, and removes what is out of date or cheapest to redo.
+  result += p.stubResults(messages, stubMode)
   for i in 0 ..< p.nodes.len:
     result += p.pruneNode(messages, i)
 
@@ -1413,7 +1453,11 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
                             "reason": "warn:threshold"})
   var used = measured(toolTokens)
   if used >= trimAt:
-    let saved = p.pruneContext(messages)
+    # The derivable stub tier deliberately does NOT run here: it would steal
+    # room the compactor needs, and a committed checkpoint keeps the whole span
+    # (tool results included) instead of eliding it. It runs in runTrimRung,
+    # after the compactor has had its chance and only when turns are next.
+    let saved = p.pruneContext(messages, smStale)
     if saved > 0 and onEvent != nil:
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "reset:prune", "bytesSaved": saved,
@@ -1502,8 +1546,25 @@ proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
   ## tokens below the line it had to reach. The fallback matters for the
   ## opposite case too — when only a few tokens have to go, the floor would take
   ## almost everything to save almost nothing.
+  ##
+  ## The rung opens with the last resort short of deletion: the derivable stub
+  ## tier. Every earlier rung is exhausted — a compactor would have kept the
+  ## whole span including tool results, and it either declined or failed — so
+  ## eliding results the model can re-run is strictly better than deleting turns
+  ## it cannot recover. Only when that is not enough does the proportional cut
+  ## run.
   let target = p.contextTarget()
   var used = estimateTokens(messages) + toolTokens + p.calib
+  if used > target and derivableStubEnabled():
+    let regained = p.stubResults(messages, smDerivable)
+    if regained > 0:
+      if onEvent != nil:
+        onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                              "reason": "reset:prune",
+                              "bytesSaved": regained,
+                              "derivable": true,
+                              "note": "elided results the tool declares re-obtainable — the last lossless step before dropping turns"})
+      used = estimateTokens(messages) + toolTokens + p.calib
   if used > target:
     let cutoff = trimCutoffFor(p, messages, toolTokens)
     if cutoff > 0:
@@ -4418,7 +4479,7 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # contents. Reads whose path a later write touched are skipped, and nothing
     # else is inferred — so a reload never stubs a result the committed
     # projection kept.
-    discard p.stubStaleReads(entry.messages, live = false)
+    discard p.stubResults(entry.messages, smNone, live = false)
     # The reasoning tombstone re-derives from position (all assistant
     # messages but the last), so a checkpoint resume starts honest too —
     # the meter must not re-inflate with replayed thinking.
