@@ -1234,7 +1234,13 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   never writes conversation or projection records.
 - A successful projection emits `reason: "reset:compact"`; model-free pruning
   emits `reset:prune`; lossy fallback emits `reset:trim`. `reset:tools` remains
-  reserved for an actual sticky tool-schema promotion. These are the only
+  reserved for an actual sticky tool-schema promotion. The prune rung also
+  elides whole tool results whose declared file a LATER write changed: a stale
+  read is out of date as well as rechargeable, so it is removed before any
+  model is asked to summarize anything. It needs no configuration — the rules
+  come from each tool's own `x-harness` declarations (`effect: read`,
+  `workspace.pathFields`, `writes.paths`) — and never touches a write tool's
+  result, calls with no declared path, or the last few messages. These are the only
   intentional prompt-prefix rebuilds and make cache misses attributable. The
   compaction rung reports **every** non-reset exit, never silently:
   `compact:unavailable` (no compactor configured or registered),

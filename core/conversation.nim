@@ -173,6 +173,11 @@ type
     id*: string          ## canonical id of the pruned message
     bytesBefore*: int
     bytesAfter*: int
+    full*: bool          ## §6.3 stub: the WHOLE result was replaced, not just
+                         ## its middle. Recorded so a restart replays the same
+                         ## edit — the classification (`stale`) depends on the
+                         ## projection's contents, so it cannot be re-derived
+                         ## positionally the way the reasoning tombstone is.
 
   Persister* = object
     ct: CoreTools
@@ -946,6 +951,196 @@ proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
                           bytesAfter: body.len))
   content.len - body.len
 
+const stubTag* = "[tool result elided"
+
+proc latestUserIndex(p: Persister, messages: seq[JsonNode]): int =
+  ## Message index of the newest canonical user request — the turn being
+  ## worked on. A cut/trim must always keep it visible (§4.3), and the stub rung
+  ## protects it so read → edit → re-read inside one turn is never elided.
+  for i in countdown(p.nodes.len - 1, 0):
+    if p.nodes[i].source == nsCanonical and i < messages.len and
+        messages[i]{"role"}.getStr("") == "user":
+      return i
+  -1
+
+proc normDeclPath(s: string): string =
+  ## Compare path-shaped declarations on one spelling. Conservative on purpose:
+  ## a MISSED match only means we do not stub (no loss), while an over-match
+  ## would stub a result that was not actually superseded — so an absolute and a
+  ## relative spelling of the same file deliberately do not match here.
+  result = s.strip()
+  while result.startsWith("./"): result = result[2 .. ^1]
+  while result.endsWith("/"): result.setLen(result.len - 1)
+
+proc declaredPathValues(schema, args: JsonNode): seq[string] =
+  ## The path arguments a call named — read from the tool's OWN declaration
+  ## (`x-harness.workspace.{pathFields,pathArrayFields}`). Core knows no
+  ## component or field names: a tool that stops declaring a path stops being
+  ## considered (AGENTS.md: language/capability support is data, not branches).
+  if schema == nil or args == nil or args.kind != JObject: return
+  let policy = schema{"x-harness"}{"workspace"}
+  if policy == nil or policy.kind != JObject: return
+  let fields = policy{"pathFields"}
+  if fields != nil and fields.kind == JArray:
+    for f in fields:
+      let v = args{f.getStr("")}
+      if v != nil and v.kind == JString and v.getStr("").len > 0:
+        result.add(normDeclPath(v.getStr("")))
+  let arrays = policy{"pathArrayFields"}
+  if arrays != nil and arrays.kind == JArray:
+    for f in arrays:
+      let v = args{f.getStr("")}
+      if v != nil and v.kind == JArray:
+        for item in v:
+          if item.kind == JString and item.getStr("").len > 0:
+            result.add(normDeclPath(item.getStr("")))
+
+proc declaredWritePaths(schema, args: JsonNode): seq[string] =
+  ## The paths a call declared it would CHANGE (`x-harness.writes.paths` names
+  ## the argument fields holding them). A tool with no such declaration claims
+  ## nothing, so it never marks another result stale.
+  if schema == nil or args == nil or args.kind != JObject: return
+  let w = schema{"x-harness"}{"writes"}
+  if w == nil or w.kind != JObject: return
+  let fields = w{"paths"}
+  if fields == nil or fields.kind != JArray: return
+  for f in fields:
+    let v = args{f.getStr("")}
+    if v == nil: continue
+    if v.kind == JString and v.getStr("").len > 0:
+      result.add(normDeclPath(v.getStr("")))
+    elif v.kind == JArray:
+      for item in v:
+        if item.kind == JString and item.getStr("").len > 0:
+          result.add(normDeclPath(item.getStr("")))
+
+proc stubBody(id, toolName: string): string =
+  ## The whole body a stubbed result leaves behind. Deterministic from the node
+  ## id and tool name alone, so a restart reproduces it byte-identically.
+  result = stubTag & ": " & toolName &
+    (if toolName.len > 0: " output" else: "output") &
+    " superseded by a later write to the same path; recall with " &
+    "context_recall {\"ref\": {\"source\": \"canonical\", \"id\": \"" &
+    id & "\"}}]"
+
+proc applyStub(p: Persister, messages: var seq[JsonNode], i: int): int =
+  ## Replace one tool result's whole body with its stub. Role, `tool_call_id`,
+  ## `name` and every machine field stay exactly as prune leaves them, so
+  ## tool-call pairing and the ledger are untouched.
+  if i < 0 or i >= messages.len: return 0
+  let m = messages[i]
+  if m{"role"}.getStr("") != "tool": return 0
+  let content = m{"content"}.getStr("")
+  if content.len == 0 or content.startsWith(stubTag): return 0
+  let body = stubBody(if i < p.nodes.len: p.nodes[i].id else: "",
+                      m{"name"}.getStr(""))
+  if body.len >= content.len: return 0
+  messages[i]["content"] = %body
+  content.len - body.len
+
+proc persisterForCatalog*(cat: Catalog): Persister =
+  ## Test seam: a persister whose catalog answers schema lookups, with no bus
+  ## and no store. The stub rung classifies entirely from tool declarations, so
+  ## a unit test can pin its rules without booting anything.
+  result = Persister(ct: CoreTools(cat: cat))
+
+const stubProtectRecent* = 4
+  ## Messages at the very end of the projection the stub rung never touches:
+  ## the immediate working set (a tool call and its result). It is deliberately
+  ## SMALL. Protecting the whole current turn was the first attempt and it was
+  ## wrong: a long agentic turn accumulates all of its own tool history after
+  ## the latest user message, which is exactly where the bulk and the pressure
+  ## are — the rung then had nothing to offer in the one situation it exists
+  ## for (the autonomous fixture proved it: 0 results elided across 16
+  ## requests). Four messages still covers read → edit → re-read in flight.
+
+proc stubStaleReads*(p: var Persister, messages: var seq[JsonNode],
+                     live = true): int =
+  ## §6.3 tier-1 stub rung: elide whole tool results whose files were WRITTEN
+  ## LATER. Every stale read it can prove is stubbed, oldest first, and the
+  ## rung is idempotent (a stubbed result is skipped on the next pass).
+  ##
+  ## Why this exists (prod finding conv-d3a5be6c05be): prune only reaches tool
+  ## results over 8192 chars — 8% of that conversation's results, covering 43%
+  ## of the reduction it needed — and the next rung was compaction, which can
+  ## fail (it did). What was left was trim, which deletes whole turns including
+  ## the human's own requests.
+  ##
+  ## The ordering rule is not size but DERIVABILITY-AND-STALENESS: a read whose
+  ## path a later `edit`/`write`/`replace_across` touched does not merely cost
+  ## bytes, it is out of date — the model may reason about a file version that
+  ## no longer exists — and its content is one `context_recall` away. Editing
+  ## that result out is therefore a repair, not merely a saving.
+  ##
+  ## Needs no new declarations and no component names: `effect: read` says the
+  ## result is re-obtainable, `x-harness.workspace` says which arguments are
+  ## paths, and `x-harness.writes.paths` says what a call changed.
+  ##
+  ## `live = false` re-applies recorded stubs on projection reload without
+  ## re-classifying (the classification depends on the projection's contents).
+  ## Returns measured bytes saved; idempotent.
+  result = 0
+  # The turn being worked is protected: read → edit → re-read is the active
+  # working set, and stubbing inside it would force an immediate re-read.
+  let protectFrom = messages.len - stubProtectRecent
+  var callIndex = initTable[string, int]()
+  for i in 0 ..< min(p.nodes.len, messages.len):
+    if p.nodes[i].source != nsCanonical: continue
+    let calls = messages[i]{"tool_calls"}
+    if calls == nil or calls.kind != JArray: continue
+    for tc in calls:
+      let id = tc{"id"}.getStr("")
+      if id.len > 0: callIndex[id] = i
+  # Later write targets, so one pass classifies every result.
+  var lastWrite = initTable[string, int]()
+  for i in 0 ..< min(p.nodes.len, messages.len):
+    if p.nodes[i].source != nsCanonical: continue
+    let calls = messages[i]{"tool_calls"}
+    if calls == nil or calls.kind != JArray: continue
+    for tc in calls:
+      let name = tc{"function"}{"name"}.getStr("")
+      if name.len == 0: continue
+      let schema = p.ct.cat.toolSchema(name)
+      if schema == nil: continue
+      var args: JsonNode
+      try: args = parseJson(tc{"function"}{"arguments"}.getStr("[BAD]"))
+      except CatchableError: continue
+      for path in declaredWritePaths(schema, args):
+        lastWrite[path] = max(lastWrite.getOrDefault(path, -1), i)
+  for i in 0 ..< min(p.nodes.len, messages.len):
+    if i >= protectFrom: break
+    if p.nodes[i].source != nsCanonical: continue
+    let m = messages[i]
+    if m{"role"}.getStr("") != "tool": continue
+    let content = m{"content"}.getStr("")
+    if content.len == 0 or content.startsWith(stubTag): continue
+    let callIdx = callIndex.getOrDefault(m{"tool_call_id"}.getStr(""), -1)
+    if callIdx < 0: continue
+    let calls = messages[callIdx]{"tool_calls"}
+    if calls == nil or calls.kind != JArray: continue
+    for tc in calls:
+      if tc{"id"}.getStr("") != m{"tool_call_id"}.getStr(""): continue
+      let name = tc{"function"}{"name"}.getStr("")
+      if name.len == 0: continue
+      let schema = p.ct.cat.toolSchema(name)
+      if schema == nil: continue
+      # Re-derivable only: a write tool's own result records what the agent DID
+      # and is never stubbed here.
+      if schema{"x-harness"}{"effect"}.getStr("write") != "read": continue
+      var args: JsonNode
+      try: args = parseJson(tc{"function"}{"arguments"}.getStr("[BAD]"))
+      except CatchableError: continue
+      var stale = false
+      for path in declaredPathValues(schema, args):
+        if lastWrite.getOrDefault(path, -1) > i: stale = true; break
+      if not stale: continue
+      let saved = applyStub(p, messages, i)
+      if saved > 0 and live:
+        p.prunes.add(PruneRec(id: p.nodes[i].id, bytesBefore: content.len,
+                              bytesAfter: content.len - saved, full: true))
+      result += saved
+      break
+
 proc tombstoneReasoning(p: var Persister, messages: var seq[JsonNode]): int =
   ## §5.2 reasoning tombstone: past assistant turns' thinking leaves the
   ## projection. The providers discard prior-turn reasoning on replay
@@ -985,17 +1180,12 @@ proc pruneContext*(p: var Persister, messages: var seq[JsonNode]): int =
   ## intact; canonical history is never rewritten. Returns measured bytes
   ## saved and is idempotent.
   result += p.tombstoneReasoning(messages)
+  # §6.3 tier-1 stub, ahead of the agent's own checks: a stale read is both the
+  # safest thing to remove (it is out of date anyway, and one recall away) and
+  # the cheapest, because it needs no model and cannot fail.
+  result += p.stubStaleReads(messages)
   for i in 0 ..< p.nodes.len:
     result += p.pruneNode(messages, i)
-
-proc latestUserIndex(p: Persister, messages: seq[JsonNode]): int =
-  ## Message index of the newest canonical user request — the turn being
-  ## worked on. A cut/trim must always keep it visible (§4.3).
-  for i in countdown(p.nodes.len - 1, 0):
-    if p.nodes[i].source == nsCanonical and i < messages.len and
-        messages[i]{"role"}.getStr("") == "user":
-      return i
-  -1
 
 proc omissionNoticeText(rangeText: string, compactFailures: int,
                          compactReason: string, recallId = ""): string =
@@ -2606,7 +2796,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
           break
       pruneJson.add(%*{"ref": {"source": refSource, "id": pr.id},
                        "bytesBefore": pr.bytesBefore,
-                       "bytesAfter": pr.bytesAfter})
+                       "bytesAfter": pr.bytesAfter,
+                       "full": pr.full})
   let record = buildProjectionRecord(newGeneration, p.canonicalHigh,
     checked.checkpoint, recordFrom, recordTo, retained, pruneJson,
     %*{"promptTokensBefore": estimateTokens(messages),
@@ -4186,7 +4377,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           let rec = PruneRec(
             id: pr{"ref"}{"id"}.getStr(pr{"id"}.getStr("")),
             bytesBefore: pr{"bytesBefore"}.getInt(0),
-            bytesAfter: pr{"bytesAfter"}.getInt(0))
+            bytesAfter: pr{"bytesAfter"}.getInt(0),
+            full: pr{"full"}.getBool(false))
           var inProjection = false
           if trimThrough > 0 and canonicalSeqOf(rec.id) > 0 and
               canonicalSeqOf(rec.id) <= trimThrough:
@@ -4202,13 +4394,31 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         var idx = -1
         for i, n in p.nodes:
           if n.id == pr.id: idx = i; break
-        if idx < 0 or entry.messages[idx]{"content"}.getStr("").len !=
+        if idx < 0: return %*{"error": "context-recovery-required: projection prune ref is not in the rebuilt projection: " & pr.id}
+        if pr.full:
+          # §6.3 stub: the whole result was replaced, and the CLASSIFICATION
+          # (which reads were superseded) depends on the projection's contents,
+          # so it cannot be re-derived here without risking a different answer
+          # than the committed one. Re-apply the recorded edit only, then prove
+          # it reproduced byte-for-byte — a mismatch is real drift and stays
+          # fatal rather than silently sending a different prompt.
+          let before = entry.messages[idx]{"content"}.getStr("")
+          let body = stubBody(pr.id, entry.messages[idx]{"name"}.getStr(""))
+          if before.len != pr.bytesBefore or body.len != pr.bytesAfter:
+            return %*{"error": "context-recovery-required: projection stub ref cannot be reproduced: " & pr.id}
+          entry.messages[idx]["content"] = %body
+        elif idx < 0 or entry.messages[idx]{"content"}.getStr("").len !=
             pr.bytesBefore or p.pruneNode(entry.messages, idx,
                                          record = false) <= 0 or
             entry.messages[idx]{"content"}.getStr("").len != pr.bytesAfter:
           return %*{"error": "context-recovery-required: projection prune ref cannot be reproduced: " & pr.id}
     elif storedNodes.len > 0:
       p.canonicalHigh = storedNodes[^1].canonicalSeq
+    # §6.3 stub: only STUBS are classified here, from the projection's own
+    # contents. Reads whose path a later write touched are skipped, and nothing
+    # else is inferred — so a reload never stubs a result the committed
+    # projection kept.
+    discard p.stubStaleReads(entry.messages, live = false)
     # The reasoning tombstone re-derives from position (all assistant
     # messages but the last), so a checkpoint resume starts honest too —
     # the meter must not re-inflate with replayed thinking.

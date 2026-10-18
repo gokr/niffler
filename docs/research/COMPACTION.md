@@ -660,7 +660,9 @@ to replaying the covered span into a request that will be rejected.
 In order, all deterministic, all bounded:
 
 1. **Prune** (§5.2) — tool results only, whole-result boundaries, bytes
-   preserved in `spill` docs first.
+   preserved in `spill` docs first. This step now includes the **tier-1 stub**
+   (§6.3a): tool results whose files a LATER write touched are elided whole,
+   before the size-gated middle-prune runs.
 2. **Compactor replay** — one retry, only for a `casFailed` that kept its
    verified snapshot (a dispatch error or timeout: a failure that says nothing
    about the history, so re-reading the same surface is not a second guess). A
@@ -735,6 +737,45 @@ removable overstates the saving and yields a boundary that still does not fit),
 and aims ~1% under the target so a boundary lands with margin instead of
 triggering another trim next turn. The result is always snapped to a user-turn
 boundary so `tool_call_id` pairs stay whole.
+
+**§6.3a Tier-1 stub (implemented 2026-10-17, same finding):** prune reaches only
+tool results over 8192 characters — on the live case 8% of them (52 of 637),
+covering 43% of the reduction needed — and the next rung was compaction, which
+can fail. What remained was trim, which deletes whole turns including the
+human's own requests. Measured on that conversation: stubbing tool results
+wholesale would have reclaimed ~265k tokens against the ~230k needed, keeping
+every user and assistant message (746 more messages than the floor trim kept).
+
+Tier 1 implements the safest half of that ordering rule, and needs no new
+declarations: a read whose declared path a LATER `edit`/`write`/`replace_across`
+declared it would change is **stale** — the model may reason from a file version
+that no longer exists — and one `context_recall` away. On the live conversation
+that is 104 results / ~52k tokens (22% of the needed reduction), no user turns,
+and nothing to configure.
+
+Rules, all derived from existing data (`effect: read` for eligibility,
+`x-harness.workspace.pathFields` for the paths a read named,
+`x-harness.writes.paths` for the paths a call changed):
+
+- A write tool's own result is never stubbed: it records what the agent DID.
+- The last `stubProtectRecent` messages are untouched. Protecting the whole
+  current turn was the first attempt and it was wrong — a long agentic turn
+  accumulates all of its own tool history after the latest user message, which
+  is where the pressure is, so the rung offered nothing exactly when it was
+  needed (the autonomous fixture measured 0 elisions across 16 requests).
+- Path comparison is deliberately conservative: a missed match means no stub
+  (no loss), so an absolute and a relative spelling do not match.
+- The stub keeps `role`, `tool_call_id`, `name` and every machine field, exactly
+  as prune does, so pairing and the ledger are untouched.
+- Recorded as a prune record with `full: true` and replayed on projection
+  reload from the recorded byte counts — the classification reads the
+  projection's contents, so it cannot be re-derived positionally without
+  risking a different answer than the committed one.
+
+Tier 2 (old reads that were never superseded, plus non-path-derived results) is
+deliberately not implemented: on the live case it is what closes the remaining
+gap to ~79% of the needed reduction, but it evicts content that is *not* stale,
+so it wants its own slice and its own review.
 
 **Calibration addendum (same finding):** the ladder's trigger measures
 candidates with a chars/4 estimate that can lag a denser tokenizer by ~4-5%

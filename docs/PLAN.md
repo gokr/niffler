@@ -415,7 +415,12 @@ These were previously tracked here as plans and are now part of `main`:
   lossy rung; a lossy trim records which compaction attempts failed plus a
   `context_recall` pointer, durably; and the trim itself cuts the measured
   smallest whole-turn prefix that fits instead of jumping to its structural
-  floor (which had been discarding history the model still had room for).
+  floor (which had been discarding history the model still had room for). Tool
+  results whose file a LATER write changed are now elided whole (tier-1 stub) —
+  stale *and* reclaimable, so removing them is a repair as well as a saving.
+  Tier 2 (old reads that were never superseded: the remaining ~57% of that
+  reduction, measured) is deliberately still open — it evicts content that is
+  not stale and wants its own review.
 - **Context status surface** — still missing: `compaction_propose` is hidden and
   runner-only, and nothing reports window/used/trim line/`trimThrough`/notice ids
   or the retained snapshot's id to an operator. A read-effect `context_status`

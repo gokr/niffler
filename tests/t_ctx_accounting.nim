@@ -3,8 +3,9 @@
 ## reserve that lowers the trim threshold below the bare ratio.
 ## Pure logic — no bus, no processes.
 
-import std/[json, math, os, strutils]
+import std/[json, math, os, strutils, tables]
 import helpers
+import ../core/catalog
 import ../core/conversation
 
 proc main() =
@@ -203,6 +204,200 @@ proc main() =
           "cutoff=" & $ps.trimCutoffFor(tight, 0) &
           " used=" & $estimateTokens(tight) & " target=" & $ps.contextTarget())
     delEnv("NIF_CTX_RESERVE")
+
+  # --- §6.3 tier-1 stub: superseded reads ---------------------------------
+  # The rung elides whole tool results whose files were WRITTEN LATER. Its
+  # inputs are the tool's own declarations, so these cases pin the rules: which
+  # results are eligible (read effect), how staleness is decided (a later write
+  # to a declared path), and what must never be touched (write results, the
+  # live working set, undetermined calls).
+  block staleReadStub:
+    proc schemaFor(tool: string): JsonNode =
+      case tool
+      of "read": %*{"x-harness": {"effect": "read",
+                                   "workspace": {"pathFields": ["path"]}}}
+      of "edit": %*{"x-harness": {"effect": "write",
+                                   "writes": {"paths": ["path"]},
+                                   "workspace": {"pathFields": ["path"]}}}
+      of "grep": %*{"x-harness": {"effect": "read",
+                                   "workspace": {"pathFields": ["glob"]}}}
+      else: %*{"x-harness": {"effect": "write"}}
+
+    proc call(cat: Catalog, id, name, args: string): JsonNode =
+      %*{"role": "assistant", "content": "",
+         "tool_calls": [%*{"id": id, "type": "function",
+                            "function": {"name": name, "arguments": args}}]}
+
+    proc resultOf(id, name, body: string): JsonNode =
+      %*{"role": "tool", "tool_call_id": id, "name": name, "content": body}
+
+    # A catalog whose registry answers the fake schemas above (same shape
+    # t_discover builds: ComponentReg + ToolReg, no bus).
+    var cat = Catalog(components: initTable[string, ComponentReg](),
+                      toolIndex: initTable[string, string]())
+    for tool in ["read", "edit", "grep"]:
+      let owner = if tool == "grep": "grep" else: "edit"
+      cat.toolIndex[tool] = owner
+      if owner notin cat.components:
+        cat.components[owner] = ComponentReg(name: owner)
+      cat.components[owner].tools.add(
+        ToolReg(name: tool, component: owner, schema: schemaFor(tool)))
+
+    # read A -> STALE, read B -> kept (never written), edit A -> protected,
+    # grep C -> kept (its path was never written).
+    let body = repeat("x", 4000)
+    var msgs = @[
+      %*{"role": "system", "content": "sys"},
+      %*{"role": "user", "content": "turn one"},
+      call(cat, "c1", "read", "{\"path\": \"a.nim\"}"),
+      resultOf("c1", "read", body),
+      call(cat, "c2", "read", "{\"path\": \"b.nim\"}"),
+      resultOf("c2", "read", body),
+      call(cat, "c3", "grep", "{\"glob\": \"*.zzz\"}"),
+      resultOf("c3", "grep", body),
+      %*{"role": "user", "content": "turn two"},
+      call(cat, "c4", "edit", "{\"path\": \"a.nim\"}"),
+      resultOf("c4", "edit", "ok"),
+      %*{"role": "user", "content": "turn three"},
+    ]
+    var sp = persisterForCatalog(cat)
+    sp.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+    for i in 1 ..< msgs.len:
+      sp.nodes.add(CtxNode(source: nsCanonical, id: "c:" & align($i, 6, '0'),
+                           canonicalSeq: i, projectionIndex: i))
+    let saved = sp.stubStaleReads(msgs)
+    check("a read superseded by a later write is stubbed",
+          msgs[3]{"content"}.getStr("").startsWith(stubTag),
+          msgs[3]{"content"}.getStr(""))
+    check("the stub still points at the original by recall ref",
+          msgs[3]{"content"}.getStr("").contains("c:000003") and
+          msgs[3]{"content"}.getStr("").contains("context_recall"),
+          msgs[3]{"content"}.getStr(""))
+    check("tool_call_id and tool name survive the stub",
+          msgs[3]{"tool_call_id"}.getStr("") == "c1" and
+          msgs[3]{"name"}.getStr("") == "read")
+    check("a read that was never written again is untouched",
+          msgs[5]{"content"}.getStr("").len == body.len)
+    check("a write tool's own result is never stubbed",
+          msgs[10]{"content"}.getStr("") == "ok")
+    check("a read whose glob was never written is untouched",
+          msgs[7]{"content"}.getStr("").len == body.len)
+    check("only the stale read was elided", saved == body.len - msgs[3]{"content"}.getStr("").len,
+          "saved=" & $saved)
+    check("the stub is recorded for replay",
+          sp.prunes.len == 1 and sp.prunes[0].full and
+          sp.prunes[0].id == "c:000003", $sp.prunes.len)
+    check("stubbing is idempotent", sp.stubStaleReads(msgs) == 0)
+
+    # Nothing stale at all: the rung is a no-op.
+    var msgs2 = @[
+      %*{"role": "system", "content": "sys"},
+      %*{"role": "user", "content": "turn"},
+      call(cat, "d1", "read", "{\"path\": \"untouched.nim\"}"),
+      resultOf("d1", "read", body),
+      %*{"role": "user", "content": "later"},
+    ]
+    var sp2 = persisterForCatalog(cat)
+    sp2.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+    for i in 1 ..< msgs2.len:
+      sp2.nodes.add(CtxNode(source: nsCanonical, id: "d:" & align($i, 6, '0'),
+                            canonicalSeq: i, projectionIndex: i))
+    check("no stale reads means no stubs", sp2.stubStaleReads(msgs2) == 0)
+
+    # The last few messages are protected: the immediate working set (a tool
+    # call and its result). Everything older that was superseded is fair game —
+    # deliberately so, because a long agentic turn keeps all of its own tool
+    # history after the latest user message, and protecting that would leave the
+    # rung empty exactly when pressure arrives.
+    # One assistant message carrying two edits keeps the tail exactly at
+    # stubProtectRecent: the live.nim read (index 6) sits inside the protected
+    # tail while still being superseded by the writes at index 7.
+    let bothEdits = %*{"role": "assistant", "content": "",
+      "tool_calls": [
+        %*{"id": "e3", "type": "function",
+           "function": {"name": "edit", "arguments": "{\"path\": \"old.nim\"}"}},
+        %*{"id": "e4", "type": "function",
+           "function": {"name": "edit", "arguments": "{\"path\": \"live.nim\"}"}}]}
+    var msgs3 = @[
+      %*{"role": "system", "content": "sys"},
+      %*{"role": "user", "content": "old turn"},
+      call(cat, "e1", "read", "{\"path\": \"old.nim\"}"),
+      resultOf("e1", "read", body),
+      %*{"role": "user", "content": "the current turn"},
+      call(cat, "e2", "read", "{\"path\": \"live.nim\"}"),
+      resultOf("e2", "read", body),
+      bothEdits,
+      resultOf("e3", "edit", "ok"),
+      resultOf("e4", "edit", "ok"),
+    ]
+    var sp3 = persisterForCatalog(cat)
+    sp3.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+    for i in 1 ..< msgs3.len:
+      sp3.nodes.add(CtxNode(source: nsCanonical, id: "e:" & align($i, 6, '0'),
+                            canonicalSeq: i, projectionIndex: i))
+    let saved3 = sp3.stubStaleReads(msgs3)
+    check("an older superseded read is stubbed",
+          msgs3[3]{"content"}.getStr("").startsWith(stubTag),
+          msgs3[3]{"content"}.getStr(""))
+    check("a superseded read inside the protected tail is kept",
+          msgs3[6]{"content"}.getStr("").len == body.len,
+          "protected=" & $stubProtectRecent & " len=" &
+          $msgs3[6]{"content"}.getStr("").len)
+    check("the protected tail is bounded — only the older read was elided",
+          saved3 == body.len - msgs3[3]{"content"}.getStr("").len,
+          "saved=" & $saved3)
+
+  # --- §6.3 stub is wired into prune --------------------------------------
+  # The rung's rules are pinned above; this proves the WIRING, which is what a
+  # regression would quietly drop: pruneContext must include the stale-read stub
+  # in the bytes it reports to admission.
+  block stubWiring:
+    proc schemaFor(tool: string): JsonNode =
+      case tool
+      of "read": %*{"x-harness": {"effect": "read",
+                                   "workspace": {"pathFields": ["path"]}}}
+      of "edit": %*{"x-harness": {"effect": "write",
+                                  "writes": {"paths": ["path"]},
+                                  "workspace": {"pathFields": ["path"]}}}
+      else: %*{"x-harness": {"effect": "write"}}
+    var cat = Catalog(components: initTable[string, ComponentReg](),
+                      toolIndex: initTable[string, string]())
+    for tool in ["read", "edit"]:
+      let owner = "edit"
+      cat.toolIndex[tool] = owner
+      if owner notin cat.components:
+        cat.components[owner] = ComponentReg(name: owner)
+      cat.components[owner].tools.add(
+        ToolReg(name: tool, component: owner, schema: schemaFor(tool)))
+    let body = repeat("x", 4000)
+    var msgs = @[
+      %*{"role": "system", "content": "sys"},
+      %*{"role": "user", "content": "read it"},
+      %*{"role": "assistant", "content": "",
+         "tool_calls": [%*{"id": "r1", "type": "function",
+                           "function": {"name": "read",
+                                        "arguments": "{\"path\": \"a.nim\"}"}}]},
+      %*{"role": "tool", "tool_call_id": "r1", "name": "read", "content": body},
+      %*{"role": "assistant", "content": "",
+         "tool_calls": [%*{"id": "w1", "type": "function",
+                           "function": {"name": "edit",
+                                        "arguments": "{\"path\": \"a.nim\"}"}}]},
+      %*{"role": "tool", "tool_call_id": "w1", "name": "edit", "content": "ok"},
+      %*{"role": "user", "content": "and now the filler"},
+      %*{"role": "assistant", "content": "done"},
+      %*{"role": "user", "content": "tail one"},
+      %*{"role": "assistant", "content": "done"},
+    ]
+    var wp = persisterForCatalog(cat)
+    wp.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+    for i in 1 ..< msgs.len:
+      wp.nodes.add(CtxNode(source: nsCanonical, id: "w:" & align($i, 6, '0'),
+                           canonicalSeq: i, projectionIndex: i))
+    let saved = wp.pruneContext(msgs)
+    check("pruneContext reports the stale-read stub it applied",
+          saved >= body.len - msgs[3]{"content"}.getStr("").len and
+          msgs[3]{"content"}.getStr("").startsWith(stubTag),
+          "saved=" & $saved & " content=" & msgs[3]{"content"}.getStr("")[0 .. 60])
 
   # --- A3: cache hit-rate arithmetic ---------------------------------------
   # The runner accumulates Σprompt and Σcached across responses reporting

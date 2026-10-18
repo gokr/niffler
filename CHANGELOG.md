@@ -41,6 +41,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never retried. Measured case: one component error before any LLM call made the
   ladder trim 1402 messages while an intact, replayable snapshot sat in the
   store; replayed by hand it produced a valid candidate in 42s.
+- Tool results superseded by a later write are elided before anything is
+  summarized or trimmed (tier-1 stub, part of the lossless prune rung). A read
+  whose declared file a later `edit`/`write`/`replace_across` changed is not
+  just reclaimable but **stale** — the model may reason from a version that no
+  longer exists — and one `context_recall` away. It needs no configuration: the
+  rules come from `x-harness.effect` (re-obtainable), `workspace.pathFields`
+  (the paths a read named) and `writes.paths` (what a call changed). Write
+  results, undetermined calls and the last few messages are never touched.
+  Measured on the incident's conversation this alone is 104 results / ~52k
+  tokens of the ~230k needed, costing no user turns; eliding tool results
+  wholesale would have covered ~265k and kept 746 more messages than the floor
+  trim did (that is tier 2, not yet implemented).
 - A lossy trim now cuts **proportionally**. The rung used to jump straight to
   its structural floor (keep only the newest user request) in one indivisible
   step, so whichever turn happened to be the boundary decided the cut — one step

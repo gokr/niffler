@@ -312,6 +312,9 @@ ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens
                        #   decision: `warn:threshold` (75% of the effective
                        #   line; `trimAt` is that line in tokens), `reset:prune`,
                        #   `reset:trim`, `reset:compact`, and EVERY compaction
+                       #   A stale-read stub (§6.3a) needs no event of its own:
+                       #   it is part of the existing `reset:prune` rung and
+                       #   arrives in `bytesSaved`/`pruned` with the rest.
                        #   refusal (`compact:unavailable|failed|declined|invalid|
                        #   stale`) with a human-readable `detail`, plus
                        #   `compact:retry` when the runner replays a failed

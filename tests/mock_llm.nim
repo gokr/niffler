@@ -130,6 +130,14 @@ proc markerStart(messages: JsonNode, needle: string): int =
     if messages[i]{"content"}.getStr("").startsWith(needle): return i
   -1
 
+proc countText(messages: JsonNode, needle: string): int =
+  ## Occurrences of `needle` across message bodies: lets a fixture assert what
+  ## the projection contained (an elided tool result, a marker) without the
+  ## request log carrying whole conversations.
+  if needle.len == 0 or messages == nil or messages.kind != JArray: return 0
+  for m in messages:
+    result += m{"content"}.getStr("").count(needle)
+
 proc logRequest(estimate: int, rejected: bool, note: string,
                 messages, tools: JsonNode) =
   if mockLog.len == 0: return
@@ -143,6 +151,7 @@ proc logRequest(estimate: int, rejected: bool, note: string,
                   "steer": containsText(messages, "Steer: "),
                   "historyMarker": markerStart(messages, mockHistoryMarker) >= 0,
                   "historyMarkerIndex": markerStart(messages, mockHistoryMarker),
+                  "elidedResults": countText(messages, "[tool result elided"),
                   "sessionId": currentSessionId,
                   "cancelId": currentCancelId,
                   "emitTokens": currentEmitTokens,
