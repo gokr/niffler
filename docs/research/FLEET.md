@@ -1,7 +1,7 @@
 # Remote instances, resident agents and the `/niffler` switcher
 
 > Design history, with implementation status in [FLEET-IMPLEMENTATION.md](FLEET-IMPLEMENTATION.md)
-> and the [manual](../MANUAL.md#ssh-and-multipass-provisioning). Identity,
+> and the [manual](../MANUAL.md#ssh-and-lima-provisioning). Identity,
 > service lifecycle, Nim provisioning, persona/agent definitions and heartbeat
 > are implemented; matching TUI source has receipt import/switching. Native
 > `cli relay` removes the interim Python Multipass bridge. The Fleet tasks branch

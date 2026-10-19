@@ -53,7 +53,7 @@ builder, MCP server or native Fabric guest sandboxed.
 ### Fleet: remote operations, not remote task orchestration yet
 
 Merged Incus support adds native unprivileged containers and optional
-SSH management hosts for Incus/Multipass. An approved local Incus smoke on
+SSH management hosts for Incus/Lima (Multipass was the earlier VM backend). An approved local Incus smoke on
 `niffler1` installed published main, verified the ordinary ubuntu service, guest
 linger, temporary sudo-rule removal, and matching TUI receipt import/native
 relay using a scratch client registry. Optional LSP servers/trafilatura and
@@ -63,7 +63,7 @@ provisioning remains fake-transport-tested, not live-certified. This records bra
 Provisioning and lifecycle are implemented in the optional Nim component, not
 manifest autostart. Matching TUI source has receipt import and switching, but
 that repository and installed client versions must be verified separately.
-The recorded Multipass smoke passed; it does not replace real SSH or
+The historical Multipass smoke passed; it does not validate Lima or replace real SSH or
 published-revision download/update acceptance. No public NATS listener,
 credential copying, shared bus namespace or distributed locks are implied.
 
@@ -124,3 +124,7 @@ ledger, settings UI or research shelf into prerequisites for the above slices.
 - Preserve old design links; mark superseded notes rather than deleting evidence.
   Refresh affected localized docs after English; client-only help belongs to the
   client repository. See [the documentation index](README.md).
+
+### Lima transport replacement
+
+Native Lima provisioning/lifecycle and matching TUI relay implemented in isolated fleet-lima worktrees; SSH/Incus preserved. Multipass profiles explicitly require migration. Real Lima smoke pending separate human authorization. No delegation implementation changes.

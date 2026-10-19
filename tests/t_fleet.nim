@@ -42,8 +42,9 @@ proc main() =
   var shortCatalog = false
   let runner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
     commands.add(argv); scripts.add(input)
-    if argv == @["multipass", "list", "--format", "json"]:
-      return CommandResult(output: (if missingVm: "{\"list\":[]}" else: "{\"list\":[{\"name\":\"fake-vm\",\"state\":\"Running\"}]}"))
+    if argv == @["limactl", "list", "--json", "--all-fields"]:
+      return CommandResult(output: (if missingVm: "" else: $(%*{"name": "fake-vm", "status": "Running", "config": limaConfig(2, "4G", "20G")})))
+    if argv.len > 1 and argv[0] == "limactl" and argv[1] == "create": missingVm = false
     if argv.len > 3 and argv[0] == "git" and argv[1] == "ls-remote":
       # Only the refs this fixture knows about resolve; anything else is empty,
       # which is how a bogus ref reaches the refusal.
@@ -53,6 +54,7 @@ proc main() =
       return CommandResult(output: "")
     if input.contains("call catalog"):
       let id = identity.copy()
+      if argv.len > 0 and argv[0] == "limactl": id["root"] = %"/home/ubuntu/niffler"
       id["gitHash"] = %(if shortCatalog: currentHash[0..6] else: currentHash)
       if drift: id["instanceId"] = %repeat('c', 32)
       return CommandResult(output: $id)
@@ -123,22 +125,72 @@ proc main() =
   createSymlink(profile, link)
   check("symlink load and save refuse", rejected(proc() = discard loadReceipt(link)) and rejected(proc() = saveReceipt(link, installed["receipt"])))
   let vmArgs = args.copy()
-  vmArgs["transport"] = %"multipass"; vmArgs["target"] = %"fake-vm"; vmArgs["profile"] = %(tmp / "vm.json")
+  vmArgs["root"] = %"/home/ubuntu/niffler"
+  vmArgs["transport"] = %"lima"; vmArgs["target"] = %"fake-vm"; vmArgs["profile"] = %(tmp / "vm.json")
   missingVm = true
   let vmInstalled = install(runner, vmArgs)
   check("VM provenance recorded without mounts", vmInstalled["receipt"]["createdVm"].getBool() and ($commands).find("mount") < 0)
+  missingVm = true
   commands.setLen(0)
   check("missing pinned VM refuses recreation", rejected(proc() = discard install(runner, vmArgs)) and commands.len == 1)
   missingVm = false
   commands.setLen(0); scripts.setLen(0)
   discard install(runner, vmArgs)
-  check("running VM adoption never launches", not ($commands).contains("launch"))
+  check("running VM adoption never creates", not ($commands).contains("create"))
+  let multipleInventory: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+    if argv == @["limactl", "list", "--json", "--all-fields"]:
+      return CommandResult(output: "{\"name\":\"unrelated\"}\n" & $(%*{"name": "fake-vm", "status": "Running", "config": limaConfig(2, "4G", "20G")}))
+    runner(argv, input, timeoutMs)
+  discard action(multipleInventory, "probe", vmArgs["profile"].getStr())
+  check("Lima newline-delimited inventory handles unrelated guests", true)
+  let stoppedInventory: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+    if argv == @["limactl", "list", "--json", "--all-fields"]:
+      return CommandResult(output: $(%*{"name": "fake-vm", "status": "Stopped", "config": limaConfig(2, "4G", "20G")}))
+    runner(argv, input, timeoutMs)
+  commands.setLen(0)
+  check("stopped pinned Lima update requires administrator", rejected(proc() = discard update(stoppedInventory, %*{"profile": vmArgs["profile"], "revision": resolvedSha})) and commands.len == 0)
   commands.setLen(0); scripts.setLen(0)
   discard action(runner, "stop", profile)
-  check("service stop distinct from VM stop", commands.len == 1 and scripts[0].contains("server.sh stop") and not scripts[0].contains("multipass"))
+  check("service stop distinct from VM stop", commands.len == 1 and scripts[0].contains("server.sh stop") and not scripts[0].contains("lima"))
   commands.setLen(0)
   discard action(runner, "vm_stop", vmArgs["profile"].getStr())
-  check("VM stop never delete", commands[^1] == @["multipass", "stop", "fake-vm"])
+  check("VM stop never delete", commands[^1] == @["limactl", "stop", "--tty=false", "fake-vm"])
+  let legacy = vmInstalled["receipt"].copy()
+  legacy["transport"] = %"multipass"
+  try:
+    validateProfile(legacy)
+    check("legacy Multipass receipt refuses", false)
+  except Refusal as e:
+    check("legacy Multipass migration error", e.msg.contains("never rename"))
+  for unsafe in ["mounts", "ssh", "images", "portForwards", "propagateProxyEnv"]:
+    let unsafeKey = unsafe
+    let badConfig = limaConfig(2, "4G", "20G")
+    case unsafeKey
+    of "mounts": badConfig["mounts"] = %*[{"location": "~"}]
+    of "ssh": badConfig["ssh"]["forwardAgent"] = %true
+    of "images": badConfig["images"][0]["digest"] = %"sha256:bad"
+    of "portForwards": badConfig["portForwards"] = %*[]
+    else: badConfig["propagateProxyEnv"] = %true
+    let unsafeRunner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+      CommandResult(output: $(%*{"name": "fake-vm", "status": "Running", "config": badConfig}))
+    check("unsafe Lima policy refuses " & unsafeKey, rejected(proc() = discard install(unsafeRunner, vmArgs)))
+  for key in ["mounts", "additionalDisks", "copyToHost", "networks", "provision", "probes", "base"]:
+    for badValue in [%false, %0, %"", newJObject(), newJNull()]:
+      let config = limaConfig(2, "4G", "20G")
+      config[key] = badValue
+      check("Lima typed empty policy refuses " & key & " " & $badValue.kind, rejected(proc() = validateLimaConfig(config)))
+  for key in ["kernel", "initrd", "variant", "archive", "format", "unknown"]:
+    let config = limaConfig(2, "4G", "20G")
+    config["images"][0][key] = %"injected"
+    check("Lima extra image field refuses " & key, rejected(proc() = validateLimaConfig(config)))
+  for badValue in [%"false", %0, newJNull()]:
+    let config = limaConfig(2, "4G", "20G")
+    config["ssh"]["forwardAgent"] = badValue
+    check("Lima typed boolean refuses " & $badValue.kind, rejected(proc() = validateLimaConfig(config)))
+  for key in ["system", "user"]:
+    let config = limaConfig(2, "4G", "20G")
+    config["containerd"][key] = %true
+    check("Lima containerd enabled refuses " & key, rejected(proc() = validateLimaConfig(config)))
   let timeoutRunner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult = CommandResult(code: 124)
   check("timeout refuses", rejected(proc() = discard probe(timeoutRunner, installed["receipt"])))
 
@@ -246,14 +298,14 @@ proc main() =
           "expanded_devices": {"eth0": {"type": "nic", "nictype": nicType}, "root": {"type": "disk", "path": "/", "pool": "default"}}}
         if managedNic: vm["expanded_devices"]["eth0"] = %*{"type": "nic", "network": "incusbr0"}
         return CommandResult(output: $(%*[vm]))
-      return CommandResult(output: "{\"list\":[{\"name\":\"fake-vm\",\"state\":\"Running\"}]}")
+      return CommandResult(output: $(%*{"name": "fake-vm", "status": "Running", "config": limaConfig(2, "4G", "20G")}))
     if "launch" in cmd: guestMissing = false
     if "start" in cmd: guestStopped = false
     if input.contains("make build"): guestHash = resolvedSha
     if input.contains(" rev-parse HEAD"): return CommandResult(output: guestHash & "\n")
     if input.contains("call catalog"):
       let id = guestIdentity.copy(); id["gitHash"] = %guestHash
-      if "multipass" in cmd: id["root"] = %"/srv/niffler"
+
       if drift: id["instanceId"] = %repeat('c', 32)
       return CommandResult(output: $id)
     CommandResult()
@@ -323,10 +375,10 @@ proc main() =
   commands.setLen(0)
   discard install(guestRunner, hostedVm)
   discard action(guestRunner, "vm_stop", hostedVm["profile"].getStr())
-  check("Multipass host routes list exec and stop with quoted argv", block:
+  check("Lima host routes list exec and stop with quoted argv", block:
     var ok = true
     for c in commands:
-      if c[0] != "ssh" or not c[^1].startsWith("'multipass' '"): ok = false
+      if c[0] != "ssh" or not c[^1].startsWith("'limactl' '"): ok = false
     ok)
   for host in ["", "-bad", "host;touch evil", "host$(id)", "host\nreboot", "host'quote"]:
     let bad = vmArgs.copy(); bad["host"] = %host; bad["profile"] = %(tmp / "invalid-host.json")
@@ -338,7 +390,7 @@ proc main() =
   let fakeBin = tmp / "bin"
   createDir(fakeBin)
   let fake = "#!/bin/bash\ninput=$(/bin/cat)\nprintf '%s\\n' \"$*\" >> \"$FLEET_TRACE\"\nif [[ $input == *'call catalog'* ]]; then\n/bin/cat \"$FLEET_IDENTITY\"\nfi\n"
-  for executable in ["ssh", "multipass", "incus"]:
+  for executable in ["ssh", "limactl", "incus"]:
     writeFile(fakeBin / executable, fake)
     setFilePermissions(fakeBin / executable, {fpUserRead, fpUserWrite, fpUserExec})
   let idFile = tmp / "identity.json"

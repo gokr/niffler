@@ -27,17 +27,17 @@ proc handler(name: string): ToolHandler =
       return errResult(e.msg, "fleet-refused")
 let profile = %*{"type": "string", "description": "Local private version-1 receipt path; mutations require human approval."}
 let installProps = %*{
-  "profile": profile, "transport": {"type": "string", "enum": ["ssh", "multipass", "incus"]},
-  "target": {"type": "string", "description": "SSH alias/user@host, Multipass VM name or Incus container name"},
-  "host": {"type": "string", "description": "Optional SSH management host alias/user@host for Incus or Multipass only; omit for local. Bound in private receipt; no passwords or agent forwarding."},
-  "root": {"type": "string", "description": "Dedicated canonical absolute installation root; Incus requires /home/ubuntu/niffler"},
+  "profile": profile, "transport": {"type": "string", "enum": ["ssh", "lima", "incus"]},
+  "target": {"type": "string", "description": "SSH alias/user@host, Lima VM name or Incus container name"},
+  "host": {"type": "string", "description": "Optional SSH management host alias/user@host for Incus or Lima only; omit for local. Bound in private receipt; no passwords or agent forwarding."},
+  "root": {"type": "string", "description": "Dedicated canonical absolute installation root; Lima/Incus require /home/ubuntu/niffler"},
   "revision": {"type": "string", "description": "Full lowercase 40-character SHA, or a ref (main, v0.4.0) resolved to one before any remote write and recorded as the receipt's pinned revision; existing installs never update"},
   "cpus": {"type": "integer", "minimum": 1, "maximum": 64},
   "memory": {"type": "string", "description": "VM memory, default 4G"},
   "disk": {"type": "string", "description": "VM disk, default 20G"}}
 discard comp.tool("fleet_install", schema(installProps,
   @["profile", "transport", "target", "root", "revision"],
-  "Install a pinned new Niffler server or adopt an existing installation without updating it; optionally create Ubuntu 24.04 in Multipass or an unprivileged Incus system container. Incus runs as ubuntu at /home/ubuntu/niffler, explicitly enables guest linger, and removes its temporary installer sudo rule on normal success/failure; forced interruption may require manual cleanup. No host sudo, forwarding, credentials, host mounts, privileged/nesting configuration or guest deletion. Save a verified private receipt; provider setup remains explicit."),
+  "Install a pinned new Niffler server or adopt an existing installation without updating it; optionally create Ubuntu 24.04 in Lima or an unprivileged Incus system container. Lima and Incus run as ubuntu at /home/ubuntu/niffler, explicitly enables guest linger, and removes its temporary installer sudo rule on normal success/failure; forced interruption may require manual cleanup. No host sudo, agent forwarding, credential copying, host mounts, privileged/nesting configuration or guest deletion. Save a verified private receipt; provider setup remains explicit."),
   handler("install"), %*{"onDemand": true, "approval": "always", "effect": "write",
     "timeoutMs": 4400000, "writes": {"paths": ["profile"]}, "workspace": {"pathFields": ["profile"]}})
 for name in ["probe", "status", "logs", "start", "stop", "vm_stop"]:
@@ -48,7 +48,7 @@ for name in ["probe", "status", "logs", "start", "stop", "vm_stop"]:
     of "logs": "Read the last 100 remote service journal lines. Application logs can contain sensitive output; do not share publicly."
     of "start": "Start the pinned service, checking durable identity before writes even when the bus is down."
     of "stop": "Stop the pinned Niffler service only, leaving the host and VM running."
-    else: "Stop a verified Multipass VM or Incus container separately from Niffler service stop. Requires reachable identity; never deletes VMs."
+    else: "Stop a verified Lima VM or Incus container separately from Niffler service stop. Requires reachable identity; never deletes VMs."
   var extensions = %*{"onDemand": true, "effect": (if readOnly: "read" else: "write"),
     "timeoutMs": 250000, "workspace": {"pathFields": ["profile"]}}
   if not readOnly:

@@ -1,4 +1,4 @@
-## Native stdio relay for Multipass exec. Only IPv4 loopback is reachable;
+## Native stdio relay for Lima/Incus stdio. Only IPv4 loopback is reachable;
 ## no bus discovery, startup, files, credentials, or public listeners.
 import std/[net, nativesockets, os, strutils]
 when defined(posix):

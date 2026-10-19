@@ -1,7 +1,14 @@
 # Fleet implementation — delivery plan
 
-Status: provisioning/lifecycle merged into `main`; the Fleet tasks branch adds
-an initial bounded read-only delegation slice (see MANUAL.md "Fleet tasks").
+> VM backend update: current Fleet/TUI use native Lima, not Multipass. Legacy
+> Multipass profiles explicitly refuse and require newly provisioned/verified
+> Lima receipts. See [Lima VM policy](../MANUAL.md#lima-vm-policy). Multipass smoke
+> results below are historical and do not certify Lima; Lima live smoke remains
+> pending separate human authorization.
+
+Status: provisioning/lifecycle and an initial bounded read-only delegation
+slice are merged into `main` (see MANUAL.md "Fleet"). Cross-instance artifact
+retrieval and background approval routing remain open.
 TUI code and installed/released client versions must be checked in their own repo.
 
 Identity, persistent service lifecycle, birth-time agent definitions and opt-in
