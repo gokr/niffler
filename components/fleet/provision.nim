@@ -95,17 +95,28 @@ proc validateRoot*(root: string) =
     if part in ["", ".", ".."]: refuse("root must be a dedicated canonical installation path")
 
 proc validateTarget(transport, target: string) =
-  if transport notin ["ssh", "multipass"]: refuse("unsupported transport")
+  if transport notin ["ssh", "multipass", "incus"]: refuse("unsupported transport")
   if target.len == 0 or target[0] notin {'a'..'z','A'..'Z','0'..'9','_'} or
       not target.allCharsInSet({'a'..'z','A'..'Z','0'..'9','_','.','@','-'}): refuse("invalid target")
-  if transport == "multipass" and (target[0] notin {'a'..'z','A'..'Z'} or
+  if transport in ["multipass", "incus"] and (target[0] notin {'a'..'z','A'..'Z'} or
       not target.allCharsInSet({'a'..'z','A'..'Z','0'..'9','-'})): refuse("invalid VM name")
+
+proc validateRoute(p: JsonNode) =
+  let transport = p{"transport"}.getStr()
+  validateTarget(transport, p{"target"}.getStr())
+  if p.hasKey("host"):
+    if p["host"].kind != JString or p["host"].getStr().len == 0:
+      refuse("host must be a nonempty SSH alias/user@host; omit for local")
+    if transport notin ["multipass", "incus"]: refuse("host is only allowed for guest transports")
+    validateTarget("ssh", p["host"].getStr())
+  if transport == "incus" and p{"root"}.getStr() != "/home/ubuntu/niffler":
+    refuse("Incus root must be /home/ubuntu/niffler")
 
 proc validateProfile*(p: JsonNode) =
   try:
     if p.kind != JObject or p{"version"}.getInt() != 1: refuse("unsupported receipt version")
     validateRoot(p{"root"}.getStr())
-    validateTarget(p{"transport"}.getStr(), p{"target"}.getStr())
+    validateRoute(p)
     let e = p{"expect"}
     if e == nil or e.kind != JObject or not hex(e{"instanceId"}.getStr(), 32): refuse("invalid receipt identity")
     for key in ["name", "root", "gitHash"]:
@@ -147,11 +158,36 @@ proc saveReceipt*(path: string, p: JsonNode) =
     if not closed: f.close()
     if fileExists(staged): removeFile(staged)
 
+proc sshArgs(target, command: string): seq[string] =
+  @["ssh", "-T", "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=15", "--", target, command]
+
+proc management*(p: JsonNode, argv: seq[string]): seq[string] =
+  ## SSH joins command arguments through a remote shell: quote EVERY word,
+  ## including executable and fixed options, never interpolate user values.
+  validateRoute(p)
+  let routed = if argv.len > 0 and argv[0] == "incus":
+      @["incus", "--force-local", "--project", "default"] & argv[1..^1]
+    else: argv
+  if not p.hasKey("host"): return routed
+  var words: seq[string]
+  for arg in routed: words.add("'" & arg.replace("'", "'\"'\"'") & "'")
+  sshArgs(p["host"].getStr(), words.join(" "))
+
+proc guestRoot(run: CommandRunner, p: JsonNode, script: string, timeoutMs = 60000): string =
+  checked(run, management(p, @["incus", "exec", p["target"].getStr(), "--mode=non-interactive", "--", "bash", "-s"]),
+          "set -euo pipefail\n" & script, timeoutMs)
+
+proc vmInfo(run: CommandRunner, p: JsonNode): JsonNode
+
 proc remote*(run: CommandRunner, p: JsonNode, script: string, timeoutMs = 60000): string =
+  validateRoute(p)
+  if p["transport"].getStr() == "incus" and vmInfo(run, p) == nil:
+    refuse("pinned container missing; refusing execution or recreation")
   let target = p["target"].getStr()
-  let argv = if p["transport"].getStr() == "ssh":
-      @["ssh", "-T", "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=15", "--", target, "bash -s"]
-    else: @["multipass", "exec", target, "--", "bash", "-s"]
+  let transport = p["transport"].getStr()
+  let argv = if transport == "ssh": sshArgs(target, "bash -s")
+    elif transport == "incus": management(p, @["incus", "exec", target, "--mode=non-interactive", "--", "runuser", "-u", "ubuntu", "--", "env", "HOME=/home/ubuntu", "USER=ubuntu", "LOGNAME=ubuntu", "bash", "-s"])
+    else: management(p, @["multipass", "exec", target, "--", "bash", "-s"])
   checked(run, argv, "set -euo pipefail\n" & script, timeoutMs)
 
 proc probe*(run: CommandRunner, p: JsonNode): JsonNode =
@@ -227,17 +263,89 @@ cd "$root"
 make build
 """ & serviceEnv & """
 bash "$root/scripts/server.sh" install "$root"
+# start alone would leave the old process serving the previous build.
+bash "$root/scripts/server.sh" stop "$root"
 bash "$root/scripts/server.sh" start "$root"
 """
 
-proc vmInfo(run: CommandRunner, target: string): JsonNode =
+proc vmInfo(run: CommandRunner, p: JsonNode): JsonNode =
   try:
-    let data = parseJson(checked(run, @["multipass", "list", "--format", "json"]))
-    if data{"list"} == nil or data["list"].kind != JArray: refuse("invalid VM list")
-    for vm in data["list"]:
-      if vm{"name"}.getStr() == target: return vm
+    let incus = p["transport"].getStr() == "incus"
+    let argv = if incus: @["incus", "list", "--format", "json"] else: @["multipass", "list", "--format", "json"]
+    let data = parseJson(checked(run, management(p, argv)))
+    let guests = if incus: data else: data{"list"}
+    if guests == nil or guests.kind != JArray: refuse("invalid guest list")
+    for vm in guests:
+      if vm{"name"}.getStr() == p["target"].getStr():
+        if incus:
+          if vm{"type"}.getStr() != "container": refuse("Incus requires a system container")
+          let config = vm{"expanded_config"}
+          if config == nil or config.kind != JObject: refuse("missing expanded container policy")
+          for key, value in config:
+            if key.startsWith("raw.") or (key.startsWith("security.") and value.getStr() notin ["false", "0"]):
+              refuse("Incus requires unprivileged, non-nesting containers without raw configuration")
+          let devices = vm{"expanded_devices"}
+          if devices == nil or devices.kind != JObject: refuse("missing expanded container devices")
+          for key, device in devices:
+            if device{"type"}.getStr() == "nic":
+              let network = device{"network"}.getStr()
+              if network.len > 0:
+                # Managed-network devices omit nictype; verify their network,
+                # rather than treating a physical/SR-IOV network as a bridge.
+                let networks = parseJson(checked(run, management(p, @["incus", "network", "list", "--format", "json"])))
+                if networks.kind != JArray: refuse("invalid Incus network inventory")
+                var safe = false
+                for net in networks:
+                  if net{"name"}.getStr() == network:
+                    safe = net{"type"}.getStr() == "bridge" and net{"managed"}.getBool()
+                if not safe: refuse("Incus requires a managed bridge network")
+              elif device{"nictype"}.getStr() notin ["bridged", "p2p"]:
+                refuse("Incus requires bridged or isolated p2p NICs; no physical/SR-IOV passthrough")
+              continue
+            if device{"type"}.getStr() != "disk" or device{"path"}.getStr() != "/" or device{"source"}.getStr().len > 0:
+              refuse("host mounts and passthrough devices are forbidden")
+        return vm
   except Refusal: raise
-  except CatchableError: refuse("invalid VM list")
+  except CatchableError: refuse("invalid guest list")
+
+proc running(p, vm: JsonNode): bool =
+  (if p["transport"].getStr() == "incus": vm{"status"}.getStr() else: vm{"state"}.getStr()) == "Running"
+
+proc guestCommand(p: JsonNode, action: string): seq[string] =
+  management(p, @[p["transport"].getStr(), action, p["target"].getStr()])
+
+proc incusInstallScript*(root, revision: string): string =
+  ## Only bootstrap is root. The temporary grant belongs to this invocation;
+  ## noclobber plus EXIT cleanup protect existing grants and failure paths.
+  result = "root=" & quoteShell(root) & "\n" & """
+grant=/etc/sudoers.d/niffler-fleet-bootstrap
+[[ ! -e "$grant" && ! -L "$grant" ]] || { echo 'existing bootstrap grant: inspect and clean up manually before retrying' >&2; exit 1; }
+[[ ! -L /home/ubuntu && ! -L "$root" ]] || exit 1
+if [[ -e "$root" ]]; then
+  [[ -f "$root/niffler.nimble" && -x "$root/var/bin/niffler" && -f "$root/scripts/server.sh" ]] || { echo 'existing incomplete/unrelated root: refusing before guest setup' >&2; exit 1; }
+fi
+if ! id ubuntu >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash ubuntu
+fi
+[[ $(id -u ubuntu) != 0 && $(getent passwd ubuntu | cut -d: -f6) == /home/ubuntu ]] || exit 1
+[[ ! -L "$root" ]] || exit 1
+if [[ ! -e "$root" ]]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y git sudo ca-certificates make curl
+fi
+# Explicitly approved guest-only persistence; never changes host linger.
+loginctl enable-linger ubuntu
+systemctl start "user@$(id -u ubuntu).service"
+if [[ ! -e "$root" ]]; then
+  (umask 077; set -o noclobber; printf 'ubuntu ALL=(ALL) NOPASSWD: ALL\n' > "$grant")
+  trap 'rm -f -- "$grant"' EXIT
+  chmod 0440 "$grant"
+  visudo -cf "$grant"
+fi
+runuser -u ubuntu -- env HOME=/home/ubuntu USER=ubuntu LOGNAME=ubuntu bash -s <<'NIFFLER_USER_INSTALL'
+set -euo pipefail
+""" & installScript(root, revision) & "\nNIFFLER_USER_INSTALL\n"
 
 proc install*(run: CommandRunner, args: JsonNode): JsonNode =
   let path = receiptPath(args{"profile"}.getStr())
@@ -258,12 +366,15 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
   for size in [memory, disk]:
     if size.len < 2 or size[^1] notin {'M','G'} or size[0] notin {'1'..'9'} or not size[0..^2].allCharsInSet({'0'..'9'}): refuse("invalid VM resource size")
   var p = %*{"version": 1, "transport": transport, "target": target, "root": root}
+  if args.hasKey("host"): p["host"] = args["host"]
+  validateRoute(p)
   if previous != nil:
+    if previous{"host"} != p{"host"}: refuse("profile already belongs to a different host route")
     for key in ["transport", "target", "root"]:
       if previous[key] != p[key]: refuse("profile already belongs to a different target")
     p = previous
-  let vm = if transport == "multipass": vmInfo(run, target) else: nil
-  if previous != nil and transport == "multipass" and vm == nil: refuse("pinned VM is missing; refusing to recreate a different instance")
+  let vm = if transport in ["multipass", "incus"]: vmInfo(run, p) else: nil
+  if previous != nil and transport in ["multipass", "incus"] and vm == nil: refuse("pinned VM is missing; refusing to recreate a different instance")
   # Never start a pinned VM before identity verification. A stopped pinned VM
   # must first be started explicitly by its administrator.
   if previous != nil:
@@ -271,13 +382,20 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
     try: discard probe(run, p)
     except Refusal as e:
       if "mismatch" in e.msg or "invalid catalog" in e.msg: raise
-  if transport == "multipass":
+  if transport in ["multipass", "incus"]:
     if vm == nil:
-      discard checked(run, @["multipass", "launch", "24.04", "--name", target, "--cpus", $cpus, "--memory", memory, "--disk", disk], timeoutMs = 600000)
+      let create = if transport == "incus":
+          @["incus", "launch", "images:ubuntu/24.04", target, "--config", "security.privileged=false", "--config", "security.nesting=false", "--config", "limits.cpu=" & $cpus, "--config", "limits.memory=" & memory & "B", "--device", "root,size=" & disk & "B"]
+        else: @["multipass", "launch", "24.04", "--name", target, "--cpus", $cpus, "--memory", memory, "--disk", disk]
+      discard checked(run, management(p, create), timeoutMs = 600000)
+      if transport == "incus" and vmInfo(run, p) == nil: refuse("created container missing")
       p["createdVm"] = %true
-    elif vm{"state"}.getStr() != "Running":
-      discard checked(run, @["multipass", "start", target], timeoutMs = 180000)
-  discard remote(run, p, (if previous != nil: guard(p) else: "") & installScript(root, revision), 3600000)
+    elif not running(p, vm):
+      discard checked(run, guestCommand(p, "start"), timeoutMs = 180000)
+  if transport == "incus" and previous == nil:
+    discard guestRoot(run, p, incusInstallScript(root, revision), 3600000)
+  else:
+    discard remote(run, p, (if previous != nil: guard(p) else: "") & installScript(root, revision), 3600000)
   var verified = false
   for attempt in 0..<30:
     try:
@@ -289,7 +407,17 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
       if attempt < 29: sleep(1000)
   if not verified: refuse("service did not verify; profile not saved")
   saveReceipt(path, p)
-  %*{"profile": path, "receipt": p, "text": "Verified receipt saved; provider configuration and linger remain explicit."}
+  %*{"profile": path, "receipt": p, "text": (if transport == "incus": "Verified receipt saved; enabled guest linger for ubuntu; temporary installer sudo grant removed. Provider configuration remains explicit." else: "Verified receipt saved; provider configuration and linger remain explicit.")}
+
+proc revisionMatches(run: CommandRunner, p, identity: JsonNode, revision: string): bool =
+  ## Catalogs advertise an abbreviated build hash. Verify the exact checkout
+  ## separately; a short prefix alone is not proof of the requested revision.
+  let advertised = identity{"gitHash"}.getStr()
+  if advertised.len < 7 or advertised.len > 40 or
+      not advertised.allCharsInSet({'0'..'9', 'a'..'f'}) or
+      not revision.startsWith(advertised): return false
+  let head = remote(run, p, guard(p) & "git -C " & quoteShell(p["root"].getStr()) & " rev-parse HEAD\n").strip()
+  head == revision
 
 proc update*(run: CommandRunner, args: JsonNode): JsonNode =
   ## Move ONE verified pinned installation to a new revision. The receipt is the
@@ -301,20 +429,22 @@ proc update*(run: CommandRunner, args: JsonNode): JsonNode =
   let path = receiptPath(args{"profile"}.getStr())
   let p = loadReceipt(path)
   if p == nil: refuse("verified receipt required; install first")
-  if p["transport"].getStr() == "multipass":
+  if p["transport"].getStr() in ["multipass", "incus"]:
     # The pre-update identity probe needs a running instance. Start a stopped
     # pinned VM — never a missing one, and never a recreated one: VM creation
     # belongs to install, and adopting a different VM would be a silent
     # re-point of the receipt.
-    let vm = vmInfo(run, p["target"].getStr())
+    let vm = vmInfo(run, p)
     if vm == nil: refuse("pinned VM is missing; refusing to update")
-    if vm{"state"}.getStr() != "Running":
-      discard checked(run, @["multipass", "start", p["target"].getStr()],
+    if not running(p, vm):
+      if p["transport"].getStr() == "incus":
+        refuse("stopped pinned container: administrator must start it before identity verification/update")
+      discard checked(run, guestCommand(p, "start"),
                       timeoutMs = 180000)
   let revision = resolveRevision(run, args{"revision"}.getStr())
   let before = probe(run, p)
   let fromHash = before{"gitHash"}.getStr()
-  if fromHash == revision:
+  if revisionMatches(run, p, before, revision):
     return %*{"profile": path, "receipt": p, "changed": false,
               "text": "Already at the requested revision; nothing to do."}
   discard remote(run, p, guard(p) & updateScript(p["root"].getStr(), revision),
@@ -323,7 +453,7 @@ proc update*(run: CommandRunner, args: JsonNode): JsonNode =
   for attempt in 0..<30:
     try:
       let identity = probe(run, p)
-      if identity{"gitHash"}.getStr() == revision:
+      if revisionMatches(run, p, identity, revision):
         p["expect"] = identity
         verified = true
         break
@@ -343,10 +473,10 @@ proc action*(run: CommandRunner, name, profile: string): JsonNode =
   if p == nil: refuse("verified profile required")
   if name == "probe": return probe(run, p)
   if name == "vm_stop":
-    if p["transport"].getStr() != "multipass": refuse("not a Multipass profile")
+    if p["transport"].getStr() notin ["multipass", "incus"]: refuse("not a guest profile")
     discard remote(run, p, guard(p))
     discard probe(run, p)
-    discard checked(run, @["multipass", "stop", p["target"].getStr()], timeoutMs = 180000)
+    discard checked(run, guestCommand(p, "stop"), timeoutMs = 180000)
     return %*{"ok": true, "text": "VM stopped; not deleted."}
   if name notin ["start", "stop", "status", "logs"]: refuse("unsupported Fleet action")
   let root = quoteShell(p["root"].getStr())

@@ -18,7 +18,7 @@ worktrees have been removed; their commits are included in `main`.
 |---|---|---|
 | Write arbitration | Durable `locks` peer; session dispatch claims; path-bound and opaque writers; harness-state claims for plugins; explicit no-claim declarations; nested Fabric calls; restart/outage/TTL contracts | Automatic worktree allocation/ownership; fencing or confirmed termination for writers that outlive leases; evidence-based completion adjudication is a separate feature |
 | Sandboxing | Opt-in synchronous Linux bwrap shell guard; launch-time checks, environment clearing, network isolation and configured masks; partial component mask checks; pure versioned conversation-policy model | Persisted effective conversation policy and human controls; uniform dispatch propagation; approved-root enforcement; conditional grants; migration from global masks; background execution; Seatbelt and real Mac validation |
-| Fleet | Persistent identity; Linux user service; approved SSH/Multipass install/adopt/update and lifecycle; pinned private receipts; native relay; agent definitions and opt-in heartbeat; durable human completion feed | Real SSH/published-revision install/update smoke; released-client integration; background approval routing; cross-instance task delegation, durable job reconciliation and artifacts |
+| Fleet | Persistent identity; Linux user service; approved SSH/Multipass install/adopt/update and lifecycle; pinned private receipts; native relay; agent definitions and opt-in heartbeat; durable human completion feed | Real Incus/SSH/published-revision install/update smoke; released-client integration; background approval routing; cross-instance task delegation, durable job reconciliation and artifacts |
 
 ### Write arbitration: usable foundation, not a sandbox
 
@@ -50,6 +50,15 @@ persist or enforce a conversation sandbox. Do not call an approved unconfined
 builder, MCP server or native Fabric guest sandboxed.
 
 ### Fleet: remote operations, not remote task orchestration yet
+
+Branch `feat/incus-fleet` adds native unprivileged Incus containers and optional
+SSH management hosts for Incus/Multipass. An approved local Incus smoke on
+`niffler1` installed published main, verified the ordinary ubuntu service, guest
+linger, temporary sudo-rule removal, and matching TUI receipt import/native
+relay using a scratch client registry. Optional LSP servers/trafilatura and
+provider credentials are not part of the server bootstrap. SSH-hosted guest
+provisioning remains fake-transport-tested, not live-certified. This is branch
+validation, not a merge/release claim.
 
 Provisioning and lifecycle are implemented in the optional Nim component, not
 manifest autostart. Matching TUI source has receipt import and switching, but

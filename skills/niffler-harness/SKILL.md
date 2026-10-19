@@ -160,3 +160,99 @@ variable carries the `NIF_` prefix (`NIF_OPENAI_*`, `NIF_NATS_URL`,
 | Broken build state | `make recover` (rebuild + wipe spawn records) |
 | Orphaned NATS after killing components | `make down` before a cold start |
 | Conversations look lost | they are not — read them from the store (recipe above) |
+
+## Fleet provisioning
+
+Enable the built optional component (not manifest autostart), then request
+human approval for provisioning, not merely permission to edit code:
+
+```bash
+./var/bin/cli call spawn '{"name":"fleet","binary":"var/bin/fleet","policy":"on-failure"}'
+```
+
+Direct SSH example (preflight below):
+
+```json
+{"transport":"ssh","target":"ubuntu@worker","root":"/home/ubuntu/niffler","revision":"main","profile":"var/fleet/worker.json"}
+```
+
+After install verifies and saves its receipt, explicitly import in the matching
+TUI; no automatic registry write or public NATS listener is needed:
+
+```bash
+niffler-tui --instance worker --instance-import /absolute/path/to/worker.json
+niffler-tui --instance worker
+```
+
+
+### Incus and remote guest management
+
+For native unprivileged system containers use `transport:"incus"`, a container
+name as `target`, and `root:"/home/ubuntu/niffler"`. Fleet launches the fixed
+`images:ubuntu/24.04` system image (not cloud/VM), default 2 CPUs, 4GB memory,
+20GB root disk; `cpus`, `memory` and `disk` override these limits. A storage
+backend without root-disk quota support fails honestly; Fleet never drops limits.
+No host mounts, passthrough devices, privileged containers or nesting are allowed;
+existing containers are checked through expanded configuration/devices.
+
+Host setup is an explicit administrator action, not performed by Fleet. On a
+supported Ubuntu/Debian host install Incus (`sudo apt install incus`), run
+`sudo incus admin init` to choose networking/storage, and add the operator with
+`sudo usermod -aG incus-admin "$USER"`; log in again and verify `incus list`.
+**incus-admin membership is host-root-equivalent**; grant it only to trusted
+operators. Do not grant broad host sudo for Fleet. Alternatively install
+Multipass from its official packages (`sudo snap install multipass` on Ubuntu),
+then verify `multipass list` as the operator. Multipass guests retain their
+standard ubuntu/sudo behavior; no mounts or SSH key extraction are used.
+
+Both guest transports accept optional `host:"operator@hypervisor"` (or an SSH
+alias). Omit `host` for local management. Every list/create/start/stop/exec goes
+through this host using fixed SSH options `BatchMode=yes`, `ForwardAgent=no`,
+`ConnectTimeout=15` and normal known_hosts checks; every remote argv word is
+shell-quoted. Receipts bind this route; changing/adding/removing host refuses.
+Preflight manually: establish trusted known_hosts and key/agent authentication,
+then run `ssh -T -o BatchMode=yes -o ForwardAgent=no operator@hypervisor 'incus --force-local --project default list'`
+(or `'multipass list'`). The noninteractive remote PATH must include that CLI.
+No passwords or credentials are stored or copied. Direct `transport:"ssh"`
+uses `target` only (no `host`); provision git, Bash and writable dedicated root,
+noninteractive prerequisite sudo or preinstalled build tools, and an available
+systemd user manager beforehand. Direct SSH never enables linger implicitly.
+
+Example approved bootstrap (omit host for local Incus; use multipass and a VM
+name for remote Multipass):
+
+```json
+{"transport":"incus","target":"worker","host":"operator@hypervisor","root":"/home/ubuntu/niffler","revision":"main","profile":"var/fleet/worker.json"}
+```
+
+Incus exec defaults to root, so Fleet bootstraps ubuntu only when necessary and
+always runs Niffler/install/build/probe/service commands and native relay as
+ordinary **ubuntu**, with explicit HOME. Install explicitly **enables guest
+linger for ubuntu** and starts its user manager; it never changes host linger.
+A new root needs apt prerequisites and a temporary guest-only sudo rule for the
+installer. Fleet refuses an existing rule at
+`/etc/sudoers.d/niffler-fleet-bootstrap`, creates it with noclobber, validates it,
+and removes it via EXIT trap on success/failure. Forced SIGKILL/host loss can
+prevent cleanup (including loss of SSH while the guest installer continues):
+inspect the guest with `incus --force-local --project default exec worker -- cat /etc/sudoers.d/niffler-fleet-bootstrap`
+and, after confirming no installer is running, remove only that grant with
+`incus --force-local --project default exec worker -- rm /etc/sudoers.d/niffler-fleet-bootstrap` before retrying.
+Run these on the configured management host, not a different local Incus daemon.
+No automatic claim of cleanup is possible then. Adoption of built roots skips apt and grants.
+Provider settings remain explicit. No permanent NOPASSWD rule is installed.
+
+Update uses `fleet_update {"profile":"var/fleet/worker.json","revision":"main"}`;
+it uses the receipt route, never root/bootstrap sudo, preserves local changes by
+refusing dirty checkouts, stops/starts the scoped user service after rebuilding,
+and pins only the updated verified identity/revision. Missing pinned guests
+refuse recreation; identity drift refuses writes. `fleet_vm_stop` also stops
+Incus containers (never deletes); service stop is separate. Relay clients must
+use the same ubuntu runuser/HOME route, not root, even for root-readable endpoints.
+Tests use fake transports only; real-machine provisioning requires separate consent.
+
+Incus commands always use `incus --force-local --project default`: the local
+daemon on the selected management host and its default project are fixed,
+regardless of mutable CLI defaults. NICs must be bridged/p2p or use a verified
+managed bridge network; physical/SR-IOV passthrough refuses. Stopped pinned Incus
+updates refuse until an administrator starts the container for identity checks;
+existing Multipass update behavior (start stopped VM before probing) is unchanged.

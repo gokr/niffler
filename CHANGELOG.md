@@ -8,6 +8,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Native unprivileged Incus Fleet containers and optional SSH management hosts
+  for Incus/Multipass, route-bound private receipts, ordinary-user guest execution,
+  explicit guest linger and temporary installer sudo cleanup. Updates now stop/start
+  the scoped service so the verified revision is actually running. Update
+  verification handles abbreviated catalog hashes and independently checks the
+  full checkout SHA, including no-op detection.
+
 - Human completion reconciliation: hidden read-only `activity_list` pages the
   latest durable completion per conversation; `ev.activity` pushes confirmed
   receipts with per-session sequences. Human unread state stays client-local,

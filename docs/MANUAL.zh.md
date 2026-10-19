@@ -80,7 +80,7 @@
 | `provider` | Go | 可选 | 存储支持的 LLM 提供商注册表：`provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`，订阅 OAuth 登录（`provider_oauth_start`/`complete`/`cancel`），`ev.provider.switch` 通知 |
 | `plugins` | Nim | 可选 | 生态系统前门：主题搜索 + 包的安装/更新/移除 |
 | `skills` | Nim | 可选 | Agent Skills（SKILL.md）：发现、加载、资源访问、基于 git 的安装/移除 |
-| `fleet` | Nim | **不在 manifest 中** | 显式启用的 SSH/Multipass 部署与生命周期管理；批准门、私有身份回执，无 Python 运行时依赖 |
+| `fleet` | Nim | **不在 manifest 中** | 显式启用的 SSH/Multipass/Incus 部署与生命周期管理；批准门、私有身份回执，无 Python 运行时依赖 |
 | `fetch` | Nim | 可选 | Web 内容检索：http/https、HTML→文本提取、带文件溢出的尺寸上限 |
 | `locks` | Nim | 可选 | 会话工具的协作式写入协调。文件工具声明路径，通配符声明其基目录，不透明写入工具声明子树。只读工具和会话编排不持有外层声明：嵌套工具分别获取。冲突返回 `E_WRITE_BUSY` 并指出持有者。审批后才获取；会话租约至少覆盖传输超时加 60 秒（最少 10 分钟）。终止回复释放租约，未知的超时或取消结果保留到期。启动恢复失败时拒绝写入并可重试；持久释放失败保留声明。内存索引写穿到每个租约一个存储文档。仅运行一个实例（不可复制）。组件缺失时不协调写入。这不是 OS 沙箱：直接总线调用、分离进程、guest 原生 I/O 和其他框架实例不在保证范围内。见 [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md)。 |
 | `edit` | Nim | 可选 | 文件工具：`read`（规范的 `reads` 数组 —— 一次调用最多 12 个文件/范围（每项 2000 行、256 KB、每行 2 KB —— 更长的行变成 `bash: sed -n …` 通知；每次调用总计 512000 字节，剩余部分报告为不使批次失败的逐项错误），可分页，单文件 `path` 语法糖；对 >1000 行的文件进行整体读取且其类型有语言服务器时，返回 lsp 符号大纲 —— 用 offset/limit 开窗，或用 `offset: 1` 无论如何整体读取，`NIF_READ_OUTLINE_LINES` 调整/禁用 —— 对本会话已完整读取过且字节完全相同的 ≥512 字节文件进行整体重读时，返回 `[unchanged] <path>: N bytes, M lines, digest <sha1>` 而不是文本；`force: true`（或任何 offset/limit 窗口）强制重新转储，窗口读取和小文件总是重新转储）、`edit`（只更改*现有*文本文件 —— 缺失路径是 `E_NOT_FOUND`，空文件是 `E_EMPTY`，两者都指向 `write` 作为创建内容的方式；接受 `{old_string, new_string, replace_all?}` 对的 `edits[]` 数组 —— 没有单独的多编辑工具 —— 全部针对*原始*文件匹配，检查重叠和无变化，然后以一次原子重命名写入；受保护的回退级联是尾随空白 → 缩进漂移 → unicode 标点 → 按 Levenshtein 相似度 ≥ 0.65 的块锚点 → 双重转义文本，每一层仍必须恰好匹配一次；陈旧门控位于匹配*之前* —— 当会话最后观察到的文件摘要与磁盘不同（外部编辑，或读取/写入后的 `bash` 变更）时，`edit` 以 `E_STALE` 拒绝，而不是匹配模型从未见过的文本：重新读取并重做。无会话调用者（`cli`、其他组件）不被跟踪并跳过门控）、`write`（原子整体文件：创建父目录、跟随符号链接、保留目标权限、将载荷上限设为 `NIF_WRITE_MAX_BYTES` = 900000）、`undo_last_edit`（每文件单级 —— 仅上一次编辑，不是栈 —— 跨重启持久化并以绝对路径为键，精确还原内容、BOM 和行尾；当文件在编辑后被修改或删除时以 `E_UNDO_STALE` 拒绝，此时陈旧记录被*丢弃*（重新读取并向前编辑）；撤销记录在文件之前写入，因此存储失败会以 `E_UNDO_UNAVAILABLE` 拒绝编辑，而不是失去还原能力；审批门控的变更）；锚定块移动位于 [niffler-hashline](https://github.com/gokr/niffler-hashline) 插件中 |
@@ -1255,7 +1255,7 @@ Multipass 为可选依赖。组件由 `make build` 构建，不自动启动。�
 VM 使用 `transport:"multipass"`，target 为 VM 名，可设置 cpus、memory、disk。
 新安装须固定 `gokr/niffler` 已发布的完整 40 位提交。已有完整安装只采用，
 不拉取或重建；无关或不完整根目录拒绝覆盖。目标需要 git；bootstrap 安装
-其余依赖，可能需要 sudo。提供商凭据和 linger 均须明确配置，不自动复制或启用。
+其余依赖，可能需要 sudo。提供商凭据须明确配置，不自动复制。SSH/Multipass 的 linger 不自动启用；Incus 安装会明确启用访客 ubuntu 的 linger。
 
 fleet_install、fleet_start、fleet_stop、fleet_vm_stop 通过标准 harness 批准门，
 目标、根目录、版本和资源由参数展示。不再使用独立 tty 批准协议；人类明确
@@ -1272,6 +1272,66 @@ instanceId，身份变化拒绝写入；固定 VM 消失时不自动重建。失
 SSH 使用原生转发；Multipass 使用远端原生 cli relay，须更新两端，无 Python
 回退。远端禁用本地路径补全。TUI 独立发布；跨实例代理委派与后台批准尚未实现。
 make test-fleet 使用假传输，不操作真实主机或 VM。
+
+### Incus and remote guest management
+
+Fleet 现支持 `transport:"incus"` 和 Incus/Multipass 可选 `host:"operator@hypervisor"`；省略 host 表示本地。收据绑定路由，漂移或已固定访客丢失会拒绝操作。Incus 使用固定 Ubuntu 24.04 非特权系统容器，普通 ubuntu 用户及 `/home/ubuntu/niffler`；明确启用访客 linger，临时 sudo 安装规则在退出时清理（SIGKILL/主机故障需人工检查），不使用主机 sudo 或挂载。incus-admin 等同主机 root 权限；必须先手动安装/初始化 Incus 并验证无密码 SSH 和 known_hosts。完整安装、Multipass、更新与安全预检步骤见英文手册对应段落。
+
+
+```bash
+# 以下为管理员明确执行的设置示例，不由 Fleet 自动在主机执行。
+sudo apt install incus
+sudo incus admin init
+sudo usermod -aG incus-admin "$USER"
+# 重新登录后验证；该组权限等同主机 root。
+incus --force-local --project default list
+# Ubuntu 上的 Multipass 替代方案：sudo snap install multipass
+ssh -T -o BatchMode=yes -o ForwardAgent=no operator@hypervisor 'incus --force-local --project default list'
+```
+
+首先手动确认 SSH known_hosts 与密钥认证；不存储密码或转发 agent。
+非交互 PATH 必须能找到 CLI。直接 SSH 使用 target，不允许 host；须预装 git、
+Bash，准备可写独立根目录及用户 systemd 管理器，并明确准备免交互安装依赖的
+sudo 或预装构建工具。直接 SSH 不自动启用 linger。
+
+```bash
+./var/bin/cli call spawn '{"name":"fleet","binary":"var/bin/fleet","policy":"on-failure"}'
+```
+
+经人工批准，将以下参数传给 fleet_install（本地省略 host；Multipass 改 transport
+和 target 为 VM 名）：
+
+```json
+{"transport":"incus","target":"worker","host":"operator@hypervisor","root":"/home/ubuntu/niffler","revision":"main","profile":"var/fleet/worker.json"}
+```
+
+固定镜像 images:ubuntu/24.04，默认 2 CPU、4GB 内存、20GB 根磁盘；不支持磁盘
+配额的后端直接报错，不静默取消限制。所有 Incus 命令固定使用
+`incus --force-local --project default`，即选定管理主机上的本地 daemon/default
+project。NIC 仅允许桥接/p2p 或已验证的托管桥接网络，不允许 physical/SR-IOV。
+安装明确启用访客 ubuntu linger 与用户管理器；仅新建安装需要 root 准备依赖，
+然后通过 runuser 和明确 HOME 以普通 ubuntu 用户安装/运行服务。采用已构建根
+目录不运行 apt 或创建临时 sudo 规则。强制中断可能遗留
+/etc/sudoers.d/niffler-fleet-bootstrap；重试拒绝覆盖，须先确认安装器已停止，
+在正确管理主机上用 `incus --force-local --project default exec worker -- cat
+/etc/sudoers.d/niffler-fleet-bootstrap` 检查，再手动删除该规则。
+
+更新调用 fleet_update：
+
+```json
+{"profile":"var/fleet/worker.json","revision":"main"}
+```
+
+更新拒绝丢失或身份漂移的访客、拒绝未提交修改；不重建访客，不使用 bootstrap
+sudo。停止的已固定 Incus 容器必须由管理员先启动再验证身份；Multipass 现有
+更新会先启动停止的 VM。重建后停止/启动作用域用户服务，仅在新版本验证成功
+后更新私有 0600 收据。服务停止与 fleet_vm_stop 的容器/VM 停止是独立批准操作，
+均不删除。收据保存成功后仍须明确导入 TUI：
+
+```bash
+niffler-tui --instance worker --instance-import /absolute/path/to/worker.json
+niffler-tui --instance worker
+```
 
 ### Scheduled turns (heartbeat)
 
