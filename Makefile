@@ -253,6 +253,7 @@ var/bin/fleet: $(call NIM_SRCS,fleet) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fleet/main.nim
 
 var/bin/test_t_fleet: $(call NIM_SRCS,fleet) var/bin/fleet
+var/bin/test_t_fleet_tasks: $(call NIM_SRCS,fleet) var/bin/fleet
 var/bin/cli: $(call NIM_SRCS,cli)
 var/bin/test_t_relay: $(call NIM_SRCS,cli) var/bin/cli
 
@@ -578,6 +579,9 @@ test-clean: var/bin/test_t_clean
 
 test-fleet: build var/bin/test_t_fleet
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet
+
+test-fleet-tasks: build var/bin/test_t_fleet_tasks
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_tasks
 
 test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \

@@ -733,6 +733,16 @@ proc loadToolExposure*(ct: CoreTools, sessionId: string,
     for m in missing:
       stderr.writeLine("session: profile '" & profile & "': selector skipped (unknown or hidden): " &
                        m.getStr(""))
+  # Scoped sessions need the actual allowed schemas, including on-demand
+  # tools, frozen at birth. Filtering the global direct snapshot alone can
+  # leave a read-only delegate with no usable tools and no discover authority.
+  if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0:
+    result.direct = newJArray()
+    for name in ct.sessionAllowlist[]:
+      let schema = ct.cat.toolSchema(name)
+      if schema != nil and not schema.isHidden():
+        result.direct.add(%*{"component": ct.cat.toolIndex.getOrDefault(name),
+          "name": name, "schema": normalizeToolSchema(schema)})
   saveToolExposure(ct, sessionId, result)
 
 proc promptTools(exposure: ToolExposure): JsonNode =
@@ -1916,11 +1926,58 @@ proc drainNotices(ct: CoreTools, p: var Persister,
         for n in notices: inbound.add(n)
     except CatchableError:
       discard # durable inbox remains available for the next drain
+  if ct.cat.toolSchema("fleet_notices") != nil:
+    try:
+      let fleet = ct.dispatchToolCall("fleet_notices",
+        %*{"session": sessionId, "peek": false}, 5_000)
+      let notices = fleet{"notices"}
+      if notices != nil and notices.kind == JArray:
+        for n in notices: inbound.add(n)
+    except CatchableError: discard
+  var seenFleet = initHashSet[string]()
+  # Scan canonical history too: compaction may have removed a notice from
+  # the current projection after append committed but before its ack arrived.
+  var hasFleet = false
+  for n in inbound:
+    if n{"kind"}.getStr("") == "fleet-settled": hasFleet = true
+  if hasFleet:
+    try:
+      for entry in ct.storeListAll("message", sessionId & ":"):
+        if entry{"value", "notice", "kind"}.getStr("") == "fleet-settled":
+          seenFleet.incl(entry{"value", "notice", "jobId"}.getStr(""))
+    except CatchableError:
+      hasFleet = false # cannot prove deduplication; leave outbox untouched
   var seenProcesses = initHashSet[string]()
   for m in messages:
     if m{"notice"}{"kind"}.getStr("") == "process-exited":
       seenProcesses.incl(m{"notice"}{"processId"}.getStr(""))
   for n in inbound:
+    if n{"kind"}.getStr("") == "fleet-settled":
+      if not hasFleet: continue
+      let id = n{"jobId"}.getStr("")
+      if id.len == 0: continue
+      if id in seenFleet:
+        try:
+          discard ct.dispatchToolCall("fleet_notices",
+            %*{"session": sessionId, "ack": id}, 5_000)
+        except CatchableError: discard
+        continue
+      let content = "[fleet task " & id & " " & n{"status"}.getStr("unknown") &
+        "]\n" & n{"summary"}.getStr("") &
+        "\nWorker report, not verified factual success. Detail: fleet_task_result {jobId: \"" & id & "\"}"
+      let msg = %*{"role": "user", "content": content,
+        "notice": {"kind": "fleet-settled", "jobId": id}}
+      let failuresBefore = p.persistenceFailures
+      ctxAppend(p, messages, msg)
+      if p.persistenceFailures == failuresBefore and not p.failing:
+        seenFleet.incl(id)
+        try:
+          discard ct.dispatchToolCall("fleet_notices",
+            %*{"session": sessionId, "ack": id}, 5_000)
+        except CatchableError: discard
+      if onEvent != nil: onEvent("notice", %*{"kind": "fleet-settled", "jobId": id, "content": content})
+      inc result
+      continue
     if n{"kind"}.getStr("") == "process-exited":
       let processId = n{"processId"}.getStr("")
       if processId in seenProcesses and not p.failing:
@@ -3868,6 +3925,14 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # happened instead of dispatching an empty args object.
         parseFailed = true
         tc{"function"}["arguments"] = %"{}"
+      # Machinery exemptions at the dispatch gate are NOT model authority.
+      # In particular, model-originated store writes must not rewrite a frozen
+      # allowlist and evade single-hop delegation. Apply before both waves and
+      # serial dispatch; internal persistence still uses the ordinary gate.
+      if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
+          name notin ct.sessionAllowlist[]:
+        parseFailed = true
+        args = %*{"__scopeDenied": true}
       items.add((id: id, name: name, args: args,
                  parseFailed: parseFailed, rawArgs: rawArgs))
       if onEvent != nil:
@@ -3957,8 +4022,11 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       var oc: ToolCallOutcome
       if it.parseFailed:
         oc = ToolCallOutcome(error:
-          "tool call arguments were not valid JSON (truncated or garbled stream): " &
-          it.rawArgs[0 ..< min(it.rawArgs.len, 200)])
+          if it.args{"__scopeDenied"}.getBool(false):
+            "tool '" & it.name & "' is not in this session's tool allowlist"
+          else:
+            "tool call arguments were not valid JSON (truncated or garbled stream): " &
+            it.rawArgs[0 ..< min(it.rawArgs.len, 200)])
       else:
         try:
           var callArgs = it.args
@@ -4378,6 +4446,18 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         entry.maxTokens = mt
         ct.updateConversationHeader(sessionId, %*{"maxTokens": %mt})
     if entry.allowlist.len > 0:
+      # A delegated birth must not run with controls that disappear on crash.
+      # Metadata helpers are generally best-effort; verify this authority
+      # boundary against durable storage before accepting any scoped turn.
+      try:
+        let durable = ct.storeGetItem("conversation", sessionId).value
+        if durable == nil or durable{"toolAllowlist"} != %entry.allowlist or
+            durable{"maxRounds"}.getInt(0) != entry.maxRounds or
+            durable{"maxCalls"}.getInt(0) != entry.maxCalls or
+            durable{"maxTokens"}.getInt(0) != entry.maxTokens:
+          return %*{"error": "scoped session controls are not durably committed"}
+      except CatchableError:
+        return %*{"error": "cannot verify durable scoped session controls"}
       # the runner allocated the ref at startup; mutating through it makes
       # the frozen allowlist visible to every dispatch on this session
       ct.sessionAllowlist[] = entry.allowlist
@@ -4905,6 +4985,12 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         pendingCount += peeked{"count"}.getInt(0)
       except CatchableError:
         discard
+    if ct.cat.toolSchema("fleet_notices") != nil:
+      try:
+        let peeked = ct.dispatchToolCall("fleet_notices",
+          %*{"session": sessionId, "peek": true}, 5_000)
+        pendingCount += peeked{"count"}.getInt(0)
+      except CatchableError: discard
     if pendingCount == 0:
       return %*{"ok": true, "wake": "skipped", "reason": "nothing pending"}
     if consecutiveWakeTurnsFromStore(ct, sessionId) >= budget:

@@ -1,7 +1,7 @@
 # Fleet implementation — delivery plan
 
-Status: provisioning/lifecycle merged into `main`; task delegation is not yet
-implemented. The harness fleet worktrees have been removed after merge.
+Status: provisioning/lifecycle merged into `main`; the Fleet tasks branch adds
+an initial bounded read-only delegation slice (see MANUAL.md "Fleet tasks").
 TUI code and installed/released client versions must be checked in their own repo.
 
 Identity, persistent service lifecycle, birth-time agent definitions and opt-in
@@ -9,7 +9,7 @@ heartbeat are implemented. Provisioning is the optional Nim `fleet` component;
 Python provisioner/tests were replaced with native code/contracts. The matching
 TUI has receipt import, switching and native Multipass relay through remote
 `cli relay`. No Python runtime is needed for Fleet. Cross-instance delegation
-and background approvals remain planned. Each step is independently tested.
+is limited to audited read tools; background approvals remain planned.
 
 ## Delivery checklist
 
@@ -18,7 +18,7 @@ and background approvals remain planned. Each step is independently tested.
 | 1–2 identity and persistent service | Implemented; service contracts use fake systemd; recorded real Multipass smoke passed |
 | 3–4 SSH/Multipass install/adopt/update | Implemented in Nim; real SSH and published-revision install/update smoke still pending |
 | 5 client switching | Matching TUI source implemented; verify/release separately; background approvals remain open |
-| 6 cross-instance delegation | Not implemented |
+| 6 cross-instance delegation | Initial read-only slice: pinned durable jobs, explicit budgets, no replay of uncertain submissions, record-first runner notices; broad authority and remote cancellation remain open |
 | 7 reconnect inbox/artifacts | Local durable human completion feed implemented; remote jobs and artifact transfer remain open |
 
 The recorded Multipass smoke used Ubuntu 24.04, 2 CPUs/4G/20G and a source-only
@@ -72,8 +72,10 @@ service. Background approvals identify their instance and route on its bus.
 
 ## 6. Cross-instance delegation
 
-A fleet component submits ordinary root conversations on each peer; those roots
-may spawn local subagents normally. Remote subagent notices belong to their
+The first task slice submits root conversations with a frozen explicit allowlist;
+those roots cannot spawn local subagents or delegate again. Older peers without
+model-originated scope enforcement refuse. Only read/grep/git inspection tools
+are permitted; broad or indirect tool routes are deliberately not shipped. Remote subagent notices belong to their
 remote parent. The requester persists job pointers and reconciles remote
 transcripts; unreachable is not interrupted. Use explicit scopes, per-task
 budgets and approved authority, never a second unrestricted delegation path.

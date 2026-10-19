@@ -765,7 +765,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           tools.add(%t.name)
         comps[name] = tools
       return %*{"components": comps, "root": ct.root,
-                "gitHash": harnessGitHash(ct.root),
+                "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "schemas":
       return ct.cat.selectedSchemas(args{"tools"})
@@ -822,7 +822,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             discard
         comps.add(entry)
       return %*{"components": comps, "root": ct.root,
-                "gitHash": harnessGitHash(ct.root),
+                "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     return %*{"error":
       "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}
