@@ -225,10 +225,13 @@
         </article>
         <article>
           <h3 data-i18n="f.proj.h">Compaction as a projection</h3>
-          <p data-i18n-html="f.proj.p">Context pressure walks a visible ladder — byte-exact prune, then a
-            checkpointed projection compactor (a replaceable seam), then trim as
-            a last resort. Nothing degrades silently, a trim is durable, and
-            everything dropped stays <em>recallable</em>.</p>
+          <p data-i18n-html="f.proj.p">Context pressure walks a visible ladder — a byte-exact prune that also
+            drops tool results a later write made stale, then a checkpointed
+            projection compactor (a replaceable seam), then eliding results the
+            tool declares re-obtainable, then a proportional trim as a last
+            resort. Only the compactor needs a model or a component; every other
+            rung is deterministic and cannot fail. Nothing degrades silently, a
+            trim is durable, and everything dropped stays <em>recallable</em>.</p>
         </article>
         <article>
           <h3 data-i18n="f.conv.h">One conversation = one process</h3>
