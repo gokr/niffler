@@ -79,6 +79,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The documentation has one index and one roadmap.** A new `docs/README.md`
+  routes each question to the document that owns it — operating instructions,
+  protocol, architecture, feature index, current status or design history —
+  and the deferred research candidates move out of `docs/PLAN.md` into
+  `docs/research/BACKLOG.md`, marked unscheduled rather than promised;
+  `docs/PLAN.md` keeps only current status, recommended next slices and
+  acceptance gates. The move reconciled the fleet, sandbox and write-arbitration
+  status lines against the code, and the README drops its client keybinding
+  table in favour of the owning client's own `/help`.
+
 - **The website lays out cleanly on phones.** The nav splits into links and
   actions that wrap or scroll instead of overflowing; the hero install command
   gains a copy button beside a primary Install button; the wide benchmark
