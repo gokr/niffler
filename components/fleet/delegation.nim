@@ -96,7 +96,7 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
     refuse("private verified receipt required (0600)")
   let j = %*{"id": id, "sessionId": id, "owner": session, "profile": path,
     "receipt": p, "task": task, "state": "queued", "createdAt": epochTime(), "checkedAt": 0}
-  discard c.requestOk("store", "put", %*{"kind": "fleetjob", "id": id, "value": j})
+  discard c.requestOk("store", "put", %*{"kind": "fleetjob", "id": id, "value": j, "expectRev": -1})
   publicJob(j)
 
 proc summary*(text: string): string =
@@ -124,8 +124,15 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         refuse("invalid peer conversation listing")
       for entry in existing["items"]:
         if entry{"id"}.getStr("") == id: refuse("remote session id already exists")
-      j["state"] = %"submitting"
-      item.rev = c.storePut("fleetjob", id, j, item.rev)
+      let submitting = j.copy()
+      submitting["state"] = %"submitting"
+      try:
+        item.rev = c.storePut("fleetjob", id, submitting, item.rev)
+      except CatchableError:
+        # Unknown commit outcome: do not write a stale queued/submitting copy
+        # over it. Next read observes the durable truth, never dispatch now.
+        raise newException(IOError, "fleet submitting commit not confirmed; no remote turn dispatched")
+      j = submitting
       discard remoteCall(run, p, "session_prepare", %*{"sessionId": id})
       var task = j["task"].copy()
       task["sessionId"] = %id
@@ -156,10 +163,13 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         for entry in entries:
           if not entry{"id"}.getStr("").startsWith(id & ":"): refuse("foreign transcript")
           let role = entry{"value", "role"}.getStr("")
-          if role == "user": inc userMessages
+          if role == "user" and entry{"value", "notice"} == nil and
+              entry{"value", "mail"} == nil:
+            inc userMessages
           if userMessages > 1:
             transcriptComplete = true
-            break # a later human activation is never this task's result
+            reply = "[summary unavailable: unmarked user/steer boundary; inspect remote transcript]"
+            break # unmarked steering and new human turns are indistinguishable
           if role == "assistant":
             reply = summary(entry{"value", "content"}.getStr(""))
         if transcriptComplete: break
@@ -181,6 +191,8 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     j["reachable"] = %true
     j.delete("diagnostic")
   except CatchableError as e:
+    if e.msg.startsWith("fleet submitting commit not confirmed"):
+      raise # no diagnostic write may overwrite an uncertain commit
     j["reachable"] = %false
     j["diagnostic"] = %summary(e.msg)
   j["checkedAt"] = %epochTime()

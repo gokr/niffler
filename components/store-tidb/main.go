@@ -415,6 +415,10 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 			}
 			cur = 0 // fresh insert → new rev 1
 		case nil:
+			if expectRev == -1 {
+				_ = tx.Rollback()
+				return sdk.ErrCode("already exists", "rev-conflict"), nil
+			}
 			if _, err := tx.Exec(
 				`UPDATE docs SET rev = rev + 1, value = ?, updated_at = NOW()
 				 WHERE kind = ? AND id = ?`,

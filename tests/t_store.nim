@@ -67,6 +67,21 @@ proc main() =
   check("store rev conflict", not conflict{"ok"}.getBool(false) and
         conflict{"code"}.getStr("") == "rev-conflict", $conflict)
 
+  # expectRev -1 is create-only: it can establish an owner without a
+  # read-then-write race, and never overwrites an existing document.
+  let created = call(nc, "store", "put",
+                     %*{"kind": "create-only", "id": "owned", "value": %*{"by": "a"},
+                        "expectRev": -1})
+  check("store put expectRev -1 creates", created{"ok"}.getBool(false) and
+        created{"rev"}.getInt(-1) == 1, $created)
+  let taken = call(nc, "store", "put",
+                   %*{"kind": "create-only", "id": "owned", "value": %*{"by": "b"},
+                      "expectRev": -1})
+  check("store put expectRev -1 refuses an existing doc",
+        not taken{"ok"}.getBool(false) and taken{"code"}.getStr("") == "rev-conflict", $taken)
+  check("create-only kept the first owner",
+        call(nc, "store", "get", %*{"kind": "create-only", "id": "owned"}){"value"}{"by"}.getStr("") == "a")
+
   # list: ordered, prefix-filtered, limit
   discard call(nc, "store", "put", %*{"kind": "test", "id": "doc2",
                                       "value": %*{"n": 2}})

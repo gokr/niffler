@@ -459,6 +459,16 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 			return sdk.OK(map[string]any{"rev": expectRev + 1}), nil
 		}
 
+		if expectRev == -1 {
+			res, err := tx.Exec(`INSERT INTO docs (kind,id,rev,value,updated_at)
+				VALUES (?,?,1,?,CURRENT_TIMESTAMP) ON CONFLICT(kind,id) DO NOTHING`, kind, id, string(value))
+			if err != nil { return nil, fmt.Errorf("put create: %w", err) }
+			if n, _ := res.RowsAffected(); n == 0 { return sdk.ErrCode("already exists", "rev-conflict"), nil }
+			if err := indexDoc(tx, kind, id, value); err != nil { return nil, err }
+			if err := tx.Commit(); err != nil { return nil, err }
+			return sdk.OK(map[string]any{"rev": int64(1)}), nil
+		}
+
 		// Upsert: rev starts at 1 on insert, increments on update.
 		var rev int64
 		if err := tx.QueryRow(

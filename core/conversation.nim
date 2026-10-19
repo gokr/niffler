@@ -1871,7 +1871,7 @@ proc drainAdvisories(ct: CoreTools, p: var Persister,
     result += 1
   ct.adviseStream.queue.setLen(0)
 
-proc drainNotices(ct: CoreTools, p: var Persister,
+proc drainNotices*(ct: CoreTools, p: var Persister,
                   messages: var seq[JsonNode],
                   onEvent: proc(kind: string, data: JsonNode) {.closure.},
                   turnId = ""): int =
@@ -3929,8 +3929,9 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       # In particular, model-originated store writes must not rewrite a frozen
       # allowlist and evade single-hop delegation. Apply before both waves and
       # serial dispatch; internal persistence still uses the ordinary gate.
-      if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
-          name notin ct.sessionAllowlist[]:
+      if ct.cat.toolSchema(name).isHidden() or
+          (ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
+           name notin ct.sessionAllowlist[]):
         parseFailed = true
         args = %*{"__scopeDenied": true}
       items.add((id: id, name: name, args: args,

@@ -254,6 +254,7 @@ var/bin/fleet: $(call NIM_SRCS,fleet) $(SDK_NIM) $(NIM_CONF) | var/bin
 
 var/bin/test_t_fleet: $(call NIM_SRCS,fleet) var/bin/fleet
 var/bin/test_t_fleet_tasks: $(call NIM_SRCS,fleet) var/bin/fleet
+var/bin/test_t_fleet_faults: $(call NIM_SRCS,fleet) var/bin/fleet var/bin/fixture-fleet-fault-store
 var/bin/cli: $(call NIM_SRCS,cli)
 var/bin/test_t_relay: $(call NIM_SRCS,cli) var/bin/cli
 
@@ -486,7 +487,10 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 # them per sandbox started a dozen concurrent `nim c` runs per pooled gate and
 # those died under load without any compiler output (issue #108, deterministic
 # in CI). Not part of `build` — they are fixtures, not shipped components.
-FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool
+FIXTURE_BINS := var/bin/fixture-fleet-fault-store var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool
+
+var/bin/fixture-fleet-fault-store: tests/fixtures/fleet_fault_store.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/fixtures/fleet_fault_store.nim
 
 var/bin/ctxtest: components/ctxtest/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/main.nim
@@ -582,6 +586,9 @@ test-fleet: build var/bin/test_t_fleet
 
 test-fleet-tasks: build var/bin/test_t_fleet_tasks
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_tasks
+
+test-fleet-faults: build var/bin/test_t_fleet_faults
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_faults
 
 test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \

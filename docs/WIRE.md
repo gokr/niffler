@@ -1275,7 +1275,10 @@ The store's bus contract is the artifact; every engine implements exactly
 these tools (docs/MANUAL.md "Store engines"). `put` / `get` / `del` carry
 `{kind, id, value?, expectRev?}`; docs are opaque JSON, ids sort
 lexicographically, and `expectRev` gives optimistic concurrency
-(`rev-conflict` on mismatch).
+(`rev-conflict` on mismatch). `expectRev: -1` is **create-only**: the write
+succeeds only when the document does not exist yet and is refused with
+`rev-conflict` otherwise, so a caller can establish a single owner without a
+read-then-write race. `expectRev: 0` (the default) is an unconditional upsert.
 
 `list` takes `{kind, idPrefix?, limit?, after?}` and returns
 `{ok, items: [{id, rev, value}], hasMore, nextAfter?}`.
