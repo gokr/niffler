@@ -155,9 +155,9 @@ harnesses — plus [MANUAL.md](MANUAL.md) "Context window" and the design record
   conservative estimate with a calibration offset re-measured from reported
   usage (model-scoped, clamped, never persisted).
 - Output reserve derived from the model's catalog output cap, overridable.
-- Threshold warning, then a bounded ladder: byte-exact tool-result prune →
-  configured compactor → oldest-complete-turn trim → explicit
-  `context-recovery-required`.
+- Threshold warning, then a bounded ladder: byte-exact tool-result prune
+  (+ stale-read stub) → configured compactor → derivable-result stub →
+  oldest-complete-turn trim → explicit `context-recovery-required`.
 - Deterministic, model-free prune with recall markers and byte-exact bounds.
 - Replaceable compaction seam (`NIF_COMPACTION_TOOL`): versioned contract,
   paged snapshots, candidate validation, strict-reduction check, atomic

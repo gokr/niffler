@@ -7,7 +7,7 @@ explicitly identified as the current target below.
 
 ## Baseline
 
-Reconciled against local `main` at `028c0e1`. This is source status, not a fresh
+Reconciled against local `main` at `6300a06`. This is source status, not a fresh
 runtime certification or a claim about the v0.4.0 release. Existing uncommitted
 implementation changes were not used to mark work complete. The old fleet
 worktrees have been removed; their commits are included in `main`.
@@ -111,9 +111,10 @@ and [components/fleet/README.md](../components/fleet/README.md).
    loss attribution, projection coverage and retained snapshot metadata. Usage
    is not a live request measurement; snapshot presence is not retryability.
    An explicit bounded retry for failed snapshots remains to be designed. Recent
-   proportional trim, compaction retry/loss attribution and tier-1 superseded
-   result elision are implemented. Tier-2 eviction of non-stale reads remains
-   a separate measured experiment, not an automatic extension of tier 1.
+   proportional trim, compaction retry/loss attribution and both stub tiers are
+   implemented: tier 1 elides results a later write superseded, tier 2 elides
+   results whose producing tool declares them re-obtainable
+   (`x-harness.derivable`, disabled with `NIF_STUB_DERIVABLE=0`).
 Keep write arbitration in maintenance mode unless real contention demonstrates
 a need for automatic worktrees or stronger fencing. Do not turn the evidence
 ledger, settings UI or research shelf into prerequisites for the above slices.

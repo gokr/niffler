@@ -382,9 +382,6 @@ ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens
                        #   decision: `warn:threshold` (75% of the effective
                        #   line; `trimAt` is that line in tokens), `reset:prune`,
                        #   `reset:trim`, `reset:compact`, and EVERY compaction
-                       #   A stale-read stub (§6.3a) needs no event of its own:
-                       #   it is part of the existing `reset:prune` rung and
-                       #   arrives in `bytesSaved`/`pruned` with the rest.
                        #   refusal (`compact:unavailable|failed|declined|invalid|
                        #   stale`) with a human-readable `detail`, plus
                        #   `compact:retry` when the runner replays a failed
@@ -393,7 +390,11 @@ ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens
                        #   never retried). A `reset:trim` may carry
                        #   `proportional: true`: the rung dropped the measured
                        #   smallest whole-turn prefix that fits rather than
-                       #   falling through to its structural floor. Only the
+                       #   falling through to its structural floor. The stub
+                       #   tiers (§6.3a stale reads, §6.3b declared-re-obtainable
+                       #   results) need no event of their own: both are part of
+                       #   the existing `reset:prune` rung and arrive in
+                       #   `bytesSaved`/`pruned` with the rest. Only the
                        #   reset:* reasons rebuild the provider prompt prefix
 ev.session.<id>.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
                        #   a transient LLM failure is being retried after delayMs
