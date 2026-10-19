@@ -622,6 +622,7 @@ proc persistConversationRuntime(p: Persister, providerOverride, modelOverride, p
     "provider": provider,
     "model": model,
     "context": p.ctxSize,
+    "output": p.ctxOutput,
     "contextUsed": p.contextUsed,
     "promptTokens": p.promptTokens,
     "cachePrompt": p.cachePrompt,
@@ -771,32 +772,19 @@ proc recordDiscovery(ct: CoreTools, sessionId: string,
 # ---------------------------------------------------------------------------
 
 const
-  ctxWarnRatio = 0.75  ## warn once this far along the way to the trim rung
-  ctxTrimRatio = 0.9   ## trim whole turns from the front at this fraction
+  ctxWarnRatio = ctxWarnRatioDefault
+    ## warn once this far along the way to the trim rung
   minKeepTurns* = 2    ## never trim below this many user turns
   pruneThreshold = 8192   ## chars — tool results over this get pruned (§5.2)
   pruneHead = 4096        ## chars kept from the head
   pruneTail = 1024        ## chars kept from the tail
   thinkingTombstonePrefix = "[thinking omitted — "  ## reasoning stub marker
-  ctxOutputReserve = 16_384  ## tokens held back for the model's next reply
-                             ## (pi compacts at window − reserve); env
-                             ## NIF_CTX_RESERVE overrides, 0 disables
 
 proc outputReserve*(p: Persister): int =
-  ## Tokens held back for the model's next reply: the model's declared output
-  ## cap when the catalog resolved one (the provider counts the requested
-  ## max_tokens against its window at admission — reserving the fixed 16K
-  ## while asking for 384K let a 736,803-token prompt overflow a 1,048,576
-  ## limit the prompt alone fit), else the fixed default. NIF_CTX_RESERVE
-  ## overrides either; 0 disables. Exported for tests.
-  let v = getEnv("NIF_CTX_RESERVE", "").strip()
-  if v.len > 0:
-    try:
-      return max(parseInt(v), 0)
-    except CatchableError:
-      discard
-  if p.ctxOutput > 0: return p.ctxOutput
-  return ctxOutputReserve
+  ## Tokens held back for the model's next reply. The rule itself lives in
+  ## compaction.nim (`outputReserveFor`) so a status reader reports the number
+  ## admission actually enforces; this is the Persister-shaped wrapper.
+  outputReserveFor(p.ctxOutput)
 
 proc wakeBudget*(): int =
   ## Consecutive autonomous wake turns a conversation may run before a real
@@ -893,14 +881,11 @@ proc estimateTokens*(messages: seq[JsonNode]): int =
         result += tc{"function"}{"arguments"}.getStr("").len div 4 + 4
 
 proc trimThreshold*(p: Persister): int =
-  ## The usage level that triggers trimming: the ratio bound, minus an
-  ## output reserve so the model's next reply still fits after compaction
-  ## (pi compacts at window − reserveTokens rather than a bare ratio).
-  let ratioBound = int(p.ctxSize.float * ctxTrimRatio)
-  # window − reserve, but never below half the window: a tiny context
-  # (window < reserve) would otherwise go negative and never trim
-  let reserved = max(p.ctxSize - outputReserve(p), p.ctxSize div 2)
-  return min(ratioBound, reserved)
+  ## The usage level that triggers trimming. Delegates to the shared
+  ## `contextThresholds` (compaction.nim) so a status reader reports the same
+  ## line admission acts on, rather than a parallel estimate that could drift
+  ## from it.
+  contextThresholds(p.ctxSize, p.ctxOutput).trimAt
 
 proc reindexNodes(p: var Persister) =
   ## After any structural edit, restore the ledger invariant nodes[i] describes

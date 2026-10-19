@@ -531,7 +531,7 @@ var/bin/test_t_retry_unit: core/retry.nim
 
 var/bin/test_t_supervisor_backoff: core/supervisor.nim core/catalog.nim
 
-var/bin/test_t_ctx_accounting: core/conversation.nim
+var/bin/test_t_ctx_accounting: core/conversation.nim core/compaction.nim
 
 # The attachment contract is pure (core/attachments.nim); the end-to-end
 # suite drives a full core, and its runner is a separate binary — rebuild

@@ -74,6 +74,43 @@ proc retryableCompactionFailure*(a: CompactionAttempt): bool =
   ## those would produce the same verdict and only delay the ladder.
   a.status == casFailed and a.snapshotRetained
 
+const
+  ctxOutputReserveDefault* = 16_384
+    ## Tokens held back for the model's next reply when the catalog resolved no
+    ## output cap (pi compacts at window − reserve rather than a bare ratio).
+  ctxTrimRatioDefault* = 0.9
+    ## Trim whole turns from the front at this fraction of the window.
+  ctxWarnRatioDefault* = 0.75
+    ## Warn once this far along the way to the trim rung.
+
+proc outputReserveFor*(ctxOutput: int): int =
+  ## The reserve rule, pure w.r.t. what it needs: an explicit output cap wins
+  ## (the provider counts the requested max_tokens against its window at
+  ## admission), the fixed default applies otherwise, and NIF_CTX_RESERVE
+  ## overrides either (0 disables). Shared so a status reader reports the SAME
+  ## number admission enforces rather than a second estimate.
+  let v = getEnv("NIF_CTX_RESERVE", "").strip()
+  if v.len > 0:
+    try:
+      return max(parseInt(v), 0)
+    except CatchableError:
+      discard
+  if ctxOutput > 0: return ctxOutput
+  ctxOutputReserveDefault
+
+proc contextThresholds*(ctxSize, ctxOutput: int): tuple[trimAt, warnAt, reserve: int] =
+  ## The two lines and the reserve for a window, exactly as admission computes
+  ## them (trimThreshold + the warn ratio). Pure: a status reader can report a
+  ## conversation that no runner is currently driving.
+  result.reserve = outputReserveFor(ctxOutput)
+  if ctxSize <= 0: return
+  let ratioBound = int(ctxSize.float * ctxTrimRatioDefault)
+  # window − reserve, but never below half the window: a tiny context
+  # (window < reserve) would otherwise go negative and never trim.
+  let reserved = max(ctxSize - result.reserve, ctxSize div 2)
+  result.trimAt = min(ratioBound, reserved)
+  result.warnAt = int(result.trimAt.float * ctxWarnRatioDefault)
+
 proc compactionConfigFromEnv*(): CompactionConfig =
   ## Harness-level configuration (§4.1). Session overrides persisting in
   ## the conversation header land with the configuration matrix (step 6).
