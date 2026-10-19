@@ -174,6 +174,23 @@ proc main() =
     let unsafeRunner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
       CommandResult(output: $(%*{"name": "fake-vm", "status": "Running", "config": badConfig}))
     check("unsafe Lima policy refuses " & unsafeKey, rejected(proc() = discard install(unsafeRunner, vmArgs)))
+  for key in ["mounts", "additionalDisks", "copyToHost", "networks", "provision", "probes", "base"]:
+    for badValue in [%false, %0, %"", newJObject(), newJNull()]:
+      let config = limaConfig(2, "4G", "20G")
+      config[key] = badValue
+      check("Lima typed empty policy refuses " & key & " " & $badValue.kind, rejected(proc() = validateLimaConfig(config)))
+  for key in ["kernel", "initrd", "variant", "archive", "format", "unknown"]:
+    let config = limaConfig(2, "4G", "20G")
+    config["images"][0][key] = %"injected"
+    check("Lima extra image field refuses " & key, rejected(proc() = validateLimaConfig(config)))
+  for badValue in [%"false", %0, newJNull()]:
+    let config = limaConfig(2, "4G", "20G")
+    config["ssh"]["forwardAgent"] = badValue
+    check("Lima typed boolean refuses " & $badValue.kind, rejected(proc() = validateLimaConfig(config)))
+  for key in ["system", "user"]:
+    let config = limaConfig(2, "4G", "20G")
+    config["containerd"][key] = %true
+    check("Lima containerd enabled refuses " & key, rejected(proc() = validateLimaConfig(config)))
   let timeoutRunner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult = CommandResult(code: 124)
   check("timeout refuses", rejected(proc() = discard probe(timeoutRunner, installed["receipt"])))
 

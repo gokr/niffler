@@ -192,32 +192,59 @@ proc limaConfig*(cpus: int, memory, disk: string): JsonNode =
     "containerd": {"system": false, "user": false}, "copyToHost": [],
     "propagateProxyEnv": false, "portForwards": [{"guestIP": "0.0.0.0", "guestIPMustBeZero": false, "guestPortRange": [1,65535], "ignore": true}]}
 
-proc validateLimaConfig(config: JsonNode) =
+proc validateLimaConfig*(config: JsonNode) =
   ## Inspect effective configuration, including operator default/override files.
   if config == nil or config.kind != JObject: refuse("missing effective Lima configuration")
+  for key in ["ssh", "user", "containerd"]:
+    if config{key} == nil or config[key].kind != JObject: refuse("missing or malformed Lima policy object: " & key)
+  for key in ["firmware", "caCerts", "hostResolver"]:
+    if config{key} != nil and config[key].kind != JObject: refuse("malformed Lima policy object: " & key)
+  if config{"vmType"} != nil and config["vmType"].kind != JString: refuse("malformed Lima VM type")
   if config{"vmType"}.getStr() notin ["", "qemu", "vz"]: refuse("Lima requires a Linux qemu/vz VM")
   if config{"os"}.getStr() != "Linux" or config{"user", "name"}.getStr() != "ubuntu" or
       config{"user", "home"}.getStr() != "/home/ubuntu": refuse("Lima requires Linux ubuntu at /home/ubuntu")
-  for key in ["mounts", "copyToHost", "additionalDisks", "networks", "provision", "probes", "env"]:
-    if config{key} != nil and config[key].len > 0: refuse("Lima host mounts, extra devices/networks, copies and provisioning hooks are forbidden")
-  for key in ["loadDotSSHPubKeys", "forwardAgent", "forwardX11"]:
-    if config{"ssh", key} == nil or config["ssh"][key].getBool(): refuse("unsafe Lima SSH configuration")
-  if config{"propagateProxyEnv"} == nil or config["propagateProxyEnv"].getBool(): refuse("Lima proxy credential propagation forbidden")
+  for key in ["mounts", "copyToHost", "additionalDisks", "networks", "provision", "probes", "base"]:
+    if config{key} != nil and (config[key].kind != JArray or config[key].len > 0):
+      refuse("Lima host mounts, extra devices/networks, copies and provisioning hooks are forbidden")
+  if config{"env"} != nil and (config["env"].kind != JObject or config["env"].len > 0): refuse("Lima environment overrides forbidden")
+  for key in ["loadDotSSHPubKeys", "forwardAgent", "forwardX11", "forwardX11Trusted"]:
+    if config{"ssh", key} == nil:
+      if key == "forwardX11Trusted": continue
+      refuse("missing Lima SSH policy")
+    if config["ssh"][key].kind != JBool or config["ssh"][key].getBool(): refuse("unsafe Lima SSH configuration")
+  if config{"propagateProxyEnv"} == nil or config["propagateProxyEnv"].kind != JBool or config["propagateProxyEnv"].getBool(): refuse("Lima proxy credential propagation forbidden")
+  for key in ["system", "user"]:
+    if config{"containerd", key} == nil or config["containerd"][key].kind != JBool or config["containerd"][key].getBool(): refuse("Lima containerd must be disabled")
+  # Disabled containerd's default archive registry is inert. Firmware, VM driver
+  # overrides and certificate injection are different boot/trust inputs.
+  if config{"firmware", "images"} != nil and (config["firmware"]["images"].kind != JArray or config["firmware"]["images"].len > 0): refuse("custom Lima firmware forbidden")
+  for key in ["vmOpts", "osOpts"]:
+    if config{key} != nil and (config[key].kind != JObject or config[key].len > 0): refuse("Lima driver/OS overrides forbidden")
+  for key in ["files", "certs"]:
+    if config{"caCerts", key} != nil and (config["caCerts"][key].kind != JArray or config["caCerts"][key].len > 0): refuse("Lima certificate injection forbidden")
   let images = config{"images"}
   let reviewed = parseJson(limaImages)
   if images == nil or images.kind != JArray or images.len != reviewed.len: refuse("Lima requires the reviewed digest-pinned Ubuntu images")
   for i in 0..<reviewed.len:
-    for key in ["location", "arch", "digest"]:
-      if images[i]{key} != reviewed[i][key]: refuse("Lima requires the reviewed digest-pinned Ubuntu images")
-    for key in ["kernel", "initrd"]:
-      if images[i]{key} != nil: refuse("custom Lima boot images forbidden")
-  if config{"cpus"}.getInt() < 1 or config{"memory"}.getStr().len == 0 or config{"disk"}.getStr().len == 0: refuse("Lima resource limits required")
+    if images[i] != reviewed[i]: refuse("Lima image entries must exactly match reviewed pins; no extra image/archive/boot fields")
+  if config{"cpus"} == nil or config["cpus"].kind != JInt or config["cpus"].getInt() notin 1..64: refuse("Lima CPU limit required")
+  for key in ["memory", "disk"]:
+    let size = config{key}
+    if size == nil or size.kind != JString: refuse("Lima resource size must be a string")
+    let value = size.getStr()
+    if value.len < 4 or value[^3..^1] notin ["GiB", "MiB"] or value[0] notin {'1'..'9'} or
+        not value[0..^4].allCharsInSet({'0'..'9'}): refuse("invalid Lima resource size")
   let forwards = config{"portForwards"}
-  if forwards == nil or forwards.len != 1 or not forwards[0]{"ignore"}.getBool() or
+  if forwards == nil or forwards.kind != JArray or forwards.len != 1 or forwards[0].kind != JObject or
+      forwards[0]{"ignore"} != %true or
       forwards[0]{"guestPortRange"} != %*[1,65535] or
       forwards[0]{"guestIP"}.getStr() != "0.0.0.0" or
-      forwards[0]{"guestIPMustBeZero"} == nil or forwards[0]["guestIPMustBeZero"].getBool() or
-      forwards[0]{"reverse"}.getBool() or forwards[0]{"static"}.getBool(): refuse("Lima automatic port forwarding forbidden")
+      forwards[0]{"guestIPMustBeZero"} != %false: refuse("Lima automatic port forwarding forbidden")
+  for key in ["reverse", "static"]:
+    if forwards[0]{key} != nil and forwards[0][key] != %false: refuse("Lima reverse/static forwarding forbidden")
+  for key in ["guestSocket", "hostSocket"]:
+    if forwards[0]{key} != nil and forwards[0][key] != %"": refuse("Lima socket forwarding forbidden")
+  if forwards[0]{"proto"} != nil and forwards[0]["proto"] != %"any": refuse("Lima ignore rule must cover every protocol")
 
 proc vmInfo(run: CommandRunner, p: JsonNode): JsonNode
 
