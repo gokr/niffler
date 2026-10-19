@@ -8,6 +8,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Image capability gating: `llm_resolve` reports whether the resolved model
+  can be SENT image parts (`vision`/`visionSource`, from the catalog's
+  `modalities.input`), echoed in the turn status frame. A text-only model gets
+  every image elided to the honest text marker instead of a request its
+  provider would reject — a rejection costs the whole conversation, not the
+  turn. Unknown capability is never read as "no images"; the rule is also
+  re-applied at the start of a turn, since a resumed conversation materialized
+  its images before any capability was known. The test-only mock enforces
+  text-only for real, so a passing turn is proof no image part was sent.
+
 - Tool-produced images (`docs/WIRE.md` "Tool results"): a tool result may carry
   an `images` array beside `text`, so a component can return something the
   model *sees* rather than reads. Core owns the bound — byte-sniffed MIME

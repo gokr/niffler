@@ -35,6 +35,17 @@ import niffler/sdk
 #   per scripted round (overrides TOOLCMD; drives multi-stage pipelines).
 # - NIF_MOCK_LOG: JSONL request log (one line per chat request) so tests
 #   assert sizes/rejections against the mock's own view.
+# - NIF_MOCK_VISION: "0" makes llm_resolve report a TEXT-ONLY model
+#   (vision: false, visionSource: "catalog"), the way the real adapter does
+#   from the catalog's modalities.input. Unset reproduces the historic mock
+#   exactly: visionSource is omitted, so core treats capability as UNKNOWN and
+#   materializes images as before.
+# - NIF_MOCK_TEXT_ONLY: 1 makes the mock ENFORCE it — any chat request whose
+#   messages carry an image part is rejected the way a text-only provider
+#   rejects it ("Invalid content type. image_url is only supported by certain
+#   models."). That turns "core elides images for a text-only model" into an
+#   observable fact: a turn that passes here is a turn whose request carried no
+#   image parts. The rejection is also logged as imageViolation.
 # - NIF_MOCK_PT_BIAS: tokens the provider adds to its own chars/4 count
 #   when REPORTING usage and ENFORCING the window — models a tokenizer that
 #   packs denser than the core's chars/4 proxy (DeepSeek-class: ~4-5%). The
@@ -60,6 +71,8 @@ let mockEnforceCtx = block:
   try: parseInt(v)
   except CatchableError: 0
 let mockRawOverflow = getEnv("NIF_MOCK_RAW_OVERFLOW", "").len > 0
+let mockVision = getEnv("NIF_MOCK_VISION", "")
+let mockTextOnly = getEnv("NIF_MOCK_TEXT_ONLY", "") == "1"
 let mockHideCtx = getEnv("NIF_MOCK_HIDE_CTX", "").len > 0
 let mockUsageDetails = getEnv("NIF_MOCK_USAGE_DETAILS", "").len > 0
 let mockRounds = block:
@@ -130,6 +143,24 @@ proc markerStart(messages: JsonNode, needle: string): int =
     if messages[i]{"content"}.getStr("").startsWith(needle): return i
   -1
 
+proc countImageParts(messages: JsonNode): int =
+  ## Image parts a request would send. The number that must be ZERO against a
+  ## text-only model: an image part there is a request the provider rejects,
+  ## and a provider rejects the whole conversation rather than the turn.
+  if messages == nil or messages.kind != JArray: return 0
+  for m in messages:
+    for part in m{"content"}.listOf:
+      if part{"type"}.getStr("") == "image_url": inc result
+
+proc countMarker(messages: JsonNode, needle: string): int =
+  ## Occurrences of `needle` in any message's SERIALIZED form, so the check
+  ## also sees a message whose content is a multimodal array (countText only
+  ## reads the plain-string shape, which is exactly the shape an image-carrying
+  ## message does not have).
+  if messages == nil or messages.kind != JArray: return 0
+  for m in messages:
+    result += ($m).count(needle)
+
 proc countText(messages: JsonNode, needle: string): int =
   ## Occurrences of `needle` across message bodies: lets a fixture assert what
   ## the projection contained (an elided tool result, a marker) without the
@@ -146,6 +177,9 @@ proc logRequest(estimate: int, rejected: bool, note: string,
     defer: f.close()
     let line = %*{"tools": tools, "estimate": estimate, "rejected": rejected,
                   "note": note,
+                  "imageParts": countImageParts(messages),
+                  "omittedImages": countMarker(messages,
+                    "[image omitted to keep the request"),
                   "provider": currentProvider, "model": currentModel,
                   "checkpoint": containsText(messages, "<context_checkpoint"),
                   "steer": containsText(messages, "Steer: "),
@@ -190,6 +224,18 @@ proc(c: Component, args: JsonNode): JsonNode =
   # The provider's own view of the request: chars/4 plus its tokenizer
   # bias. Rejections and reported usage both speak this scale.
   let providerCount = est + mockPtBias
+  # A text-only provider rejects a request carrying image parts outright, and
+  # that rejection costs the WHOLE conversation on a real backend — which is
+  # why core elides images when the resolved model cannot take them. Enforcing
+  # it here makes "no image parts were sent" an observed fact rather than an
+  # inspection of a log.
+  if mockTextOnly and countImageParts(messages) > 0:
+    logRequest(providerCount, true, "image-part-on-text-only-model",
+               messages, args{"tools"})
+    raise newException(ValueError,
+      "llm error: error, status code: 400, status: 400 Bad Request, " &
+      "message: Invalid content type. image_url is only supported by " &
+      "certain models.")
   let rejectAt = if mockEnforceCtx > 0: mockEnforceCtx else: mockCtx
   if rejectAt > 0 and providerCount > rejectAt:
     logRequest(providerCount, true, "over-window", messages, args{"tools"})
@@ -359,6 +405,12 @@ proc(c: Component, args: JsonNode): JsonNode =
              "model": args{"model"}.getStr("mock-model")}
   if mockCtx > 0 and not mockHideCtx:
     r["context"] = %mockCtx
+  # Image capability, the way the real adapter reports it (a POSITIVE catalog
+  # answer, with its provenance). Omitted entirely by default so core's
+  # unknown-capability path stays the historic one.
+  if mockVision.len > 0:
+    r["vision"] = %(mockVision != "0")
+    r["visionSource"] = %"catalog"
   r)
 
 comp.run()

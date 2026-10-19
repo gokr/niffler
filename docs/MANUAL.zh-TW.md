@@ -714,6 +714,12 @@ mid-turn — retry when the turn finishes」），而非等待：回合永遠不
 在純文字模型上不會發生任何特殊處理：該模型的 `modalities.input` 正是呼叫方要檢查的東西
 （`models_list {"input": "image"}`），而無法送出的影像會以那行如實的文字標記抵達請求。
 
+**純文字模型**會被自動處理，而不是留給你踩坑：`llm_resolve` 會回報模型能力
+（`vision`，取自目錄的 `modalities.input` —— 回合的狀態訊框與 `session_info` 中都看得到），
+當模型確定無法接收影像部分時，每一張影像都會被替換為如實的文字標記，而不是被物化。這是刻意
+的：provider 拒絕的是**整段對話**而不只是這一個回合，因此把影像送給一個無法渲染它的模型，會
+讓該對話之後每一個回合都失敗。能力未知**絕不**被當成「不支援」 —— 未知模型保留它的影像。
+
 **撰寫會回傳影像的元件。** 任何元件都可以：把說明放進 `text`，並在結果物件上加上
 `images` 陣列。三個 SDK 都提供建構子 —— `resultImage`/`withImages`（Nim
 `sdk/niffler/sdk.nim`、TypeScript `sdk/ts/src/wire.ts`）與 `ResultImage`/`WithImages`

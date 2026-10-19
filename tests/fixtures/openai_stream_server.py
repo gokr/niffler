@@ -43,10 +43,28 @@ def scripted_tool_call(request):
         return None
     spec = content.split(marker, 1)[1].strip().splitlines()[0].strip()
     name, _, raw_args = spec.partition(" ")
-    try:
-        args = json.loads(raw_args) if raw_args.strip() else {}
-    except ValueError:
-        args = {}
+    args = {}
+    if raw_args.strip():
+        try:
+            args = json.loads(raw_args)
+        except ValueError:
+            # Prose after the arguments is allowed (`TOOLCALL:read {"path":...}
+            # please describe it`): take the first balanced {...} object and
+            # leave the rest as the message's own text. Without this the call
+            # silently arrives with empty arguments, which reads as the tool
+            # being broken rather than the marker being mis-parsed.
+            depth = 0
+            for index, char in enumerate(raw_args):
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            args = json.loads(raw_args[: index + 1])
+                        except ValueError:
+                            args = {}
+                        break
     call_id = "fixture-call-1"
     for message in request.get("messages", []):
         for call in message.get("tool_calls") or []:

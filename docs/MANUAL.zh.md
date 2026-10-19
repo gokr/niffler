@@ -748,6 +748,12 @@ true`，加上窗口——否则上下文仪表会一直显示
 在纯文本模型上不会发生任何特殊处理：该模型的 `modalities.input` 正是调用方要检查的东西
 （`models_list {"input": "image"}`），而无法发送的图像会以那行如实的文本标记抵达请求。
 
+**纯文本模型**会被自动处理，而不是留给你去踩坑：`llm_resolve` 会报告模型能力
+（`vision`，取自目录的 `modalities.input` —— 回合的状态帧与 `session_info` 中都能看到），
+当模型确定无法接收图像部分时，每一张图像都会被替换为如实的文本标记，而不是被物化。这是刻意
+的：provider 拒绝的是**整段对话**而不只是这一个回合，因此把图像发给一个无法渲染它的模型，会
+让该对话之后每一个回合都失败。能力未知**绝不**被当作"不支持" —— 未知模型保留它的图像。
+
 **撰写会返回图像的组件。** 任何组件都可以：把说明放进 `text`，并在结果对象上添加
 `images` 数组。三个 SDK 都提供构造函数 —— `resultImage`/`withImages`（Nim
 `sdk/niffler/sdk.nim`、TypeScript `sdk/ts/src/wire.ts`）与 `ResultImage`/`WithImages`

@@ -1106,9 +1106,15 @@ Two consequences worth knowing when reading a transcript:
   a superseded screenshot leaves the projection instead of being
   re-materialized from stale refs.
 
-On a text-only model nothing special happens: the model's `modalities.input`
-is what a caller checks (`models_list {"input": "image"}`), and an image that
-cannot be sent reaches the request as the honest text marker.
+A **text-only model** is handled for you, not left to fail: `llm_resolve`
+reports the model's capability (`vision`, resolved from the catalog's
+`modalities.input` — visible in the turn's status frame and in `session_info`),
+and when the model positively cannot take image parts every image is elided to
+the honest text marker instead of being materialized. That is deliberate: a
+provider rejects the whole conversation, not just the turn, so sending one
+image to a model that cannot render it would break every later turn in that
+conversation. Unknown capability is never treated as "no" — an unknown model
+keeps its images.
 
 **Writing a component that returns images.** Any component may: put a caption
 in `text` and add an `images` array to the result object. All three SDKs ship
@@ -1150,6 +1156,11 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   own server-side cap and truncates long answers mid-stream. A per-call
   `maxTokens` only ever lowers the resolved value (the expert judge's tiny
   verdicts), and the Codex lane ignores it entirely.
+- The model's **image capability** comes back on the same frame as
+  `vision`/`visionSource`, resolved from the catalog's `modalities.input` (see
+  [Images](#images-dropped-and-tool-produced) for what core does with it).
+  Both fields are absent when nothing determined it, and absence is never read
+  as "text-only".
 
 - `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
   conversation-scoped provider and model override. `provider` names a stored

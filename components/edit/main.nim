@@ -1304,7 +1304,6 @@ proc readPathArg(args: JsonNode, label: string): string =
 type ImageInfo = object
   ok: bool
   mime: string
-  bytes: int
   width: int
   height: int
 
@@ -1382,17 +1381,21 @@ proc sniffImageInfo(raw: string): ImageInfo =
   ImageInfo()
 
 proc formatSize(bytes: int): string =
+  ## The caption's size field. Bytes below a kilobyte are reported in bytes:
+  ## `${bytes div 1024}KB` said "0KB" for a small icon, which reads as a broken
+  ## measurement in the one line the model gets about the image.
   if bytes >= 1024 * 1024: $round(bytes / (1024 * 1024), 1) & "MB"
-  else: $(bytes div 1024) & "KB"
+  elif bytes >= 1024: $(bytes div 1024) & "KB"
+  else: $bytes & "B"
 
-proc imageCaption(shownPath: string, info: ImageInfo): string =
+proc imageCaption(shownPath: string, info: ImageInfo, bytes: int): string =
   ## The `text` field an image read returns. It is the whole LLM-facing
   ## channel besides the pixels (WIRE.md "Tool results"), so it carries what
   ## the model cannot see for itself: which file, what format, how big, and
   ## its dimensions — the facts a later request cannot recover once the image
   ## is elided from the projection and only this marker remains.
   result = "[image: " & shownPath & " " & info.mime & ", " &
-    formatSize(info.bytes)
+    formatSize(bytes)
   if info.width > 0 and info.height > 0:
     result.add(", " & $info.width & "x" & $info.height)
   result.add("]")
@@ -1404,7 +1407,7 @@ proc hReadImage(c: Component, args: JsonNode, target, shownPath, raw: string): J
   ## dropped image takes, so nothing here can reach the provider unbounded.
   let info = sniffImageInfo(raw)
   if not info.ok: return nil
-  var caption = imageCaption(shownPath, info)
+  var caption = imageCaption(shownPath, info, raw.len)
   let session = args{"__session"}{"session"}.getStr("")
   if raw.len > READ_IMAGE_MAX_BYTES:
     # Too large to send. Say so and name the lever instead of shipping a

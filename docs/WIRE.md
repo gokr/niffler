@@ -329,15 +329,21 @@ ev.session.<id>.assistant   # {sessionId, turnId?, content, provider?, model?,
                        #   context?, usage?}
                        #   complete model text + actual backend metadata per LLM round
 ev.session.<id>.status      # {sessionId, turnId?, provider?, providerSource?, model?,
-                       #   catalog?, context?, contextSource?, promptTokens?,
+                       #   catalog?, context?, contextSource?, output?,
+                       #   outputSource?, vision?, visionSource?, promptTokens?,
                        #   usedTokens?, cache?: {prompt, read, hitRate}, warning?}
                        #   resolved turn config and live context occupancy.
                        #   cache reports cumulative provider-reported
                        #   prompt-cache reads (A3; present when the provider
                        #   sends prompt_tokens_details). warning is present
                        #   when a pinned provider/model pair has no catalog
-                       #   match and resolved to the fallback window. Also
-                       #   emitted by model-only session calls (no inference)
+                       #   match and resolved to the fallback window. vision
+                       #   is the resolved model's image capability and
+                       #   visionSource its provenance ("catalog" today); both
+                       #   are ABSENT when nobody determined it, which is not
+                       #   the same as false (a text-only model elides every
+                       #   image — see "Tool results"). Also emitted by
+                       #   model-only session calls (no inference)
 ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens,
                        #   usedTokens, context, trimAt?, warning?, trimmed?,
                        #   bytesSaved?, pruned?, generation?, covered?,
@@ -1350,11 +1356,17 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
      one rule for every image in a conversation, whatever produced it. A
      single result's images are capped below that budget, so the newest
      result's image is never born already elided.
-  4. **Non-vision models.** Nothing special happens here: the model's own
-     `modalities.input` is what a caller checks (models_list, `input:
-     "image"`), and an elided or unsendable image reaches the request as the
-     text marker above. A run on a text-only model therefore degrades to
-     "there is an image at this path" rather than failing.
+  4. **Non-vision models.** The projection consults the resolved model's
+     capability, which `llm_resolve` reports as `vision` + `visionSource`
+     (from the catalog's `modalities.input`): when the model positively cannot
+     take image parts, EVERY image is elided to the text marker above instead
+     of being materialized, so the request stays one the provider accepts. This
+     matters because a provider rejects the whole conversation, not just the
+     turn, so one image in history would strand every later turn. Unknown is
+     not "no": an unresolvable model, an unavailable models component or an
+     older `llm` component that omits the field all keep images materialized,
+     and the same rule is re-applied at the start of a turn (a resumed
+     conversation materialized before any capability was known).
 
   A tool's images are **append-only history**, never part of the frozen
   prefix: the request prefix is the system prompt plus the direct tool

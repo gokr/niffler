@@ -408,6 +408,97 @@ proc main() =
         manyRead{"text"}.getStr("").contains("m4.png"),
         $manyRead{"text"})
 
+  # --- a text-only model gets elision, not a rejected request --------------
+  # Without this, an image in history is sent to a model that rejects image
+  # parts — and a provider rejects the WHOLE conversation, not just the turn,
+  # so every later turn in that conversation would fail. Core learns the
+  # capability from the same resolve that reports the window and elides every
+  # image (the honest text marker) instead. The mock reports it only when
+  # NIF_MOCK_VISION is set, which is also the check that an UNKNOWN capability
+  # keeps images materialized rather than guessing.
+  #
+  # A fresh harness, because the capability is per-conversation and this
+  # fixture's mock llm is the one that must answer it.
+  block textOnlyModel:
+    let sandbox2 = newCoreSandbox("toolimages-textonly",
+      ["store", "provider", "llm", "edit"])
+    copyFileWithPermissions(repoRoot / "var" / "bin" / "session",
+                            sandbox2.sandboxBin("session"))
+    # Replace the sandbox's llm with the deterministic mock (prebuilt by
+    # `make test-server`): a second llm component beside the manifest's would
+    # race for the same subject, and this test needs the mock's answer.
+    discard fixtureBin(sandbox2, "llm", repoRoot / "tests" / "mock_llm.nim",
+                       prebuiltName = "fixture-mock-llm")
+    let (server2, url2) = startNats()
+    defer: stopServer(server2)
+    var nc2 = waitConnect(url2)
+    defer: nc2.close()
+    # The mock IS the provider here, so the evidence is its own request log —
+    # and it ENFORCES text-only (any request carrying image parts is refused
+    # the way a real text-only backend refuses it), which makes a passing turn
+    # proof that no image part was sent.
+    let mockLog2 = sandbox2.root / "var" / "textonly-requests.jsonl"
+    var coreProc2 = startComponent(sandbox2.sandboxBin("niffler"), url2,
+                                   root = sandbox2.root, extra = [
+      ("NIF_AUTO_APPROVE", "1"),
+      ("NIF_MOCK_VISION", "0"),
+      ("NIF_MOCK_TEXT_ONLY", "1"),
+      ("NIF_MOCK_LOG", mockLog2),
+      # Script the tool call through the MOCK (the `TOOLCALL:` marker belongs
+      # to the other fixture): one round calls img_ok, whose result carries an
+      # image, so round 2's request is the one that would have sent it.
+      ("NIF_MOCK_ROUNDS", "1"),
+      ("NIF_MOCK_TOOLJSON", $(%*[{"name": "img_ok", "arguments": {}}]))])
+    defer:
+      if coreProc2.running():
+        coreProc2.terminate()
+        sleep(1500)
+        if coreProc2.running(): coreProc2.kill()
+        sleep(200)
+      coreProc2.close()
+      removeDir(sandbox2.root)
+    check("the mock llm registers on the second bus",
+          waitComponent(nc2, "llm"), "no llm on the second bus")
+    # The image must actually be IN the conversation for this to prove
+    # anything: the fixture tool returns one, so round 2's request is the one
+    # that would have carried image parts to a text-only model.
+    var toolProc2 = startComponent(
+      repoRoot / "var" / "bin" / "fixture-image-tool", url2,
+      root = sandbox2.root)
+    defer: stopHard(toolProc2)
+    check("the fixture registers on the second bus",
+          waitComponent(nc2, "imagetool"), "imagetool never registered")
+    let turn = call(nc2, "core", "session", %*{
+      "sessionId": "text-only", "content": "look at the screenshot"},
+      120_000)
+    check("the turn on a text-only model succeeds", turn{"ok"}.getBool(false),
+          jdump(turn))
+    var entries: seq[JsonNode] = @[]
+    if fileExists(mockLog2):
+      for line in readFile(mockLog2).splitLines():
+        if line.strip().len > 0:
+          try: entries.add(parseJson(line))
+          except CatchableError: discard
+    var imageParts = 0
+    var violations = 0
+    for entry in entries:
+      imageParts += entry{"imageParts"}.getInt(0)
+      if entry{"note"}.getStr("") == "image-part-on-text-only-model":
+        inc violations
+    check("the mock provider saw the conversation's requests",
+          entries.len >= 2, $entries.len & " request(s)")
+    check("no request carried an image part to the text-only model",
+          imageParts == 0 and violations == 0,
+          "imageParts=" & $imageParts & " violations=" & $violations)
+    var omitted = 0
+    for entry in entries:
+      omitted += entry{"omittedImages"}.getInt(0)
+    check("the elision marker tells the model an image is there",
+          omitted > 0, "omittedImages=" & $omitted)
+    check("the text-only model still answered (images were elided, not sent)",
+          turn{"ok"}.getBool(false) and
+          turn{"error"}.getStr("").len == 0, jdump(turn))
+
   report("TOOL IMAGES TEST")
 
 main()

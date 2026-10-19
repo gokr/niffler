@@ -187,6 +187,15 @@ type
     promptTokens*: int   ## model-reported prompt tokens of the last chat request
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
     ctxSize*: int        ## catalog model context window
+    vision*: bool        ## may the resolved model be SENT image parts? An
+                         ## explicit turn-config fact (`llm_resolve`'s
+                         ## `vision`, from the catalog's modalities.input) —
+                         ## never inferred from anything else
+    visionKnown*: bool   ## whether that was actually determined: false
+                         ## before the first resolve and when the catalog had
+                         ## no answer. Unknown must never read as "no images",
+                         ## so the projection stays byte-identical until a
+                         ## positive answer arrives
     ctxOutput*: int      ## catalog model output cap (0 = unknown): what the
                          ## next request asks the provider to reserve. Held
                          ## back from the window by admission and trim because
@@ -1678,6 +1687,12 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
   let resolvedOutput = resolved{"output"}.getInt(0)
   if resolvedOutput > 0:
     p.ctxOutput = resolvedOutput
+  # Model capability is a fact of the same resolution, and it decides whether
+  # image parts may be sent at all (see materializeProjection). VisionSource
+  # "" means nobody answered; that is NOT "text-only".
+  if resolved{"visionSource"}.getStr("").len > 0:
+    p.vision = resolved{"vision"}.getBool(true)
+    p.visionKnown = true
   # The calibration offset is model-specific: switching models (or their
   # provider) changes the tokenizer — drop the stale offset and re-learn
   # from the next response.
@@ -1698,6 +1713,12 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
     "promptTokens": p.promptTokens,
     "usedTokens": p.contextUsed
   }
+  # Image capability belongs on the same frame: a UI can show why images are
+  # being elided, and the turn reads it from here (an older llm component omits
+  # both fields, leaving the unknown-capability default of "send them").
+  if p.visionKnown:
+    result["vision"] = %p.vision
+    result["visionSource"] = %resolved{"visionSource"}.getStr("")
   # A pinned provider/model pair the catalog cannot match silently accepts the
   # conservative fallback window — as much as 4x smaller than the pin's real
   # model — and admission then measures a healthy transcript against the wrong
@@ -2102,12 +2123,27 @@ proc materializeMessage*(ct: CoreTools, message: var JsonNode,
   message["attachText"] = %text
   message["content"] = buildContent(text, refs.elems, payloads, retain)
 
-proc materializeProjection*(ct: CoreTools, messages: var seq[JsonNode]) =
+proc materializeProjection*(ct: CoreTools, messages: var seq[JsonNode],
+                            vision = true) =
   ## Apply the projection rule to a whole message list. Idempotent: called
   ## once after a resume load, and after each append so a new image can
   ## elide the oldest one (the window only ever slides toward newer, so an
   ## elided image is never re-materialized mid-session).
-  let retained = retainedMessages(messages, projectionBudget())
+  ##
+  ## `vision = false` means the turn's resolved model cannot be sent image
+  ## parts at all. Every image is then ELIDED (the honest text marker naming
+  ## the file), not materialized: without this, a text-only model receives
+  ## image_url parts it rejects — and a provider that rejects the request
+  ## rejects the WHOLE conversation, not just the turn, so an image in the
+  ## frozen history would strand every later turn. Elision rather than refusal
+  ## is what the elision marker already exists for, and it keeps the elided
+  ## form a pure function of the refs (resume reproduces it byte for byte).
+  ## Only a POSITIVE catalog answer sets this (see resolveTurnConfig); an
+  ## unknown model keeps every image, so no capability guess ever costs the
+  ## model something it could have seen.
+  let retained =
+    if vision: retainedMessages(messages, projectionBudget())
+    else: newSeq[bool](messages.len)
   for i in 0 ..< messages.len:
     if not hasAttachments(messages[i]): continue
     materializeMessage(ct, messages[i], retained[i])
@@ -2417,7 +2453,8 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
                     onEvent: proc(kind: string, data: JsonNode) {.closure.},
                     sessionId, turnId: string,
                     it: ToolCallItem, oc: ToolCallOutcome,
-                    toolStartedAt: float, toolDurationMs: int) =
+                    toolStartedAt: float, toolDurationMs: int,
+                    vision = true) =
   ## Shared post-processing for one executed tool call (serial or from a
   ## parallel wave): catalog pump, discovery recording, transcript append,
   ## persistence (with lifecycle telemetry), and the "done" toolcall event.
@@ -2492,8 +2529,9 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
     # passing here, so a tool cannot hand the request a payload the projection
     # never bounded — and the pixels themselves never enter the frozen prefix
     # (the prefix is the system prompt plus tool schemas; this is append-only
-    # history).
-    materializeProjection(ct, messages)
+    # history). `vision` is the turn's resolved model capability: a text-only
+    # model gets every image elided rather than a request it would reject.
+    materializeProjection(ct, messages, vision)
   if onEvent != nil:
     if oc.ok or partialFailure:
       # The event's result copy carries image DESCRIPTORS, never the pixels:
@@ -3063,6 +3101,11 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   ## (ev.session.<id>.turn).
   let sessionId = p.convId
   let turnId = "turn-" & newId()
+  # The resolved model's image capability for this turn, refreshed from every
+  # turn-config resolution (a model switch mid-conversation changes it). True
+  # until a resolve positively says otherwise, so an unknown model is never
+  # silently denied the images it could have seen (see materializeProjection).
+  var turnVision = true
   # Live turn identity for pumpAdvise: advisor requests are accepted only
   # while this turn is running and only for its turnId.
   if ct.activeTurn != nil:
@@ -3132,6 +3175,20 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     status["turnId"] = %turnId
     resolvedProvider = status{"provider"}.getStr("")
     selectedModel = status{"model"}.getStr(selectedModel)
+    # Capability comes back on the same status frame; the Persister already
+    # recorded it (resolveTurnConfig), so the turn reads it from there and an
+    # older llm component that omits the field leaves the safe default.
+    if status{"visionSource"}.getStr("").len > 0:
+      turnVision = status{"vision"}.getBool(true)
+    if p.visionKnown and not p.vision:
+      # The projection may already hold materialized images: a fresh append
+      # cannot precede the resolve, but a RESUMED conversation was materialized
+      # at load time, when the capability was not yet known. Re-apply the rule
+      # now, before the first request of the turn, so a text-only model is
+      # never handed image parts it would reject (a rejection costs the whole
+      # conversation, not the turn). Idempotent: the marker rebuilds from
+      # attachText to the same text.
+      materializeProjection(ct, messages, false)
     if onEvent != nil:
       onEvent("status", status)
   except CatchableError:
@@ -3834,7 +3891,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           # call with an error result so the history stays provider-valid.
           for k in idx ..< items.len:
             commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
-              turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
+              turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0,
+              turnVision)
           endTurnOnLimit(p, turnError, "seconds", detail, msg)
           return ""
       if maxCalls > 0 and toolCallsMade >= maxCalls:
@@ -3845,7 +3903,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # valid for providers that require complete tool-call pairing.
         for k in idx ..< items.len:
           commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
-            turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
+            turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0,
+            turnVision)
         turnError = msg
         finishTurn("budget-exhausted", err = msg)
         return ""
@@ -3887,7 +3946,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                           parseFailed: false, rawArgs: ""),
                          (if k < outcomes.len: outcomes[k]
                           else: ToolCallOutcome(error: "no outcome")),
-                         waveStartedAt, waveDurationMs)
+                         waveStartedAt, waveDurationMs, turnVision)
         continue
       let it = items[idx]
       inc idx
@@ -3960,7 +4019,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           oc = ToolCallOutcome(error: e.msg)
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
       commitToolItem(ct, p, messages, exposure, onEvent, sessionId, turnId,
-                     it, oc, toolStartedAt, toolDurationMs)
+                     it, oc, toolStartedAt, toolDurationMs, turnVision)
 
   # The only way out of the round loop without a return is the round budget:
   # end the turn loudly. A silent empty reply here reads exactly like a hang
@@ -4491,7 +4550,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # rule is greedy-newest within the budget and a pure function of the
     # refs, so this reproduces exactly the projection the previous turn
     # sent — a resumed conversation must not silently lose or re-add pixels.
-    materializeProjection(ct, entry.messages)
+    materializeProjection(ct, entry.messages,
+                          if entry.persister.visionKnown: entry.persister.vision
+                          else: true)
     # A2/A3: usage and cumulative cache counters persist in the header
     # (written by persistConversationRuntime), so the context meter and
     # cache metrics survive a runner restart. seqNo continues after the
@@ -5025,7 +5086,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # Materialize into the projection: the newest images within the budget
     # carry their data URL, older ones an honest text marker. Deterministic
     # from the refs, so every resume rebuilds the same projection.
-    materializeProjection(ct, entry.messages)
+    materializeProjection(ct, entry.messages,
+                          if entry.persister.visionKnown: entry.persister.vision
+                          else: true)
   if entry.persister.seqNo == 1 and not hasTitle and not isWake and
       heartbeatId.len == 0:
     # first message of a fresh conversation: title it from the message so
