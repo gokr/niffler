@@ -89,9 +89,11 @@ and [components/fleet/README.md](../components/fleet/README.md).
    Then replace the shell's readable host root with reviewed runtime/data roots.
    Conditional approvals, background lifecycle and Seatbelt each get their own
    acceptance gate; a skipped Mac test is not a pass.
-3. **Expose context health and recovery.** A read-effect `context_status` should
-   report window/used/trim thresholds, `trimThrough`, loss notices and retained
-   snapshot IDs; design an explicit bounded retry for failed snapshots. Recent
+3. **Expose context health and recovery.** Read-effect `context_status` now
+   reports persisted window/usage, shared thresholds, `trimThrough`, structured
+   loss attribution, projection coverage and retained snapshot metadata. Usage
+   is not a live request measurement; snapshot presence is not retryability.
+   An explicit bounded retry for failed snapshots remains to be designed. Recent
    proportional trim, compaction retry/loss attribution and tier-1 superseded
    result elision are implemented. Tier-2 eviction of non-stale reads remains
    a separate measured experiment, not an automatic extension of tier 1.

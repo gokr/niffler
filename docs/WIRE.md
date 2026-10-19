@@ -59,6 +59,39 @@ bus without changing environment or loading dotenv; empty URLs are refused and
 re-attachment retries only the pinned endpoint. This permits in-process clients
 for multiple instances without process-global endpoint mutation.
 
+## Context health
+
+On-demand, read-effect core tool `context_status {sessionId?:string}` reports
+stored context health. During a session turn an omitted/empty ID is injected
+from that runner; direct callers must supply an ID. Unknown IDs and store
+failures refuse rather than inventing an empty conversation.
+
+The result contains `sessionId`, `window`, `used`,
+`usageSource:"last-persisted"`, `trimAt`, `warnAt`, `outputReserve`, optional
+`promptTokens`, and `trimThrough` (highest canonical sequence dropped by lossy
+trim, zero if none). For a known window it adds `usedPercent`, `trimPercent`,
+`headroomTokens` (clamped to zero), and `state:"ok"|"warning"|"trim-needed"`.
+This is the last persisted occupancy, **not** the measured next request;
+`trim-needed` does not claim a trim is running. Threshold arithmetic is shared
+with admission, using the persisted output cap and current `NIF_CTX_RESERVE`.
+Older headers without an output cap use the default reserve until refreshed.
+
+`projection` is null or `{generation,covered,retained,prunes}` (the last two
+are counts). Positive `trimThrough` adds `lostRecallRef` pointing to the first
+canonical message and a structured `lossNotices` entry
+`{kind:"history_omitted_without_summary",through,recallRef,compactFailures,compactReason}`.
+These entries describe durable loss, not the runner's exact rendered synthetic
+notice text. Positive failure counts also add top-level `compactFailures` and
+`compactReason`.
+
+`retainedSnapshots` lists compaction-input metadata
+`{id,trigger,createdAt,canonicalHigh,bytes}` without page contents. Inputs may
+be stale, failed or still in flight: existence does not certify retryability.
+A failed listing adds `snapshotError`; an empty list with that field is not
+proof no inputs exist. Store reads are independent, not an atomic snapshot.
+The tool never compacts, retries, writes history or changes the frozen prefix;
+when a model calls it, its normal tool result enters append-only history.
+
 ## Scheduled turns (heartbeat)
 
 The opt-in heartbeat component publishes `session {sessionId, content,
