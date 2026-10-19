@@ -187,6 +187,15 @@ type
     promptTokens*: int   ## model-reported prompt tokens of the last chat request
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
     ctxSize*: int        ## catalog model context window
+    vision*: bool        ## may the resolved model be SENT image parts? An
+                         ## explicit turn-config fact (`llm_resolve`'s
+                         ## `vision`, from the catalog's modalities.input) —
+                         ## never inferred from anything else
+    visionKnown*: bool   ## whether that was actually determined: false
+                         ## before the first resolve and when the catalog had
+                         ## no answer. Unknown must never read as "no images",
+                         ## so the projection stays byte-identical until a
+                         ## positive answer arrives
     ctxOutput*: int      ## catalog model output cap (0 = unknown): what the
                          ## next request asks the provider to reserve. Held
                          ## back from the window by admission and trim because
@@ -893,6 +902,36 @@ proc reindexNodes(p: var Persister) =
   for i in 0 ..< p.nodes.len:
     p.nodes[i].projectionIndex = i
 
+proc toolBodyText*(m: JsonNode): string =
+  ## One tool message's TEXT, whatever shape its content has: the plain string
+  ## almost every result stores, or the multimodal array an image-carrying
+  ## result materializes into (text parts joined; image parts contribute
+  ## nothing). Every elision decision is made on text and must keep working for
+  ## a result that also carries pixels — reading `content` as a string there
+  ## finds "" and would skip that message forever.
+  let content = m{"content"}
+  if content.isStr: return content.getStr("")
+  if content.jkind == JArray:
+    for part in content.elems:
+      if part{"type"}.getStr("") == "text":
+        result.add(part{"text"}.getStr(""))
+  if result.len == 0: result = m{"attachText"}.getStr("")
+
+type TextInt = object
+  text: string
+  bytes: int
+
+proc toolBody(m: JsonNode): TextInt =
+  ## What a tool result means to the elision ladder: its text (the elision
+  ## decision input) and the bytes it occupies in the request — the text plus,
+  ## for an image-carrying result, the materialized parts. A stub that drops
+  ## the images reclaims both, so measuring only the text would under-report
+  ## what the rung freed.
+  result.text = toolBodyText(m)
+  result.bytes = result.text.len
+  if m{"attachments"}.jkind == JArray and m{"content"}.jkind == JArray:
+    result.bytes = ($m{"content"}).len
+
 proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
                record = true): int =
   ## Apply the deterministic §5.2 projection edit to one canonical tool
@@ -903,7 +942,7 @@ proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
   if n.source != nsCanonical: return 0
   let m = messages[i]
   if m{"role"}.getStr("") != "tool": return 0
-  let content = m{"content"}.getStr("")
+  let content = toolBodyText(m)
   if content.len <= pruneThreshold or
       content.contains("[tool result middle pruned"):
     return 0
@@ -930,6 +969,11 @@ proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
     " bytes omitted — recall the original with context_recall " & refJson &
     "]\n" & tail
   if body.len >= content.len: return 0
+  # Middle-pruning a result that carries images would drop them: `content`
+  # becomes the pruned string, and the pixels' refs would then describe a
+  # message that no longer advertises them. Refuse instead — the rung is
+  # opportunistic, and the stub rung can still reclaim the whole result.
+  if m{"attachments"}.jkind == JArray: return 0
   messages[i]["content"] = %body
   if record:
     p.prunes.add(PruneRec(id: n.id, bytesBefore: content.len,
@@ -1028,13 +1072,22 @@ proc applyStub(p: Persister, messages: var seq[JsonNode], i: int): int =
   if i < 0 or i >= messages.len: return 0
   let m = messages[i]
   if m{"role"}.getStr("") != "tool": return 0
-  let content = m{"content"}.getStr("")
-  if content.len == 0 or content.startsWith(stubTag): return 0
+  let before = toolBody(m)
+  if before.bytes == 0 or before.text.startsWith(stubTag): return 0
   let body = stubBody(if i < p.nodes.len: p.nodes[i].id else: "",
                       m{"name"}.getStr(""))
-  if body.len >= content.len: return 0
+  if body.len >= before.bytes: return 0
   messages[i]["content"] = %body
-  content.len - body.len
+  # A stubbed result takes its pixels with it, refs and all: leaving the refs
+  # behind would describe images the message no longer carries, and the next
+  # materialization would resurrect exactly the pixels this rung reclaimed
+  # (docs/WIRE.md "Tool results" — the refs and the parts are one fact). The
+  # canonical document in the store keeps them, so `context_recall` still
+  # recovers the original.
+  if m{"attachments"}.jkind == JArray:
+    messages[i].delete("attachments")
+    messages[i].delete("attachText")
+  before.bytes - body.len
 
 proc persisterForCatalog*(cat: Catalog): Persister =
   ## Test seam: a persister whose catalog answers schema lookups, with no bus
@@ -1129,8 +1182,8 @@ proc stubResults*(p: var Persister, messages: var seq[JsonNode],
     if p.nodes[i].source != nsCanonical: continue
     let m = messages[i]
     if m{"role"}.getStr("") != "tool": continue
-    let content = m{"content"}.getStr("")
-    if content.len == 0 or content.startsWith(stubTag): continue
+    let body = toolBody(m)
+    if body.bytes == 0 or body.text.startsWith(stubTag): continue
     let callIdx = callIndex.getOrDefault(m{"tool_call_id"}.getStr(""), -1)
     if callIdx < 0: continue
     let calls = messages[callIdx]{"tool_calls"}
@@ -1153,11 +1206,13 @@ proc stubResults*(p: var Persister, messages: var seq[JsonNode],
       for path in declaredPathValues(schema, args):
         if lastWrite.getOrDefault(path, -1) > i: stale = true; break
       if not (stale or (mode == smDerivable and declared)): continue
-      let saved = applyStub(p, messages, i)
-      if saved > 0 and live:
-        p.prunes.add(PruneRec(id: p.nodes[i].id, bytesBefore: content.len,
-                              bytesAfter: content.len - saved, full: true))
-      result += saved
+      let before = body.bytes
+      let freed = applyStub(p, messages, i)
+      if freed > 0:
+        if live:
+          p.prunes.add(PruneRec(id: p.nodes[i].id, bytesBefore: before,
+                                bytesAfter: before - freed, full: true))
+        result += freed
       break
 
 proc tombstoneReasoning(p: var Persister, messages: var seq[JsonNode]): int =
@@ -1632,6 +1687,12 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
   let resolvedOutput = resolved{"output"}.getInt(0)
   if resolvedOutput > 0:
     p.ctxOutput = resolvedOutput
+  # Model capability is a fact of the same resolution, and it decides whether
+  # image parts may be sent at all (see materializeProjection). VisionSource
+  # "" means nobody answered; that is NOT "text-only".
+  if resolved{"visionSource"}.getStr("").len > 0:
+    p.vision = resolved{"vision"}.getBool(true)
+    p.visionKnown = true
   # The calibration offset is model-specific: switching models (or their
   # provider) changes the tokenizer — drop the stale offset and re-learn
   # from the next response.
@@ -1652,6 +1713,12 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
     "promptTokens": p.promptTokens,
     "usedTokens": p.contextUsed
   }
+  # Image capability belongs on the same frame: a UI can show why images are
+  # being elided, and the turn reads it from here (an older llm component omits
+  # both fields, leaving the unknown-capability default of "send them").
+  if p.visionKnown:
+    result["vision"] = %p.vision
+    result["visionSource"] = %resolved{"visionSource"}.getStr("")
   # A pinned provider/model pair the catalog cannot match silently accepts the
   # conservative fallback window — as much as 4x smaller than the pin's real
   # model — and admission then measures a healthy transcript against the wrong
@@ -2056,12 +2123,27 @@ proc materializeMessage*(ct: CoreTools, message: var JsonNode,
   message["attachText"] = %text
   message["content"] = buildContent(text, refs.elems, payloads, retain)
 
-proc materializeProjection*(ct: CoreTools, messages: var seq[JsonNode]) =
+proc materializeProjection*(ct: CoreTools, messages: var seq[JsonNode],
+                            vision = true) =
   ## Apply the projection rule to a whole message list. Idempotent: called
   ## once after a resume load, and after each append so a new image can
   ## elide the oldest one (the window only ever slides toward newer, so an
   ## elided image is never re-materialized mid-session).
-  let retained = retainedMessages(messages, projectionBudget())
+  ##
+  ## `vision = false` means the turn's resolved model cannot be sent image
+  ## parts at all. Every image is then ELIDED (the honest text marker naming
+  ## the file), not materialized: without this, a text-only model receives
+  ## image_url parts it rejects — and a provider that rejects the request
+  ## rejects the WHOLE conversation, not just the turn, so an image in the
+  ## frozen history would strand every later turn. Elision rather than refusal
+  ## is what the elision marker already exists for, and it keeps the elided
+  ## form a pure function of the refs (resume reproduces it byte for byte).
+  ## Only a POSITIVE catalog answer sets this (see resolveTurnConfig); an
+  ## unknown model keeps every image, so no capability guess ever costs the
+  ## model something it could have seen.
+  let retained =
+    if vision: retainedMessages(messages, projectionBudget())
+    else: newSeq[bool](messages.len)
   for i in 0 ..< messages.len:
     if not hasAttachments(messages[i]): continue
     materializeMessage(ct, messages[i], retained[i])
@@ -2324,13 +2406,55 @@ proc toolResultText*(value: JsonNode): string =
   if text.isStr: return text.getStr()
   jdump(value)
 
+type ResultImages* = object
+  ## Tool-produced images on their way into a tool message. `refs` are the
+  ## small descriptors the stored message keeps (ids already stamped) and
+  ## `payloads` the base64, index-aligned. `dropped` is non-empty when a
+  ## declared `images` array contributed nothing, with the reason to report.
+  refs*: seq[JsonNode]
+  payloads*: seq[string]
+  dropped*: string
+
+proc takeResultImages*(ct: CoreTools, value: JsonNode,
+                       messageKey, convId: string): ResultImages =
+  ## Bounded entry point for TOOL-PRODUCED images (docs/WIRE.md "Tool
+  ## results"). A tool result is the one path an image enters history without a
+  ## human having chosen it — `bash` can capture a screenshot, a file read can
+  ## open a PNG, a bridge can relay whatever a server returned — so the bound
+  ## lives here rather than in each component: whatever a tool hands back is
+  ## validated against the byte-sniffed allowlist, capped, and stored beside
+  ## the tool message. A refusal is reported INTO the message (ResultImages.
+  ## dropped) instead of failing the turn: the tool's text still answers the
+  ## call and the model learns why the pixels are missing, which is the same
+  ## shape as an elided image's honest marker.
+  ##
+  ## Oversized is dropped, never silently downscaled. The Pi lesson is that an
+  ## unsendable image makes the provider reject the WHOLE conversation, so
+  ## unbounded pixels entering history must be impossible; the honest other
+  ## half is that core has no image codec, and a re-encoder living in one
+  ## language's runtime would break the language-agnostic rule (and its output
+  ## would still need its own bound). A component that wants a big capture sent
+  ## resizes it before returning it — the same division of labour `bash`
+  ## already has for output it caps.
+  if value == nil or value.kind != JObject: return
+  let raw = value{"images"}
+  if raw.jkind != JArray or raw.len == 0: return
+  let validated = validateResultImages(raw)
+  if not validated.ok:
+    result.dropped = validated.error
+    return
+  result.refs = validated.refs
+  result.payloads = validated.payloads
+  storeAttachments(ct, messageKey, result.refs, result.payloads, convId)
+
 proc commitToolItem(ct: CoreTools, p: var Persister,
                     messages: var seq[JsonNode],
                     exposure: var ToolExposure,
                     onEvent: proc(kind: string, data: JsonNode) {.closure.},
                     sessionId, turnId: string,
                     it: ToolCallItem, oc: ToolCallOutcome,
-                    toolStartedAt: float, toolDurationMs: int) =
+                    toolStartedAt: float, toolDurationMs: int,
+                    vision = true) =
   ## Shared post-processing for one executed tool call (serial or from a
   ## parallel wave): catalog pump, discovery recording, transcript append,
   ## persistence (with lifecycle telemetry), and the "done" toolcall event.
@@ -2356,34 +2480,79 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
   let content =
     if oc.ok or partialFailure: toolResultText(oc.value)
     else: ""
-  let toolMsg =
-    if oc.ok or partialFailure:
-      var body = content
-      promoteSpill(ct, p, sessionId, oc.value, body)
-      if oc.value{"__partial"}.getBool(false):
-        let reason = oc.value{"__partialReason"}.getStr("cancelled")
-        let wording = if reason == "timed_out":
-                        "timed out"
-                      else:
-                        "cancelled by user"
-        body.add("\n\n[tool output above is partial; " & wording &
-                 "; retry may be useful]")
-      if partialFailure:
-        body = "ERROR: " & oc.error & "\n\n" & body
-      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
-         "content": body}
-    else:
-      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
-         "content": "ERROR: " & oc.error}
+  var resultImages: ResultImages
+  var toolMsg: JsonNode
+  if oc.ok or partialFailure:
+    var body = content
+    # The message's own key, peeked: attachment docs are addressed under the
+    # tool message exactly as a dropped image is addressed under its user
+    # message, so `conversation_delete`'s existing sweep (ids under
+    # "<sessionId>:") reclaims tool pixels with no extra bookkeeping.
+    promoteSpill(ct, p, sessionId, oc.value, body)
+    resultImages = takeResultImages(ct, oc.value, p.nextMsgKey(), sessionId)
+    if resultImages.dropped.len > 0:
+      # Into the message, not into the turn's error path: the tool's text
+      # still answers the call, and the model is told why the pixels it was
+      # promised are not here.
+      body.add("\n[images from this result were not attached: " &
+               resultImages.dropped & "]")
+    if oc.value{"__partial"}.getBool(false):
+      let reason = oc.value{"__partialReason"}.getStr("cancelled")
+      let wording = if reason == "timed_out":
+                      "timed out"
+                    else:
+                      "cancelled by user"
+      body.add("\n\n[tool output above is partial; " & wording &
+               "; retry may be useful]")
+    if partialFailure:
+      body = "ERROR: " & oc.error & "\n\n" & body
+    toolMsg = %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+                 "content": body}
+    if resultImages.refs.len > 0:
+      # The same stored shape a dropped image gets: text plus refs, never
+      # inline base64 (a `list` page carrying pixels outgrows the bus
+      # payload), and the original text so materialization stays a pure
+      # function of the refs across resume.
+      toolMsg["attachText"] = %body
+      toolMsg["attachments"] = %resultImages.refs
+      toolMsg["imageCount"] = %resultImages.refs.len
+  else:
+    toolMsg = %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+                 "content": "ERROR: " & oc.error}
   ctxAppend(p, messages, toolMsg,
     %*{"turnId": turnId, "startedAt": toolStartedAt,
        "durationMs": toolDurationMs})
+  if resultImages.refs.len > 0:
+    # Materialize into the projection through the ONE shared rule: the newest
+    # images within the budget carry their data URL, an older one gets the
+    # honest text marker. Nothing image-shaped reaches the provider without
+    # passing here, so a tool cannot hand the request a payload the projection
+    # never bounded — and the pixels themselves never enter the frozen prefix
+    # (the prefix is the system prompt plus tool schemas; this is append-only
+    # history). `vision` is the turn's resolved model capability: a text-only
+    # model gets every image elided rather than a request it would reject.
+    materializeProjection(ct, messages, vision)
   if onEvent != nil:
     if oc.ok or partialFailure:
+      # The event's result copy carries image DESCRIPTORS, never the pixels:
+      # the caller that dispatched the tool already has them, and repeating up
+      # to a few megabytes per tool call onto a UI/telemetry subject would
+      # make every observer pay for them. Machine fields stay stable; only the
+      # base64 moves out. A refused array is replaced too — that is the case
+      # where the payload is largest (an over-limit image) and the one where
+      # nothing stored the bytes, so passing it through would be pure waste.
+      var evValue = oc.value
+      if resultImages.refs.len > 0 or resultImages.dropped.len > 0:
+        evValue = oc.value.copy()
+        if resultImages.refs.len > 0:
+          evValue["images"] = %resultImages.refs
+        else:
+          evValue.delete("images")
+          evValue["imagesDropped"] = %resultImages.dropped
       var event = %*{"sessionId": sessionId, "turnId": turnId,
                       "callId": it.id, "phase": "done",
                       "tool": it.name, "args": it.args,
-                      "result": oc.value,
+                      "result": evValue,
                       "durationMs": toolDurationMs,
                       "at": epochTime()}
       if partialFailure: event["error"] = %oc.error
@@ -2932,6 +3101,11 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   ## (ev.session.<id>.turn).
   let sessionId = p.convId
   let turnId = "turn-" & newId()
+  # The resolved model's image capability for this turn, refreshed from every
+  # turn-config resolution (a model switch mid-conversation changes it). True
+  # until a resolve positively says otherwise, so an unknown model is never
+  # silently denied the images it could have seen (see materializeProjection).
+  var turnVision = true
   # Live turn identity for pumpAdvise: advisor requests are accepted only
   # while this turn is running and only for its turnId.
   if ct.activeTurn != nil:
@@ -3001,6 +3175,20 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     status["turnId"] = %turnId
     resolvedProvider = status{"provider"}.getStr("")
     selectedModel = status{"model"}.getStr(selectedModel)
+    # Capability comes back on the same status frame; the Persister already
+    # recorded it (resolveTurnConfig), so the turn reads it from there and an
+    # older llm component that omits the field leaves the safe default.
+    if status{"visionSource"}.getStr("").len > 0:
+      turnVision = status{"vision"}.getBool(true)
+    if p.visionKnown and not p.vision:
+      # The projection may already hold materialized images: a fresh append
+      # cannot precede the resolve, but a RESUMED conversation was materialized
+      # at load time, when the capability was not yet known. Re-apply the rule
+      # now, before the first request of the turn, so a text-only model is
+      # never handed image parts it would reject (a rejection costs the whole
+      # conversation, not the turn). Idempotent: the marker rebuilds from
+      # attachText to the same text.
+      materializeProjection(ct, messages, false)
     if onEvent != nil:
       onEvent("status", status)
   except CatchableError:
@@ -3703,7 +3891,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           # call with an error result so the history stays provider-valid.
           for k in idx ..< items.len:
             commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
-              turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
+              turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0,
+              turnVision)
           endTurnOnLimit(p, turnError, "seconds", detail, msg)
           return ""
       if maxCalls > 0 and toolCallsMade >= maxCalls:
@@ -3714,7 +3903,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # valid for providers that require complete tool-call pairing.
         for k in idx ..< items.len:
           commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
-            turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
+            turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0,
+            turnVision)
         turnError = msg
         finishTurn("budget-exhausted", err = msg)
         return ""
@@ -3756,7 +3946,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                           parseFailed: false, rawArgs: ""),
                          (if k < outcomes.len: outcomes[k]
                           else: ToolCallOutcome(error: "no outcome")),
-                         waveStartedAt, waveDurationMs)
+                         waveStartedAt, waveDurationMs, turnVision)
         continue
       let it = items[idx]
       inc idx
@@ -3829,7 +4019,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           oc = ToolCallOutcome(error: e.msg)
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
       commitToolItem(ct, p, messages, exposure, onEvent, sessionId, turnId,
-                     it, oc, toolStartedAt, toolDurationMs)
+                     it, oc, toolStartedAt, toolDurationMs, turnVision)
 
   # The only way out of the round loop without a return is the round budget:
   # end the turn loudly. A silent empty reply here reads exactly like a hang
@@ -4360,7 +4550,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # rule is greedy-newest within the budget and a pure function of the
     # refs, so this reproduces exactly the projection the previous turn
     # sent — a resumed conversation must not silently lose or re-add pixels.
-    materializeProjection(ct, entry.messages)
+    materializeProjection(ct, entry.messages,
+                          if entry.persister.visionKnown: entry.persister.vision
+                          else: true)
     # A2/A3: usage and cumulative cache counters persist in the header
     # (written by persistConversationRuntime), so the context meter and
     # cache metrics survive a runner restart. seqNo continues after the
@@ -4448,11 +4640,23 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           # than the committed one. Re-apply the recorded edit only, then prove
           # it reproduced byte-for-byte — a mismatch is real drift and stays
           # fatal rather than silently sending a different prompt.
-          let before = entry.messages[idx]{"content"}.getStr("")
+          #
+          # Measured through toolBody and not through `content`: at this point
+          # the projection is already materialized, so a result that carried
+          # images holds an ARRAY whose string read is "" — comparing that to
+          # the recorded byte count would report drift on a conversation that
+          # is perfectly intact and wedge it on resume.
+          let before = toolBody(entry.messages[idx])
           let body = stubBody(pr.id, entry.messages[idx]{"name"}.getStr(""))
-          if before.len != pr.bytesBefore or body.len != pr.bytesAfter:
+          if before.bytes != pr.bytesBefore or body.len != pr.bytesAfter:
             return %*{"error": "context-recovery-required: projection stub ref cannot be reproduced: " & pr.id}
           entry.messages[idx]["content"] = %body
+          # The refs go with the body, exactly as applyStub wrote the record:
+          # leaving them would re-materialize pixels the committed projection
+          # had already reclaimed.
+          if entry.messages[idx]{"attachments"}.jkind == JArray:
+            entry.messages[idx].delete("attachments")
+            entry.messages[idx].delete("attachText")
         elif idx < 0 or entry.messages[idx]{"content"}.getStr("").len !=
             pr.bytesBefore or p.pruneNode(entry.messages, idx,
                                          record = false) <= 0 or
@@ -4882,7 +5086,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # Materialize into the projection: the newest images within the budget
     # carry their data URL, older ones an honest text marker. Deterministic
     # from the refs, so every resume rebuilds the same projection.
-    materializeProjection(ct, entry.messages)
+    materializeProjection(ct, entry.messages,
+                          if entry.persister.visionKnown: entry.persister.vision
+                          else: true)
   if entry.persister.seqNo == 1 and not hasTitle and not isWake and
       heartbeatId.len == 0:
     # first message of a fresh conversation: title it from the message so

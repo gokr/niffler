@@ -105,7 +105,11 @@ type resolvedConfig struct {
 	ContextSource  string
 	Output         int
 	OutputSource   string
-	StripPrefix    bool
+	// Vision: may this model be SENT image parts? Resolved from the catalog's
+	// modalities.input; unknown means true (see resolveModelTraits).
+	Vision       bool
+	VisionSource string
+	StripPrefix  bool
 }
 
 // resolveContextWindow returns the effective context size and its provenance:
@@ -149,31 +153,70 @@ func resolveContextWindow(ctx context.Context, c *sdk.Component, p provider, pro
 	return defaultContext, catalogProvider, "fallback"
 }
 
-// resolveOutputWindow returns the model's max output tokens and its
-// provenance. The catalog's limit.output is authoritative when present;
-// otherwise a generous default so the provider's server-side cap (which
-// would otherwise truncate answers mid-stream) is not hit.
-func resolveOutputWindow(ctx context.Context, c *sdk.Component, catalogProvider, model string) (int, string) {
-	if c != nil && catalogProvider != "" {
-		lookupCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-		defer cancel()
-		raw, err := c.RequestContext(lookupCtx, "models", "models_get", map[string]any{
-			"provider": catalogProvider, "model": model,
-		})
-		if err == nil {
-			var descriptor struct {
-				Model struct {
-					Limit struct {
-						Output int `json:"output"`
-					} `json:"limit"`
-				} `json:"model"`
-			}
-			if json.Unmarshal(raw, &descriptor) == nil && descriptor.Model.Limit.Output > 0 {
-				return descriptor.Model.Limit.Output, "catalog"
+// modelTraits is what one catalog lookup answers about a model: its output cap
+// and whether it accepts image parts. One request, because resolveRuntimeConfig
+// runs on every turn and each lookup is a bus round trip.
+type modelTraits struct {
+	Output       int
+	OutputSource string
+	Vision       bool
+	VisionSource string
+}
+
+// resolveModelTraits resolves the model's max output tokens and its vision
+// capability. The catalog's limit.output is authoritative when present;
+// otherwise a generous default so the provider's server-side cap (which would
+// otherwise truncate answers mid-stream) is not hit.
+//
+// Vision comes from the catalog's modalities.input. Absence of evidence means
+// TRUE, never false: an unknown model (self-hosted, a gateway, a model newer
+// than the catalog) must not have its images silently discarded, and an
+// unavailable models component is not an answer at all. Only a POSITIVE
+// catalog answer that omits "image" turns it off — the same "fire only on a
+// positive answer" rule crossCatalogMismatch follows.
+func resolveModelTraits(ctx context.Context, c *sdk.Component, catalogProvider, model string) modelTraits {
+	result := modelTraits{Output: defaultOutput, OutputSource: "fallback", Vision: true}
+	if c == nil || catalogProvider == "" {
+		return result
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	raw, err := c.RequestContext(lookupCtx, "models", "models_get", map[string]any{
+		"provider": catalogProvider, "model": model,
+	})
+	if err != nil {
+		return result
+	}
+	var descriptor struct {
+		Model struct {
+			Limit struct {
+				Output int `json:"output"`
+			} `json:"limit"`
+			Modalities struct {
+				Input []string `json:"input"`
+			} `json:"modalities"`
+		} `json:"model"`
+	}
+	if json.Unmarshal(raw, &descriptor) != nil {
+		return result
+	}
+	if descriptor.Model.Limit.Output > 0 {
+		result.Output = descriptor.Model.Limit.Output
+		result.OutputSource = "catalog"
+	}
+	// An empty list is not a claim either: models.dev entries without a
+	// modalities block must not read as "no images".
+	if len(descriptor.Model.Modalities.Input) > 0 {
+		result.VisionSource = "catalog"
+		result.Vision = false
+		for _, input := range descriptor.Model.Modalities.Input {
+			if input == "image" {
+				result.Vision = true
+				break
 			}
 		}
 	}
-	return defaultOutput, "fallback"
+	return result
 }
 
 func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverride, modelOverride string) (resolvedConfig, error) {
@@ -206,11 +249,13 @@ func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverrid
 		}
 	}
 	contextSize, catalogProvider, contextSource := resolveContextWindow(ctx, c, p, providerName, model)
-	outputSize, outputSource := resolveOutputWindow(ctx, c, catalogProvider, model)
+	traits := resolveModelTraits(ctx, c, catalogProvider, model)
 	return resolvedConfig{
 		Provider: p, ProviderName: providerName, ProviderSource: providerSource,
 		Model: model, Catalog: catalogProvider, Context: contextSize,
-		ContextSource: contextSource, Output: outputSize, OutputSource: outputSource,
+		ContextSource: contextSource, Output: traits.Output,
+		OutputSource: traits.OutputSource,
+		Vision:       traits.Vision, VisionSource: traits.VisionSource,
 		StripPrefix: p.StripPrefix,
 	}, nil
 }
@@ -1443,6 +1488,7 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		"model": resolved.Model, "catalog": resolved.Catalog,
 		"context": resolved.Context, "contextSource": resolved.ContextSource,
 		"output": resolved.Output, "outputSource": resolved.OutputSource,
+		"vision": resolved.Vision, "visionSource": resolved.VisionSource,
 		"protocol": resolved.Provider.Protocol, "authType": resolved.Provider.AuthType,
 		"hasKey": resolved.Provider.APIKey != "",
 	}

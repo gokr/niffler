@@ -129,9 +129,14 @@ window"; [WIRE.md](WIRE.md) "Subjects", "Approvals", "Attachments".
 - Mid-turn steering, turn-bound advisory delivery, repo-map appends and
   asynchronous LSP diagnostics — folded as append-only history (clean
   diagnostics are display/storage-only and never enter model history).
-- Image attachments: validation (MIME allowlist, magic bytes, per-image and
-  per-turn caps), metadata/pixel store split, deterministic greedy-newest
-  projection, caption placeholder, delete sweep.
+- Images, dropped or tool-produced: validation (MIME allowlist, magic bytes,
+  per-image and per-turn caps, 4 per tool result), metadata/pixel store split,
+  deterministic greedy-newest projection, text-marker elision, delete sweep,
+  and capability gating — a text-only model (`llm_resolve`'s `vision`, from
+  the catalog's `modalities.input`) gets every image elided rather than a
+  request its provider would reject wholesale. A tool result may carry
+  `images` beside `text`; `edit`'s `read` answers an image path with the image
+  and a caption instead of a binary refusal.
 - Hard, non-negotiable budgets for subagents alongside soft human limits that
   negotiate through the approval channel.
 - Conversation deletion (messages, toolset, lineage, jobs, attachments) behind

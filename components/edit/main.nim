@@ -21,7 +21,8 @@
 ## retyping them, install the niffler-hashline plugin and discover its
 ## anchored replace.
 
-import std/[algorithm, json, os, posix, sequtils, strutils, tables]
+import std/[algorithm, base64, json, math, os, posix, sequtils,
+            strutils, tables]
 import checksums/sha1
 import niffler/sdk
 import niffler/readscope
@@ -55,6 +56,21 @@ const
   OUTLINE_MIN_LINES = 1000  # whole-reads above this get an lsp outline (NIF_READ_OUTLINE_LINES)
   OUTLINE_TIMEOUT_MS = 8_000  # the outline is opportunistic — never stall a read
   OUTLINE_MAX_PER_CALL = 2  # per batch call: 2 × timeout stays inside the read budget
+  READ_IMAGE_MAX_PER_CALL = 4
+    ## Images one `read` RESULT may contribute, across a batch. Mirrors core's
+    ## per-result cap (core/attachments.nim attachResultMaxCount) because a
+    ## component cannot ask core for it: a batch of twelve screenshots must
+    ## report which of them did not come through rather than let core drop
+    ## them silently.
+  READ_IMAGE_MAX_BYTES = 3_500_000
+    ## Read-image cap: above this the file is NOT attached and the caption
+    ## says why. Sits under the harness's 4 MB per-image base64 ceiling with
+    ## room for encoding, so an image this component agrees to send is one
+    ## core will accept — a component offering more would only produce a
+    ## refusal in the transcript. The provider's own limit is stricter in
+    ## practice (Anthropic refuses past ~5 MB base64 and downscales beyond
+    ## 1568px itself), which is why the caption tells the model to resize
+    ## rather than this code doing it behind its back.
 
 # ---------------------------------------------------------------------------
 # line helpers + normalization
@@ -1285,6 +1301,141 @@ proc readPathArg(args: JsonNode, label: string): string =
   raise newException(ValueError,
     "[E_BAD_SHAPE] " & label & " requires a non-empty \"path\" string.")
 
+type ImageInfo = object
+  ok: bool
+  mime: string
+  width: int
+  height: int
+
+proc sniffImageInfo(raw: string): ImageInfo =
+  ## Recognize an image by its MAGIC BYTES, and read its pixel dimensions.
+  ## Deliberately extension-independent: a screenshot named `shot` or a
+  ## committed fixture named `.gitkeep` is still an image, and a `.png` that
+  ## is really text is still text — the bytes decide, exactly as the
+  ## attachment contract does for a dropped image (core/attachments.nim owns
+  ## the provider-side allowlist this mirrors). Nothing is decoded or
+  ## re-encoded here: this component ships no image codec, so it reports what
+  ## it can prove and leaves a capture that is too large to the caller.
+  ## Dimensions are best-effort (0 when the header does not parse) and only
+  ## feed the caption — a wrong guess costs a wrong number in a label, never
+  ## a wrong payload.
+  if raw.len < 16: return
+  template b(i: int): int = ord(raw[i])
+  template u16(i: int): int = b(i) or (b(i + 1) shl 8)
+  template u32(i: int): int =
+    b(i) or (b(i + 1) shl 8) or (b(i + 2) shl 16) or (b(i + 3) shl 24)
+  template be32(i: int): int =
+    (b(i) shl 24) or (b(i + 1) shl 16) or (b(i + 2) shl 8) or b(i + 3)
+  if b(0) == 0x89 and b(1) == 0x50 and b(2) == 0x4E and b(3) == 0x47:
+    # PNG: IHDR is the first chunk — width then height, big-endian.
+    if raw.len >= 24: return ImageInfo(ok: true, mime: "image/png",
+      width: be32(16), height: be32(20))
+    return ImageInfo(ok: true, mime: "image/png")
+  if b(0) == 0xFF and b(1) == 0xD8 and b(2) == 0xFF:
+    # JPEG: walk the marker segments to the frame header (SOFn).
+    var i = 2
+    while i + 9 < raw.len:
+      if b(i) != 0xFF: inc i; continue
+      let marker = int(b(i + 1))
+      if marker == 0xD8 or marker == 0x01 or (marker >= 0xD0 and marker <= 0xD7):
+        i += 2
+        continue
+      if marker == 0xD9 or marker == 0xDA: break   # end / start of scan
+      let size = (int(b(i + 2)) shl 8) or int(b(i + 3))
+      if size < 2: break
+      if marker >= 0xC0 and marker <= 0xCF and
+          marker != 0xC4 and marker != 0xC8 and marker != 0xCC:
+        return ImageInfo(ok: true, mime: "image/jpeg",
+          height: (int(b(i + 5)) shl 8) or int(b(i + 6)),
+          width: (int(b(i + 7)) shl 8) or int(b(i + 8)))
+      i += 2 + size
+    return ImageInfo(ok: true, mime: "image/jpeg")
+  if b(0) == 0x47 and b(1) == 0x49 and b(2) == 0x46:
+    # GIF: the logical screen descriptor is little-endian, right after the
+    # signature. Deliberately NOT refused when the version byte is odd — the
+    # magic is enough to send it, and a provider is the authority on the rest.
+    return ImageInfo(ok: true, mime: "image/gif",
+      width: u16(6), height: u16(8))
+  if b(0) == 0x52 and b(1) == 0x49 and b(2) == 0x46 and b(3) == 0x46 and
+      raw.len >= 30 and b(8) == 0x57 and b(9) == 0x45 and b(10) == 0x42 and
+      b(11) == 0x50:
+    # WebP: three container layouts. VP8X carries the canvas size minus one;
+    # VP8L packs both dimensions into one little-endian word; plain VP8
+    # stores the frame size in its own header.
+    if b(12) == 0x56 and b(13) == 0x50 and b(14) == 0x38 and b(15) == 0x58:
+      return ImageInfo(ok: true, mime: "image/webp",
+        width: 1 + (int(b(24)) or (int(b(25)) shl 8) or
+                    (int(b(26)) shl 16)),
+        height: 1 + (int(b(27)) or (int(b(28)) shl 8) or
+                     (int(b(29)) shl 16)))
+    if b(12) == 0x56 and b(13) == 0x50 and b(14) == 0x38 and b(15) == 0x4C:
+      let bits = u32(21)
+      return ImageInfo(ok: true, mime: "image/webp",
+        width: 1 + (bits and 0x3FFF),
+        height: 1 + ((bits shr 14) and 0x3FFF))
+    return ImageInfo(ok: true, mime: "image/webp",
+      width: u16(26) and 0x3FFF, height: u16(28) and 0x3FFF)
+  if b(0) == 0x42 and b(1) == 0x4D:
+    return ImageInfo(ok: true, mime: "image/bmp",
+      width: u32(18), height: u32(22))
+  ImageInfo()
+
+proc formatSize(bytes: int): string =
+  ## The caption's size field. Bytes below a kilobyte are reported in bytes:
+  ## `${bytes div 1024}KB` said "0KB" for a small icon, which reads as a broken
+  ## measurement in the one line the model gets about the image.
+  if bytes >= 1024 * 1024: $round(bytes / (1024 * 1024), 1) & "MB"
+  elif bytes >= 1024: $(bytes div 1024) & "KB"
+  else: $bytes & "B"
+
+proc imageCaption(shownPath: string, info: ImageInfo, bytes: int): string =
+  ## The `text` field an image read returns. It is the whole LLM-facing
+  ## channel besides the pixels (WIRE.md "Tool results"), so it carries what
+  ## the model cannot see for itself: which file, what format, how big, and
+  ## its dimensions — the facts a later request cannot recover once the image
+  ## is elided from the projection and only this marker remains.
+  result = "[image: " & shownPath & " " & info.mime & ", " &
+    formatSize(bytes)
+  if info.width > 0 and info.height > 0:
+    result.add(", " & $info.width & "x" & $info.height)
+  result.add("]")
+
+proc hReadImage(c: Component, args: JsonNode, target, shownPath, raw: string): JsonNode =
+  ## The `read` an image path gets instead of a binary refusal. Returns the
+  ## pixels on the result's `images` channel plus a caption on `text`;
+  ## core validates, stores and materializes them through the same path a
+  ## dropped image takes, so nothing here can reach the provider unbounded.
+  let info = sniffImageInfo(raw)
+  if not info.ok: return nil
+  var caption = imageCaption(shownPath, info, raw.len)
+  let session = args{"__session"}{"session"}.getStr("")
+  if raw.len > READ_IMAGE_MAX_BYTES:
+    # Too large to send. Say so and name the lever instead of shipping a
+    # payload the provider would reject for the whole conversation — and
+    # never downscale silently: a resized image the model did not ask for is
+    # a wrong answer to "what does this look like".
+    caption.add("\n[not attached: " & formatSize(raw.len) &
+      " is over the " & formatSize(READ_IMAGE_MAX_BYTES) &
+      " read-image limit — resize it first (e.g. bash: magick/convert " &
+      "-resize 1568x1568 in.png out.png) and read the result]")
+    return %*{"text": caption, "image": info.mime, "attached": false}
+  if session.len > 0:
+    # The same seen-state a text read records, under the same correction gate
+    # (an unchanged re-read writes nothing; only a correction does). An image
+    # read delivers every byte, so it marks the file fully seen — `edit` on it
+    # is still refused as binary, and undo stays keyed to the text tools.
+    observe(c, session, target, raw, full = true,
+            persist = seenOf(c, session, target).digest != $secureHash(raw))
+  result = %*{"text": caption, "image": info.mime, "attached": true,
+              "bytes": raw.len,
+              "images": %*[{"type": "image", "name": shownPath,
+                             "mimeType": info.mime,
+                             "data": encode(raw),
+                             "width": info.width,
+                             "height": info.height}]}
+  if info.width > 0: result["width"] = %info.width
+  if info.height > 0: result["height"] = %info.height
+
 proc hRead(c: Component, args: JsonNode): JsonNode =
   if args == nil or args.kind != JObject:
     raise newException(ValueError, "[E_BAD_SHAPE] Read request must be an object.")
@@ -1332,6 +1483,16 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     return %notice
   let sampleLen = min(SNIFF_BYTES, raw.len)
   let sample = raw[0 ..< sampleLen]
+  # An image is the one binary `read` can answer instead of refusing: it is
+  # what visual debugging turns on (a screenshot, a rendered chart, a UI
+  # fixture), and the alternative for the model is a dead end plus a bash
+  # detour that still cannot show it anything. Sniffed AFTER the masked and
+  # oversize gates above and BEFORE the binary refusal below, so every one of
+  # those still applies; the text-encoding refusals stay after it, because a
+  # UTF-16 TEXT file must keep its existing "convert it with bash" answer.
+  if not capture:
+    let imageResult = hReadImage(c, args, target, shownPath, raw)
+    if imageResult != nil: return imageResult
   if '\0' in sample:
     raise newException(ValueError,
       "[E_NOT_TEXT] " & path & " looks binary (NUL bytes) — inspect with bash")
@@ -1529,6 +1690,8 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
   var blocks: seq[string]
   var items = newJArray()
   var used = 0
+  var batchImages = newJArray()
+  var batchDropped: seq[string]
   for req in requests:
     if req.err.len > 0:
       let name = if req.path.len > 0: req.path else: "<invalid item>"
@@ -1550,8 +1713,22 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
       let content = hRead(c, itemArgs)
       let text = if content.kind == JString: content.getStr()
                  else: content{"text"}.getStr()
+      # `__captureText` is absent from every non-capture reply — including an
+      # image result, which has no text source at all — and a nil VALUE inside
+      # the reply object crashes the encode (std/json's toUgly dereferences
+      # it). Normalize to an explicit null: the machine field is then "no
+      # capturable text", which is exactly true.
       let source = if content.kind == JString: content
-                   else: content{"__captureText"}
+                   elif content{"__captureText"} != nil: content{"__captureText"}
+                   else: newJNull()
+      # An image item contributes pixels, not text: dropping them here would
+      # answer a batch `read` of [{png}, {txt}] with the image's caption
+      # alone — a silent loss the caller cannot detect from the reply.
+      for img in content{"images"}.listOf:
+        if batchImages.len < READ_IMAGE_MAX_PER_CALL:
+          batchImages.add(img)
+        else:
+          batchDropped.add(req.path)
       if used + text.len > 512_000:
         blocks.add("### " & heading &
           "\n[read limit: aggregate output exceeds 512000 bytes; read remaining items separately]")
@@ -1566,7 +1743,20 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
       blocks.add("### " & heading & "\n" & e.msg)
       items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
                    "error": e.msg})
-  result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
+  var text = blocks.join("\n")
+  result = %*{"text": text, "items": items, "count": items.len}
+  if batchImages.len > 0:
+    result["images"] = batchImages
+    result["imageCount"] = %batchImages.len
+  if batchDropped.len > 0:
+    # Say it in the text the model reads, not only in a machine field: the
+    # images are capped per RESULT (core's own bound), so a 12-file batch of
+    # screenshots legitimately exceeds it and the caller must know which
+    # files did not come through.
+    result["text"] = %(text & "\n[only " & $batchImages.len &
+      " image(s) are attached per result; not attached: " &
+      batchDropped.join(", ") & " — read them in separate calls]")
+    result["imagesDropped"] = %batchDropped
   if args{"__capture"}.getBool(false):
     result["__captureText"] = newJNull()
     result["__captureError"] = %"A batch contains separate files/ranges; capture items.0.content (or another item) explicitly."
@@ -1853,7 +2043,7 @@ discard comp.tool("read", toolSchema(%*{
               "properties": {"name": {"type": "string"}, "from": {"type": "string"}},
               "required": ["name"], "additionalProperties": false}]}
 }, @[],
-  "Read verbatim text: path for one file, reads for up to 12 files/ranges; offset/limit window them. Select items use glob to list paths, or a literal pattern to fetch match regions. Do not mix content and select items."), hReadTool,
+  "Read verbatim text: path for one file, reads for up to 12 files/ranges; offset/limit window them. Select items use glob to list paths, or a literal pattern to fetch match regions. Do not mix content and select items. A path that IS an image (png/jpeg/gif/webp/bmp, detected by its bytes, not its extension) returns the image for you to LOOK AT instead of text — use it for screenshots, rendered charts and visual debugging; the caption names the file, format and dimensions. An image too large to send is reported as such, not resized: shrink it with bash and read the result."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      "variables": true,
      # `effect: read` is deliberate: fabric's batch host would otherwise

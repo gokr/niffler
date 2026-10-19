@@ -23,6 +23,13 @@ keywords all must match; use fewer words when nothing matches.
   (`reads`: `{path, offset?, limit?}` items). Prefer one shape; both remain
   accepted with existing union/deduplication. Batch related reads; cut
   tool round trips when inspecting several files at once.
+- `read` on an IMAGE — a PNG/JPEG/GIF/WebP/BMP path (recognized by its
+  bytes, not its extension) comes back as the image itself plus a caption
+  naming file, format, size and dimensions, so a screenshot, a rendered
+  chart or a visual diff can actually be looked at instead of guessed
+  from text. Use it after anything that produces an image (a browser test,
+  a plot, `make` docs), and shrink a capture over ~3.5MB first rather than
+  expecting a resize: an over-limit image is reported, never downscaled.
 - `write` — atomic whole-file write (create or overwrite). Use for new files
   or full rewrites.
 - `edit` — surgical change: unique `old_string` → `new_string` per edit,

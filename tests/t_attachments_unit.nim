@@ -46,6 +46,53 @@ proc main() =
   let empty = validateAttachments(%*[img("x.png", "image/png", "")])
   check("an empty image is refused", not empty.ok, empty.error)
 
+  # --- tool-result images (the same routine, a tighter count) --------------
+  # A result cannot be trusted more than a client: same allowlist, same byte
+  # sniffing. Only the count differs.
+  let resultOk = validateResultImages(%*[img()])
+  check("a well-formed result image validates", resultOk.ok and
+        resultOk.refs.len == 1, resultOk.error)
+  check("a result needs no `type` field (it defaults to image)",
+        resultOk.refs[0]{"mimeType"}.getStr("") == "image/png",
+        $resultOk.refs[0])
+
+  var atCap = newJArray()
+  for i in 0 ..< attachResultMaxCount:
+    atCap.add(%*{"name": "s" & $i & ".png", "mimeType": "image/png",
+                 "data": pngB64, "width": 1, "height": 1})
+  let capOk = validateResultImages(atCap)
+  check("a result may carry exactly the result cap",
+        capOk.ok and capOk.refs.len == attachResultMaxCount, capOk.error)
+
+  var overCap = newJArray()
+  for i in 0 .. attachResultMaxCount:
+    overCap.add(%*{"name": "s" & $i & ".png", "mimeType": "image/png",
+                   "data": pngB64, "width": 1, "height": 1})
+  let capBad = validateResultImages(overCap)
+  check("a result over the cap is refused with the limit named",
+        not capBad.ok and capBad.error.contains("too many images") and
+        capBad.error.contains("(limit " & $attachResultMaxCount & ")"),
+        capBad.error)
+
+  let resultLiar = validateResultImages(%*[%*{
+    "name": "x.png", "mimeType": "image/png", "data": encode("not an image")}])
+  check("a result cannot smuggle non-image bytes past the sniff",
+        not resultLiar.ok and
+        resultLiar.error.contains("not a recognized image"), resultLiar.error)
+
+  let resultBig = validateResultImages(%*[%*{
+    "name": "big.png", "mimeType": "image/png",
+    "data": repeat('A', attachMaxImageB64 + 1)}])
+  check("a result image over the inline cap is refused",
+        not resultBig.ok and resultBig.error.contains("inline limit"),
+        resultBig.error)
+
+  # The result cap must leave the newest message's images inside the
+  # projection budget, or a fresh screenshot would be born already elided.
+  check("the result cap fits inside the projection budget",
+        attachMaxTurnB64 < attachDefaultBudget,
+        $(attachMaxTurnB64) & " vs " & $(attachDefaultBudget))
+
   let notArray = validateAttachments(%*{"type": "image"})
   check("a non-array is refused", not notArray.ok and
         notArray.error.contains("must be an array"), notArray.error)

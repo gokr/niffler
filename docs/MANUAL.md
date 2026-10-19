@@ -29,7 +29,7 @@ outcomes, crash windows and the session-ID reuse restriction.
 - [Store engines](#store-engines)
 - [State and configuration](#state-and-configuration) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
-- [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
+- [Context window](#context-window) · [Images (dropped and tool-produced)](#images-dropped-and-tool-produced) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
@@ -87,7 +87,7 @@ A one-file index of every shipped capability (not a reference) is
 | `fleet` | Nim | **not in the manifest** | Opt-in SSH/Multipass provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Multipass provisioning](#ssh-and-multipass-provisioning) |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
-| `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump; a *select* item ({glob|path, pattern?, word?, context?, max?}) locates-then-fetches in one call — with no pattern it lists the matched paths like find/ls, while a literal pattern returns verbatim hit regions ±context lines (grep semantics) ready to copy into `edit`'s `old_string`), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `replace_across` (sed-style literal s///g across a bounded file set in one call — `paths` and/or `glob` (`f*.go` in one directory, `**/*.go` recursively), rules applied in order like a sed pipeline with an optional `word` (\b) span, every occurrence per file and zero-match files passing like sed; a zero *total* match is refused with `E_NO_MATCH` so a mistyped needle cannot silently succeed, per-file counts come back, and each changed file gets its own undo entry that `undo_last_edit` reverts individually; bounded by a 512-file glob-accident circuit breaker and a 32 MB per-call undo pre-image budget (`E_TOO_LARGE`) — the counting pass writes nothing until every refusal has passed), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); `read`, `edit`, `replace_across` and `write` additionally carry the session-variable pipeline controls (`save_as` captures a response field, `resolve_vars: true` substitutes `$name` in that call's arguments — every other `$` stays literal; see [WIRE.md](WIRE.md) `x-harness.variables`); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
+| `edit` | Nim | optional | the file tools: `read` (an image path — png/jpeg/gif/webp/bmp, recognized by its bytes rather than its extension — returns the image itself for the model to look at instead of the `E_NOT_TEXT` binary refusal, with a caption naming file, format, byte size and dimensions; over `READ_IMAGE_MAX_BYTES` (3.5 MB) the file is *reported*, never silently downscaled, and `capture`/`save_as` calls skip the image path entirely, so a var-capable call cannot smuggle pixels into a variable; see [Images](#images-dropped-and-tool-produced)); `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump; a *select* item ({glob|path, pattern?, word?, context?, max?}) locates-then-fetches in one call — with no pattern it lists the matched paths like find/ls, while a literal pattern returns verbatim hit regions ±context lines (grep semantics) ready to copy into `edit`'s `old_string`), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `replace_across` (sed-style literal s///g across a bounded file set in one call — `paths` and/or `glob` (`f*.go` in one directory, `**/*.go` recursively), rules applied in order like a sed pipeline with an optional `word` (\b) span, every occurrence per file and zero-match files passing like sed; a zero *total* match is refused with `E_NO_MATCH` so a mistyped needle cannot silently succeed, per-file counts come back, and each changed file gets its own undo entry that `undo_last_edit` reverts individually; bounded by a 512-file glob-accident circuit breaker and a 32 MB per-call undo pre-image budget (`E_TOO_LARGE`) — the counting pass writes nothing until every refusal has passed), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); `read`, `edit`, `replace_across` and `write` additionally carry the session-variable pipeline controls (`save_as` captures a response field, `resolve_vars: true` substitutes `$name` in that call's arguments — every other `$` stays literal; see [WIRE.md](WIRE.md) `x-harness.variables`); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover`, `warmup` — plus `lsp_servers` (list the merged registry) and `lsp_registry` (`add`/`remove` an entry, approval-gated) — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions, nine tools: `agent_run`/`agent_spawn` (fresh or continued children, background jobs, durable settlement notices) plus `agent_status`/`agent_wait`/`agent_stop`/`agent_steer`/`agent_ask`/`agent_notices`/`agent_list` — see [Fabric and subagents](#fabric-and-subagents) |
@@ -1066,6 +1066,66 @@ rather than waiting: turns never nest, and a client that waits instead just
 expires its own timeout (this is what made `/export` look broken during a long
 turn).
 
+## Images (dropped and tool-produced)
+
+A conversation can carry images on two paths, and they meet in the same code:
+
+- **A human drops one.** `svc.session.<id>.call` takes `attachments` beside
+  `content` — the TUI's drag-and-drop (see [WIRE.md](WIRE.md) "Attachments"
+  for the exact validation, size caps and storage split).
+- **A tool returns one.** A tool result may carry an `images` array beside
+  `text`, which is the only channel by which a component can hand the model
+  something it *sees* rather than reads (see [WIRE.md](WIRE.md) "Tool
+  results"). The shipped producer is `read`: a path that is an image comes
+  back as the image plus a caption instead of `E_NOT_TEXT … looks binary`,
+  so a screenshot or a rendered chart is one `read` away during visual
+  debugging. No new tool and no new argument are involved — `read` is already
+  in every conversation's direct toolset, so nothing is added to the frozen
+  prompt prefix.
+
+Core, not the component, owns everything after that: images are validated
+against the byte-sniffed MIME allowlist (a component's claim is a hint, the
+bytes decide), capped (4 per tool result, 4 MB each, 4.5 MB per message),
+stored as `attachment`/`attachmentdata` documents addressed under the message
+that carries them, and materialized into the provider request by the one
+shared projection rule — newest-first within `NIF_ATTACH_BUDGET`, older
+images replaced by a text marker naming the file. A malformed or oversized
+`images` array never fails a turn: the refusal is appended to the tool's own
+text (`[images from this result were not attached: …]`) so the model learns
+why, and an over-limit file read is *reported* rather than silently resized —
+silent downscaling would be a wrong answer to "what does this look like".
+
+Two consequences worth knowing when reading a transcript:
+
+- Images are **append-only history**. The frozen prefix is the system prompt
+  plus the direct tool schemas, so pixels entering mid-conversation never
+  invalidate a conversation's cached prefix.
+- A **resumed** conversation rebuilds exactly the projection the previous turn
+  sent, because the rule is a pure function of the stored refs. Eliding a
+  result (the staleness/derivable stub rungs) drops its refs with its text, so
+  a superseded screenshot leaves the projection instead of being
+  re-materialized from stale refs.
+
+A **text-only model** is handled for you, not left to fail: `llm_resolve`
+reports the model's capability (`vision`, resolved from the catalog's
+`modalities.input` — visible in the turn's status frame and in `session_info`),
+and when the model positively cannot take image parts every image is elided to
+the honest text marker instead of being materialized. That is deliberate: a
+provider rejects the whole conversation, not just the turn, so sending one
+image to a model that cannot render it would break every later turn in that
+conversation. Unknown capability is never treated as "no" — an unknown model
+keeps its images.
+
+**Writing a component that returns images.** Any component may: put a caption
+in `text` and add an `images` array to the result object. All three SDKs ship
+the constructors — `resultImage`/`withImages` (Nim `sdk/niffler/sdk.nim`,
+TypeScript `sdk/ts/src/wire.ts`) and `ResultImage`/`WithImages` (Go
+`sdk/go/wire.go`) — so the wire shape lives in one place per language instead
+of being hand-rolled per component. Remember what core does NOT do: no
+re-encoding, so a capture that would exceed the caps is a component's problem
+to shrink (or to avoid, by returning the path and letting the model `read`
+it — which is exactly what `edit`'s own `read` does).
+
 ## Context window
 
 The model behind this section — canonical history vs the provider projection,
@@ -1096,6 +1156,11 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   own server-side cap and truncates long answers mid-stream. A per-call
   `maxTokens` only ever lowers the resolved value (the expert judge's tiny
   verdicts), and the Codex lane ignores it entirely.
+- The model's **image capability** comes back on the same frame as
+  `vision`/`visionSource`, resolved from the catalog's `modalities.input` (see
+  [Images](#images-dropped-and-tool-produced) for what core does with it).
+  Both fields are absent when nothing determined it, and absence is never read
+  as "text-only".
 
 - `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
   conversation-scoped provider and model override. `provider` names a stored
@@ -3952,7 +4017,7 @@ only a subset — this table is the complete list):
 | `compaction_input` | `<convId>:<attemptId>` | the paged pre-compaction snapshot the compaction component verifies and the runner commits from (pages are `<id>:p<idx>`). Transient: deleted as soon as the attempt settles, and pages orphaned by a crashed or timed-out attempt are swept after 600 s — nothing may treat it as durable (only `context_projection` is) |
 | `context_projection` | `<convId>` | one document per conversation — the committed context projection (`version`, `generation`, `canonicalHigh`, `renderer`, the normalized `checkpoint`, the durable `covered` canonical range, the `retained` ids, `prunes`, `measurements`, `provenance`) a runner reuses after compaction. Written once with `expectRev` on the previous generation; it is the source of truth a restart rebuilds the provider view from, and the recall resolver reads its `checkpoint`/`generation` when a notice names a `checkpoint` ref |
 | `spill` | `<convId>:<n>` | an oversized tool result promoted out of the context window, addressable with `context_recall {"ref": {"source": "spill", "id": "…"}}`. Promotion is best-effort at append time (a failure keeps the temp-file pointer and adds no ref); a missing, empty or malformed spill document is refused loudly instead of answered as an empty success, and the prune gate re-verifies the document before pruning, so a broken spill can never cost the last copy |
-| `attachment` | `<messageId>:a<i>` | one dropped image's METADATA (message id, MIME, dimensions, original name) — deliberately pixel-free, because a `list` page of this kind is how attachments are enumerated and a page carrying pixels exceeds the bus payload limit after two images. Written before the message that refs it; swept by `conversation_delete` |
+| `attachment` | `<messageId>:a<i>` | one image's METADATA (message id, MIME, dimensions, original name) — deliberately pixel-free, because a `list` page of this kind is how attachments are enumerated and a page carrying pixels exceeds the bus payload limit after two images. Written before the message that refs it; the message id is a user turn's when a human dropped the image and a TOOL message's when a tool returned it (see [Images](#images-dropped-and-tool-produced)). Swept by `conversation_delete` |
 | `attachmentdata` | `<messageId>:a<i>` | the base64 pixels for the `attachment` doc with the same id. Read when the context materializes images for the provider request (newest-first within `NIF_ATTACH_BUDGET`); never enumerated in bulk |
 | `mcp` | server name | MCP server config record of the `mcp` component (see [External MCP servers](#external-mcp-servers-mcp)) |
 | `jevshadow` | `<sessionId>:<turnId>:<kind>` (`kind` = `tools`/`skills`) | per-turn shadow observations of the advisory-discovery spike (`jev`): the candidate snapshot, raw answers, `elapsedMs`/`queueMs`, `status`/`turnClosed`. Never surfaced to the model and never written into a transcript; an absent backend writes **no** record (see [Advisory discovery](#advisory-discovery-jev-and-the-von-launcher)). Records contain task text — treat them as sensitive |

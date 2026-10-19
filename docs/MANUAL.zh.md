@@ -28,7 +28,7 @@
 - [Store engines](#store-engines)
 - [State and configuration](#state-and-configuration) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
-- [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
+- [Images (dropped and tool-produced)](#images-dropped-and-tool-produced) · [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
@@ -715,6 +715,51 @@ true`，加上窗口——否则上下文仪表会一直显示
 并给出 `busy`（“会话正处于回合中——请在回合结束后重试”）
 而不是等待：回合绝不嵌套，而选择等待的客户端只会
 耗尽自己的超时（这就是为什么在长回合期间 `/export` 看起来像坏了一样）。
+
+## Images (dropped and tool-produced)
+
+一条对话可以通过两条路径携带图像，而它们最终汇入同一段代码：
+
+- **人拖入一张图。** `svc.session.<id>.call` 在 `content` 之外接受 `attachments` —— 也就是
+  TUI 的拖放（校验规则、大小上限与存储拆分的确切细节见 [WIRE.md](WIRE.md) "Attachments"）。
+- **工具返回一张图。** 工具结果可以在 `text` 之外携带一个 `images` 数组，这是组件能够把
+  "*看得见*"、而不仅是"读得到"的东西交给模型的唯一通道（见 [WIRE.md](WIRE.md) "Tool
+  results"）。已随附的实现者是 `read`：路径确实是图像时，它以图像加一行说明返回，而不是
+  `E_NOT_TEXT … looks binary`，因此在可视化调试时，截图或渲染出的图表只需一次 `read`。
+  这没有引入新工具、也没有新增参数 —— `read` 本就在每条对话的直接工具集中，所以冻结的
+  提示前缀不会增加任何东西。
+
+此后的一切由 core 而非组件掌控：图像按字节嗅探出的 MIME 白名单校验（组件的声明只是提示，
+字节才是结论）、按上限裁剪（每个工具结果 4 张、每张 4 MB、每条消息 4.5 MB）、作为
+`attachment`/`attachmentdata` 文档存放在承载它们的消息之下，并由唯一一条共享的投影规则
+物化进 provider 请求 —— 在 `NIF_ATTACH_BUDGET` 内由新到旧，更早的图像替换为一行指明文件
+的文本标记。格式错误或超限的 `images` 数组**绝不**让回合失败：拒绝原因会追加到工具自身的
+文本之后（`[images from this result were not attached: …]`），这样模型能知道原因；而读取到
+超限文件时是*如实报告*而非静默缩放 —— 静默缩放等于对"这看起来是什么样"给出错误答案。
+
+阅读 transcript 时值得知道的两点后果：
+
+- 图像是**只追加的历史**。冻结前缀是系统提示加直接工具 schema，因此对话中途进入的图像
+  永远不会让该对话的缓存前缀失效。
+- **resume** 后的对话会重建上一回合发出的同一份投影，因为该规则是所存 refs 的纯函数。
+  省略某个结果（陈旧/可派生 stub 两级）时，其 refs 随文本一起被丢弃，因此被取代的截图会
+  离开投影，而不会从过期的 refs 重新物化出来。
+
+在纯文本模型上不会发生任何特殊处理：该模型的 `modalities.input` 正是调用方要检查的东西
+（`models_list {"input": "image"}`），而无法发送的图像会以那行如实的文本标记抵达请求。
+
+**纯文本模型**会被自动处理，而不是留给你去踩坑：`llm_resolve` 会报告模型能力
+（`vision`，取自目录的 `modalities.input` —— 回合的状态帧与 `session_info` 中都能看到），
+当模型确定无法接收图像部分时，每一张图像都会被替换为如实的文本标记，而不是被物化。这是刻意
+的：provider 拒绝的是**整段对话**而不只是这一个回合，因此把图像发给一个无法渲染它的模型，会
+让该对话之后每一个回合都失败。能力未知**绝不**被当作"不支持" —— 未知模型保留它的图像。
+
+**撰写会返回图像的组件。** 任何组件都可以：把说明放进 `text`，并在结果对象上添加
+`images` 数组。三个 SDK 都提供构造函数 —— `resultImage`/`withImages`（Nim
+`sdk/niffler/sdk.nim`、TypeScript `sdk/ts/src/wire.ts`）与 `ResultImage`/`WithImages`
+（Go `sdk/go/wire.go`）—— 因此线格式在每种语言里只有一处定义，而不是每个组件各写一遍。
+记住 core 不做的事：不做重新编码，因此超出上限的截图需要组件自己缩小（或者干脆避开：返回
+路径、让模型用 `read` 去看 —— 这正是 `edit` 自带 `read` 的做法）。
 
 ## Context window
 

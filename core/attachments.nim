@@ -5,7 +5,10 @@
 ## owns the whole contract between that call and the provider request:
 ##
 ##   * validation (MIME allowlist, per-image and per-turn size caps, base64
-##     and magic-byte checks) — core never trusts a client's claim;
+##     and magic-byte checks) — core never trusts a client's claim. A TOOL
+##     RESULT's `images` array goes through the same routine with a tighter
+##     count: one allowlist, one sniffing rule, one set of size caps for
+##     every image that crosses the wire, whatever produced it;
 ##   * the stored form: a message keeps its text and small attachment REFS,
 ##     never the base64. Inline base64 broke resume once already: `list`
 ##     replies are capped by the bus max_payload (8MiB), so a page holding
@@ -39,6 +42,15 @@ const
     ## (tui/attach.go mirrors it).
   attachMaxTurnB64* = 4_500_000
     ## Per-turn base64 cap across every attachment (mirrored by the TUI).
+    ## A tool result's `images` array is held to the same total, which is
+    ## also what keeps a result's own images under attachDefaultBudget: the
+    ## newest message's images must fit the projection in one piece, or a
+    ## fresh screenshot would be born already elided.
+  attachResultMaxCount* = 4
+    ## Images ONE TOOL RESULT may add (`images` on the result object).
+    ## Tighter than a human's drop on purpose: a turn's drop is a person
+    ## choosing files, a result is one call's side effect, and a tool that
+    ## returns a screenshot wall is a tool bug worth refusing loudly.
   attachDefaultBudget* = 5_000_000
     ## Projection budget: how many base64 characters of images stay
     ## materialized in the context. Must stay above attachMaxTurnB64 so the
@@ -84,44 +96,51 @@ proc sniffImageMime(data: openArray[byte]): string =
     return "image/bmp"
   ""
 
-proc validateAttachments*(raw: JsonNode):
+proc validateAttachments*(raw: JsonNode, maxCount = attachMaxCount,
+                          label = "attachment",
+                          maxTotalB64 = attachMaxTurnB64):
     tuple[ok: bool, error: string, refs: seq[JsonNode], payloads: seq[string]] =
-  ## Validate one session call's `attachments`. On success `refs` are the
-  ## small descriptors the stored message keeps and `payloads` the base64
-  ## strings, index-aligned. Every failure is a precise reason: a UI must be
-  ## able to tell the user which image was refused and why.
+  ## Validate one session call's `attachments` — or a tool result's `images`
+  ## array, which is the same shape and the same rules under a different
+  ## count (see validateResultImages). On success `refs` are the small
+  ## descriptors the stored message keeps and `payloads` the base64 strings,
+  ## index-aligned. Every failure is a precise reason: a UI must be able to
+  ## tell the user which image was refused and why, and a component author
+  ## must learn the same way. `label` only names the thing in errors (an
+  ## omitted `type` already defaults to "image", so a result needs no field
+  ## it does not use).
   result = (ok: true, error: "", refs: @[], payloads: @[])
   if raw.isNil: return
   if raw.jkind != JArray:
-    return (ok: false, error: "attachments must be an array", refs: @[],
+    return (ok: false, error: label & "s must be an array", refs: @[],
             payloads: @[])
-  if raw.len > attachMaxCount:
+  if raw.len > maxCount:
     return (ok: false,
-            error: "too many attachments: " & $raw.len & " (limit " &
-                   $attachMaxCount & ")",
+            error: "too many " & label & "s: " & $raw.len & " (limit " &
+                   $maxCount & ")",
             refs: @[], payloads: @[])
   var total = 0
   for i, item in raw.elems:
     if item.jkind != JObject:
-      return (ok: false, error: "attachment " & $i & " is not an object",
+      return (ok: false, error: label & " " & $i & " is not an object",
               refs: @[], payloads: @[])
     if item{"type"}.getStr("image") != "image":
       return (ok: false,
-              error: "attachment " & $i & ": only type \"image\" is supported",
+              error: label & " " & $i & ": only type \"image\" is supported",
               refs: @[], payloads: @[])
     let mime = item{"mimeType"}.getStr("").strip().toLowerAscii()
     if mime notin attachMimes:
       return (ok: false,
-              error: "attachment " & $i & ": unsupported MIME type \"" &
+              error: label & " " & $i & ": unsupported MIME type \"" &
                      mime & "\" (have: " & attachMimes.join(", ") & ")",
               refs: @[], payloads: @[])
     let data = item{"data"}.getStr("")
     if data.len == 0:
-      return (ok: false, error: "attachment " & $i & ": missing data",
+      return (ok: false, error: label & " " & $i & ": missing data",
               refs: @[], payloads: @[])
     if data.len > attachMaxImageB64:
       return (ok: false,
-              error: "attachment " & $i & " (\"" &
+              error: label & " " & $i & " (\"" &
                      item{"name"}.getStr("") & "\"): image exceeds the " &
                      $(attachMaxImageB64 div 1_000_000) & "MB inline limit",
               refs: @[], payloads: @[])
@@ -130,28 +149,28 @@ proc validateAttachments*(raw: JsonNode):
       decoded = decode(data)
     except CatchableError:
       return (ok: false,
-              error: "attachment " & $i & ": data is not valid base64",
+              error: label & " " & $i & ": data is not valid base64",
               refs: @[], payloads: @[])
     if decoded.len == 0:
-      return (ok: false, error: "attachment " & $i & ": empty image",
+      return (ok: false, error: label & " " & $i & ": empty image",
               refs: @[], payloads: @[])
     if decoded.len > attachMaxDecodedBytes:
       return (ok: false,
-              error: "attachment " & $i & ": decoded image exceeds " &
+              error: label & " " & $i & ": decoded image exceeds " &
                      $(attachMaxDecodedBytes div 1_000_000) & "MB",
               refs: @[], payloads: @[])
     let sniffed = sniffImageMime(decoded.toOpenArrayByte(0, decoded.len - 1))
     if sniffed.len == 0:
       return (ok: false,
-              error: "attachment " & $i & " (\"" &
+              error: label & " " & $i & " (\"" &
                      item{"name"}.getStr("") &
                      "\"): bytes are not a recognized image",
               refs: @[], payloads: @[])
     total += data.len
-    if total > attachMaxTurnB64:
+    if total > maxTotalB64:
       return (ok: false,
-              error: "attachments exceed the " &
-                     $(attachMaxTurnB64 div 1_000_000) &
+              error: label & "s exceed the " &
+                     $(maxTotalB64 div 1_000_000) &
                      "MB per-message limit",
               refs: @[], payloads: @[])
     let width = item{"width"}.getInt(0)
@@ -166,6 +185,16 @@ proc validateAttachments*(raw: JsonNode):
       "height": max(0, height),
     })
     result.payloads.add(data)
+
+proc validateResultImages*(raw: JsonNode):
+    tuple[ok: bool, error: string, refs: seq[JsonNode], payloads: seq[string]] =
+  ## Validate the `images` array a TOOL RESULT may carry (docs/WIRE.md "Tool
+  ## results"). Deliberately the same routine as a UI drop under a tighter
+  ## count: one allowlist, one byte-sniffing rule, one set of size caps. A
+  ## result cannot be trusted more than a client can — it may have just read
+  ## a file a hostile repo committed — so nothing here is relaxed, and the
+  ## count is the only difference (attachResultMaxCount).
+  validateAttachments(raw, maxCount = attachResultMaxCount, label = "image")
 
 # --- token accounting --------------------------------------------------------
 

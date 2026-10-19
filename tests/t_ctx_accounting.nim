@@ -602,6 +602,61 @@ proc main() =
   check("notice hold can be disabled", not noticeHoldEnabled())
   putEnv("NIF_AGENT_NOTICE_HOLD", "false")
   check("notice hold accepts a word", not noticeHoldEnabled())
+  # --- an image-carrying tool result is elided like any other -------------
+  # The ladder reads a tool message's TEXT to classify it, but an image
+  # result is materialized into a multimodal array — a string read finds ""
+  # and would skip the message forever, so the pixel-carrying result would
+  # stay in the projection while every text result was elided around it.
+  # Elision must also drop the refs: leaving them would re-materialize
+  # exactly the pixels the rung reclaimed.
+  block imageResult:
+    proc schemaFor(tool: string): JsonNode =
+      %*{"x-harness": {"effect": "read", "derivable": true}}
+    var cat = Catalog(components: initTable[string, ComponentReg](),
+                      toolIndex: initTable[string, string]())
+    cat.toolIndex["read"] = "edit"
+    cat.components["edit"] = ComponentReg(name: "edit")
+    cat.components["edit"].tools.add(
+      ToolReg(name: "read", component: "edit", schema: schemaFor("read")))
+    var p = persisterForCatalog(cat)
+    p.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+    for i in 1 ..< 8:
+      p.nodes.add(CtxNode(source: nsCanonical, id: "t:" & align($i, 6, '0'),
+                          canonicalSeq: i, projectionIndex: i))
+    var msgs = @[
+      %*{"role": "system", "content": "sys"},
+      %*{"role": "user", "content": "old request"},
+      %*{"role": "assistant", "content": "",
+         "tool_calls": [%*{"id": "r1", "type": "function",
+                           "function": {"name": "read", "arguments": "{}"}}]},
+      # The shape materializeProjection produces for an image result: the
+      # text parts first, then the image, with the refs kept beside them.
+      %*{"role": "tool", "tool_call_id": "r1", "name": "read",
+         "attachText": "[image: shot.png image/png, 1KB, 1x1]",
+         "attachments": [%*{"id": "t:000003:a0", "name": "shot.png",
+                            "mimeType": "image/png", "bytes": 70, "b64": 96,
+                            "width": 1, "height": 1}],
+         # A realistically sized payload: the rung never stubs a result whose
+         # stub text would be LONGER than what it replaces, so a tiny image
+         # is legitimately kept and this fixture must not rely on that.
+         "content": [%*{"type": "text",
+                        "text": "[image: shot.png image/png, 210KB, 1280x800]"},
+                     %*{"type": "image_url",
+                        "image_url": {"url": "data:image/png;base64," &
+                                             repeat("A", 3000)}}]},
+      %*{"role": "user", "content": "the current turn"},
+      %*{"role": "assistant", "content": "working"},
+      %*{"role": "user", "content": "tail"},
+      %*{"role": "assistant", "content": "done"},
+    ]
+    let saved = p.stubResults(msgs, smDerivable)
+    check("an image-carrying result is elided (its text, not an empty string)",
+          msgs[3]{"content"}.getStr("").startsWith(stubTag) and saved > 0,
+          "content=" & $msgs[3]{"content"})
+    check("eliding an image result drops its refs with its text",
+          msgs[3]{"attachments"} == nil and msgs[3]{"attachText"} == nil,
+          $msgs[3])
+
   delEnv("NIF_AGENT_NOTICE_HOLD")
 
   report("CTX ACCOUNTING")

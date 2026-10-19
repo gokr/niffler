@@ -150,6 +150,17 @@ working in every language.
   the first comment block join into the schema description, `- param: text`
   lines become parameter docs. Write *when-to-use* guidance there — the LLM
   decides tool choice from that text alone.
+- **A tool result's `images` array is the only way a component returns
+  something the model *sees*** (docs/WIRE.md "Tool results"). A result's
+  `text` string is the whole text channel; `images` is the pixel channel, and
+  core — not the component — bounds whatever arrives: byte-sniffed MIME
+  allowlist, 4 per result / 4 MB each / 4.5 MB per result, stored as
+  attachment documents under the tool message, materialized through the same
+  budget and projection rule as a human's dropped image. A refusal never
+  fails the turn (the reason is appended to the tool's text). Core never
+  re-encodes, so an oversized capture is the component's to shrink. Build the
+  entry with the SDK helper (`resultImage`/`withImages`, Go
+  `ResultImage`/`WithImages`) rather than a hand-rolled object.
 - **Subagent settlement is push, not poll** (docs/WIRE.md "Settlement
   notices"): a background child that settles while its parent is idle
   **wakes** the parent — the agent component publishes a fire-and-forget

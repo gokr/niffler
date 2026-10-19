@@ -102,3 +102,55 @@ func Err(msg string) map[string]any {
 func ErrCode(msg, code string) map[string]any {
 	return map[string]any{"ok": false, "error": msg, "code": code}
 }
+
+// ---------------------------------------------------------------------------
+// Tool-produced images
+//
+// A tool result may carry an `images` array beside its `text` (docs/WIRE.md
+// "Tool results"): the one channel by which a component returns something the
+// model SEES rather than reads — a screenshot, a rendered chart, an image the
+// agent was asked to inspect. `text` stays the model's only text channel, so
+// use it as the caption: what the image is, plus the facts a later request
+// cannot recover from the pixels alone.
+//
+// Core, not the component, owns the bound, so a component cannot widen it:
+//   - the image is validated against a byte-sniffed MIME allowlist
+//     (png/jpeg/gif/webp/bmp) — mimeType is a hint and the BYTES decide, so a
+//     wrong (but allowlisted) claim is corrected rather than honored;
+//   - at most 4 images per result, 4 MB each, 4.5 MB per result;
+//   - a refusal never fails the turn: the reason is appended to the tool's
+//     text ("[images from this result were not attached: ...]"), which still
+//     answers the call;
+//   - core never re-encodes. An oversized capture is reported, not silently
+//     resized — shrink it in the component (or return the path and let the
+//     model `read` it) rather than shipping something unsendable.
+//
+// data is the RAW base64 of the file, with no "data:...;base64," prefix: the
+// prefix belongs to the provider projection core builds, not to this field.
+
+// ResultImage builds one entry for a result's "images" array. mimeType must
+// name an allowlisted image type; name, width and height are advisory (they
+// caption the image and feed the token estimate).
+func ResultImage(data, mimeType, name string, width, height int) map[string]any {
+	image := map[string]any{"type": "image", "data": data, "mimeType": mimeType}
+	if name != "" {
+		image["name"] = name
+	}
+	if width > 0 {
+		image["width"] = width
+	}
+	if height > 0 {
+		image["height"] = height
+	}
+	return image
+}
+
+// WithImages attaches images to a result object. The result's text is what the
+// model reads, so a result carrying images should still describe them there.
+func WithImages(result map[string]any, images ...map[string]any) map[string]any {
+	if result == nil {
+		result = map[string]any{}
+	}
+	result["images"] = images
+	return result
+}
