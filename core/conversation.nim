@@ -893,6 +893,36 @@ proc reindexNodes(p: var Persister) =
   for i in 0 ..< p.nodes.len:
     p.nodes[i].projectionIndex = i
 
+proc toolBodyText*(m: JsonNode): string =
+  ## One tool message's TEXT, whatever shape its content has: the plain string
+  ## almost every result stores, or the multimodal array an image-carrying
+  ## result materializes into (text parts joined; image parts contribute
+  ## nothing). Every elision decision is made on text and must keep working for
+  ## a result that also carries pixels — reading `content` as a string there
+  ## finds "" and would skip that message forever.
+  let content = m{"content"}
+  if content.isStr: return content.getStr("")
+  if content.jkind == JArray:
+    for part in content.elems:
+      if part{"type"}.getStr("") == "text":
+        result.add(part{"text"}.getStr(""))
+  if result.len == 0: result = m{"attachText"}.getStr("")
+
+type TextInt = object
+  text: string
+  bytes: int
+
+proc toolBody(m: JsonNode): TextInt =
+  ## What a tool result means to the elision ladder: its text (the elision
+  ## decision input) and the bytes it occupies in the request — the text plus,
+  ## for an image-carrying result, the materialized parts. A stub that drops
+  ## the images reclaims both, so measuring only the text would under-report
+  ## what the rung freed.
+  result.text = toolBodyText(m)
+  result.bytes = result.text.len
+  if m{"attachments"}.jkind == JArray and m{"content"}.jkind == JArray:
+    result.bytes = ($m{"content"}).len
+
 proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
                record = true): int =
   ## Apply the deterministic §5.2 projection edit to one canonical tool
@@ -903,7 +933,7 @@ proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
   if n.source != nsCanonical: return 0
   let m = messages[i]
   if m{"role"}.getStr("") != "tool": return 0
-  let content = m{"content"}.getStr("")
+  let content = toolBodyText(m)
   if content.len <= pruneThreshold or
       content.contains("[tool result middle pruned"):
     return 0
@@ -930,6 +960,11 @@ proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
     " bytes omitted — recall the original with context_recall " & refJson &
     "]\n" & tail
   if body.len >= content.len: return 0
+  # Middle-pruning a result that carries images would drop them: `content`
+  # becomes the pruned string, and the pixels' refs would then describe a
+  # message that no longer advertises them. Refuse instead — the rung is
+  # opportunistic, and the stub rung can still reclaim the whole result.
+  if m{"attachments"}.jkind == JArray: return 0
   messages[i]["content"] = %body
   if record:
     p.prunes.add(PruneRec(id: n.id, bytesBefore: content.len,
@@ -1028,13 +1063,22 @@ proc applyStub(p: Persister, messages: var seq[JsonNode], i: int): int =
   if i < 0 or i >= messages.len: return 0
   let m = messages[i]
   if m{"role"}.getStr("") != "tool": return 0
-  let content = m{"content"}.getStr("")
-  if content.len == 0 or content.startsWith(stubTag): return 0
+  let before = toolBody(m)
+  if before.bytes == 0 or before.text.startsWith(stubTag): return 0
   let body = stubBody(if i < p.nodes.len: p.nodes[i].id else: "",
                       m{"name"}.getStr(""))
-  if body.len >= content.len: return 0
+  if body.len >= before.bytes: return 0
   messages[i]["content"] = %body
-  content.len - body.len
+  # A stubbed result takes its pixels with it, refs and all: leaving the refs
+  # behind would describe images the message no longer carries, and the next
+  # materialization would resurrect exactly the pixels this rung reclaimed
+  # (docs/WIRE.md "Tool results" — the refs and the parts are one fact). The
+  # canonical document in the store keeps them, so `context_recall` still
+  # recovers the original.
+  if m{"attachments"}.jkind == JArray:
+    messages[i].delete("attachments")
+    messages[i].delete("attachText")
+  before.bytes - body.len
 
 proc persisterForCatalog*(cat: Catalog): Persister =
   ## Test seam: a persister whose catalog answers schema lookups, with no bus
@@ -1129,8 +1173,8 @@ proc stubResults*(p: var Persister, messages: var seq[JsonNode],
     if p.nodes[i].source != nsCanonical: continue
     let m = messages[i]
     if m{"role"}.getStr("") != "tool": continue
-    let content = m{"content"}.getStr("")
-    if content.len == 0 or content.startsWith(stubTag): continue
+    let body = toolBody(m)
+    if body.bytes == 0 or body.text.startsWith(stubTag): continue
     let callIdx = callIndex.getOrDefault(m{"tool_call_id"}.getStr(""), -1)
     if callIdx < 0: continue
     let calls = messages[callIdx]{"tool_calls"}
@@ -1153,11 +1197,13 @@ proc stubResults*(p: var Persister, messages: var seq[JsonNode],
       for path in declaredPathValues(schema, args):
         if lastWrite.getOrDefault(path, -1) > i: stale = true; break
       if not (stale or (mode == smDerivable and declared)): continue
-      let saved = applyStub(p, messages, i)
-      if saved > 0 and live:
-        p.prunes.add(PruneRec(id: p.nodes[i].id, bytesBefore: content.len,
-                              bytesAfter: content.len - saved, full: true))
-      result += saved
+      let before = body.bytes
+      let freed = applyStub(p, messages, i)
+      if freed > 0:
+        if live:
+          p.prunes.add(PruneRec(id: p.nodes[i].id, bytesBefore: before,
+                                bytesAfter: before - freed, full: true))
+        result += freed
       break
 
 proc tombstoneReasoning(p: var Persister, messages: var seq[JsonNode]): int =
@@ -2324,6 +2370,47 @@ proc toolResultText*(value: JsonNode): string =
   if text.isStr: return text.getStr()
   jdump(value)
 
+type ResultImages* = object
+  ## Tool-produced images on their way into a tool message. `refs` are the
+  ## small descriptors the stored message keeps (ids already stamped) and
+  ## `payloads` the base64, index-aligned. `dropped` is non-empty when a
+  ## declared `images` array contributed nothing, with the reason to report.
+  refs*: seq[JsonNode]
+  payloads*: seq[string]
+  dropped*: string
+
+proc takeResultImages*(ct: CoreTools, value: JsonNode,
+                       messageKey, convId: string): ResultImages =
+  ## Bounded entry point for TOOL-PRODUCED images (docs/WIRE.md "Tool
+  ## results"). A tool result is the one path an image enters history without a
+  ## human having chosen it — `bash` can capture a screenshot, a file read can
+  ## open a PNG, a bridge can relay whatever a server returned — so the bound
+  ## lives here rather than in each component: whatever a tool hands back is
+  ## validated against the byte-sniffed allowlist, capped, and stored beside
+  ## the tool message. A refusal is reported INTO the message (ResultImages.
+  ## dropped) instead of failing the turn: the tool's text still answers the
+  ## call and the model learns why the pixels are missing, which is the same
+  ## shape as an elided image's honest marker.
+  ##
+  ## Oversized is dropped, never silently downscaled. The Pi lesson is that an
+  ## unsendable image makes the provider reject the WHOLE conversation, so
+  ## unbounded pixels entering history must be impossible; the honest other
+  ## half is that core has no image codec, and a re-encoder living in one
+  ## language's runtime would break the language-agnostic rule (and its output
+  ## would still need its own bound). A component that wants a big capture sent
+  ## resizes it before returning it — the same division of labour `bash`
+  ## already has for output it caps.
+  if value == nil or value.kind != JObject: return
+  let raw = value{"images"}
+  if raw.jkind != JArray or raw.len == 0: return
+  let validated = validateResultImages(raw)
+  if not validated.ok:
+    result.dropped = validated.error
+    return
+  result.refs = validated.refs
+  result.payloads = validated.payloads
+  storeAttachments(ct, messageKey, result.refs, result.payloads, convId)
+
 proc commitToolItem(ct: CoreTools, p: var Persister,
                     messages: var seq[JsonNode],
                     exposure: var ToolExposure,
@@ -2356,34 +2443,78 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
   let content =
     if oc.ok or partialFailure: toolResultText(oc.value)
     else: ""
-  let toolMsg =
-    if oc.ok or partialFailure:
-      var body = content
-      promoteSpill(ct, p, sessionId, oc.value, body)
-      if oc.value{"__partial"}.getBool(false):
-        let reason = oc.value{"__partialReason"}.getStr("cancelled")
-        let wording = if reason == "timed_out":
-                        "timed out"
-                      else:
-                        "cancelled by user"
-        body.add("\n\n[tool output above is partial; " & wording &
-                 "; retry may be useful]")
-      if partialFailure:
-        body = "ERROR: " & oc.error & "\n\n" & body
-      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
-         "content": body}
-    else:
-      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
-         "content": "ERROR: " & oc.error}
+  var resultImages: ResultImages
+  var toolMsg: JsonNode
+  if oc.ok or partialFailure:
+    var body = content
+    # The message's own key, peeked: attachment docs are addressed under the
+    # tool message exactly as a dropped image is addressed under its user
+    # message, so `conversation_delete`'s existing sweep (ids under
+    # "<sessionId>:") reclaims tool pixels with no extra bookkeeping.
+    promoteSpill(ct, p, sessionId, oc.value, body)
+    resultImages = takeResultImages(ct, oc.value, p.nextMsgKey(), sessionId)
+    if resultImages.dropped.len > 0:
+      # Into the message, not into the turn's error path: the tool's text
+      # still answers the call, and the model is told why the pixels it was
+      # promised are not here.
+      body.add("\n[images from this result were not attached: " &
+               resultImages.dropped & "]")
+    if oc.value{"__partial"}.getBool(false):
+      let reason = oc.value{"__partialReason"}.getStr("cancelled")
+      let wording = if reason == "timed_out":
+                      "timed out"
+                    else:
+                      "cancelled by user"
+      body.add("\n\n[tool output above is partial; " & wording &
+               "; retry may be useful]")
+    if partialFailure:
+      body = "ERROR: " & oc.error & "\n\n" & body
+    toolMsg = %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+                 "content": body}
+    if resultImages.refs.len > 0:
+      # The same stored shape a dropped image gets: text plus refs, never
+      # inline base64 (a `list` page carrying pixels outgrows the bus
+      # payload), and the original text so materialization stays a pure
+      # function of the refs across resume.
+      toolMsg["attachText"] = %body
+      toolMsg["attachments"] = %resultImages.refs
+      toolMsg["imageCount"] = %resultImages.refs.len
+  else:
+    toolMsg = %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+                 "content": "ERROR: " & oc.error}
   ctxAppend(p, messages, toolMsg,
     %*{"turnId": turnId, "startedAt": toolStartedAt,
        "durationMs": toolDurationMs})
+  if resultImages.refs.len > 0:
+    # Materialize into the projection through the ONE shared rule: the newest
+    # images within the budget carry their data URL, an older one gets the
+    # honest text marker. Nothing image-shaped reaches the provider without
+    # passing here, so a tool cannot hand the request a payload the projection
+    # never bounded — and the pixels themselves never enter the frozen prefix
+    # (the prefix is the system prompt plus tool schemas; this is append-only
+    # history).
+    materializeProjection(ct, messages)
   if onEvent != nil:
     if oc.ok or partialFailure:
+      # The event's result copy carries image DESCRIPTORS, never the pixels:
+      # the caller that dispatched the tool already has them, and repeating up
+      # to a few megabytes per tool call onto a UI/telemetry subject would
+      # make every observer pay for them. Machine fields stay stable; only the
+      # base64 moves out. A refused array is replaced too — that is the case
+      # where the payload is largest (an over-limit image) and the one where
+      # nothing stored the bytes, so passing it through would be pure waste.
+      var evValue = oc.value
+      if resultImages.refs.len > 0 or resultImages.dropped.len > 0:
+        evValue = oc.value.copy()
+        if resultImages.refs.len > 0:
+          evValue["images"] = %resultImages.refs
+        else:
+          evValue.delete("images")
+          evValue["imagesDropped"] = %resultImages.dropped
       var event = %*{"sessionId": sessionId, "turnId": turnId,
                       "callId": it.id, "phase": "done",
                       "tool": it.name, "args": it.args,
-                      "result": oc.value,
+                      "result": evValue,
                       "durationMs": toolDurationMs,
                       "at": epochTime()}
       if partialFailure: event["error"] = %oc.error
@@ -4448,11 +4579,23 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           # than the committed one. Re-apply the recorded edit only, then prove
           # it reproduced byte-for-byte — a mismatch is real drift and stays
           # fatal rather than silently sending a different prompt.
-          let before = entry.messages[idx]{"content"}.getStr("")
+          #
+          # Measured through toolBody and not through `content`: at this point
+          # the projection is already materialized, so a result that carried
+          # images holds an ARRAY whose string read is "" — comparing that to
+          # the recorded byte count would report drift on a conversation that
+          # is perfectly intact and wedge it on resume.
+          let before = toolBody(entry.messages[idx])
           let body = stubBody(pr.id, entry.messages[idx]{"name"}.getStr(""))
-          if before.len != pr.bytesBefore or body.len != pr.bytesAfter:
+          if before.bytes != pr.bytesBefore or body.len != pr.bytesAfter:
             return %*{"error": "context-recovery-required: projection stub ref cannot be reproduced: " & pr.id}
           entry.messages[idx]["content"] = %body
+          # The refs go with the body, exactly as applyStub wrote the record:
+          # leaving them would re-materialize pixels the committed projection
+          # had already reclaimed.
+          if entry.messages[idx]{"attachments"}.jkind == JArray:
+            entry.messages[idx].delete("attachments")
+            entry.messages[idx].delete("attachText")
         elif idx < 0 or entry.messages[idx]{"content"}.getStr("").len !=
             pr.bytesBefore or p.pruneNode(entry.messages, idx,
                                          record = false) <= 0 or

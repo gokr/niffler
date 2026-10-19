@@ -485,7 +485,7 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 # them per sandbox started a dozen concurrent `nim c` runs per pooled gate and
 # those died under load without any compiler output (issue #108, deterministic
 # in CI). Not part of `build` — they are fixtures, not shipped components.
-FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp
+FIXTURE_BINS := var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool
 
 var/bin/ctxtest: components/ctxtest/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/main.nim
@@ -507,6 +507,13 @@ var/bin/fixture-compaction: tests/compaction_contract/fixture.nim $(SDK_NIM) $(N
 # A dependency-free stdio MCP server (t_mcp and t_cli_run both need one).
 var/bin/fixture-mcp-server: tests/fixtures/mcp_server.nim $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) -o:$@ tests/fixtures/mcp_server.nim
+
+# A component that returns images on its tool results: no shipped component
+# does (yet), and the contract under test (docs/WIRE.md "Tool results") is
+# core's, so t_tool_images needs a producer to hand core results it could not
+# otherwise be shown.
+var/bin/fixture-image-tool: tests/fixtures/image_tool.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/fixtures/image_tool.nim
 
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(CORE_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/$*.nim
@@ -541,6 +548,12 @@ var/bin/test_t_attachments_unit: core/attachments.nim
 
 var/bin/test_t_attachments: core/conversation.nim core/attachments.nim \
     var/bin/session var/bin/niffler
+
+# Tool-produced images (docs/WIRE.md "Tool results"): the contract is core's
+# (validation, storage, projection, elision), so the runner and core must be
+# current before the test binary.
+var/bin/test_t_tool_images: core/conversation.nim core/attachments.nim \
+    var/bin/session var/bin/niffler var/bin/fixture-image-tool
 
 var/bin/test_t_context_drains: core/conversation.nim
 var/bin/test_t_discover: core/catalog.nim

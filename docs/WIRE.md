@@ -1317,6 +1317,69 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
   failure) and repeat the same facts in structured fields (`exit_code`,
   `cancelled`, `spill`, ...). A bare-string result is rendered as-is; a
   result without `text` is serialized into the transcript unchanged.
+- **Tool results may carry images.** A result object may add an `images`
+  array beside `text` — the one channel by which a TOOL can return something
+  the model *sees* rather than reads (a screenshot, a rendered chart, an
+  image the agent was asked to inspect). Items are
+  `{type:"image", name?, mimeType, data, width?, height?}` exactly as a
+  session call's `attachments` are, and they are validated by the same code
+  against the same byte-sniffed allowlist (`image/png|jpeg|gif|webp|bmp`),
+  with one difference: at most **4** per result, because a turn's drop is a
+  human choosing files while a result is one call's side effect. `width`,
+  `height` and `name` are advisory metadata for the caption and the token
+  proxy; the bytes are the facts.
+
+  Core, not the component, owns what happens next, so no component can widen
+  the bound:
+
+  1. **Validation.** A well-formed array is stored; a malformed one never
+     fails the turn. The refusal is appended to the result's `text`
+     (`[images from this result were not attached: <reason>]`) so the model
+     learns why the pixels it expected are missing, and the tool's own text
+     still answers the call.
+  2. **Storage.** Pixels become `attachmentdata` documents (kind
+     `attachmentdata`, id `<toolMessageId>:a<i>`) with a pixel-free
+     `attachment` metadata doc beside them — the same two-document split a
+     dropped image uses, so the tool pixels are swept by
+     `conversation_delete` and never appear in a `list` page. The stored tool
+     message keeps the text plus small `attachments` refs.
+  3. **The projection.** The tool message materializes into the multimodal
+     content array through the SAME rule as a user turn: text parts first,
+     then `image_url` data-URL parts, newest-first within `NIF_ATTACH_BUDGET`,
+     older images replaced by the honest text marker. There is one budget and
+     one rule for every image in a conversation, whatever produced it. A
+     single result's images are capped below that budget, so the newest
+     result's image is never born already elided.
+  4. **Non-vision models.** Nothing special happens here: the model's own
+     `modalities.input` is what a caller checks (models_list, `input:
+     "image"`), and an elided or unsendable image reaches the request as the
+     text marker above. A run on a text-only model therefore degrades to
+     "there is an image at this path" rather than failing.
+
+  A tool's images are **append-only history**, never part of the frozen
+  prefix: the request prefix is the system prompt plus the direct tool
+  schemas, so pixels entering mid-conversation cannot invalidate a
+  conversation's cached prefix. A result's `images` is also the one field core
+  rewrites for a bus-facing event: `ev.session.<id>.toolcall`'s `result` carries
+  the stored refs (id, name, mimeType, bytes, dimensions) with the base64
+  removed — and a refused array is replaced by `imagesDropped: <reason>`
+  instead of passing through, which is the case where the payload is largest
+  and nothing stored the bytes. The dispatching caller already holds the
+  pixels; no observer should pay megabytes for them.
+
+  What core does **not** do is re-encode. An oversized image is reported, not
+  resized: silently downscaling is a wrong answer to "what does this look
+  like", and the alternative — an unsendable payload entering history — is the
+  failure this bound exists to prevent (an over-limit image makes a provider
+  reject the whole conversation, not just the turn). A component that wants a
+  large capture sent shrinks it before returning it, exactly as `bash` caps its
+  own output.
+
+  Elision keeps working on image-carrying results: the stub rung elides the
+  result's text AND drops its refs (reclaiming the pixels), so a superseded
+  screenshot leaves the projection instead of being re-materialized from stale
+  refs. Middle-pruning refuses such a result rather than silently dropping its
+  images.
   One `userMessage` convention rides the same machine-data rule: a result
   object carrying `userMessage` (string) asks the *client UI* to render
   that string as a user-authored message (MCP prompt templates, e.g.

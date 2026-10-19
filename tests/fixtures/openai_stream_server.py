@@ -7,6 +7,54 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+def scripted_tool_call(request):
+    """A tool call scripted by the user message, or None.
+
+    Test harnesses need the model to CALL a tool (the tool result is what is
+    under test), but this fixture is a fixed SSE stream. `TOOLCALL:<tool>
+    {json args}` anywhere in the newest user message makes the first round
+    emit that call; once the transcript carries its result the next round
+    answers normally. Marker-driven on purpose: every existing test's prompts
+    lack the marker and keep their plain "OK" behavior byte for byte.
+    """
+    marker = "TOOLCALL:"
+    last_user = None
+    for message in request.get("messages", []):
+        if message.get("role") == "user":
+            last_user = message
+    if last_user is None:
+        return None
+    content = last_user.get("content")
+    if isinstance(content, list):
+        content = "\n".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    if not isinstance(content, str) or marker not in content:
+        return None
+    # The tool result is the message AFTER the call; its presence means the
+    # call already happened and this round is the final answer.
+    seen_result = False
+    for message in request.get("messages", []):
+        if message.get("role") == "tool":
+            seen_result = True
+    if seen_result:
+        return None
+    spec = content.split(marker, 1)[1].strip().splitlines()[0].strip()
+    name, _, raw_args = spec.partition(" ")
+    try:
+        args = json.loads(raw_args) if raw_args.strip() else {}
+    except ValueError:
+        args = {}
+    call_id = "fixture-call-1"
+    for message in request.get("messages", []):
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict) and call.get("id"):
+                call_id = str(call["id"])
+    return {"id": call_id, "name": name, "arguments": json.dumps(args)}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
@@ -35,35 +83,80 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        chunks = [
-            {
-                "id": "chatcmpl-fixture",
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"role": "assistant", "content": "OK"},
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "chatcmpl-fixture",
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [
-                    {"index": 0, "delta": {}, "finish_reason": "stop"}
-                ],
-                "usage": {
-                    "prompt_tokens": 123,
-                    "completion_tokens": 1,
-                    "total_tokens": 124,
+        call = scripted_tool_call(request)
+        if call is not None:
+            chunks = [
+                {
+                    "id": "chatcmpl-fixture",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": call["id"],
+                                        "type": "function",
+                                        "function": {
+                                            "name": call["name"],
+                                            "arguments": call["arguments"],
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
                 },
-            },
-        ]
+                {
+                    "id": "chatcmpl-fixture",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 123,
+                        "completion_tokens": 1,
+                        "total_tokens": 124,
+                    },
+                },
+            ]
+        else:
+            chunks = [
+                {
+                    "id": "chatcmpl-fixture",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "OK"},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl-fixture",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "stop"}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 123,
+                        "completion_tokens": 1,
+                        "total_tokens": 124,
+                    },
+                },
+            ]
         for chunk in chunks:
             self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
             self.wfile.flush()
