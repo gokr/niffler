@@ -39,6 +39,7 @@ proc main() =
   # update script moves; `resolvedSha` is what `git ls-remote` answers.
   let resolvedSha = repeat('d', 40)
   var currentHash = repeat('b', 40)
+  var shortCatalog = false
   let runner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
     commands.add(argv); scripts.add(input)
     if argv == @["multipass", "list", "--format", "json"]:
@@ -52,9 +53,11 @@ proc main() =
       return CommandResult(output: "")
     if input.contains("call catalog"):
       let id = identity.copy()
-      id["gitHash"] = %currentHash
+      id["gitHash"] = %(if shortCatalog: currentHash[0..6] else: currentHash)
       if drift: id["instanceId"] = %repeat('c', 32)
       return CommandResult(output: $id)
+    if input.contains(" rev-parse HEAD") and not input.contains("checkout --detach"):
+      return CommandResult(output: currentHash & "\n")
     # Whatever the script checks out is what the instance reports afterwards —
     # this is how an install, an adoption or an update moves the visible build.
     if input.contains("checkout --detach"):
@@ -186,6 +189,17 @@ proc main() =
   check("update at the current revision changes nothing",
         not update(runner, %*{"profile": profile,
                               "revision": resolvedSha}){"changed"}.getBool())
+  shortCatalog = true
+  commands.setLen(0); scripts.setLen(0)
+  check("short catalog hash and exact checkout identify a no-op update",
+    not update(runner, %*{"profile": profile, "revision": resolvedSha}){"changed"}.getBool() and
+    not scripts.join("").contains("make build"))
+  let shortUpdate = update(runner, %*{"profile": profile, "revision": repeat('e', 40)})
+  check("short catalog hash verifies a real update", shortUpdate{"changed"}.getBool() and
+    loadReceipt(profile){"expect"}{"gitHash"}.getStr() == repeat('e', 7))
+  shortCatalog = false
+  currentHash = resolvedSha
+  discard install(runner, args)
   drift = true
   commands.setLen(0); scripts.setLen(0)
   check("identity drift refuses an update before any write",
@@ -197,11 +211,134 @@ proc main() =
         "scripts=" & $scripts)
   drift = false
 
+  # Execute the exact grant creation/EXIT block in a workspace-only sandbox.
+  # No sudo, Incus, user creation or host configuration is reachable here.
+  let incusShell = incusInstallScript("/home/ubuntu/niffler", resolvedSha)
+  let grantStart = incusShell.find("  (umask 077;")
+  let grantEnd = incusShell.find("\nfi\nrunuser", grantStart)
+  let grantBlock = incusShell[grantStart..<grantEnd]
+  for failValidation in [false, true]:
+    let grantFile = tmp / "test-grant"
+    let fixture = "set -euo pipefail\ngrant=" & quoteShell(grantFile) & "\nvisudo() { return " & (if failValidation: "1" else: "0") & "; }\n" & grantBlock
+    let r = nativeRunner(@["bash", "-s"], fixture, 1000)
+    check("temporary guest grant cleaned on " & (if failValidation: "failure" else: "success"),
+      r.code == (if failValidation: 1 else: 0) and not fileExists(grantFile))
+  # Guest transports, local and SSH-hosted: no real transport can run here.
+  var guestMissing = true
+  var guestStopped = false
+  var unsafeGuest = false
+  var nicType = "bridged"
+  var managedNic = false
+  var networkType = "bridge"
+  var guestHash = repeat('b', 40)
+  let guestIdentity = identity.copy()
+  guestIdentity["root"] = %"/home/ubuntu/niffler"
+  let guestRunner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+    commands.add(argv); scripts.add(input)
+    let cmd = argv.join(" ")
+    if "network" in cmd and "list" in cmd:
+      return CommandResult(output: $(%*[{"name": "incusbr0", "type": networkType, "managed": true}]))
+    if ("list" in cmd):
+      if "incus" in cmd:
+        if guestMissing: return CommandResult(output: "[]")
+        let vm = %*{"name": "fake-ct", "type": "container", "status": (if guestStopped: "Stopped" else: "Running"),
+          "expanded_config": {"security.privileged": (if unsafeGuest: "true" else: "false"), "security.nesting": "false"},
+          "expanded_devices": {"eth0": {"type": "nic", "nictype": nicType}, "root": {"type": "disk", "path": "/", "pool": "default"}}}
+        if managedNic: vm["expanded_devices"]["eth0"] = %*{"type": "nic", "network": "incusbr0"}
+        return CommandResult(output: $(%*[vm]))
+      return CommandResult(output: "{\"list\":[{\"name\":\"fake-vm\",\"state\":\"Running\"}]}")
+    if "launch" in cmd: guestMissing = false
+    if "start" in cmd: guestStopped = false
+    if input.contains("make build"): guestHash = resolvedSha
+    if input.contains(" rev-parse HEAD"): return CommandResult(output: guestHash & "\n")
+    if input.contains("call catalog"):
+      let id = guestIdentity.copy(); id["gitHash"] = %guestHash
+      if "multipass" in cmd: id["root"] = %"/srv/niffler"
+      if drift: id["instanceId"] = %repeat('c', 32)
+      return CommandResult(output: $id)
+    CommandResult()
+  for hosted in [false, true]:
+    let ct = %*{"profile": tmp / ("ct-" & $hosted & ".json"), "transport": "incus", "target": "fake-ct", "root": "/home/ubuntu/niffler", "revision": repeat('b', 40)}
+    if hosted: ct["host"] = %"operator@hypervisor"
+    guestMissing = true; guestHash = repeat('b', 40)
+    commands.setLen(0); scripts.setLen(0)
+    let installedCt = install(guestRunner, ct)
+    check("Incus created with fixed image and limits " & $hosted,
+      ($commands).contains("images:ubuntu/24.04") and ($commands).contains("limits.cpu=2") and ($commands).contains("security.privileged=false") and ($commands).contains("root,size=20GB"))
+    let bootstrap = firstScript(scripts, "loginctl enable-linger")
+    check("Incus bootstrap valid shell " & $hosted, nativeRunner(@["bash", "-n"], bootstrap, 1000).code == 0)
+    check("guest-only bootstrap and temporary grant cleanup " & $hosted,
+      bootstrap.contains("trap 'rm -f") and bootstrap.contains("noclobber") and bootstrap.contains("visudo -cf") and bootstrap.contains("runuser -u ubuntu") and bootstrap.contains("apt-get install -y git sudo ca-certificates make curl"))
+    if hosted:
+      check("host persisted and every management command routed via SSH", block:
+        var ok = installedCt["receipt"]["host"] == ct["host"] and commands.len > 0
+        for c in commands:
+          if c[0] != "ssh" or c[^2] != "operator@hypervisor" or not c[^1].startsWith("'incus' '"): ok = false
+        ok)
+    commands.setLen(0); scripts.setLen(0)
+    discard install(guestRunner, ct)
+    check("pinned Incus adoption no launch or root bootstrap " & $hosted,
+      not ($commands).contains("launch") and not scripts.join("").contains("loginctl enable-linger"))
+    guestStopped = true
+    commands.setLen(0)
+    check("stopped pinned Incus update refuses before start", rejected(proc() = discard update(guestRunner, %*{"profile": ct["profile"], "revision": resolvedSha})) and commands.len == 1)
+    guestStopped = false
+    discard update(guestRunner, %*{"profile": ct["profile"], "revision": resolvedSha})
+    check("Incus update rebuilds as ubuntu " & $hosted,
+      guestHash == resolvedSha and firstScript(scripts, "make build").contains("server.sh\" stop"))
+    commands.setLen(0); scripts.setLen(0)
+    for actionName in ["probe", "status", "logs", "start", "stop", "vm_stop"]:
+      discard action(guestRunner, actionName, ct["profile"].getStr())
+    check("all Incus execution paths ordinary ubuntu " & $hosted, block:
+      var ok = true
+      for c in commands:
+        let cmd = c.join(" ")
+        if "exec" in cmd and (not cmd.contains("runuser") or not cmd.contains("ubuntu") or not cmd.contains("HOME=/home/ubuntu")): ok = false
+      ok)
+    drift = true
+    scripts.setLen(0)
+    check("Incus drift blocks update", rejected(proc() = discard update(guestRunner, %*{"profile": ct["profile"], "revision": repeat('e', 40)})) and not scripts.join("").contains("make build"))
+    drift = false
+    guestMissing = true
+    commands.setLen(0)
+    check("Incus missing pinned install refuses", rejected(proc() = discard install(guestRunner, ct)) and not ($commands).contains("launch"))
+    check("Incus missing pinned update refuses", rejected(proc() = discard update(guestRunner, %*{"profile": ct["profile"], "revision": resolvedSha})))
+    check("Incus missing pinned action refuses", rejected(proc() = discard action(guestRunner, "stop", ct["profile"].getStr())))
+    guestMissing = false; unsafeGuest = true
+    check("unsafe Incus adoption refuses", rejected(proc() = discard install(guestRunner, ct)))
+    unsafeGuest = false
+    for unsafeNic in ["physical", "sriov", "macvlan"]:
+      nicType = unsafeNic
+      check("passthrough Incus NIC refuses " & unsafeNic, rejected(proc() = discard install(guestRunner, ct)))
+    nicType = "bridged"
+    managedNic = true
+    discard install(guestRunner, ct)
+    networkType = "physical"
+    check("managed physical network refuses", rejected(proc() = discard install(guestRunner, ct)))
+    networkType = "bridge"; managedNic = false
+    let rerouted = ct.copy(); rerouted["host"] = %"other"
+    commands.setLen(0)
+    check("host drift refuses before any transport", rejected(proc() = discard install(guestRunner, rerouted)) and commands.len == 0)
+  let hostedVm = vmArgs.copy(); hostedVm["host"] = %"operator@hypervisor"; hostedVm["profile"] = %(tmp / "hosted-vm.json")
+  commands.setLen(0)
+  discard install(guestRunner, hostedVm)
+  discard action(guestRunner, "vm_stop", hostedVm["profile"].getStr())
+  check("Multipass host routes list exec and stop with quoted argv", block:
+    var ok = true
+    for c in commands:
+      if c[0] != "ssh" or not c[^1].startsWith("'multipass' '"): ok = false
+    ok)
+  for host in ["", "-bad", "host;touch evil", "host$(id)", "host\nreboot", "host'quote"]:
+    let bad = vmArgs.copy(); bad["host"] = %host; bad["profile"] = %(tmp / "invalid-host.json")
+    check("invalid host refuses " & host, rejected(proc() = discard install(guestRunner, bad)))
+  let sshHost = args.copy(); sshHost["host"] = %"host"
+  check("direct SSH cannot have management host", rejected(proc() = discard install(guestRunner, sshHost)))
+
   # Actual component registration and tool calls. PATH cannot reach real transports.
   let fakeBin = tmp / "bin"
   createDir(fakeBin)
   let fake = "#!/bin/bash\ninput=$(/bin/cat)\nprintf '%s\\n' \"$*\" >> \"$FLEET_TRACE\"\nif [[ $input == *'call catalog'* ]]; then\n/bin/cat \"$FLEET_IDENTITY\"\nfi\n"
-  for executable in ["ssh", "multipass"]:
+  for executable in ["ssh", "multipass", "incus"]:
     writeFile(fakeBin / executable, fake)
     setFilePermissions(fakeBin / executable, {fpUserRead, fpUserWrite, fpUserExec})
   let idFile = tmp / "identity.json"

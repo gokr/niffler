@@ -18,7 +18,7 @@ worktrees have been removed; their commits are included in `main`.
 |---|---|---|
 | Write arbitration | Durable `locks` peer; session dispatch claims; path-bound and opaque writers; harness-state claims for plugins; explicit no-claim declarations; nested Fabric calls; restart/outage/TTL contracts | Automatic worktree allocation/ownership; fencing or confirmed termination for writers that outlive leases; evidence-based completion adjudication is a separate feature |
 | Sandboxing | Opt-in synchronous Linux bwrap shell guard; launch-time checks, environment clearing, network isolation and configured masks; partial component mask checks; pure versioned conversation-policy model | Persisted effective conversation policy and human controls; uniform dispatch propagation; approved-root enforcement; conditional grants; migration from global masks; background execution; Seatbelt and real Mac validation |
-| Fleet | Persistent identity; Linux user service; approved SSH/Multipass install/adopt/update and lifecycle; pinned private receipts; native relay; agent definitions and opt-in heartbeat; durable human completion feed | Real SSH/published-revision install/update smoke; released-client integration; background approval routing; cross-instance task delegation, durable job reconciliation and artifacts |
+| Fleet | Persistent identity; Linux user service; approved SSH/Multipass/Incus install/adopt/update and lifecycle; pinned private receipts; native relay; agent definitions and opt-in heartbeat; durable human completion feed | Real SSH-hosted guest provisioning and published-revision update smoke; released-client integration; background approval routing; cross-instance task delegation, durable job reconciliation and artifacts |
 | Vision path | Tool results may carry `images` (`docs/WIRE.md` "Tool results"): core validates them against the byte-sniffed allowlist, stores them as attachment docs under the tool message, and materializes them through the same budget/projection rule as a dropped image; `read` answers an image path with the image plus a caption; elision drops refs with text so a superseded screenshot leaves the projection | Re-encoding an oversized capture (reported today, never silently downscaled — needs an image codec in a component plus a bound on its output); provider-specific degradation beyond the honest elision marker; TUI-side rendering of tool images |
 
 ### Write arbitration: usable foundation, not a sandbox
@@ -51,6 +51,14 @@ persist or enforce a conversation sandbox. Do not call an approved unconfined
 builder, MCP server or native Fabric guest sandboxed.
 
 ### Fleet: remote operations, not remote task orchestration yet
+
+Merged Incus support adds native unprivileged containers and optional
+SSH management hosts for Incus/Multipass. An approved local Incus smoke on
+`niffler1` installed published main, verified the ordinary ubuntu service, guest
+linger, temporary sudo-rule removal, and matching TUI receipt import/native
+relay using a scratch client registry. Optional LSP servers/trafilatura and
+provider credentials are not part of the server bootstrap. SSH-hosted guest
+provisioning remains fake-transport-tested, not live-certified. This records branch validation, not a release claim.
 
 Provisioning and lifecycle are implemented in the optional Nim component, not
 manifest autostart. Matching TUI source has receipt import and switching, but
