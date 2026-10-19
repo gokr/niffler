@@ -80,18 +80,19 @@ discard comp.tool("fleet_task_submit", schema(taskProps,
   proc(c: Component, args: JsonNode): JsonNode = createJob(c, args),
   %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true,
     "workspace": {"pathFields": ["profile"]}})
+proc taskReader(verb: string): ToolHandler =
+  result = proc(c: Component, args: JsonNode): JsonNode =
+    let j = authorized(c, args).value
+    if verb == "result":
+      %*{"jobId": j["id"], "state": j["state"], "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
+        "summary": j{"notice", "summary"}.getStr(""), "bounded": true,
+        "remoteSession": j["sessionId"], "detail": "Full transcript remains on the pinned peer; open this remoteSession there."}
+    else: publicJob(j)
 for name in ["status", "result"]:
-  let verb = name
   discard comp.tool("fleet_task_" & name, schema(%*{
     "jobId": {"type": "string"}}, @["jobId"],
     "Read an owned remote task's durable status or cached bounded report. Unreachable and unknown do not mean failed or successful; no submission replay. Completion is pushed automatically."),
-    proc(c: Component, args: JsonNode): JsonNode =
-      let j = authorized(c, args).value
-      if verb == "result":
-        %*{"jobId": j["id"], "state": j["state"], "completion": j{"completion"},
-          "summary": j{"notice", "summary"}.getStr(""), "bounded": true,
-          "remoteSession": j["sessionId"], "detail": "Full transcript remains on the pinned peer; open this remoteSession there."}
-      else: publicJob(j),
+    taskReader(name),
     %*{"onDemand": true, "effect": "read", "sessionContext": true})
 discard comp.tool("fleet_task_cancel", schema(%*{"jobId": {"type": "string"}}, @["jobId"],
   "Cancel a queued task before dispatch. An already attempted or unknown submission cannot be cancelled by this slice; inspect the pinned peer and cancel its remote session there. Never claims a remote cancellation succeeded."),

@@ -140,20 +140,29 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     if completions == nil or completions.kind != JArray: refuse("invalid completion listing")
     for entry in completions:
       if entry{"id"}.getStr("") == id: receipt = entry{"value"}
-    if receipt != nil and receipt{"sessionId"}.getStr("") == id and receipt{"seq"}.getInt(0) > 0:
+    # The task owns one activation only. A later human turn can replace the
+    # latest-per-session activity receipt; never attribute that to our task.
+    if receipt != nil and receipt{"sessionId"}.getStr("") == id and receipt{"seq"}.getInt(0) == 1:
       # Activity certifies a completed turn, not factual task success. Retrieve
       # a bounded reply only from this session, then commit notice WITH job.
       var after = ""
       var reply = ""
       var transcriptComplete = false
+      var userMessages = 0
       for pageNo in 0..<32:
         let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
         let entries = page{"items"}
         if entries == nil or entries.kind != JArray: refuse("invalid transcript")
         for entry in entries:
           if not entry{"id"}.getStr("").startsWith(id & ":"): refuse("foreign transcript")
-          if entry{"value", "role"}.getStr("") == "assistant":
+          let role = entry{"value", "role"}.getStr("")
+          if role == "user": inc userMessages
+          if userMessages > 1:
+            transcriptComplete = true
+            break # a later human activation is never this task's result
+          if role == "assistant":
             reply = summary(entry{"value", "content"}.getStr(""))
+        if transcriptComplete: break
         if not page{"hasMore"}.getBool(false):
           transcriptComplete = true
           break

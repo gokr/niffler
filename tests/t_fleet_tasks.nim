@@ -79,6 +79,10 @@ proc main() =
   check("malformed capabilities refuse safely", rejected(proc() = validateCapabilities(%*{}, %*{}, args)))
   let job = createJob(c, args)
   let id = job["id"].getStr()
+  let ownedQuery = %*{"jobId": id, "__session": {"session": "origin"}}
+  let status = call(nc, "fleet", "fleet_task_status", ownedQuery)
+  let cached = call(nc, "fleet", "fleet_task_result", ownedQuery)
+  check("status and result handlers remain distinct/local", status{"owner"}.getStr("") == "origin" and cached{"bounded"}.getBool(false), $status & " / " & $cached)
   check("owner job durable before dispatch", c.storeGet("fleetjob", id).value["state"].getStr() == "queued" and submissions == 0)
   check("identical request deduplicates", createJob(c, args)["id"].getStr() == id)
   let bad = args.copy(); bad["content"] = %"different"
@@ -180,6 +184,12 @@ proc main() =
   discard c.storePut("fleetjob", mismatchId, item.value, item.rev)
   reconcileJob(c, mismatchId, run)
   check("identity mismatch refuses dispatch", submissions == 2 and not c.storeGet("fleetjob", mismatchId).value{"reachable"}.getBool(true))
+  args["requestId"] = %"cancel"
+  let cancelledId = createJob(c, args)["id"].getStr()
+  let cancelled = call(nc, "fleet", "fleet_task_cancel", %*{"jobId": cancelledId, "__session": {"session": "origin"}})
+  check("queued cancellation settles without remote dispatch", cancelled{"state"}.getStr("") == "settled" and submissions == 2)
+  let deniedCancel = call(nc, "fleet", "fleet_task_cancel", %*{"jobId": unknownId, "__session": {"session": "origin"}})
+  check("uncertain remote cancellation refuses", deniedCancel{"error"} != nil)
   report("FLEET TASKS TEST")
 
 main()

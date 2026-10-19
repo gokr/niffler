@@ -2795,7 +2795,9 @@ boundaries. No wall-clock hard cap or auto approval is granted.
 `queued` is the only replayable state. `submitting`/`unknown` may already have
 executed: reconciliation never resubmits them, even after restart. Unreachable,
 identity mismatch and missing completion receipts are not interruption or
-success. `settled` means a durable remote turn receipt was observed, not that
+success. Only the first completion sequence is accepted; if human continuation
+has replaced that latest-per-session receipt, the task stays unknown rather
+than attributing the later turn to it. `settled` means a durable remote turn receipt was observed, not that
 the task's claims were verified. Cancellation is supported only before dispatch;
 after dispatch cancel the remote conversation explicitly on the pinned peer.
 
