@@ -80,3 +80,37 @@ func TestResultConventions(t *testing.T) {
 		t.Errorf("ErrCode = %s", errCode)
 	}
 }
+
+func TestResultImageCarriesTheWireShape(t *testing.T) {
+	image := ResultImage("AAAA", "image/png", "shot.png", 1280, 800)
+	if image["type"] != "image" || image["data"] != "AAAA" ||
+		image["mimeType"] != "image/png" || image["name"] != "shot.png" ||
+		image["width"] != 1280 || image["height"] != 800 {
+		t.Fatalf("ResultImage = %#v", image)
+	}
+	// Advisory metadata is omitted when unknown rather than sent as zero:
+	// a 0x0 dimension would read as a real measurement to a caption.
+	bare := ResultImage("AAAA", "image/png", "", 0, 0)
+	for _, key := range []string{"name", "width", "height"} {
+		if _, present := bare[key]; present {
+			t.Fatalf("ResultImage sent %q for an unknown value: %#v", key, bare)
+		}
+	}
+	// The pixels are RAW base64: the data-URL prefix belongs to the provider
+	// projection core builds, not to the result field.
+	if _, present := bare["url"]; present {
+		t.Fatalf("ResultImage must not pre-build a data URL: %#v", bare)
+	}
+}
+
+func TestWithImagesAttachesBesideText(t *testing.T) {
+	result := WithImages(OK(map[string]any{"text": "[image: shot.png]"}),
+		ResultImage("AAAA", "image/png", "shot.png", 1, 1))
+	if result["ok"] != true || result["text"] != "[image: shot.png]" {
+		t.Fatalf("WithImages dropped the text result: %#v", result)
+	}
+	images, ok := result["images"].([]map[string]any)
+	if !ok || len(images) != 1 || images[0]["data"] != "AAAA" {
+		t.Fatalf("images = %#v", result["images"])
+	}
+}

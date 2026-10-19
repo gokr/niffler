@@ -714,6 +714,13 @@ mid-turn — retry when the turn finishes」），而非等待：回合永遠不
 在純文字模型上不會發生任何特殊處理：該模型的 `modalities.input` 正是呼叫方要檢查的東西
 （`models_list {"input": "image"}`），而無法送出的影像會以那行如實的文字標記抵達請求。
 
+**撰寫會回傳影像的元件。** 任何元件都可以：把說明放進 `text`，並在結果物件上加上
+`images` 陣列。三個 SDK 都提供建構子 —— `resultImage`/`withImages`（Nim
+`sdk/niffler/sdk.nim`、TypeScript `sdk/ts/src/wire.ts`）與 `ResultImage`/`WithImages`
+（Go `sdk/go/wire.go`）—— 因此線格式在每種語言裡只有一處定義，而不是每個元件各寫一遍。
+記住 core 不做的事：不做重新編碼，因此超出上限的截圖需要元件自己縮小（或者乾脆避開：回傳
+路徑、讓模型用 `read` 去看 —— 這正是 `edit` 內建 `read` 的做法）。
+
 ## Context window
 
 Core 會監看一段會話使用了模型 context window 的多少，並以*極簡*方式因應——不做摘要，除了模型回報的數字外不做任何 token 計算：

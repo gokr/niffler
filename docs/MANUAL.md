@@ -1110,6 +1110,16 @@ On a text-only model nothing special happens: the model's `modalities.input`
 is what a caller checks (`models_list {"input": "image"}`), and an image that
 cannot be sent reaches the request as the honest text marker.
 
+**Writing a component that returns images.** Any component may: put a caption
+in `text` and add an `images` array to the result object. All three SDKs ship
+the constructors — `resultImage`/`withImages` (Nim `sdk/niffler/sdk.nim`,
+TypeScript `sdk/ts/src/wire.ts`) and `ResultImage`/`WithImages` (Go
+`sdk/go/wire.go`) — so the wire shape lives in one place per language instead
+of being hand-rolled per component. Remember what core does NOT do: no
+re-encoding, so a capture that would exceed the caps is a component's problem
+to shrink (or to avoid, by returning the path and letting the model `read`
+it — which is exactly what `edit`'s own `read` does).
+
 ## Context window
 
 The model behind this section — canonical history vs the provider projection,

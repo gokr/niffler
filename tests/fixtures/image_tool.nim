@@ -23,8 +23,11 @@ const
   jpegB64 = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q=="
 
 proc img(name, mime, data: string, w, h: int): JsonNode =
-  %*{"type": "image", "name": name, "mimeType": mime, "data": data,
-     "width": w, "height": h}
+  ## Built with the SDK's own helper (sdk/niffler/sdk.nim resultImage) rather
+  ## than a hand-rolled object: the fixture is also the contract test for what
+  ## the SDK tells a component author to produce, so a helper that drifts from
+  ## the wire shape fails here instead of in a downstream component.
+  resultImage(data, mime, name, w, h)
 
 let comp = newComponent("imagetool", "0.0.1-test")
 
@@ -32,26 +35,26 @@ discard comp.tool("img_ok", %*{
   "type": "object", "properties": {},
   "x-harness": {"timeoutMs": 10000},
 }, proc(c: Component, args: JsonNode): JsonNode =
-  %*{"text": "[image: shot.png image/png, 1KB, 1x1]",
-     "image": "image/png",
-     "images": [img("shot.png", "image/png", pngB64, 1, 1)]})
+  withImages(%*{"text": "[image: shot.png image/png, 1KB, 1x1]",
+                "image": "image/png"},
+             [img("shot.png", "image/png", pngB64, 1, 1)]))
 
 discard comp.tool("img_bad", %*{
   "type": "object", "properties": {},
   "x-harness": {"timeoutMs": 10000},
 }, proc(c: Component, args: JsonNode): JsonNode =
   # "not an image" in base64: the declared MIME is a lie about the bytes.
-  %*{"text": "here is the picture you asked for",
-     "images": [img("x.png", "image/png", encode("not an image"), 1, 1)]})
+  withImages(%*{"text": "here is the picture you asked for"},
+             [img("x.png", "image/png", encode("not an image"), 1, 1)]))
 
 discard comp.tool("img_many", %*{
   "type": "object", "properties": {},
   "x-harness": {"timeoutMs": 10000},
 }, proc(c: Component, args: JsonNode): JsonNode =
-  var many = newJArray()
+  var many: seq[JsonNode] = @[]
   for i in 0 .. 5:
     many.add(img("s" & $i & ".png", "image/png", pngB64, 1, 1))
-  %*{"text": "six frames", "images": many})
+  withImages(%*{"text": "six frames"}, many))
 
 discard comp.tool("img_huge", %*{
   "type": "object", "properties": {},
@@ -60,8 +63,8 @@ discard comp.tool("img_huge", %*{
   # A real PNG header, then padding: large enough to trip the per-image cap
   # while still sniffing as an image (the order of the checks matters).
   let big = base64.decode(pngB64) & repeat('\0', 5_000_000)
-  %*{"text": "a big one", "images": [img("big.png", "image/png",
-                                          encode(big), 4000, 4000)]})
+  withImages(%*{"text": "a big one"},
+             [img("big.png", "image/png", encode(big), 4000, 4000)]))
 
 discard comp.tool("img_meta", %*{
   "type": "object", "properties": {},
@@ -69,7 +72,8 @@ discard comp.tool("img_meta", %*{
 }, proc(c: Component, args: JsonNode): JsonNode =
   # JPEG bytes declared as PNG: the bytes must win (same rule as a client's
   # declared MIME on a dropped image).
-  %*{"text": "mislabelled", "images": [img("m.png", "image/png", jpegB64, 1, 1)]})
+  withImages(%*{"text": "mislabelled"},
+             [img("m.png", "image/png", jpegB64, 1, 1)]))
 
 discard comp.tool("img_none", %*{
   "type": "object", "properties": {},

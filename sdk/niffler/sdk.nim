@@ -217,6 +217,50 @@ proc errResult*(msg: string, code = "", extra: JsonNode = nil): JsonNode =
   if code.len > 0: result["code"] = %code
   mergeExtra(result, extra)
 
+# ---------------------------------------------------------------------------
+# Tool-produced images
+#
+# A tool result may carry an `images` array beside its `text` (docs/WIRE.md
+# "Tool results"): the one channel by which a component returns something the
+# model SEES rather than reads — a screenshot, a rendered chart, an image the
+# agent was asked to inspect. `text` stays the model's only text channel, so
+# use it as the caption (what the image is, and the facts a later request
+# cannot recover from the pixels alone).
+#
+# Core, not the component, owns the bound, so a component cannot widen it:
+#   * the image is validated against a byte-sniffed MIME allowlist
+#     (png/jpeg/gif/webp/bmp) — `mimeType` is a hint and the BYTES decide, so
+#     a wrong (but allowlisted) claim is corrected rather than honored;
+#   * at most 4 images per result, 4 MB each, 4.5 MB per result;
+#   * a refusal never fails the turn: the reason is appended to the tool's
+#     text (`[images from this result were not attached: ...]`), which still
+#     answers the call;
+#   * core never re-encodes. An oversized capture is reported, not silently
+#     resized — shrink it in the component (or return the path and let the
+#     model `read` it) rather than shipping something unsendable.
+#
+# `data` is the RAW base64 of the file, with no `data:...;base64,` prefix: the
+# prefix belongs to the provider projection core builds, not to this field.
+
+proc resultImage*(data: string, mimeType: string, name = "",
+                  width = 0, height = 0): JsonNode =
+  ## One entry for a result's `images` array. `mimeType` must name an
+  ## allowlisted image type; `name`, `width` and `height` are advisory
+  ## (they caption the image and feed the token estimate).
+  result = %*{"type": "image", "data": data, "mimeType": mimeType}
+  if name.len > 0: result["name"] = %name
+  if width > 0: result["width"] = %width
+  if height > 0: result["height"] = %height
+
+proc withImages*(value: JsonNode,
+                 images: openArray[JsonNode]): JsonNode =
+  ## Attach images to a result object. The result's `text` is what the model
+  ## reads, so a result carrying images should still describe them there.
+  result = if value != nil and value.kind == JObject: value else: newJObject()
+  var arr = newJArray()
+  for image in images: arr.add(image)
+  result["images"] = arr
+
 proc messageData(msg: ptr natsMsg): string =
   let data = natsMsg_GetData(msg)
   let length = natsMsg_GetDataLength(msg).int

@@ -748,6 +748,13 @@ true`，加上窗口——否则上下文仪表会一直显示
 在纯文本模型上不会发生任何特殊处理：该模型的 `modalities.input` 正是调用方要检查的东西
 （`models_list {"input": "image"}`），而无法发送的图像会以那行如实的文本标记抵达请求。
 
+**撰写会返回图像的组件。** 任何组件都可以：把说明放进 `text`，并在结果对象上添加
+`images` 数组。三个 SDK 都提供构造函数 —— `resultImage`/`withImages`（Nim
+`sdk/niffler/sdk.nim`、TypeScript `sdk/ts/src/wire.ts`）与 `ResultImage`/`WithImages`
+（Go `sdk/go/wire.go`）—— 因此线格式在每种语言里只有一处定义，而不是每个组件各写一遍。
+记住 core 不做的事：不做重新编码，因此超出上限的截图需要组件自己缩小（或者干脆避开：返回
+路径、让模型用 `read` 去看 —— 这正是 `edit` 自带 `read` 的做法）。
+
 ## Context window
 
 Core 会监视对话使用了模型上下文窗口的多少，并以*简单直接*的方式采取行动——不做摘要，也不做超出模型所报告范围之外的 token 计算：
