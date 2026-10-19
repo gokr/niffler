@@ -74,7 +74,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
          test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-server-lifecycle test-fleet \
-        test-retry-unit test-ctx-accounting test-compaction \
+        test-retry-unit test-ctx-accounting test-context-status test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
         setup doctor recover install-go install-nim \
@@ -532,6 +532,7 @@ var/bin/test_t_retry_unit: core/retry.nim
 var/bin/test_t_supervisor_backoff: core/supervisor.nim core/catalog.nim
 
 var/bin/test_t_ctx_accounting: core/conversation.nim core/compaction.nim
+var/bin/test_t_context_status: $(wildcard core/*.nim) var/bin/niffler
 
 # The attachment contract is pure (core/attachments.nim); the end-to-end
 # suite drives a full core, and its runner is a separate binary — rebuild
@@ -635,6 +636,7 @@ test-approval: build var/bin/test_t_approval_manifest ; $(TEST_LOCK) env "NIF_RE
 test-controls: build var/bin/test_t_controls ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_controls
 test-retry-unit: build var/bin/test_t_retry_unit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_retry_unit
 test-ctx-accounting: build var/bin/test_t_ctx_accounting ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_ctx_accounting
+test-context-status: build var/bin/test_t_context_status ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_context_status
 test-context-drains: build var/bin/test_t_context_drains ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_context_drains
 test-compaction: build var/bin/test_t_compaction ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction
 # §8.7 conformance runner: suite run proves the shipped component; point

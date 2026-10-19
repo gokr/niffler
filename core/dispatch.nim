@@ -14,6 +14,7 @@ import ../sdk/subjects
 import ../sdk/niffler/sandboxpolicy
 import approval
 import catalog
+import compaction
 import schema_validation
 import supervisor
 import uireg
@@ -296,6 +297,94 @@ proc storeDel*(ct: CoreTools, kind, id: string, timeoutMs = 5000) =
   ## Delete a document; idempotent.
   discard dispatchSubjectCall(ct, "svc.store.call", "del",
                               %*{"kind": kind, "id": id}, timeoutMs)
+
+proc contextStatus*(ct: CoreTools, sessionId: string): JsonNode =
+  ## Read-only context health for one conversation: the numbers an operator (or
+  ## the model itself) needs to see a loss coming, and to reconstruct one that
+  ## already happened.
+  ##
+  ## Every field is a projection of state that already exists (header,
+  ## projection record, compaction_input records, notice nodes). Nothing here
+  ## mutates, sends, or starts a run: it is the read half only, so it is safe to
+  ## call mid-turn. Usage is the last persisted sample, not a live request
+  ## measurement; independent store reads are not an atomic snapshot.
+  var doc = %*{"sessionId": sessionId}
+  let header = ct.storeGetItem("conversation", sessionId)
+  if header.value == nil:
+    return %*{"error": "no conversation '" & sessionId & "'"}
+  let h = header.value
+  # The window and the two lines. The same arithmetic the runner uses
+  # (trimThreshold with the declared output reserve), so the numbers a UI shows
+  # are the numbers admission acts on rather than a second estimate.
+  let window = h{"context"}.getInt(0)
+  let lines = contextThresholds(window, h{"output"}.getInt(0))
+  let trimAt = lines.trimAt
+  let warnAt = lines.warnAt
+  let used = h{"contextUsed"}.getInt(0)
+  doc["window"] = %window
+  doc["used"] = %used
+  doc["usageSource"] = %"last-persisted"
+  doc["trimAt"] = %trimAt
+  doc["warnAt"] = %warnAt
+  doc["outputReserve"] = %lines.reserve
+  if h{"promptTokens"} != nil: doc["promptTokens"] = h{"promptTokens"}
+  if window > 0:
+    doc["usedPercent"] = %int(used.float * 100.0 / window.float)
+    doc["trimPercent"] = %int(trimAt.float * 100.0 / window.float)
+    doc["headroomTokens"] = %max(trimAt - used, 0)
+    # The one-line verdict a caller should act on, rather than making every
+    # consumer re-derive it from three numbers.
+    doc["state"] = %(if used >= trimAt: "trim-needed"
+                     elif used >= warnAt: "warning"
+                     else: "ok")
+  # Loss accounting: what a trim dropped, and why compaction did not prevent it.
+  let trimThrough = h{"trimThrough"}.getInt(0)
+  doc["trimThrough"] = %trimThrough
+  if trimThrough > 0:
+    doc["lostRecallRef"] = %*{"source": "canonical",
+                              "id": sessionId & ":" & align($1, 6, '0')}
+  let failures = h{"compactFailures"}.getInt(0)
+  if failures > 0:
+    doc["compactFailures"] = %failures
+    doc["compactReason"] = %h{"compactReason"}.getStr("")
+  # The projection: which generation is installed and what it covers, so a
+  # caller can tell "summarized" from "only ever trimmed".
+  let projection = ct.storeGetItem("context_projection", sessionId)
+  if projection.value != nil and projection.value.kind == JObject:
+    doc["projection"] = %*{
+      "generation": projection.value{"generation"}.getInt(0),
+      "covered": projection.value{"covered"},
+      "retained": projection.value{"retained"}.len,
+      "prunes": projection.value{"prunes"}.len}
+  else:
+    doc["projection"] = newJNull()
+  # Retained inputs may belong to failed, orphaned or in-flight attempts.
+  # Presence alone is not a retryability verdict. Never inline their pages.
+  var snapshots = newJArray()
+  try:
+    for item in ct.storeListAll("compaction_input", sessionId & ":"):
+      let id = item{"id"}.getStr("")
+      if ":p" in id: continue
+      let v = item{"value"}
+      snapshots.add(%*{"id": id,
+                       "trigger": (if v != nil: v{"trigger"}.getStr("") else: ""),
+                       "createdAt": (if v != nil: v{"createdAt"}.getFloat(0.0) else: 0.0),
+                       "canonicalHigh": (if v != nil: v{"canonicalHigh"}.getInt(0) else: 0),
+                       "bytes": (if v != nil: v{"contentBytes"}.getInt(0) else: 0)})
+  except CatchableError as e:
+    doc["snapshotError"] = %e.msg
+  doc["retainedSnapshots"] = snapshots
+  # Omission notices are synthetic projection nodes, NOT canonical messages.
+  # Report durable loss attribution instead of scanning the entire transcript
+  # (which cannot find the runner's notices). This is not their rendered text.
+  var notices = newJArray()
+  if trimThrough > 0:
+    notices.add(%*{"kind": "history_omitted_without_summary",
+      "through": trimThrough, "recallRef": doc["lostRecallRef"],
+      "compactFailures": failures,
+      "compactReason": h{"compactReason"}.getStr("")})
+  doc["lossNotices"] = notices
+  doc
 
 proc invokeTool(ct: CoreTools, args: JsonNode,
                 defaultTimeoutMs: int): JsonNode =
@@ -890,6 +979,11 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       info["warning"] = %("store unavailable: " & e.msg)
     return info
+  of "context_status":
+    let sid = args{"sessionId"}.getStr("").strip()
+    if sid.len == 0:
+      return %*{"error": "context_status needs sessionId (a session runner injects its own id for the current session)"}
+    return contextStatus(ct, sid)
   of "prompt_preview":
     ## Read-only provenance for the composed request context (CodeWhale's
     ## /preview-request, bounded to what Niffler durably knows): the system
@@ -2079,21 +2173,22 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     return invokeTool(ct, args, defaultTimeoutMs)
   ct.checkToolAllowlist(tool)
 
-  # session_info / prompt_preview with no sessionId mean "my own
+  # session_info / prompt_preview / context_status with no sessionId mean "my own
   # conversation": while a turn is live (ct.nested.session is set only
   # inside runTurn) the runner injects its own session id before the call
   # reaches the system, so the model's introspection always answers about
   # the conversation it is running in. Direct (non-session) callers have no
   # live nested session and get the tool's clear "needs sessionId" error
   # instead.
-  if tool in ["session_info", "prompt_preview"] and ct.nested != nil and
+  if tool in ["session_info", "prompt_preview", "context_status"] and ct.nested != nil and
       ct.nested.session.len > 0 and args{"sessionId"}.getStr("").len == 0:
     args["sessionId"] = %ct.nested.session
 
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
-              "session_info", "activity_list", "prompt_preview", "doctor", "ui",
+              "session_info", "activity_list", "prompt_preview", "context_status",
+              "doctor", "ui",
               "conversation_delete", "toolset", "profile"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)

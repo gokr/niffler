@@ -158,6 +158,16 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       },
       "x-harness": {"onDemand": true}
     }))
+  coreReg.tools.add(ToolReg(name: "context_status", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Inspect context pressure or explain missing history: window, last persisted tokens used (not a live request measurement), shared warning/trim thresholds, lossy trim watermark and recall ref, compaction failure attribution, installed projection coverage, and retained compaction-input metadata. Omit sessionId during a turn to inspect the CURRENT conversation. Read-only; never compacts or retries. Retained inputs may be stale or still in flight, not necessarily retryable. Store reads are not an atomic snapshot.",
+      "properties": {
+        "sessionId": {"type": "string",
+                      "description": "Conversation id (conv-*). Omit or leave empty to report the current session"}
+      },
+      "x-harness": {"onDemand": true, "effect": "read"}
+    }))
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",

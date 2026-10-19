@@ -242,6 +242,16 @@ proc main() =
       call(nc, "core", "activity_list", %*{}){"items"}[0] == activity)
     check("invalid activity page size refused",
       call(nc, "core", "activity_list", %*{"limit": 0}){"error"} != nil)
+    let health = call(nc, "core", "context_status", %*{"sessionId": sid})
+    let headerBefore = call(nc, "store", "get", %*{"kind": "conversation", "id": sid})
+    check("context status reports persisted usage",
+      health{"error"} == nil and health{"sessionId"}.getStr() == sid and
+      health{"used"} == headerBefore{"value"}{"contextUsed"} and
+      health{"usageSource"}.getStr() == "last-persisted", $health)
+    check("context status preserves declared output cap",
+      headerBefore{"value"}{"output"} != nil)
+    check("context status is read only",
+      call(nc, "store", "get", %*{"kind": "conversation", "id": sid}) == headerBefore)
     # Late clean diagnostics must be stored/displayed while idle without a
     # model activation or message record. This is a real runner/bus probe.
     let diagnostics = openSub(nc, "ev.session." & sid & ".diagnostics")
@@ -452,6 +462,24 @@ proc main() =
           cut{"usage"}{"cacheReadTokens"} == nil and
           cut{"usage"}{"reasoningTokens"} == nil,
           $cut{"usage"})
+
+  block contextIntrospection:
+    var p = startProbe("context-introspection", @[("NIF_MOCK_ROUNDS", "1"),
+      ("NIF_MOCK_TOOLJSON", "[{\"name\":\"context_status\",\"arguments\":{}}]")])
+    defer: p.stopProbe()
+    let sid = "context-introspection"
+    var frames: seq[Frame]
+    let reply = p.driveTurn(sid, %*{"sessionId": sid, "content": "inspect context"}, frames)
+    let transcript = call(p.nc, "store", "list",
+      %*{"kind": "message", "idPrefix": sid & ":"})
+    var found = false
+    for item in transcript{"items"}:
+      let v = item{"value"}
+      if v{"role"}.getStr() == "tool":
+        let body = v{"content"}.getStr()
+        if body.contains("last-persisted") and body.contains(sid): found = true
+    check("live runner forwards context introspection with its own identity",
+      reply{"error"} == nil and found, $transcript)
 
   block steerDispatch:
     var p = startProbe("steer-dispatch", @[("NIF_MOCK_ROUNDS", "1"),

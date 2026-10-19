@@ -5115,7 +5115,8 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     try:
       case env.tool
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
-          "session_prepare", "session_info", "activity_list", "prompt_preview", "doctor",
+          "session_prepare", "session_info", "activity_list", "prompt_preview",
+          "context_status", "doctor",
           "conversation_delete", "toolset", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
