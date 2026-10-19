@@ -1315,8 +1315,38 @@ instanceId，身份变化拒绝写入；固定 VM 消失时不自动重建。失
 匹配的 TUI 可用 `niffler-tui --instance worker --instance-import /path/to/worker.json`
 导入回执，然后 `niffler-tui --instance worker` 连接。/niffler 列出或切换远端。
 SSH 使用原生转发；Multipass 使用远端原生 cli relay，须更新两端，无 Python
-回退。远端禁用本地路径补全。TUI 独立发布；跨实例代理委派与后台批准尚未实现。
+回退。远端禁用本地路径补全。TUI 独立发布；后台批准尚未实现。
 make test-fleet 使用假传输，不操作真实主机或 VM。
+
+### Fleet tasks
+
+可选 fleet 提供 `fleet_task_submit`、`fleet_task_status`、`fleet_task_result`、
+`fleet_task_cancel`，不与服务生命周期 `fleet_status`/`fleet_stop` 混用。
+提交须经人类批准，并提供私有已验证 `profile`、幂等 `requestId`、`content`、
+远端 `cwd`、显式 `tools`，以及正数 `maxRounds`（≤32）、`maxCalls`（≤100）、
+`maxTokens`（≤100000）。首个切片仅允许 read、grep 和只读 git 工具
+（status/diff/log/show/blame）；拒绝 shell、存储、间接调用和再次委派。
+对端须发布 `taskScopeVersion:1`；这不是操作系统沙箱，仍须审计工具与工作区。
+
+所有者来自注入的会话上下文。任务、所有者、路由与实例身份在派发前持久化；
+修改回执不能重定向现有任务。相同请求标识配不同工作会被拒绝。
+传输超时不是任务硬时限；轮数、调用数、令牌预算按运行器既有边界执行，
+不授予自动批准或墙钟硬上限。
+
+仅 `queued` 可派发；`submitting`/`unknown` 即使重启也不重放。
+不可达、身份不符或缺少完成回执不表示中断或成功。`settled` 只证明观察到
+持久化回合回执，不证明任务结论正确。仅接受首次完成序号；若人类后续回合已替换最新回执，任务保留 unknown，不能归因到后续回合。取消仅支持派发前；派发后须在对端
+明确取消远端会话。
+
+完成与 UTF-8 安全摘要（2048 字节前缀及可选省略号）先存储再唤醒。
+运行器先持久化追加通知再确认，通过规范历史在重启与压缩后去重。
+忙碌会话在普通与即将停止边界排空；空闲会话使用 `NIF_AGENT_WAKES` 预算；
+拒绝唤醒会保留通知。人类活动已读状态独立，冻结前缀不变。
+结果工具返回缓存有界报告，不阻塞管理通道；完整记录保留在对端 remoteSession。
+尚不支持通用邮箱、制品传输或不确定工作自动重试。
+
+`make test-fleet-tasks` 是双实例真实 NATS/模拟模型隔离冒烟测试，不执行 SSH/VM。
+`NIF_FLEET_TASK_WORKERS=0` 可禁用传输工作进程，但仍投递待处理通知。
 
 ### Incus and remote guest management
 

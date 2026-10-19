@@ -2769,8 +2769,52 @@ Its `/niffler` command lists/switches registered remote instances. SSH uses nati
 port forwarding; Multipass uses the remote installation's native `cli relay`
 mode. Update both ends for that relay; there is no Python fallback. Local path
 completion is disabled on remote workspaces. Client code ships separately from
-the harness. Cross-instance agent delegation and background approvals remain
-future work. `make test-fleet` uses fake transports, never real hosts or VMs.
+the harness. Background approvals remain future work. `make test-fleet` uses
+fake transports, never real hosts or VMs.
+
+### Fleet tasks
+
+The optional fleet component offers session-context `fleet_task_submit`,
+`fleet_task_status`, `fleet_task_result` and `fleet_task_cancel`, distinct from
+service `fleet_status`/`fleet_stop`. Submit requires human approval, a private
+verified `profile` receipt, an idempotent `requestId`, `content`, remote `cwd`,
+explicit `tools`, and positive `maxRounds` (≤32), `maxCalls` (≤100), `maxTokens`
+(≤100000). This first slice permits only `read`, `grep`, and read-only `git_*`
+inspection tools (status/diff/log/show/blame). Shell, store, indirect invocation,
+local/remote delegation and orchestration are refused. The peer must advertise
+`taskScopeVersion:1`; older peers refuse before dispatch. This is capability
+scoping, not an OS sandbox: audit the selected remote tools and workspace.
+
+Owner identity comes from injected session context, never a target session in
+the tool arguments. The requester persists the owner, task, route and identity
+before submission; editing the receipt cannot retarget an existing job.
+Reusing a request ID with different work refuses. A transport timeout is **not**
+a hard task deadline: the runner enforces round/call/token budgets at its normal
+boundaries. No wall-clock hard cap or auto approval is granted.
+
+`queued` is the only replayable state. `submitting`/`unknown` may already have
+executed: reconciliation never resubmits them, even after restart. Unreachable,
+identity mismatch and missing completion receipts are not interruption or
+success. Only the first completion sequence is accepted; if human continuation
+has replaced that latest-per-session receipt, the task stays unknown rather
+than attributing the later turn to it. `settled` means a durable remote turn receipt was observed, not that
+the task's claims were verified. Cancellation is supported only before dispatch;
+after dispatch cancel the remote conversation explicitly on the pinned peer.
+
+Completion is stored with a UTF-8-safe summary (2048-byte prefix plus ellipsis)
+before any wake. The runner folds notices as append-only machinery, commits the
+transcript before acknowledging, and deduplicates replay against canonical
+history, including after projection compaction. Busy turns drain at normal and
+would-stop boundaries; idle turns use the existing `NIF_AGENT_WAKES` budget.
+A declined wake leaves the notice pending. Human activity/seen state is separate.
+`fleet_task_result` returns the cached bounded report without blocking management
+on a remote transport. Full transcripts remain on the worker under `remoteSession`.
+No general mailbox, artifact transfer or automatic retry of uncertain work.
+
+`make test-fleet-tasks` is an isolated two-instance real-NATS/mock-model smoke;
+its guest transport executes scripts only inside test roots, never SSH or VMs.
+`NIF_FLEET_TASK_WORKERS=0` disables transport workers (maintenance/test use),
+without disabling pending-notice delivery.
 
 ### Scheduled turns (heartbeat)
 

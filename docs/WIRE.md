@@ -20,6 +20,37 @@ normal approval gate; receipts are client-local JSON, not prompt context.
 Multipass clients use the installed native `cli relay` stdio/loopback seam,
 never a Python bridge; SSH clients use standard native port forwarding.
 
+## Fleet task settlement
+
+Optional fleet uses requester-owned `fleetjob` documents, never shared remote
+stores or core imports. `fleet_task_submit` binds injected `__session.session`,
+requestId, immutable receipt route/instance identity and explicit birth budgets
+before dispatch. Catalog components/snapshot advertise `taskScopeVersion:1`:
+model-originated calls in allowlisted sessions may not use runner/store
+machinery exemptions. Internal runner persistence remains exempt. Fleet refuses
+older peers and restricts its first slice to audited file/search/git read tools;
+no invoke/orchestrator, shell, store or further delegation authority.
+
+Only `queued` permits submission. Persisting `submitting` spends that permission
+before remote preparation/submission; uncertain outcomes remain unknown, never
+replayed or inferred successful/interrupted from disconnection. A durable remote
+activity receipt establishes turn settlement, not factual task success. Remote
+budgets use supported maxRounds/maxCalls/maxTokens, not a transport timeout as a
+wall-clock deadline. Cancel is local queued-only; later cancellation is explicit
+on the peer. The result tool reads a cached bounded summary, not a blocking relay.
+
+Terminal job and `notice:{kind:"fleet-settled",jobId,status,summary}` commit in
+one revision before notification. Summary is a 2048-byte UTF-8-safe prefix plus
+optional ellipsis. Hidden runner tool `fleet_notices {session,peek?,ack?}` reads
+without consuming; ack marks delivered only for that owner. The conversation
+runner appends a machinery message durably BEFORE ack. It scans canonical
+messages to deduplicate replay after restart/compaction; failed append never
+acks. Both opening and would-stop drains participate. Idle wake attempts use
+the existing bounded wake admission; declined wakes leave notices pending.
+Retries recover record-before-notify and append-before-ack crashes. Human
+activity and client seen markers remain independent. Frozen prefixes do not
+change; only appended notice messages enter model history.
+
 ## Human completion activity
 
 Hidden read-only core tool `activity_list {after?:string,limit?:1..1000}`
@@ -1244,7 +1275,10 @@ The store's bus contract is the artifact; every engine implements exactly
 these tools (docs/MANUAL.md "Store engines"). `put` / `get` / `del` carry
 `{kind, id, value?, expectRev?}`; docs are opaque JSON, ids sort
 lexicographically, and `expectRev` gives optimistic concurrency
-(`rev-conflict` on mismatch).
+(`rev-conflict` on mismatch). `expectRev: -1` is **create-only**: the write
+succeeds only when the document does not exist yet and is refused with
+`rev-conflict` otherwise, so a caller can establish a single owner without a
+read-then-write race. `expectRev: 0` (the default) is an unconditional upsert.
 
 `list` takes `{kind, idPrefix?, limit?, after?}` and returns
 `{ok, items: [{id, rev, value}], hasMore, nextAfter?}`.

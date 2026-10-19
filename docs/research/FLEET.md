@@ -4,8 +4,10 @@
 > and the [manual](../MANUAL.md#ssh-and-multipass-provisioning). Identity,
 > service lifecycle, Nim provisioning, persona/agent definitions and heartbeat
 > are implemented; matching TUI source has receipt import/switching. Native
-> `cli relay` removes the interim Python Multipass bridge. Delegation and
-> background approvals are still planned. Two halves of one story.
+> `cli relay` removes the interim Python Multipass bridge. The Fleet tasks branch
+> adds an initial read-only delegation slice with durable notices; broad task
+> authority and background approvals remain planned. The proposals below are
+> design history, not the shipped tool names: see MANUAL.md "Fleet tasks".
 >
 > **Part I (§1–§5)** — running one or several full Nifflers on remote machines
 > and driving them from another Niffler, or from a bare `niffler-tui` with no

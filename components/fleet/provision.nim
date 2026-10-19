@@ -30,8 +30,13 @@ proc nativeRunner*(argv: seq[string], input: string, timeoutMs: int): CommandRes
   let args = allocCStringArray(argv)
   defer: deallocCStringArray(args)
   cloexecInheritedFds()
+  let expectedParent = getpid()
   let pid = fork()
   if pid == 0:
+    when defined(linux):
+      proc prctl(option: cint): cint {.varargs, importc, header: "<sys/prctl.h>".}
+      discard prctl(1.cint, SIGTERM) # PR_SET_PDEATHSIG: transport cannot outlive its worker
+      if getppid() != expectedParent: exitnow(127)
     discard setpgid(0, 0)
     discard dup2(cint(getFileHandle(inf)), 0)
     discard dup2(cint(getFileHandle(outf)), 1)

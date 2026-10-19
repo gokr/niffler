@@ -32,6 +32,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   frozen prefix is untouched; a resumed conversation rebuilds the same
   projection, and eliding a result drops its refs with its text.
 
+- Fleet task delegation (experimental, read-only): `fleet_task_submit`
+  delegates one bounded investigation to a conversation on a pinned peer,
+  with an explicit read-only tool allowlist and round/call/token budgets;
+  `fleet_task_status`/`fleet_task_result` read the durable local pointer and a
+  cached bounded report, and `fleet_task_cancel` cancels only before dispatch.
+  An unknown transport outcome is never replayed, and unreachable is never
+  reported as failed or successful. Completion is pushed, not polled: a
+  `fleet-settled` notice is appended to the requester's history (deduplicated
+  against canonical history across runner restarts) and wakes an idle
+  requester within the existing wake budget. Store `put` gained
+  `expectRev: -1` (create-only) so a job record cannot be claimed twice. The
+  slice deliberately permits no shell, orchestration, store tools or
+  inherited auto approvals; the remote report is the worker's claim, not a
+  factual success verdict.
+
 - Native unprivileged Incus Fleet containers and optional SSH management hosts
   for Incus/Multipass, route-bound private receipts, ordinary-user guest execution,
   explicit guest linger and temporary installer sudo cleanup. Updates now stop/start

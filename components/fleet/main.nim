@@ -1,7 +1,12 @@
 ## Opt-in Fleet provisioning, using the ordinary harness approval gate.
-import std/json
+import std/[json, os]
 import niffler/sdk
 import provision
+import delegation
+
+if paramCount() == 2 and paramStr(1) == "--fleet-worker":
+  workerMain()
+  quit(0)
 
 let comp = newComponent("fleet", "0.1.0")
 proc schema(properties: JsonNode, required: seq[string], description: string): JsonNode =
@@ -62,4 +67,54 @@ discard comp.tool("fleet_update", schema(%*{
   handler("update"), %*{"onDemand": true, "approval": "always",
     "effect": "write", "timeoutMs": 4400000,
     "writes": {"paths": ["profile"]}, "workspace": {"pathFields": ["profile"]}})
+let taskProps = %*{
+  "profile": profile, "requestId": {"type": "string"},
+  "content": {"type": "string"}, "cwd": {"type": "string"},
+  "tools": {"type": "array", "items": {"type": "string"}},
+  "maxRounds": {"type": "integer", "minimum": 1, "maximum": 32},
+  "maxCalls": {"type": "integer", "minimum": 1, "maximum": 100},
+  "maxTokens": {"type": "integer", "minimum": 1, "maximum": 100000}}
+discard comp.tool("fleet_task_submit", schema(taskProps,
+  @["profile", "requestId", "content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"],
+  "Delegate a bounded read-only task to another machine using a private verified receipt. Explicit tools and round/call/token budgets required. Same requestId is idempotent; unknown outcomes are never replayed. Completion automatically notifies this conversation; do not poll to wait. No shell, orchestration, store tools or auto approvals. Results are claims by the worker, not proof of factual success."),
+  proc(c: Component, args: JsonNode): JsonNode = createJob(c, args),
+  %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true,
+    "workspace": {"pathFields": ["profile"]}})
+proc taskReader(verb: string): ToolHandler =
+  result = proc(c: Component, args: JsonNode): JsonNode =
+    let j = authorized(c, args).value
+    if verb == "result":
+      %*{"jobId": j["id"], "state": j["state"], "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
+        "summary": j{"notice", "summary"}.getStr(""), "bounded": true,
+        "remoteSession": j["sessionId"], "detail": "Full transcript remains on the pinned peer; open this remoteSession there."}
+    else: publicJob(j)
+for name in ["status", "result"]:
+  discard comp.tool("fleet_task_" & name, schema(%*{
+    "jobId": {"type": "string"}}, @["jobId"],
+    "Read an owned remote task's durable status or cached bounded report. Unreachable and unknown do not mean failed or successful; no submission replay. Completion is pushed automatically."),
+    taskReader(name),
+    %*{"onDemand": true, "effect": "read", "sessionContext": true})
+discard comp.tool("fleet_task_cancel", schema(%*{"jobId": {"type": "string"}}, @["jobId"],
+  "Cancel a queued task before dispatch. An already attempted or unknown submission cannot be cancelled by this slice; inspect the pinned peer and cancel its remote session there. Never claims a remote cancellation succeeded."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    var item = authorized(c, args)
+    if item.value["state"].getStr() != "queued":
+      return errResult("dispatch already attempted; cancel on peer explicitly", "unknown")
+    item.value["state"] = %"settled"
+    item.value["notice"] = %*{"kind": "fleet-settled", "jobId": item.id,
+      "status": "cancelled-before-dispatch", "summary": "No remote turn was submitted."}
+    item.value["delivered"] = %false
+    discard c.storePut("fleetjob", item.id, item.value, item.rev)
+    publicJob(item.value),
+  %*{"onDemand": true, "sessionContext": true, "approval": "always"})
+discard comp.tool("fleet_notices", schema(%*{
+  "session": {"type": "string"}, "peek": {"type": "boolean"},
+  "ack": {"type": "string"}}, @["session"],
+  "Runner Fleet completion inbox. Read is non-consuming; acknowledge only after durable transcript append."),
+  proc(c: Component, args: JsonNode): JsonNode = taskNotices(c, args),
+  %*{"hidden": true, "runner": true, "effect": "read"})
+discard comp.onIdle(500) do (c: Component):
+  try: idleJobs(c)
+  except CatchableError as e: stderr.writeLine("fleet idle: " & e.msg)
+discard comp.onDrain do (c: Component): stopWorker()
 comp.run()

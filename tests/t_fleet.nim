@@ -364,7 +364,8 @@ proc main() =
     let data = if registration.hasKey("args"): registration["args"] elif registration.hasKey("payload"): registration["payload"] else: registration
     let expected = ["fleet_install", "fleet_probe", "fleet_status",
                     "fleet_logs", "fleet_start", "fleet_stop",
-                    "fleet_vm_stop", "fleet_update"]
+                    "fleet_vm_stop", "fleet_update", "fleet_task_submit",
+                    "fleet_task_status", "fleet_task_result", "fleet_task_cancel", "fleet_notices"]
     var seen: seq[string]
     if data{"tools"} != nil:
       for tool in data["tools"]: seen.add(tool["name"].getStr())
@@ -378,8 +379,11 @@ proc main() =
       for tool in data["tools"]:
         let name = tool["name"].getStr()
         let ext = tool["schema"]["x-harness"]
+        if name == "fleet_notices":
+          check("fleet inbox hidden runner machinery", ext{"hidden"}.getBool() and ext{"runner"}.getBool())
+          continue
         check(name & " on demand", ext["onDemand"].getBool())
-        if name in ["fleet_probe", "fleet_status", "fleet_logs"]:
+        if name in ["fleet_probe", "fleet_status", "fleet_logs", "fleet_task_status", "fleet_task_result"]:
           check(name & " read effect", ext["effect"].getStr() == "read")
         else:
           check(name & " enforced approval", ext["approval"].getStr() == "always")
