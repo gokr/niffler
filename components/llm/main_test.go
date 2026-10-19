@@ -893,10 +893,8 @@ func TestCrossCatalogMismatchSkipsWithoutComponent(t *testing.T) {
 	}
 }
 
-// A message that carries no text must still put a `content` key on the wire.
-// go-openai marks Content `omitempty`, so without this every schema-strict
-// provider rejects the whole request (deepswe pilot10 on Synthetic: an
-// otherwise healthy session died at the first empty `read` result).
+// Empty messages need valid content, not just a content key. An empty text
+// part loses its text key to omitempty and wedges strict-provider resumes.
 func TestOpenAIMessagesAlwaysCarryContentKey(t *testing.T) {
 	build := func(role string, content string, toolCalls []openai.ToolCall) openai.ChatCompletionMessage {
 		m := openai.ChatCompletionMessage{Role: role, Content: content, ToolCalls: toolCalls}
@@ -920,15 +918,15 @@ func TestOpenAIMessagesAlwaysCarryContentKey(t *testing.T) {
 
 	t.Run("empty tool result", func(t *testing.T) {
 		got := raw(t, build("tool", "", nil))
-		if _, ok := got["content"]; !ok {
-			t.Fatalf("content key missing: %v", got)
+		if got["content"] != "[empty message]" {
+			t.Fatalf("empty content must be a valid string, got: %v", got)
 		}
 	})
 
 	t.Run("assistant turn with no text", func(t *testing.T) {
 		got := raw(t, build("assistant", "", nil))
-		if _, ok := got["content"]; !ok {
-			t.Fatalf("content key missing: %v", got)
+		if got["content"] != "[empty message]" {
+			t.Fatalf("empty content must be a valid string, got: %v", got)
 		}
 	})
 
@@ -960,6 +958,9 @@ func TestOpenAIMessagesShapeForStrictProviders(t *testing.T) {
 		{Role: "user", Content: "go"},
 	}
 	out := openAIMessages(msgs)
+	if msgs[2].Content != "" || len(msgs[2].MultiContent) != 0 {
+		t.Fatal("provider normalization mutated canonical history")
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -975,8 +976,8 @@ func TestOpenAIMessagesShapeForStrictProviders(t *testing.T) {
 		if m["role"] == "assistant" && m["tool_calls"] != nil {
 			continue
 		}
-		if _, ok := m["content"]; !ok {
-			t.Fatalf("messages[%d] (%v) lost its content key: %v", i, m["role"], m)
+		if _, ok := m["content"].(string); !ok {
+			t.Fatalf("messages[%d] (%v) needs string content, got: %v", i, m["role"], m)
 		}
 	}
 }

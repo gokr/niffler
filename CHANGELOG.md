@@ -33,6 +33,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Empty tool results no longer wedge strict OpenAI-compatible providers with
+  a malformed text part. The LLM adapter sends an explicit empty-message marker
+  on both streaming and non-streaming requests, including replayed history,
+  without rewriting stored messages.
+
 - A transient compaction failure no longer costs history silently. The fallback
   ladder replays a failed replaceable compactor **once** (announced as
   `compact:retry`) when its outcome kept the verified snapshot — a dispatch

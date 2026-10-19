@@ -547,19 +547,11 @@ func openAIMessages(messages []chatMessage) []openai.ChatCompletionMessage {
 	return result
 }
 
-// ensureContentKey guarantees the `content` key is PRESENT on the wire for
-// messages that carry none. go-openai's ChatCompletionMessage marks Content
-// `json:"content,omitempty"`, so an empty string is omitted entirely — and a
-// strict provider rejects the request outright with an opaque 400 that only
-// says `.messages[N].content is missing` for every schema option (deepswe
-// pilot10 on Synthetic, and DeepSeek answers 422). It is not only the
-// literally empty case: a tool whose result was the empty string (a `read`
-// with no output) and a turn whose final assistant message had no text both
-// produced it. Verified against both providers: a tool message accepts the
-// empty string or a single empty text part, `content: null` is REJECTED, and
-// an assistant message with no content key and no tool_calls is rejected by
-// DeepSeek ("content or tool_calls must be set") — so the fallback is the
-// text-part shape, the only spelling go-openai will emit for a set field.
+// ensureContentKey keeps empty messages valid at the provider boundary without
+// changing stored history. go-openai omits both an empty Content string and
+// an empty ChatMessagePart.Text: an empty text part becomes {"type":"text"},
+// which strict providers reject (conv-d8e18e9fa617). Use an explicit, non-empty
+// marker instead. Assistant tool-call turns may still omit content.
 func ensureContentKey(out *openai.ChatCompletionMessage, in chatMessage) {
 	if out.Content != "" || len(out.MultiContent) > 0 {
 		return
@@ -572,10 +564,7 @@ func ensureContentKey(out *openai.ChatCompletionMessage, in chatMessage) {
 	if len(in.MultiContent) > 0 {
 		return
 	}
-	out.MultiContent = []openai.ChatMessagePart{{
-		Type: openai.ChatMessagePartTypeText,
-		Text: "",
-	}}
+	out.Content = "[empty message]"
 }
 
 type chatArgs struct {
