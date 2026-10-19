@@ -17,7 +17,7 @@ append-only conversation history. Matching TUI clients pin imported receipt
 identities before forwarding and on reconnect. Provisioning belongs to the
 optional Nim `fleet` component, not core. Its approved mutation tools use the
 normal approval gate; receipts are client-local JSON, not prompt context.
-Multipass clients use the installed native `cli relay` stdio/loopback seam,
+Lima clients use the installed native `cli relay` stdio/loopback seam,
 never a Python bridge; SSH clients use standard native port forwarding.
 
 ## Human completion activity

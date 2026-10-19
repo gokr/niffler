@@ -24,7 +24,7 @@ material across them.
 - **Sandboxing:** [current experimental behavior](research/SANDBOX-BASH-STATUS.md)
   versus [agreed conversation-policy target](research/SANDBOX-CONVERSATION-POLICY.md).
   The older sandbox notes retain superseded proposals, not current promises.
-- **Fleet:** [manual](MANUAL.md#ssh-and-multipass-provisioning),
+- **Fleet:** [manual](MANUAL.md#ssh-and-lima-provisioning),
   [component reference](../components/fleet/README.md) and
   [delivery status](research/FLEET-IMPLEMENTATION.md).
   Provisioning is implemented; cross-instance task delegation is not.

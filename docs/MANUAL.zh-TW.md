@@ -80,7 +80,7 @@
 | `provider` | Go | optional | 儲存後端的 LLM 提供者註冊表：`provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`，訂閱 OAuth 登入（`provider_oauth_start`/`complete`/`cancel`），`ev.provider.switch` 通知 |
 | `plugins` | Nim | optional | 生態系統前門：主題搜尋 ＋套件的安裝/更新/移除 |
 | `skills` | Nim | optional | Agent Skills（SKILL.md）：探索、載入、資源存取、基於 git 的安裝/移除 |
-| `fleet` | Nim | **不在 manifest 中** | 明確啟用的 SSH/Multipass/Incus 部署與生命週期管理；核准門、私有身分回執，無 Python 執行環境依賴 |
+| `fleet` | Nim | **不在 manifest 中** | 明確啟用的 SSH/Lima/Incus 部署與生命週期管理；核准門、私有身分回執，無 Python 執行環境依賴 |
 | `fetch` | Nim | optional | 網頁內容擷取：http/https、HTML→文字擷取、帶檔案溢出的尺寸上限 |
 | `locks` | Nim | optional | 會話工具的協作式寫入協調。檔案工具宣告路徑，萬用字元宣告其基底目錄，不透明寫入工具宣告子樹。唯讀工具與會話編排不持有外層宣告：巢狀工具分別取得。衝突回傳 `E_WRITE_BUSY` 並指出持有者。核准後才取得；會話租約至少涵蓋傳輸逾時加 60 秒（最少 10 分鐘）。終止回覆釋放租約，未知的逾時或取消結果保留到期。啟動復原失敗時拒絕寫入並可重試；持久釋放失敗保留宣告。記憶體索引寫穿至每個租約一份儲存文件。僅執行一個實例（不可複製）。元件缺席時不協調寫入。這不是 OS 沙箱：直接匯流排呼叫、分離程序、guest 原生 I/O 與其他框架實例不在保證範圍內。見 [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md)。 |
 | `edit` | Nim | optional | 檔案工具：`read`（規範的 `reads` 陣列 — 一次呼叫最多 12 個檔案/範圍（每項 2000 行、256 KB、每行 2 KB — 更長的行變成 `bash: sed -n …` 通知；每次呼叫總計 512000 位元組，剩餘部分報告為不會使批次失敗的每項錯誤），可分頁，單檔 `path` 語法糖；對超過 1000 行的檔案進行整檔讀取且其類型有語言伺服器時，改為返回 lsp 符號大綱 — 用 offset/limit 開窗，或用 `offset: 1` 無論如何整檔讀取，`NIF_READ_OUTLINE_LINES` 調整/停用 — 對本會話已完整讀取過且位元組完全相同的 ≥512 位元組檔案進行整檔重讀時，返回 `[unchanged] <path>: N bytes, M lines, digest <sha1>` 而非文字；`force: true`（或任何 offset/limit 視窗）強制重新傾印，且視窗讀取和小檔案總是重新傾印），`edit`（只改變*現有*文字檔 — 缺失路徑為 `E_NOT_FOUND`，空檔案為 `E_EMPTY`，兩者都指向 `write` 作為建立內容的方式；接受 `{old_string, new_string, replace_all?}` 對的 `edits[]` 陣列 — 沒有單獨的多重編輯工具 — 全部對照*原始*檔案匹配，檢查重疊和無變化，然後以一次原子重命名寫入；受保護的後備級聯是尾隨空白 → 縮排漂移 → unicode 標點 → 按 Levenshtein 相似度 ≥ 0.65 的區塊錨點 → 雙重轉義文字，且每一層仍必須恰好匹配一次；陳舊閘門位於匹配*之前* — 當會話最後觀察到的檔案摘要與磁碟不同（外部編輯，或讀取/寫入以來的 `bash` 變更），`edit` 以 `E_STALE` 拒絕而非匹配模型從未見過的文字：重新讀取並重做。無會話呼叫者（`cli`、其他元件）不被追蹤並跳過閘門），`write`（原子整檔：建立父目錄、跟隨符號連結、保留目標的權限、將負載上限設為 `NIF_WRITE_MAX_BYTES` = 900000），`undo_last_edit`（每檔單層 — 僅前一次編輯，不是堆疊 — 跨重啟持久化並以絕對路徑為鍵，精確還原內容、BOM 和行尾；當檔案在編輯後被修改或刪除時以 `E_UNDO_STALE` 拒絕，此時陳舊記錄被*丟棄*（重新讀取並向前編輯）；undo 記錄在檔案之前寫入，因此儲存失敗會以 `E_UNDO_UNAVAILABLE` 拒絕編輯而非失去還原能力；受核准閘控的變更）；錨定區塊移動位於 [niffler-hashline](https://github.com/gokr/niffler-hashline) 外掛中 |
@@ -1518,11 +1518,11 @@ NIF_ROOT，停用 UI 自動退出和自動核准，使用核心擁有的隔離�
 修改 linger，也不使用 sudo。在 SSH/VM 目標執行這些生命週期操作前須取得
 人類核准。測試使用假的 systemd 命令，不操作主機服務管理器。
 
-### SSH and Multipass provisioning
+### SSH and Lima provisioning
 
-選用 **Nim `fleet` 元件**透過普通 SSH 或 `multipass exec` 安裝或採用 Linux
+選用 **Nim `fleet` 元件**透過普通 SSH 或 `limactl shell` 安裝或採用 Linux
 實例。本機和遠端均不需要 Python。SSH、Bash 和目標建置依賴仍是必要條件；
-Multipass 為選用依賴。元件由 make build 建置，不自動啟動。明確啟用後，
+Lima (limactl >=2.2.1) 為選用依賴。元件由 make build 建置，不自動啟動。明確啟用後，
 將下列 JSON 傳給 fleet_install：
 
 ```bash
@@ -1533,30 +1533,30 @@ Multipass 為選用依賴。元件由 make build 建置，不自動啟動。明�
 {"transport":"ssh","target":"ubuntu@worker","root":"/home/ubuntu/niffler","revision":"<full-published-commit-sha>","profile":"var/fleet/worker.json"}
 ```
 
-VM 使用 `transport:"multipass"`，target 為 VM 名，可設定 cpus、memory、disk。
+VM 使用 `transport:"lima"`，target 為 VM 名，可設定 cpus、memory、disk。
 新安裝須固定 gokr/niffler 已發布的完整 40 位提交。既有完整安裝僅採用，
 不拉取或重建；無關或不完整根目錄拒絕覆寫。目標需要 git；bootstrap 安裝
-其餘依賴，可能需要 sudo。供應商憑證須明確設定，不自動複製。SSH/Multipass 的 linger 不自動啟用；Incus 安裝會明確啟用訪客 ubuntu 的 linger。
+其餘依賴，可能需要 sudo。供應商憑證須明確設定，不自動複製。SSH 的 linger 不自動啟用；Lima/Incus 安裝啟用 guest ubuntu linger。
 
 fleet_install、fleet_start、fleet_stop、fleet_vm_stop 透過標準 harness 核准門，
 目標、根目錄、版本和資源由參數展示。不再使用獨立 tty 核准協定；人類明確
 選擇的標準自動核准策略仍適用。fleet_probe、fleet_status、fleet_logs 為唯讀，
 使用 `{profile:"/absolute/path/to/receipt.json"}`。不要公開 NATS 監聽器。
 
-SSH 保留別名、金鑰、ProxyJump 和 known_hosts，停用 agent 轉送。Multipass
+SSH 保留別名、金鑰、ProxyJump 和 known_hosts，停用 agent 轉送。Lima
 不掛載主機、不提取金鑰。無刪除或 purge 工具。0600 原子回執固定 root 和
 instanceId，身分變化拒絕寫入；固定 VM 消失時不自動重建。失敗保留部分狀態。
 停止 Niffler 與停止 VM 是分別核准的操作，用戶端斷線不會停止常駐服務。
 
 匹配的 TUI 可用 `niffler-tui --instance worker --instance-import /path/to/worker.json`
 匯入回執，再以 `niffler-tui --instance worker` 連線。/niffler 列出或切換遠端。
-SSH 使用原生轉送；Multipass 使用遠端原生 cli relay，須更新兩端，無 Python
+SSH 使用原生轉送；Lima 使用遠端原生 cli relay，須更新兩端，無 Python
 回退。遠端停用本機路徑補全。TUI 獨立發布；跨實例代理委派與背景核准尚未實作。
 make test-fleet 使用假傳輸，不操作真實主機或 VM。
 
 ### Incus and remote guest management
 
-Fleet 現支援 `transport:"incus"` 和 Incus/Multipass 可選 `host:"operator@hypervisor"`；省略 host 表示本機。收據綁定路由，漂移或已固定訪客遺失會拒絕操作。Incus 使用固定 Ubuntu 24.04 非特權系統容器，普通 ubuntu 使用者及 `/home/ubuntu/niffler`；明確啟用訪客 linger，臨時 sudo 安裝規則於退出時清理（SIGKILL/主機故障需人工檢查），不使用主機 sudo 或掛載。incus-admin 等同主機 root 權限；必須先手動安裝/初始化 Incus 並驗證無密碼 SSH 和 known_hosts。完整安裝、Multipass、更新與安全預檢步驟見英文手冊對應段落。
+Fleet 現支援 `transport:"incus"` 和 Incus/Lima 可選 `host:"operator@hypervisor"`；省略 host 表示本機。收據綁定路由，漂移或已固定訪客遺失會拒絕操作。Incus 使用固定 Ubuntu 24.04 非特權系統容器，普通 ubuntu 使用者及 `/home/ubuntu/niffler`；明確啟用訪客 linger，臨時 sudo 安裝規則於退出時清理（SIGKILL/主機故障需人工檢查），不使用主機 sudo 或掛載。incus-admin 等同主機 root 權限；必須先手動安裝/初始化 Incus 並驗證無密碼 SSH 和 known_hosts。完整安裝、Lima、更新與安全預檢步驟見英文手冊對應段落。
 
 
 ```bash
@@ -1566,7 +1566,7 @@ sudo incus admin init
 sudo usermod -aG incus-admin "$USER"
 # 重新登入後驗證；該组權限等同主機 root。
 incus --force-local --project default list
-# Ubuntu 上的 Multipass 替代方案：sudo snap install multipass
+# Ubuntu 上的 Lima 替代方案：limactl --version
 ssh -T -o BatchMode=yes -o ForwardAgent=no operator@hypervisor 'incus --force-local --project default list'
 ```
 
@@ -1579,7 +1579,7 @@ sudo 或预装建置工具。直接 SSH 不自动啟用 linger。
 ./var/bin/cli call spawn '{"name":"fleet","binary":"var/bin/fleet","policy":"on-failure"}'
 ```
 
-经人工核准，将以下參數传给 fleet_install（本機省略 host；Multipass 改 transport
+经人工核准，将以下參數传给 fleet_install（本機省略 host；Lima 改 transport
 和 target 為 VM 名）：
 
 ```json
@@ -1604,8 +1604,7 @@ project。NIC 僅允许橋接/p2p 或已驗證的托管橋接網路，不允许 
 ```
 
 更新拒绝遺失或身份漂移的訪客、拒绝未提交修改；不重建訪客，不使用 bootstrap
-sudo。停止的已固定 Incus 容器必須由管理員先启动再驗證身份；Multipass 现有
-更新會先启动停止的 VM。重建後停止/启动範圍使用者服务，僅在新版本驗證成功
+sudo。停止的已固定 Incus 或 Lima guest 必須由管理員先啟動再驗證身分。重建後停止/启动範圍使用者服务，僅在新版本驗證成功
 後更新私有 0600 收據。服务停止與 fleet_vm_stop 的容器/VM 停止是獨立核准操作，
 均不刪除。收據保存成功後仍須明确匯入 TUI：
 
@@ -2666,3 +2665,7 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
 | 會話呼叫失敗：「session runner binary missing」 | `var/bin/session` 從未建置——`make build` |
 | `spawn` 失敗：「spawn failed — tool '<t>' already provided by <owner>」 | 註冊被拒絕——幾乎總是已存在的工具名稱（名稱全域唯一；請以元件名稱作為你的前綴）。修正名稱、重新建置並再次 `spawn`：失敗的嘗試已被回滾（複本已停止，未持久化任何東西），因此該名稱立即空出。在 core 的 stdout 上，同樣的拒絕讀作 `catalog: rejecting <name> — …` |
 | `spawn` 失敗：「did not register within <n> ms」 | 元件未及時宣告自己——可能是啟動緩慢的元件，或是在途中死掉的二進位檔（core 會將 `var/logs/<name>.log` 的有界尾端附加到錯誤中）。修正原因並再次 `spawn`（該嘗試已被回滾），或為真正緩慢的元件提高 `NIF_SPAWN_WAIT_MS` |
+
+#### Lima VM policy
+
+Lima 需要 2.2.1 或更新版本，transport 為 `lima`，root 固定 `/home/ubuntu/niffler`。原生 `limactl create/start/stop/shell` 支援可選 SSH host。預設 2 CPU、4GiB RAM、20GiB disk；無主機掛載、憑證複製、agent 轉送或自動 port forwarding。Ubuntu 24.04 amd64/arm64 映像固定 release-20260926 並驗證 SHA256，無浮動 fallback；URL/digest 更新須人工審查。guest ubuntu 保留 Lima 標準 passwordless sudo，安裝啟用 guest linger 和持久 user service，不更改主機 sudo。舊 Multipass 回執與 registry 欄位明確拒絕：建立新 Lima guest 並匯入新驗證回執，勿更名舊 transport 或複製 instance-id。停止的已固定 guest 須由管理員啟動後驗證身分。真實 VM smoke 尚未授權執行；詳見 English manual 的 Lima VM policy。

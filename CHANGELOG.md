@@ -6,6 +6,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Replace supported Multipass transport with native Lima provisioning/relay; preserve SSH and Incus. Old Multipass profiles explicitly require new verified Lima receipts. Digest-pinned Ubuntu images, no host mounts or credential forwarding; real Lima smoke pending authorization.
+
+
 ### Added
 
 - Image capability gating: `llm_resolve` reports whether the resolved model

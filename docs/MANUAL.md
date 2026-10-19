@@ -84,7 +84,7 @@ A one-file index of every shipped capability (not a reference) is
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
-| `fleet` | Nim | **not in the manifest** | Opt-in SSH/Multipass provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Multipass provisioning](#ssh-and-multipass-provisioning) |
+| `fleet` | Nim | **not in the manifest** | Opt-in SSH/Lima provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Lima provisioning](#ssh-and-lima-provisioning) |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
 | `edit` | Nim | optional | the file tools: `read` (an image path — png/jpeg/gif/webp/bmp, recognized by its bytes rather than its extension — returns the image itself for the model to look at instead of the `E_NOT_TEXT` binary refusal, with a caption naming file, format, byte size and dimensions; over `READ_IMAGE_MAX_BYTES` (3.5 MB) the file is *reported*, never silently downscaled, and `capture`/`save_as` calls skip the image path entirely, so a var-capable call cannot smuggle pixels into a variable; see [Images](#images-dropped-and-tool-produced)); `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump; a *select* item ({glob|path, pattern?, word?, context?, max?}) locates-then-fetches in one call — with no pattern it lists the matched paths like find/ls, while a literal pattern returns verbatim hit regions ±context lines (grep semantics) ready to copy into `edit`'s `old_string`), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `replace_across` (sed-style literal s///g across a bounded file set in one call — `paths` and/or `glob` (`f*.go` in one directory, `**/*.go` recursively), rules applied in order like a sed pipeline with an optional `word` (\b) span, every occurrence per file and zero-match files passing like sed; a zero *total* match is refused with `E_NO_MATCH` so a mistyped needle cannot silently succeed, per-file counts come back, and each changed file gets its own undo entry that `undo_last_edit` reverts individually; bounded by a 512-file glob-accident circuit breaker and a 32 MB per-call undo pre-image budget (`E_TOO_LARGE`) — the counting pass writes nothing until every refusal has passed), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); `read`, `edit`, `replace_across` and `write` additionally carry the session-variable pipeline controls (`save_as` captures a response field, `resolve_vars: true` substitutes `$name` in that call's arguments — every other `$` stays literal; see [WIRE.md](WIRE.md) `x-harness.variables`); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
@@ -2623,12 +2623,12 @@ linger, logout/reboot persistence is not guaranteed; ask an administrator about
 operations affect host lifecycle: obtain human approval before running them on
 an SSH/VM target. Tests use fake systemd commands, not the host service manager.
 
-### SSH and Multipass provisioning
+### SSH and Lima provisioning
 
 The optional **Nim `fleet` component** installs or adopts Linux instances over
-ordinary SSH, `multipass exec`, or native `incus exec`. Fleet provisioning and the matching TUI's
-Multipass relay require **no Python interpreter**, locally or remotely. SSH,
-Bash and the target's build prerequisites remain necessary; Multipass is optional.
+ordinary SSH, `limactl shell`, or native `incus exec`. Fleet provisioning and the matching TUI's
+Lima relay require **no Python interpreter**, locally or remotely. SSH,
+Bash and the target's build prerequisites remain necessary; Lima is optional.
 
 Enable the built component explicitly (it is not in the boot manifest):
 
@@ -2648,12 +2648,12 @@ is what the receipt records and the remote checkout verifies — pinning is
 preserved, only the typing gets easier. An update requires the full SHA that
 `fleet_update` resolved, or the same ref form.
 
-For a VM use `transport:"multipass"`, a VM name as `target`, and optional `cpus`,
+For a VM use `transport:"lima"`, a VM name as `target`, and optional `cpus`,
 `memory` and `disk`. New installations pin a full 40-character commit available
 from `gokr/niffler`; unpublished local commits cannot be provisioned this way.
 Existing built roots are adopted without pulling or rebuilding; incomplete or
 unrelated roots refuse overwrite. Provider credentials and linger must be set
-explicitly for SSH/Multipass; neither is copied/enabled there. Incus explicitly enables guest linger as described below. New targets need git; bootstrap installs
+explicitly for SSH. Credentials are never copied. Lima and Incus enable guest linger. New targets need git; bootstrap installs
 remaining prerequisites (possibly sudo).
 
 
@@ -2673,9 +2673,8 @@ supported Ubuntu/Debian host install Incus (`sudo apt install incus`), run
 `sudo usermod -aG incus-admin "$USER"`; log in again and verify `incus list`.
 **incus-admin membership is host-root-equivalent**; grant it only to trusted
 operators. Do not grant broad host sudo for Fleet. Alternatively install
-Multipass from its official packages (`sudo snap install multipass` on Ubuntu),
-then verify `multipass list` as the operator. Multipass guests retain their
-standard ubuntu/sudo behavior; no mounts or SSH key extraction are used.
+Lima 2.2.1 or newer from its official distribution, then verify `limactl --version`.
+No mounts or SSH key extraction are used.
 
 Both guest transports accept optional `host:"operator@hypervisor"` (or an SSH
 alias). Omit `host` for local management. Every list/create/start/stop/exec goes
@@ -2684,14 +2683,14 @@ through this host using fixed SSH options `BatchMode=yes`, `ForwardAgent=no`,
 shell-quoted. Receipts bind this route; changing/adding/removing host refuses.
 Preflight manually: establish trusted known_hosts and key/agent authentication,
 then run `ssh -T -o BatchMode=yes -o ForwardAgent=no operator@hypervisor 'incus --force-local --project default list'`
-(or `'multipass list'`). The noninteractive remote PATH must include that CLI.
+(or `'limactl list --json --all-fields'`). The noninteractive remote PATH must include that CLI.
 No passwords or credentials are stored or copied. Direct `transport:"ssh"`
 uses `target` only (no `host`); provision git, Bash and writable dedicated root,
 noninteractive prerequisite sudo or preinstalled build tools, and an available
 systemd user manager beforehand. Direct SSH never enables linger implicitly.
 
-Example approved bootstrap (omit host for local Incus; use multipass and a VM
-name for remote Multipass):
+Example approved bootstrap (omit host for local Incus; use lima and a VM
+name for remote Lima):
 
 ```json
 {"transport":"incus","target":"worker","host":"operator@hypervisor","root":"/home/ubuntu/niffler","revision":"main","profile":"var/fleet/worker.json"}
@@ -2722,6 +2721,38 @@ Incus containers (never deletes); service stop is separate. Relay clients must
 use the same ubuntu runuser/HOME route, not root, even for root-readable endpoints.
 Tests use fake transports only; real-machine provisioning requires separate consent.
 
+
+#### Lima VM policy
+
+Use `transport:"lima"`, VM name as `target`, root `/home/ubuntu/niffler`.
+Optional SSH `host` routes every command like Incus. Requires Lima >=2.2.1.
+Native `limactl create --tty=false --name=NAME -` reads standalone config on stdin;
+`limactl start/stop` manage the VM; `limactl shell --workdir=/home/ubuntu NAME ...`
+carries scripts and native `cli relay` binary stdio. No Colima, host mounts,
+credential copying, agent forwarding, proxy propagation, automatic port forwarding
+or host sudo. Lima's own private management key stays on the management host;
+`loadDotSSHPubKeys` is off. Explicit defaults: 2 CPUs, 4GiB RAM, 20GiB disk.
+Fleet inspects effective configuration via `limactl list --json --all-fields`
+before start/adoption/execution; unsafe mounts, hooks, copies, extra devices/networks
+and forwarding refuse. Operator defaults/overrides must conform; Fleet never edits them.
+Guest ubuntu/home are fixed. Bootstrap enables guest linger/user manager and the
+persistent user service. Lima's baseline guest passwordless sudo remains, unlike
+host sudo; the temporary Fleet installer grant is removed on normal EXIT. Forced
+interruption can require manual guest grant cleanup, as with Incus.
+
+Ubuntu 24.04 server images (amd64/arm64 only) pin `release-20260926` and mandatory
+SHA256 digests in provision.nim, cross-checked against Ubuntu SHA256SUMS and
+[Lima v2.2.1 image pins](https://github.com/lima-vm/lima/blob/v2.2.1/templates/_images/ubuntu-24.04.yaml).
+No mutable fallback: expired URLs fail closed; review URL+digest updates together.
+Syntax was checked against installed Lima 2.2.1 help and upstream CLI/config sources.
+Multipass is no longer supported: old receipts and TUI registry `multipass` fields
+explicitly refuse. Provision a new Lima guest and import its new verified private
+receipt; never rename old transport fields or copy var/instance-id. SSH and Incus
+remain supported. Stopped pinned guests require administrator startup before
+identity verification; missing pinned guests never recreate automatically.
+No real Lima VM smoke was authorized/run. Fake tests and configuration validation
+do not prove hypervisor, boot, package installation or persistent-service readiness.
+
 #### Updating a provisioned instance
 
 `fleet_install` never updates: a rerun adopts. Moving an existing instance
@@ -2731,8 +2762,7 @@ forward is its own approved action:
 {"profile":"var/fleet/worker.json","revision":"main"}
 ```
 
-`fleet_update` verifies instance identity over the live catalog first (starting a
-stopped pinned VM, never creating one), resolves the ref, and then on the host
+`fleet_update` verifies instance identity over the live catalog first (stopped pinned guests require administrator startup), resolves the ref, and then on the host
 refuses a symlinked, unrelated or **locally-modified** checkout — uncommitted
 work on an instance is the operator's, not something an update discards.
 Otherwise it fetches, checks out the resolved commit, runs `make build` in place
@@ -2751,7 +2781,7 @@ read-only; lifecycle and probe tools take
 `{profile:"/absolute/path/to/receipt.json"}`. Never expose NATS publicly.
 
 SSH honors aliases, keys, ProxyJump and known_hosts with agent forwarding disabled.
-Multipass uses exec, no host mounts or key extraction. No delete/purge tool exists.
+Lima uses native limactl shell, no host mounts or key extraction. No delete/purge tool exists.
 A scoped user service keeps the instance running when clients disconnect. A
 verified, atomically written 0600 receipt pins its root and stable instanceId;
 identity drift refuses remote writes, and a missing pinned VM is never recreated.
@@ -2766,7 +2796,7 @@ niffler-tui --instance worker
 ```
 
 Its `/niffler` command lists/switches registered remote instances. SSH uses native
-port forwarding; Multipass uses the remote installation's native `cli relay`
+port forwarding; Lima uses the remote installation's native `cli relay`
 mode. Update both ends for that relay; there is no Python fallback. Local path
 completion is disabled on remote workspaces. Client code ships separately from
 the harness. Cross-instance agent delegation and background approvals remain
@@ -4339,4 +4369,4 @@ daemon on the selected management host and its default project are fixed,
 regardless of mutable CLI defaults. NICs must be bridged/p2p or use a verified
 managed bridge network; physical/SR-IOV passthrough refuses. Stopped pinned Incus
 updates refuse until an administrator starts the container for identity checks;
-existing Multipass update behavior (start stopped VM before probing) is unchanged.
+stopped pinned Lima guests also require administrator startup before identity verification.

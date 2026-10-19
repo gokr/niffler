@@ -1,5 +1,11 @@
 # Fleet implementation — delivery plan
 
+> VM backend update: current Fleet/TUI use native Lima, not Multipass. Legacy
+> Multipass profiles explicitly refuse and require newly provisioned/verified
+> Lima receipts. See [Lima VM policy](../MANUAL.md#lima-vm-policy). Multipass smoke
+> results below are historical and do not certify Lima; Lima live smoke remains
+> pending separate human authorization.
+
 Status: provisioning/lifecycle merged into `main`; task delegation is not yet
 implemented. The harness fleet worktrees have been removed after merge.
 TUI code and installed/released client versions must be checked in their own repo.

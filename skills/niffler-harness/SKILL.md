@@ -201,9 +201,8 @@ supported Ubuntu/Debian host install Incus (`sudo apt install incus`), run
 `sudo usermod -aG incus-admin "$USER"`; log in again and verify `incus list`.
 **incus-admin membership is host-root-equivalent**; grant it only to trusted
 operators. Do not grant broad host sudo for Fleet. Alternatively install
-Multipass from its official packages (`sudo snap install multipass` on Ubuntu),
-then verify `multipass list` as the operator. Multipass guests retain their
-standard ubuntu/sudo behavior; no mounts or SSH key extraction are used.
+Lima 2.2.1 or newer from its official distribution, then verify `limactl --version`.
+No mounts or SSH key extraction are used.
 
 Both guest transports accept optional `host:"operator@hypervisor"` (or an SSH
 alias). Omit `host` for local management. Every list/create/start/stop/exec goes
@@ -212,14 +211,14 @@ through this host using fixed SSH options `BatchMode=yes`, `ForwardAgent=no`,
 shell-quoted. Receipts bind this route; changing/adding/removing host refuses.
 Preflight manually: establish trusted known_hosts and key/agent authentication,
 then run `ssh -T -o BatchMode=yes -o ForwardAgent=no operator@hypervisor 'incus --force-local --project default list'`
-(or `'multipass list'`). The noninteractive remote PATH must include that CLI.
+(or `'limactl list --json --all-fields'`). The noninteractive remote PATH must include that CLI.
 No passwords or credentials are stored or copied. Direct `transport:"ssh"`
 uses `target` only (no `host`); provision git, Bash and writable dedicated root,
 noninteractive prerequisite sudo or preinstalled build tools, and an available
 systemd user manager beforehand. Direct SSH never enables linger implicitly.
 
-Example approved bootstrap (omit host for local Incus; use multipass and a VM
-name for remote Multipass):
+Example approved bootstrap (omit host for local Incus; use lima and a VM
+name for remote Lima):
 
 ```json
 {"transport":"incus","target":"worker","host":"operator@hypervisor","root":"/home/ubuntu/niffler","revision":"main","profile":"var/fleet/worker.json"}
@@ -255,4 +254,36 @@ daemon on the selected management host and its default project are fixed,
 regardless of mutable CLI defaults. NICs must be bridged/p2p or use a verified
 managed bridge network; physical/SR-IOV passthrough refuses. Stopped pinned Incus
 updates refuse until an administrator starts the container for identity checks;
-existing Multipass update behavior (start stopped VM before probing) is unchanged.
+stopped pinned Lima guests also require administrator startup before identity verification.
+
+
+## Lima VM policy
+
+Use `transport:"lima"`, VM name as `target`, root `/home/ubuntu/niffler`.
+Optional SSH `host` routes every command like Incus. Requires Lima >=2.2.1.
+Native `limactl create --tty=false --name=NAME -` reads standalone config on stdin;
+`limactl start/stop` manage the VM; `limactl shell --workdir=/home/ubuntu NAME ...`
+carries scripts and native `cli relay` binary stdio. No Colima, host mounts,
+credential copying, agent forwarding, proxy propagation, automatic port forwarding
+or host sudo. Lima's own private management key stays on the management host;
+`loadDotSSHPubKeys` is off. Explicit defaults: 2 CPUs, 4GiB RAM, 20GiB disk.
+Fleet inspects effective configuration via `limactl list --json --all-fields`
+before start/adoption/execution; unsafe mounts, hooks, copies, extra devices/networks
+and forwarding refuse. Operator defaults/overrides must conform; Fleet never edits them.
+Guest ubuntu/home are fixed. Bootstrap enables guest linger/user manager and the
+persistent user service. Lima's baseline guest passwordless sudo remains, unlike
+host sudo; the temporary Fleet installer grant is removed on normal EXIT. Forced
+interruption can require manual guest grant cleanup, as with Incus.
+
+Ubuntu 24.04 server images (amd64/arm64 only) pin `release-20260926` and mandatory
+SHA256 digests in provision.nim, cross-checked against Ubuntu SHA256SUMS and
+[Lima v2.2.1 image pins](https://github.com/lima-vm/lima/blob/v2.2.1/templates/_images/ubuntu-24.04.yaml).
+No mutable fallback: expired URLs fail closed; review URL+digest updates together.
+Syntax was checked against installed Lima 2.2.1 help and upstream CLI/config sources.
+Multipass is no longer supported: old receipts and TUI registry `multipass` fields
+explicitly refuse. Provision a new Lima guest and import its new verified private
+receipt; never rename old transport fields or copy var/instance-id. SSH and Incus
+remain supported. Stopped pinned guests require administrator startup before
+identity verification; missing pinned guests never recreate automatically.
+No real Lima VM smoke was authorized/run. Fake tests and configuration validation
+do not prove hypervisor, boot, package installation or persistent-service readiness.

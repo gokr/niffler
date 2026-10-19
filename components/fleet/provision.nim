@@ -95,10 +95,11 @@ proc validateRoot*(root: string) =
     if part in ["", ".", ".."]: refuse("root must be a dedicated canonical installation path")
 
 proc validateTarget(transport, target: string) =
-  if transport notin ["ssh", "multipass", "incus"]: refuse("unsupported transport")
+  if transport == "multipass": refuse("Multipass profiles are no longer supported; provision a new Lima guest and import its new verified receipt; never rename the transport")
+  if transport notin ["ssh", "lima", "incus"]: refuse("unsupported transport")
   if target.len == 0 or target[0] notin {'a'..'z','A'..'Z','0'..'9','_'} or
       not target.allCharsInSet({'a'..'z','A'..'Z','0'..'9','_','.','@','-'}): refuse("invalid target")
-  if transport in ["multipass", "incus"] and (target[0] notin {'a'..'z','A'..'Z'} or
+  if transport in ["lima", "incus"] and (target[0] notin {'a'..'z','A'..'Z'} or
       not target.allCharsInSet({'a'..'z','A'..'Z','0'..'9','-'})): refuse("invalid VM name")
 
 proc validateRoute(p: JsonNode) =
@@ -107,10 +108,10 @@ proc validateRoute(p: JsonNode) =
   if p.hasKey("host"):
     if p["host"].kind != JString or p["host"].getStr().len == 0:
       refuse("host must be a nonempty SSH alias/user@host; omit for local")
-    if transport notin ["multipass", "incus"]: refuse("host is only allowed for guest transports")
+    if transport notin ["lima", "incus"]: refuse("host is only allowed for guest transports")
     validateTarget("ssh", p["host"].getStr())
-  if transport == "incus" and p{"root"}.getStr() != "/home/ubuntu/niffler":
-    refuse("Incus root must be /home/ubuntu/niffler")
+  if transport in ["incus", "lima"] and p{"root"}.getStr() != "/home/ubuntu/niffler":
+    refuse("guest root must be /home/ubuntu/niffler")
 
 proc validateProfile*(p: JsonNode) =
   try:
@@ -177,17 +178,58 @@ proc guestRoot(run: CommandRunner, p: JsonNode, script: string, timeoutMs = 6000
   checked(run, management(p, @["incus", "exec", p["target"].getStr(), "--mode=non-interactive", "--", "bash", "-s"]),
           "set -euo pipefail\n" & script, timeoutMs)
 
+const limaImages = """[
+  {"location":"https://cloud-images.ubuntu.com/releases/noble/release-20260926/ubuntu-24.04-server-cloudimg-amd64.img","arch":"x86_64","digest":"sha256:6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2"},
+  {"location":"https://cloud-images.ubuntu.com/releases/noble/release-20260926/ubuntu-24.04-server-cloudimg-arm64.img","arch":"aarch64","digest":"sha256:1d6bffe64b848468ac97f821d369a4846d983de1800ccf6b5ec8853e85cefc55"}
+]"""
+
+proc limaConfig*(cpus: int, memory, disk: string): JsonNode =
+  ## Standalone JSON is YAML; never inherit Lima's host-mounting templates.
+  result = %*{"minimumLimaVersion": "2.2.1", "os": "Linux", "images": parseJson(limaImages),
+    "cpus": cpus, "memory": memory & "iB", "disk": disk & "iB", "mounts": [],
+    "ssh": {"loadDotSSHPubKeys": false, "forwardAgent": false, "forwardX11": false},
+    "user": {"name": "ubuntu", "home": "/home/ubuntu", "shell": "/bin/bash", "passwordlessSudo": true},
+    "containerd": {"system": false, "user": false}, "copyToHost": [],
+    "propagateProxyEnv": false, "portForwards": [{"guestIP": "0.0.0.0", "guestIPMustBeZero": false, "guestPortRange": [1,65535], "ignore": true}]}
+
+proc validateLimaConfig(config: JsonNode) =
+  ## Inspect effective configuration, including operator default/override files.
+  if config == nil or config.kind != JObject: refuse("missing effective Lima configuration")
+  if config{"vmType"}.getStr() notin ["", "qemu", "vz"]: refuse("Lima requires a Linux qemu/vz VM")
+  if config{"os"}.getStr() != "Linux" or config{"user", "name"}.getStr() != "ubuntu" or
+      config{"user", "home"}.getStr() != "/home/ubuntu": refuse("Lima requires Linux ubuntu at /home/ubuntu")
+  for key in ["mounts", "copyToHost", "additionalDisks", "networks", "provision", "probes", "env"]:
+    if config{key} != nil and config[key].len > 0: refuse("Lima host mounts, extra devices/networks, copies and provisioning hooks are forbidden")
+  for key in ["loadDotSSHPubKeys", "forwardAgent", "forwardX11"]:
+    if config{"ssh", key} == nil or config["ssh"][key].getBool(): refuse("unsafe Lima SSH configuration")
+  if config{"propagateProxyEnv"} == nil or config["propagateProxyEnv"].getBool(): refuse("Lima proxy credential propagation forbidden")
+  let images = config{"images"}
+  let reviewed = parseJson(limaImages)
+  if images == nil or images.kind != JArray or images.len != reviewed.len: refuse("Lima requires the reviewed digest-pinned Ubuntu images")
+  for i in 0..<reviewed.len:
+    for key in ["location", "arch", "digest"]:
+      if images[i]{key} != reviewed[i][key]: refuse("Lima requires the reviewed digest-pinned Ubuntu images")
+    for key in ["kernel", "initrd"]:
+      if images[i]{key} != nil: refuse("custom Lima boot images forbidden")
+  if config{"cpus"}.getInt() < 1 or config{"memory"}.getStr().len == 0 or config{"disk"}.getStr().len == 0: refuse("Lima resource limits required")
+  let forwards = config{"portForwards"}
+  if forwards == nil or forwards.len != 1 or not forwards[0]{"ignore"}.getBool() or
+      forwards[0]{"guestPortRange"} != %*[1,65535] or
+      forwards[0]{"guestIP"}.getStr() != "0.0.0.0" or
+      forwards[0]{"guestIPMustBeZero"} == nil or forwards[0]["guestIPMustBeZero"].getBool() or
+      forwards[0]{"reverse"}.getBool() or forwards[0]{"static"}.getBool(): refuse("Lima automatic port forwarding forbidden")
+
 proc vmInfo(run: CommandRunner, p: JsonNode): JsonNode
 
 proc remote*(run: CommandRunner, p: JsonNode, script: string, timeoutMs = 60000): string =
   validateRoute(p)
-  if p["transport"].getStr() == "incus" and vmInfo(run, p) == nil:
+  if p["transport"].getStr() in ["incus", "lima"] and vmInfo(run, p) == nil:
     refuse("pinned container missing; refusing execution or recreation")
   let target = p["target"].getStr()
   let transport = p["transport"].getStr()
   let argv = if transport == "ssh": sshArgs(target, "bash -s")
     elif transport == "incus": management(p, @["incus", "exec", target, "--mode=non-interactive", "--", "runuser", "-u", "ubuntu", "--", "env", "HOME=/home/ubuntu", "USER=ubuntu", "LOGNAME=ubuntu", "bash", "-s"])
-    else: management(p, @["multipass", "exec", target, "--", "bash", "-s"])
+    else: management(p, @["limactl", "shell", "--workdir=/home/ubuntu", target, "bash", "-s"])
   checked(run, argv, "set -euo pipefail\n" & script, timeoutMs)
 
 proc probe*(run: CommandRunner, p: JsonNode): JsonNode =
@@ -271,9 +313,12 @@ bash "$root/scripts/server.sh" start "$root"
 proc vmInfo(run: CommandRunner, p: JsonNode): JsonNode =
   try:
     let incus = p["transport"].getStr() == "incus"
-    let argv = if incus: @["incus", "list", "--format", "json"] else: @["multipass", "list", "--format", "json"]
-    let data = parseJson(checked(run, management(p, argv)))
-    let guests = if incus: data else: data{"list"}
+    let argv = if incus: @["incus", "list", "--format", "json"] else: @["limactl", "list", "--json", "--all-fields"]
+    let output = checked(run, management(p, argv))
+    let guests = if incus: parseJson(output) else: newJArray()
+    if not incus:
+      for line in output.splitLines():
+        if line.strip().len > 0: guests.add(parseJson(line))
     if guests == nil or guests.kind != JArray: refuse("invalid guest list")
     for vm in guests:
       if vm{"name"}.getStr() == p["target"].getStr():
@@ -304,15 +349,17 @@ proc vmInfo(run: CommandRunner, p: JsonNode): JsonNode =
               continue
             if device{"type"}.getStr() != "disk" or device{"path"}.getStr() != "/" or device{"source"}.getStr().len > 0:
               refuse("host mounts and passthrough devices are forbidden")
+        else:
+          validateLimaConfig(vm{"config"})
         return vm
   except Refusal: raise
   except CatchableError: refuse("invalid guest list")
 
 proc running(p, vm: JsonNode): bool =
-  (if p["transport"].getStr() == "incus": vm{"status"}.getStr() else: vm{"state"}.getStr()) == "Running"
+  vm{"status"}.getStr() == "Running"
 
 proc guestCommand(p: JsonNode, action: string): seq[string] =
-  management(p, @[p["transport"].getStr(), action, p["target"].getStr()])
+  management(p, (if p["transport"].getStr() == "lima": @["limactl", action, "--tty=false", p["target"].getStr()] else: @["incus", action, p["target"].getStr()]))
 
 proc incusInstallScript*(root, revision: string): string =
   ## Only bootstrap is root. The temporary grant belongs to this invocation;
@@ -373,8 +420,8 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
     for key in ["transport", "target", "root"]:
       if previous[key] != p[key]: refuse("profile already belongs to a different target")
     p = previous
-  let vm = if transport in ["multipass", "incus"]: vmInfo(run, p) else: nil
-  if previous != nil and transport in ["multipass", "incus"] and vm == nil: refuse("pinned VM is missing; refusing to recreate a different instance")
+  let vm = if transport in ["lima", "incus"]: vmInfo(run, p) else: nil
+  if previous != nil and transport in ["lima", "incus"] and vm == nil: refuse("pinned VM is missing; refusing to recreate a different instance")
   # Never start a pinned VM before identity verification. A stopped pinned VM
   # must first be started explicitly by its administrator.
   if previous != nil:
@@ -382,18 +429,23 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
     try: discard probe(run, p)
     except Refusal as e:
       if "mismatch" in e.msg or "invalid catalog" in e.msg: raise
-  if transport in ["multipass", "incus"]:
+  if transport in ["lima", "incus"]:
     if vm == nil:
       let create = if transport == "incus":
           @["incus", "launch", "images:ubuntu/24.04", target, "--config", "security.privileged=false", "--config", "security.nesting=false", "--config", "limits.cpu=" & $cpus, "--config", "limits.memory=" & memory & "B", "--device", "root,size=" & disk & "B"]
-        else: @["multipass", "launch", "24.04", "--name", target, "--cpus", $cpus, "--memory", memory, "--disk", disk]
-      discard checked(run, management(p, create), timeoutMs = 600000)
+        else: @["limactl", "create", "--tty=false", "--name=" & target, "-"]
+      discard checked(run, management(p, create), (if transport == "lima": $limaConfig(cpus, memory, disk) else: ""), timeoutMs = 600000)
+      if transport == "lima":
+        if vmInfo(run, p) == nil: refuse("created Lima guest missing")
+        discard checked(run, guestCommand(p, "start"), timeoutMs = 600000)
       if transport == "incus" and vmInfo(run, p) == nil: refuse("created container missing")
       p["createdVm"] = %true
     elif not running(p, vm):
       discard checked(run, guestCommand(p, "start"), timeoutMs = 180000)
   if transport == "incus" and previous == nil:
     discard guestRoot(run, p, incusInstallScript(root, revision), 3600000)
+  elif transport == "lima" and previous == nil:
+    discard checked(run, management(p, @["limactl", "shell", "--workdir=/home/ubuntu", target, "sudo", "-n", "bash", "-s"]), "set -euo pipefail\n" & incusInstallScript(root, revision), 3600000)
   else:
     discard remote(run, p, (if previous != nil: guard(p) else: "") & installScript(root, revision), 3600000)
   var verified = false
@@ -407,7 +459,7 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
       if attempt < 29: sleep(1000)
   if not verified: refuse("service did not verify; profile not saved")
   saveReceipt(path, p)
-  %*{"profile": path, "receipt": p, "text": (if transport == "incus": "Verified receipt saved; enabled guest linger for ubuntu; temporary installer sudo grant removed. Provider configuration remains explicit." else: "Verified receipt saved; provider configuration and linger remain explicit.")}
+  %*{"profile": path, "receipt": p, "text": (if transport in ["incus", "lima"]: "Verified receipt saved; enabled guest linger for ubuntu; temporary installer sudo grant removed. Provider configuration remains explicit." else: "Verified receipt saved; provider configuration and linger remain explicit.")}
 
 proc revisionMatches(run: CommandRunner, p, identity: JsonNode, revision: string): bool =
   ## Catalogs advertise an abbreviated build hash. Verify the exact checkout
@@ -429,18 +481,13 @@ proc update*(run: CommandRunner, args: JsonNode): JsonNode =
   let path = receiptPath(args{"profile"}.getStr())
   let p = loadReceipt(path)
   if p == nil: refuse("verified receipt required; install first")
-  if p["transport"].getStr() in ["multipass", "incus"]:
-    # The pre-update identity probe needs a running instance. Start a stopped
-    # pinned VM — never a missing one, and never a recreated one: VM creation
-    # belongs to install, and adopting a different VM would be a silent
-    # re-point of the receipt.
+  if p["transport"].getStr() in ["lima", "incus"]:
+    # Identity must verify before any write: the administrator starts stopped
+    # pinned guests. Creation belongs to install; missing guests never recreate.
     let vm = vmInfo(run, p)
     if vm == nil: refuse("pinned VM is missing; refusing to update")
     if not running(p, vm):
-      if p["transport"].getStr() == "incus":
-        refuse("stopped pinned container: administrator must start it before identity verification/update")
-      discard checked(run, guestCommand(p, "start"),
-                      timeoutMs = 180000)
+      refuse("stopped pinned guest: administrator must start it before identity verification/update")
   let revision = resolveRevision(run, args{"revision"}.getStr())
   let before = probe(run, p)
   let fromHash = before{"gitHash"}.getStr()
@@ -473,7 +520,7 @@ proc action*(run: CommandRunner, name, profile: string): JsonNode =
   if p == nil: refuse("verified profile required")
   if name == "probe": return probe(run, p)
   if name == "vm_stop":
-    if p["transport"].getStr() notin ["multipass", "incus"]: refuse("not a guest profile")
+    if p["transport"].getStr() notin ["lima", "incus"]: refuse("not a guest profile")
     discard remote(run, p, guard(p))
     discard probe(run, p)
     discard checked(run, guestCommand(p, "stop"), timeoutMs = 180000)
