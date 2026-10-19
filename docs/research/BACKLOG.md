@@ -45,14 +45,20 @@ in the manual and active plan.
   D3/D4 design constraints ([CODEWHALE.md](CODEWHALE.md) #1 + D3/D4,
   [REASONIX.md](REASONIX.md) #6,
   [MAKI-STEAL.md](MAKI-STEAL.md) #8).
-- **Tool-produced images + normalize-on-entry** — the *transport* shipped
-  (session `attachments` on all three protocols, billed by pixel area); what is
-  missing is a vision `read`/screenshot path and the rewrite-as-they-enter-history
-  discipline, so no component can poison a frozen prefix with an unsendable
-  image ([PI-NEXT.md](PI-NEXT.md) #4,
+- **Tool-produced images — shipped.** A tool result may carry `images`
+  (docs/WIRE.md "Tool results"), validated and stored by core under the same
+  byte-sniffed allowlist, budget and projection rule as a human's dropped
+  image, so nothing a component returns can enter history unbounded. `read`
+  answers an image path with the image itself, which is the visual-debugging
+  path ([PI-NEXT.md](PI-NEXT.md) #4,
   [PI_EFFICIENCY_PLAN.md](PI_EFFICIENCY_PLAN.md) A6,
+  [MAKI-STEAL.md](MAKI-STEAL.md) "view_image",
   [OCTOFRIEND-STEAL.md](OCTOFRIEND-STEAL.md) "Smaller items",
-  [CODEWHALE.md](CODEWHALE.md) D13).
+  [CODEWHALE.md](CODEWHALE.md) D13). Still open, each with its own evidence
+  bar: **re-encoding** (an oversized capture is reported, not downscaled —
+  that needs an image codec in a component, plus a bound on its output) and
+  **provider-side degradation** beyond the honest elision marker (a
+  per-model resize hint rather than one harness budget).
 - **Anthropic cache breakpoints + retention** — cache-write accounting shipped,
   and the OpenAI-family lanes cache implicitly, so nothing else in this row has
   a producer until the Anthropic path is actually exercised

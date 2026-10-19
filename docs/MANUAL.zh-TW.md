@@ -28,7 +28,7 @@
 - [Store engines](#store-engines)
 - [State and configuration](#state-and-configuration) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
-- [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
+- [Images (dropped and tool-produced)](#images-dropped-and-tool-produced) · [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
@@ -681,6 +681,38 @@ session 呼叫設定（Web UI 將它們公開為 `/approvals`、`/limit` 和 `/c
 mid-turn — retry when the turn finishes」），而非等待：回合永遠不會嵌套，而
 選擇等待的用戶端只會讓自己的逾時到期（這就是讓 `/export` 在長時間回合期間
 看似故障的原因）。
+
+## Images (dropped and tool-produced)
+
+一段對話可以透過兩條路徑攜帶影像，而它們最終匯入同一段程式碼：
+
+- **人拖入一張圖。** `svc.session.<id>.call` 在 `content` 之外接受 `attachments` —— 也就是
+  TUI 的拖放（驗證規則、大小上限與儲存拆分的确切細節見 [WIRE.md](WIRE.md) "Attachments"）。
+- **工具回傳一張圖。** 工具結果可以在 `text` 之外攜帶一個 `images` 陣列，這是元件能夠把
+  "*看得見*"、而不只是「讀得到」的東西交給模型的唯一通道（見 [WIRE.md](WIRE.md) "Tool
+  results"）。已隨附的實作者是 `read`：路徑確實是影像時，它以影像加一行說明回傳，而不是
+  `E_NOT_TEXT … looks binary`，因此在視覺化除錯時，截圖或渲染出的圖表只需一次 `read`。
+  這沒有引入新工具、也沒有新增參數 —— `read` 本就在每段對話的直接工具集中，所以凍結的
+  提示前綴不會增加任何東西。
+
+此後的一切由 core 而非元件掌控：影像按位元組嗅探出的 MIME 白名單驗證（元件的宣告只是提示，
+位元組才是結論）、按上限裁剪（每個工具結果 4 張、每張 4 MB、每則訊息 4.5 MB）、作為
+`attachment`/`attachmentdata` 文件存放在承載它們的訊息之下，並由唯一一條共享的投影規則
+物化進 provider 請求 —— 在 `NIF_ATTACH_BUDGET` 內由新到舊，更早的影像替換為一行指明檔案
+的文字標記。格式錯誤或超限的 `images` 陣列**絕不**讓回合失敗：拒絕原因會附加到工具自身的
+文字之後（`[images from this result were not attached: …]`），這樣模型能知道原因；而讀取到
+超限檔案時是*如實回報*而非靜默縮放 —— 靜默縮放等於對「這看起來是什麼樣」給出錯誤答案。
+
+閱讀 transcript 時值得知道的兩點後果：
+
+- 影像是**只追加的歷史**。凍結前綴是系統提示加直接工具 schema，因此對話中途進入的影像
+  永遠不會讓該對話的快取前綴失效。
+- **resume** 後的對話會重建上一回合送出的同一份投影，因為該規則是所存 refs 的純函式。
+  省略某個結果（陳舊/可推導 stub 兩級）時，其 refs 隨文字一起被丟棄，因此被取代的截圖會
+  離開投影，而不會從過期的 refs 重新物化出來。
+
+在純文字模型上不會發生任何特殊處理：該模型的 `modalities.input` 正是呼叫方要檢查的東西
+（`models_list {"input": "image"}`），而無法送出的影像會以那行如實的文字標記抵達請求。
 
 ## Context window
 
