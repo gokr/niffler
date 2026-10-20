@@ -412,7 +412,7 @@ is the precedent for steps 2–6.
 - `--minimal` is a boot profile, not a lockdown: it starts only `store`,
   `bash`, `llm`, and `systemprompt` (without it a conversation would degrade
   to core's baked-in fallback prompt; compaction stays out — the runner's
-  deterministic prune/trim ladder needs no component), does not restore
+  deterministic prune/stub/trim rungs need no component), does not restore
   persisted spawned components (records
   remain), and uses `NIF_OPENAI_*` without `models`/`provider`. Session runners
   still start on demand; a normal boot restores the full shape.
