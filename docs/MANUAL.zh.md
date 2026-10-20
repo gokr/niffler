@@ -829,7 +829,44 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 - 安装记录存放在存储中（kind `plugin`，id = 包名）；它们会像所有组件记录一样被 `--recover` 清除——重新安装时，全新启动会从记录的 repo/ref 重新克隆。
 - GitHub API 以未认证方式使用（60 req/h/IP）。
 - 发布：添加 `niffler-component` 主题并打发布标签（`v1.0.0`）。[`gokr/niffler-weather`](https://github.com/gokr/niffler-weather) 示例中的发布工作流会自食其果：它启动一个 harness 并通过 `plugin_install` 安装该包，因此每个标签都证明该包能干净安装。
-- 包可以通过注册一个带 `x-models-source: {version: 1, priority: ...}` 的隐藏工具来扩展或修正模型元数据。`models` 组件会自动发现它，并在该组件存在期间应用其 JSON Merge Patch。参见 [Source plugins](#source-plugins)。
+- 包可以通过注册一个带 `x-models-source: {version: 1, priority: ...}`（或用于嵌入模型的 `x-embed-source`，见 [Embed model sources](#embed-model-sources)）的隐藏工具来扩展或修正模型元数据。`models` 组件会自动发现它，并在该组件存在期间应用其 JSON Merge Patch。参见 [Source plugins](#source-plugins)。
+
+### Embed model sources
+
+models.dev 无法发现嵌入模型：它的 `modalities.output` 即使对 `text-embedding-3-large` 也是 `["text"]`，因此基线几乎不包含它们。插件以**元数据、而非实现**的方式填补这个空缺——它声明某个 provider 提供哪些嵌入模型、其维度和上下文窗口，而没有任何调用会通过它分派推理：
+
+```json
+{
+  "x-embed-source": {
+    "version": 1,
+    "priority": 120,
+    "provider": "synthetic",
+    "models": [
+      {"id": "hf:nomic-ai/nomic-embed-text-v1.5", "dimensions": 768, "context": 8192}
+    ]
+  },
+  "x-harness": {"hidden": true}
+}
+```
+
+上面的扩展是组件为人类和 `models_sources` 提供的*声明*；承载它的工具调用方式与模型源完全相同（`{version: 1}`），返回一个以 provider 为键、作用于**嵌入视图**的 JSON Merge Patch：
+
+```json
+{
+  "patch": {
+    "synthetic": {
+      "available": {
+        "hf:nomic-ai/nomic-embed-text-v1.5": {"id": "hf:nomic-ai/nomic-embed-text-v1.5",
+                                              "dimensions": 768, "limit": {"context": 8192}}
+      }
+    }
+  }
+}
+```
+
+该视图按 provider 由以下内容构建：(a) provider 配置的 `embedModel`——即使别处没有任何元数据也始终存在；以及 (b) catalog 的 `modalities.output` 包含 `embedding` 的模型，然后由每个 `x-embed-source` 按优先级顺序打补丁。它有意**不是**聊天 catalog：`models_list {embed: false}` 证明了这一区别，嵌入模型永远不会成为聊天选项。`models_list`、`models_get` 和 `models_resolve` 读取该视图，因此嵌入模型会在它所属的聊天模型旁边被发现，并标记为 `embedding: true`。离开的组件会一步丢弃它的补丁及其模型，与聊天源完全一样。
+
+信任边界正是关键：`llm` 自己解析 provider 并直接向它的端点发送请求，所以嵌入调用绝不会在请求中途穿过插件代码。元数据是一次读取；委托则意味着一个超时预算和一条权限边界，而在存在既不兼容 OpenAI、也无法用普通 HTTP POST 到达的 provider 之前，它毫无收益。
 - 树内有三种参考形态：`gokr/niffler-weather` 包（Nim）、MCP 桥（一个被 spawn 的 Go 组件），以及 `examples/dialog/dialog.sh`——一个完全没有 SDK 的纯 bash 组件。
 
 ## Skills
@@ -880,8 +917,8 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 
 | Tool | What it does |
 |---|---|
-| `provider_add {nickname, apiKey, protocol?, baseUrl?, model?, catalog?, context?, plugin?, stripPrefix?, active?}` | 添加或覆盖一个 API-key provider（按昵称 upsert；`protocol`：默认 `openai-chat` 或 `anthropic`）；第一个 provider——API-key 或 OAuth——会自动变为活跃，除非 `active: false`；`stripPrefix` 会发送不带 `vendor/` 前缀的命名空间模型 id，用于按规范 id 路由的网关（例如 `alibaba/glm-5.2` 发送为 `glm-5.2`）；响应已脱敏 |
-| `provider_update {nickname, apiKey?, protocol?, baseUrl?, model?, catalog?, context?, plugin?, stripPrefix?}` | 用于部分更新的隐藏客户端 API；省略的 API key 会被保留 |
+| `provider_add {nickname, apiKey, protocol?, baseUrl?, model?, embedModel?, embedBaseUrl?, catalog?, context?, plugin?, stripPrefix?, active?}` | 添加或覆盖一个 API-key provider（按昵称 upsert；`protocol`：默认 `openai-chat` 或 `anthropic`）；第一个 provider——API-key 或 OAuth——会自动变为活跃，除非 `active: false`；`stripPrefix` 会发送不带 `vendor/` 前缀的命名空间模型 id，用于按规范 id 路由的网关（例如 `alibaba/glm-5.2` 发送为 `glm-5.2`）；响应已脱敏 |
+| `provider_update {nickname, apiKey?, protocol?, baseUrl?, model?, embedModel?, embedBaseUrl?, catalog?, context?, plugin?, stripPrefix?}` | 用于部分更新的隐藏客户端 API；省略的 API key 会被保留 |
 | `provider_oauth_start {protocol, method?, nickname?, model?, active?}` | 隐藏，开始订阅登录：`protocol` 为 `openai-codex`（ChatGPT Plus/Pro）或 `anthropic`（Claude Pro/Max）；`method` 为 `browser`（本地回调）或 `device`（无头，仅 OpenAI）。返回 `{flowId, url, userCode?, callbackAvailable, expiresAt}` |
 | `provider_oauth_complete {flowId, code?}` | 隐藏，轮询/完成登录；在回调（或粘贴的 `code`）到达之前返回 `{pending, retryAfterMs?}`，然后存储 provider 并以脱敏形式报告 |
 | `provider_oauth_cancel {flowId}` | 隐藏，取消待处理的登录并关闭其回调监听器 |
@@ -898,6 +935,19 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 暴露标志，这样每行的说明文字无需解析：`provider_oauth_*`、`provider_status`、`provider_active`、`provider_get` 和 `provider_use_environment` 行是**隐藏**客户端 API（由 UI 或操作员调用；模型永远看不到它们），而 `provider_add`、`provider_update`、`provider_list`、`provider_switch`、`provider_export` 和 `provider_import` 是**按需**的——模型通过 `discover` + `invoke` 到达它们。四个移动凭据的工具带有 `x-harness.approval: "always"`（见下文），`provider_models` 在 20 秒超时下运行。
 
 省略的字段采用协议默认值：`openai-codex` 推断 ChatGPT 后端 URL，`anthropic` 推断 Anthropic 的（在 `openai-chat` 下，`deepseek` 或 `openai` 昵称暗示其自己的 base URL），模型默认为 `deepseek-chat`（`openai-chat`）、`gpt-5.4`（`openai-codex`）或 `claude-sonnet-4-6`（`anthropic`），两个 OAuth 协议推断其 models.dev catalog id（`openai`/`anthropic`）。
+
+#### Embeddings
+
+一个 provider 还可以携带一个嵌入模型，通过两个有意与 `model` 分离的可选字段：一个聊天模型无法表达“聊天用 A、嵌入用 B”，而这正是网关的常态（Synthetic 用 `syn:small:text` 聊天、用 `hf:nomic-ai/nomic-embed-text-v1.5` 生成向量）。`embedModel` 指定该模型，`embedBaseUrl` 在后端把嵌入放在别处时指向另一个 base URL。两者都会穿过 `provider_list`（脱敏摘要）、`provider_get`、`provider_export`/`provider_import` 和 `llm_resolve`（`embedModel`），因此客户端无需管理员往返即可展示和编辑它们。
+
+隐藏工具 `llm.embed` 消费它们：它完全像 `chat` 一样解析 provider（活跃 provider，或显式的 `provider` 参数），模型取 `model` → `embedModel`，base URL 取 `embedBaseUrl` → `baseUrl`，然后把 `{model, input, dimensions?}` 发到 `{base}/embeddings`。结果是 `{ok, provider, model, dimensions, embeddings: [[float…]…], usage?}`，向量按 `index` 与输入对齐，而不是按响应顺序。runner 只接收工具文本，所以这个结果也是文本形态：它面向的是对调用方已持有的候选集排序，或由调用方自己持久化向量（语义化 `context_recall` 还额外需要一种存储 kind、一个分块器以及增量更新路径——那是另一项工作）。
+
+两条限制，明说而非掩盖：
+
+- **仅限 OpenAI 兼容。** Ollama 通过其 OpenAI 兼容层工作（`embedBaseUrl: http://localhost:11434/v1`）；其原生 `/api/embed` 是不同的请求/响应形态，不在范围内。`anthropic` 和 `openai-codex` provider 会被拒绝并给出该修法，而不是发送一个端点无法回答的请求。
+- **不猜模型。** 没有 `embedModel` 的 provider 会失败并提示
+  `provider "x" has no embedding model — set it with provider_add {embedModel: "…"}`；
+  把聊天模型 id 发给 `/embeddings` 只会得到 400，所以给出修法是唯一有用的回答。
 
 ### Wire protocols
 
@@ -1658,7 +1708,7 @@ Live Components 面板将全局 `core.status` 数据与活动
 
 1. `NIF_MODELS_PATH`、缓存的 models.dev 目录或嵌入式种子。
 2. 已注册的 `x-models-source` 插件，按 `priority` 升序，然后按
-   `component/tool`。因此较大的 priority 胜出。
+   `component/tool`。因此较大的 priority 胜出。`x-embed-source` 声明以同样方式注册，但只作用于独立的嵌入视图（见下文 “Embed model sources”），绝不作用于聊天 catalog。
 3. `NIF_MODELS_OVERRIDE`，始终最后。
 
 插件层和本地层是 JSON Merge Patches（RFC 7396）：对象合并，
@@ -1692,7 +1742,7 @@ models.dev 下载被跳过。HTTP 获取有界
 | Tool | Purpose |
 |---|---|
 | `models_providers` | provider 连接元数据和配置状态，绝不包含 secret 值 |
-| `models_list` | 带能力、模态、限制和成本的过滤 model 搜索 |
+| `models_list` | 带能力、模态、限制和成本的过滤 model 搜索；产生嵌入的模型会标记 `embedding: true`，`embed: true\|false` 可只筛出这些或只筛聊天模型 |
 | `models_get` | 供其他组件使用的精确 provider/model 描述符 |
 | `models_resolve` | 严格的 `provider/model` 或全局唯一裸 id 解析 |
 | `models_refresh` | 排队刷新 models.dev 和每个活跃扩展源：它立即返回*当前*来源报告以及 `queued` 和 `force`，工作在异步进行（注册突发在 150 ms 内合并），因此再次读取 `models_sources`——或等待 `ev.models.updated`——以查看结果；`force: true` 绕过缓存 TTL |
