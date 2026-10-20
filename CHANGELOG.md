@@ -399,6 +399,36 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bare python3). It now runs uv's HOME-local standalone installer (no
   sudo) and only falls back to naming the manual commands when that fails.
 
+### Added
+
+- **`context_status`, a read-only context-health report.** A new on-demand,
+  read-effect core tool reports one conversation's window and last persisted
+  token usage, the warning and trim thresholds admission acts on, and — for a
+  known window — `usedPercent`, `trimPercent`, `headroomTokens` and a `state`
+  verdict of `ok` / `warning` / `trim-needed`. It also reports `trimThrough`
+  with a `lostRecallRef` and structured `lossNotices`, the installed
+  projection's generation and coverage, and `retainedSnapshots` metadata
+  (IDs, triggers and sizes, never page contents). Omit `sessionId` during a
+  turn to inspect the current conversation; direct callers must supply one,
+  and an unknown ID refuses rather than inventing an empty conversation. It
+  never compacts, retries or writes history: persisted usage is not a live
+  request measurement, and a retained snapshot may be stale, failed or still
+  in flight — presence is not a retryability verdict. Contract in
+  `docs/WIRE.md`; covered by `tests/t_context_status.nim`.
+
+### Changed
+
+- Context pressure thresholds and the output reserve are now defined once, in
+  `core/compaction.nim` (`outputReserveFor`, `contextThresholds`), and both
+  admission and `context_status` delegate to them, so a reported warning or
+  trim line is the line admission enforces rather than a parallel estimate.
+  The conversation runtime also persists the resolved output cap beside the
+  window.
+- `docs/WIRE.md` gains a **Context health** section specifying the
+  `context_status` result fields; `docs/PLAN.md` records health reporting as
+  implemented and leaves an explicit bounded retry for failed snapshots to be
+  designed.
+
 ## [0.4.0] — 2026-10-05
 
 Niffler 0.4.0 replaces the BitBarrel store with SQLite by default (or TiDB),
