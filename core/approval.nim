@@ -303,6 +303,17 @@ proc askContinue*(a: Approval, dimension, detail: string): bool =
                    "args": %*{"dimension": dimension, "detail": detail}}
   askHuman(a, payload, continueTimeoutMs)
 
+proc defaultApprovalMode*(): string =
+  ## The instance's DEFAULT gate mode (NIF_APPROVALS_DEFAULT): "auto" for a
+  ## resident instance nobody watches (a remote harness reached over
+  ## cli/relay), "" for the ordinary per-call configuration. Deliberately a
+  ## FALLBACK, not a bypass: a conversation's own mode always wins when it
+  ## carries one, so the human can still switch a single conversation back to
+  ## asking. That is the whole difference from NIF_AUTO_APPROVE, which is
+  ## consulted first in ask() and therefore makes /approvals ask a no-op.
+  let mode = getEnv("NIF_APPROVALS_DEFAULT", "").strip().toLowerAscii()
+  if mode == "auto": "auto" else: ""
+
 proc ask*(a: Approval, tool: string, args: JsonNode): bool =
   ## Returns true when the call may proceed.
   if getEnv("NIF_AUTO_APPROVE") == "1":
@@ -313,6 +324,21 @@ proc ask*(a: Approval, tool: string, args: JsonNode): bool =
   if a.approvalMode == "auto":
     echo "core: approval auto-granted for " & tool &
          " (this conversation is in approval mode: auto)"
+    return true
+  # A DIRECT, context-free call — no conversation and no gate mode: this is
+  # core's own gate answering core's own destructive tools, as when
+  # `plugin_install` calls `core.spawn` (the plugins component is not a
+  # conversation, so nothing above can speak for it). The conversation's mode
+  # is not merely empty here, it does not EXIST, so the instance default is
+  # the only authority left — the same fallback rule a conversation nobody
+  # decided about gets, which is what makes a detached resident instance
+  # operable at all. Without it every plugin install on such an instance dies
+  # with "spawn needs a human but no interactive client is attached" and the
+  # instance can never extend itself (see docs/PLAN.md, background approvals).
+  if a.session.len == 0 and a.approvalMode.len == 0 and
+      defaultApprovalMode() == "auto":
+    echo "core: approval auto-granted for " & tool &
+         " (instance default: NIF_APPROVALS_DEFAULT=auto, no conversation)"
     return true
   # Persisted per-conversation auto-approve (set by a client's "auto
   # approve" action): grant without asking any client, so no dialog is

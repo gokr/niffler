@@ -549,18 +549,6 @@ proc ensureConversationHeader*(ct: CoreTools, convId: string) =
   except CatchableError:
     discard
 
-proc defaultApprovalMode*(): string =
-  ## The instance's DEFAULT gate mode for conversations the human has not
-  ## decided about (NIF_APPROVALS_DEFAULT): "auto" for a resident instance
-  ## nobody watches (a remote harness reached over cli/relay), "" for the
-  ## ordinary per-call configuration. Deliberately a FALLBACK, not a bypass:
-  ## the conversation header always wins when it carries a mode, so the human
-  ## can still switch a single conversation back to asking. That is the whole
-  ## difference from NIF_AUTO_APPROVE, which is consulted first in
-  ## approval.ask and therefore makes /approvals ask a no-op.
-  let mode = getEnv("NIF_APPROVALS_DEFAULT", "").strip().toLowerAscii()
-  if mode == "auto": "auto" else: ""
-
 proc loadConversationHeader(ct: CoreTools, convId: string): JsonNode =
   ## Return a mutable conversation header, or an empty header when store is
   ## unavailable. Callers preserve unrelated fields such as the UI title.

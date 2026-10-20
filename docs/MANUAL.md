@@ -627,7 +627,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query; accepted range 100–100000, applies to `logfile_paths` too, and the truncation is reported as `directoryTruncated` | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed, and every `/limit` keep-going question is answered with yes (it implies `NIF_AUTO_CONTINUE`). For headless automation only; never set it in a session you care about | unset |
 | `NIF_AUTO_CONTINUE` | `1` → a turn that reaches one of the conversation's soft limits (`/limit`) keeps going without asking (`NIF_AUTO_APPROVE=1` implies it). For headless automation only | unset |
-| `NIF_APPROVALS_DEFAULT` | `auto` → conversations nobody has decided about **start in auto approval** (as if `/approvals auto` had been set): gated tools are granted loudly, per conversation. This is the resident/remote alternative to `NIF_AUTO_APPROVE` — it is a FALLBACK, so an explicit `/approvals ask` still gates that one conversation, and clearing (`/approvals` with an empty argument) returns it to the default. Any other value (or unset) means the ordinary per-call gate. Nuance worth knowing: the conversation header is the record of a human's decision, so an unreadable header (store outage) counts as undecided and the default applies — on an `auto` instance a store outage therefore opens the gate rather than stalling it | unset (`auto` in `server.sh`'s user service) |
+| `NIF_APPROVALS_DEFAULT` | `auto` → conversations nobody has decided about **start in auto approval** (as if `/approvals auto` had been set): gated tools are granted loudly, per conversation. This is the resident/remote alternative to `NIF_AUTO_APPROVE` — it is a FALLBACK, so an explicit `/approvals ask` still gates that one conversation, and clearing (`/approvals` with an empty argument) returns it to the default. Any other value (or unset) means the ordinary per-call gate. It also covers a **direct, context-free** core call — one with no conversation at all, such as `core.spawn` issued by a component (`plugin_install` installing a package): core's own gate has no session or caller to consult there, so the instance default is the only authority left, and without it a detached instance could never install a plugin. Nuance worth knowing: the conversation header is the record of a human's decision, so an unreadable header (store outage) counts as undecided and the default applies — on an `auto` instance a store outage therefore opens the gate rather than stalling it | unset (`auto` in `server.sh`'s user service) |
 | `NIF_LOCK_TTL_MS` | write-lease lifetime for the `locks` component (docs/research/WRITE-ARBITRATION.md). A lease is released when its call finishes; the TTL is the backstop for a runner that dies mid-call, after which the path is claimable again | `600000` |
 | `NIF_MAX_TURN_ROUNDS` | hard LLM-round ceiling per turn; an explicit per-session `maxRounds` may narrow it | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | estimated-token cap on a conversation's direct toolset for `invoke {sticky: true}` promotion; a promotion that would exceed it is deferred and reported in the tool result | `4000` |
@@ -994,6 +994,13 @@ included):
   re-gate the one conversation they are looking at. Prefer it over
   `NIF_AUTO_APPROVE` on an instance you also attach to interactively —
   `NIF_AUTO_APPROVE` is consulted first and swallows that override.
+- A **direct, context-free** call — no conversation at all, as when a
+  component calls `core.spawn` on its own behalf (`plugin_install` installing
+  a package) — has no session, caller or gate mode to consult, so
+  `NIF_APPROVALS_DEFAULT=auto` decides that too. Without it a detached
+  instance refuses its own `core.spawn` (`spawn needs a human but no
+  interactive client is attached`) and can never install a plugin: it cannot
+  extend itself, which is the whole point of the harness.
 - Core's own destructive tools are named `spawn`, `kill`, `remove` and
   `conversation_delete`; they are gated by name inside `handleCoreTool`, not
   through a schema, so `x-harness.approval` appears on component tools only.

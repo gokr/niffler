@@ -396,6 +396,58 @@ proc main() =
           clearedHeader{"value"}{"approvals"}.getStr("") == "",
           $clearedHeader)
 
+    # f) the default also covers a DIRECT, context-free core call — core's own
+    # gate answering core's own tools. This is the path `plugin_install` takes
+    # (the plugins component calls core.spawn; it is not a conversation, so no
+    # session, caller or gate mode exists). Without this fallback every plugin
+    # install on a detached resident instance dies with "spawn needs a human
+    # but no interactive client is attached", and the instance can never
+    # extend itself — the exact failure that started this work.
+    #
+    # Probed with `spawn`, the same gated tool the installer uses, aimed at a
+    # binary that does NOT exist: core checks the gate first and only then
+    # looks for the binary, so the error names which path ran — "approval
+    # denied" means the gate refused, "binary not found" means it let the
+    # call through. Nothing is spawned and nothing is persisted either way.
+    let spawnInbox = "_INBOX.controls.spawn." & newId()
+    let spawnReplies = openSub(nc, spawnInbox)
+    publishCall(nc, "svc.core.call", spawnInbox,
+                callEnvelope("spawn",
+                  %*{"name": "probe-absent",
+                     "binary": "var/bin/no-such-component"}, ""))
+    let spawnReply = pollEnv(spawnReplies, 60_000)
+    natsSubscription_Destroy(spawnReplies)
+    let spawnPayload = if spawnReply.found: callerOf(spawnReply.env)
+                       else: %*{"error": "no reply to direct spawn"}
+    check("instance default: a direct core call is not left gated with no human",
+          spawnPayload{"error"}.getStr("").contains("binary not found"),
+          $spawnPayload)
+    # and the conversation's own ask still outranks the default for ITS calls
+    let pinned = call(nc, "core", "session", %*{"sessionId": askSid}, 60_000)
+    check("instance default: the per-conversation mode is still authoritative",
+          pinned{"approvals"}.getStr("") == "auto", $pinned)
+
+  # -------------------------------------------------------------------------
+  # 2c. the SAME direct call stays gated when the instance default is off:
+  # the fallback must key off the knob, not merely off "no conversation".
+  block defaultOff:
+    var p = startProbe("approvdefaultoff", @[("NIF_MOCK_ROUNDS", "1")])
+    defer: p.stopProbe()
+    let nc = p.nc
+    let offInbox = "_INBOX.controls.spawnoff." & newId()
+    let offReplies = openSub(nc, offInbox)
+    publishCall(nc, "svc.core.call", offInbox,
+                callEnvelope("spawn",
+                  %*{"name": "probe-absent-off",
+                     "binary": "var/bin/no-such-component"}, ""))
+    let offReply = pollEnv(offReplies, 30_000)
+    natsSubscription_Destroy(offReplies)
+    let offPayload = if offReply.found: callerOf(offReply.env)
+                     else: %*{"error": "no reply"}
+    check("instance default off: a direct core call is still denied",
+          offPayload{"error"}.getStr("").contains("approval denied"),
+          $offPayload)
+
   # -------------------------------------------------------------------------
   # 3. a soft round limit asks; yes continues the turn, no ends it
   # 4. a job-scoped round budget stays hard and never asks

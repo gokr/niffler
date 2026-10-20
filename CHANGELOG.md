@@ -136,6 +136,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as `auto` for the persistent user service, keeping `NIF_AUTO_APPROVE=0`. An
   explicit `ask` and "never decided" are now stored distinctly in the
   conversation header (`approvals`).
+- `NIF_APPROVALS_DEFAULT` now also decides a **direct, context-free** core
+  call — no conversation at all, as when `plugins` calls `core.spawn` for a
+  `plugin_install`. Core's own gate has no session, caller or gate mode to
+  consult there, so the instance default is the only authority left; without
+  it a detached resident instance refused its own `core.spawn` ("spawn needs a
+  human but no interactive client is attached") and could never install a
+  plugin — it could not extend itself, which is the architecture's own
+  validation criterion. A conversation's mode still wins wherever one exists,
+  so `/approvals ask` stays authoritative for agent-initiated work.
 - Optional Nim `fleet` provisioning component with approval-gated SSH/Multipass
   install/adopt and lifecycle tools, pinned private receipts and native transport
   contracts. Replaces the interim Python helper and Python tests. Multipass TUI
