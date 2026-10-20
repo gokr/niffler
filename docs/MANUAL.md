@@ -1436,6 +1436,13 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   still dispatches, but a conversation frozen with a `tools` allowlist refuses
   it like any tool outside that list — the one case where a prune or spill
   notice's instruction cannot be followed.
+- Read-only `context_status` answers "how close am I, and what was lost?" for
+  one conversation: window, last-persisted usage, the shared warn/trim lines
+  and output reserve, the lossy-trim watermark with structured loss
+  attribution, projection coverage and retained compaction-input metadata. It
+  never compacts, retries or writes history, so it is safe mid-turn; usage is
+  the last persisted sample, not a live request measurement. See "Core tools"
+  for the full field set.
 
 ## Self-extension and component lifecycle
 
@@ -2919,7 +2926,15 @@ per-role message counts, cumulative completion tokens); `prompt_preview`
 (onDemand) shows composed-request provenance — where the system prompt came
 from, how many project context files feed it, the frozen direct tool names
 vs. schemas discovered so far, message/token counts — without sending
-anything. `doctor` (onDemand) is a one-shot machine-readable health report:
+anything. `context_status` (onDemand, read-effect) reports a conversation's
+stored context health without mutating anything: window and last-persisted
+usage, the shared warn/trim thresholds and output reserve, the lossy-trim
+watermark (`trimThrough`) with a structured loss notice and canonical recall
+ref once history was dropped without a summary, the installed projection's
+coverage, and retained compaction-input metadata (presence is not a
+retryability verdict, and the store reads are not an atomic snapshot). During
+a turn an omitted `sessionId` inspects the current conversation. `doctor`
+(onDemand) is a one-shot machine-readable health report:
 store reachability, llm registration, active provider, systemprompt
 presence, catalog size, conversation count, plus a self-test fan-out —
 every component that registers the standard `selftest` tool (docs/WIRE.md)
@@ -3102,9 +3117,10 @@ The long tail is on demand:
   content points at), `repo_map` (the ranked workspace map the model
   asks for explicitly), and the `observe_*` diagnostics plus
   logfile's `logfile_search`/`logfile_paths`.
-- State and introspection: store `get`/`list`, `session_info`, and the
-  skill entry points `skill_list`/`skill_load` (a workflow guide is
-  loaded only when one fits the task).
+- State and introspection: store `get`/`list`, `session_info`,
+  `context_status` (stored context health), and the skill entry points
+  `skill_list`/`skill_load` (a workflow guide is loaded only when one fits
+  the task).
 - Orchestration: `fabric`, the `agent_*` and `expert_*` tools, and the
   experimental advisory pair `jev_*` / `von_status` (load them only when
   lexical discovery is a weak match — see

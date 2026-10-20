@@ -90,8 +90,8 @@ stopping"; [WIRE.md](WIRE.md) "Lifecycle".
   effect classification, delegation-depth guard, nested-call leases.
 - Core's own tools: `session` (hidden), `session_prepare`, `spawn`, `kill`,
   `remove`, `catalog`, `status`, `doctor`, `prompt_preview`, `session_info`,
-  `discover`, `invoke`, `profile`, `ui` (hidden), `conversation_delete`
-  (hidden, gated).
+  `context_status`, `discover`, `invoke`, `profile`, `ui` (hidden),
+  `conversation_delete` (hidden, gated).
 - Never-blocking core: session calls ride a private forwarding inbox, and
   mid-turn component calls (e.g. `spawn` inside `plugin_install`) are served
   from the dispatch idle slot; a second turn is refused with `busy` instead of
@@ -143,7 +143,7 @@ window"; [WIRE.md](WIRE.md) "Subjects", "Approvals", "Attachments".
   a hidden gated tool.
 - Introspection: `/export` (the exact provider request), `prompt_preview`
   (composition provenance), `session_info` (summary and per-role counts),
-  `/compact` (run the compactor now).
+  `context_status` (stored context health), `/compact` (run the compactor now).
 
 ## Context window, pruning, compaction and recall
 
@@ -177,6 +177,10 @@ harnesses — plus [MANUAL.md](MANUAL.md) "Context window" and the design record
   spill bodies and the current checkpoint, with session-scoped search.
 - Cumulative prompt-cache reporting per turn and in the header, with the reset
   reasons (`prune`/`compact`/`trim`/`tools`) as the only attributable rebuilds.
+- Read-only `context_status` for stored context health — window,
+  last-persisted usage, shared thresholds and output reserve, the lossy-trim
+  watermark with structured loss attribution, projection coverage and retained
+  compaction-input metadata — never compacting, retrying or writing history.
 
 ## Tool exposure and progressive discovery
 
