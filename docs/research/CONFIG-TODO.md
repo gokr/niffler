@@ -56,10 +56,14 @@ pass. Repository status is not a claim that installed binaries were updated.
   two-owner database tests. Existing process wiring still uses legacy owner;
   stable identity binding and adoption remain pending. make gotest, test-store
   and full make test passed (90 server tests). See [INSTANCE-STORE.md](INSTANCE-STORE.md).
-- [ ] Use existing persistent instance identity; define restore/clone behavior.
-- [ ] Scope put/get/list/del/search, revision conflicts, selftest, and FTS;
+- [x] Use existing persistent instance identity; binding resolved once at open
+  (NIF_INSTANCE_ID, else var/instance-id, else legacy). SQLite adopts its own
+  legacy rows once and refuses a different identity; TiDB never adopts.
+- [x] Scope put/get/list/del/search, revision conflicts, selftest, and FTS;
   preserve verbatim values and correct pagination within a scope.
-- [ ] Migrate legacy data explicitly without dropping history or stealing rows.
+- [ ] Document `NIF_INSTANCE_ID` as a bootstrap variable (manual + .env.example).
+- [ ] Explicit `store_claim` admin operation for TiDB legacy rows (dryRun,
+  reported counts, approval-gated). Never implicit.
 - [ ] Two-instance tests: same kind/id isolation; no foreign restore/recover,
   heartbeat execution, grants, leases or settings; metadata registry roundtrip.
 - [ ] Exercise TiDB against a real test database when available; don't treat

@@ -2601,6 +2601,24 @@ it when provisioning a new one. A malformed file refuses startup rather than
 silently changing identity. The ID is routing metadata, not authentication;
 matching TUI clients pin it when importing a connection receipt.
 
+**Document ownership.** Each store process resolves its document owner once at
+startup and never takes it from a tool argument: `NIF_INSTANCE_ID` if set, else
+the identity in `$NIF_ROOT/var/instance-id`, else the legacy owner `""` (a
+single-instance or test process — the boot log says so). With the SQLite engine
+the database file is one instance's data, so the first real identity that opens
+it adopts the pre-scoping documents exactly once (`store_binding` records that;
+rowids, revisions and the search index are untouched) and a *different*
+identity on an already-bound file refuses to boot rather than serve another
+instance's history. With TiDB the dataset is shared: an identity is registered
+and `""` rows are never adopted implicitly, because they may belong to another
+instance — set `NIF_INSTANCE_ID` for every instance on a shared cluster, and
+remember that it is required when the root is not persistent (a recreated
+container or ephemeral CI checkout would otherwise orphan its rows). Provide
+`NIF_INSTANCE_ID` when provisioning a *new* instance; never copy `var/instance-id`
+between instances. Scoping is organisation, not authorization: any process on a
+bus can reach the store, so per-instance isolation there still needs database
+credentials/ACLs. See [research/INSTANCE-STORE.md](research/INSTANCE-STORE.md).
+
 ### Persistent server lifecycle
 
 `bash scripts/bootstrap.sh --server <root>` builds without installing the TUI,

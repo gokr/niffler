@@ -11,8 +11,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Core checkpoints its persistent identity at boot; failures warn and do not
   block startup. This is registry infrastructure only: document isolation and fleet registry
   migration are not yet active. Staged document ownership migrations preserve
-  legacy rows; owner-captured SQL handlers have isolation tests, but normal
-  processes still use the legacy owner pending identity binding/adoption.
+  legacy rows. Store processes now bind their owner once at open; SQLite adopts
+  its own pre-scoping rows exactly once and refuses a different identity, while
+  a shared TiDB dataset never adopts them implicitly.
 
 - Skill discovery now resolves workspace `.agents/skills`, user
   `~/.agents/skills`, then bundled skills. Project install/removal uses the

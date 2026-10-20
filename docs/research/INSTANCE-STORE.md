@@ -45,10 +45,21 @@ FTS stays derived by document rowid. Global bm25 statistics are not per-instance
 ranking statistics; isolation guarantees returned documents, not independent
 relevance scores.
 
-**Normal process wiring still uses the legacy owner in this staged slice.**
-This is not yet a safely shared deployment. The next slice must resolve stable
-identity and explicit legacy adoption before passing that owner to every
-handler. There is no caller-supplied scope argument or implicit fallback.
+**Ownership binding is implemented.** Each engine resolves the owner once at
+open (`NIF_INSTANCE_ID`, else `$NIF_ROOT/var/instance-id`, else legacy) and
+passes it to every handler; no tool argument can choose a scope.
+
+- SQLite binds the file to the first real identity: it adopts the pre-scoping
+  rows in one scoped UPDATE (rowids, revisions, timestamps and FTS rows
+  untouched), records that in `store_binding`, and refuses a *different*
+  identity on an already-bound file. A store that boots with no identity
+  writes no binding at all, so a later real identity can still bind (a
+  provisional legacy binding would lock out the harness).
+- TiDB registers the identity and **never** adopts `''` rows: on a shared
+  dataset those may be another instance's pre-scoping history. Adoption there
+  stays an explicit admin operation.
+- The boot log states which owner is being served, and whether it is the
+  legacy/test owner. There is no caller-supplied scope argument or implicit fallback.
 TiDB DDL still needs live DSN validation. Ownership rollback refuses scoped data
 rather than merge conflicting keys; TiDB down migration deliberately refuses.
 

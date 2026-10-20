@@ -72,6 +72,9 @@ const (
 	listCap = 1000                 // hard cap on list limit, as in the other engines
 )
 
+// boundOwner is resolved once at open: document scope is never a tool argument.
+var boundOwner string
+
 func main() {
 	db, err := openStore()
 	if err != nil {
@@ -80,16 +83,22 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
+	if boundOwner == "" {
+		fmt.Println("store-tidb: no instance identity — serving the legacy owner (single-instance/test use only; shared deployments must set NIF_INSTANCE_ID)")
+	} else {
+		fmt.Println("store-tidb: serving documents for instance " + boundOwner)
+	}
+
 	comp := sdk.New("store", "0.1.0")
 	comp.
 		Tool("instance_list", instanceSchema(false), instanceListHandler(db)).
 		Tool("instance_register", instanceSchema(true), instanceRegisterHandler(db)).
-		Tool("put", putSchema(), putHandler(db)).
-		Tool("get", getSchema(), getHandler(db)).
-		Tool("list", listSchema(), listHandler(db)).
-		Tool("search", searchSchema(), searchHandler(db)).
-		Tool("del", delSchema(), delHandler(db)).
-		Tool("selftest", selfTestSchema(), selfTestHandler(db, "tidb")).
+		Tool("put", putSchema(), putHandler(db, boundOwner)).
+		Tool("get", getSchema(), getHandler(db, boundOwner)).
+		Tool("list", listSchema(), listHandler(db, boundOwner)).
+		Tool("search", searchSchema(), searchHandler(db, boundOwner)).
+		Tool("del", delSchema(), delHandler(db, boundOwner)).
+		Tool("selftest", selfTestSchema(), selfTestHandler(db, "tidb", boundOwner)).
 		OnDrain(func(c *sdk.Component) { _ = db.Close() })
 	if err := comp.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "store-tidb:", err)
@@ -234,6 +243,12 @@ func openStore() (*sql.DB, error) {
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if owner, err := bindStoreOwner(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	} else {
+		boundOwner = owner
 	}
 	return db, nil
 }

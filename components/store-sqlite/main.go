@@ -89,6 +89,7 @@ const (
 type storeDB struct {
 	*sql.DB
 	lockFd int
+	owner  string // document owner bound at open; "" = legacy/test
 }
 
 func (s *storeDB) Close() error {
@@ -107,17 +108,22 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = db.Close() }()
+	if db.owner == "" {
+		fmt.Println("store-sqlite: no instance identity — serving the legacy owner (single-instance/test use only)")
+	} else {
+		fmt.Println("store-sqlite: serving documents for instance " + db.owner)
+	}
 
 	comp := sdk.New("store", "0.1.0")
 	comp.
 		Tool("instance_list", instanceSchema(false), instanceListHandler(db.DB)).
 		Tool("instance_register", instanceSchema(true), instanceRegisterHandler(db.DB)).
-		Tool("put", putSchema(), putHandler(db.DB)).
-		Tool("get", getSchema(), getHandler(db.DB)).
-		Tool("list", listSchema(), listHandler(db.DB)).
-		Tool("search", searchSchema(), searchHandler(db.DB)).
-		Tool("del", delSchema(), delHandler(db.DB)).
-		Tool("selftest", selfTestSchema(), selfTestHandler(db.DB, "sqlite")).
+		Tool("put", putSchema(), putHandler(db.DB, db.owner)).
+		Tool("get", getSchema(), getHandler(db.DB, db.owner)).
+		Tool("list", listSchema(), listHandler(db.DB, db.owner)).
+		Tool("search", searchSchema(), searchHandler(db.DB, db.owner)).
+		Tool("del", delSchema(), delHandler(db.DB, db.owner)).
+		Tool("selftest", selfTestSchema(), selfTestHandler(db.DB, "sqlite", db.owner)).
 		OnDrain(func(c *sdk.Component) { _ = db.Close() })
 	if err := comp.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "store-sqlite:", err)
@@ -262,6 +268,21 @@ func openStore() (*storeDB, error) {
 	// crash, a manual DB edit, rows written around put). Cheap when in
 	// sync — count + max(rowid) — so a normal start does not re-tokenize
 	// the store (docs/WIRE.md "Store contract").
+	// Ownership is bound before any traffic: this file IS one instance's
+	// data, so the first identity that opens it adopts the pre-scoping rows
+	// exactly once. A different identity on an already-bound file refuses
+	// rather than silently swapping the view.
+	owner, err := bindStoreOwner(db)
+	if err != nil {
+		_ = db.Close()
+		_ = syscall.Close(fd)
+		return nil, err
+	}
+	// Derived search index: self-heal when it disagrees with `docs` (a
+	// crash, a manual DB edit, rows written around put). Cheap when in
+	// sync — count + max(rowid) — so a normal start does not re-tokenize
+	// the store (docs/WIRE.md "Store contract"). Adoption re-points rowids'
+	// owners only, never the rowids themselves, so this stays a no-op.
 	rebuilt, err := syncSearchIndex(db)
 	if err != nil {
 		_ = db.Close()
@@ -271,7 +292,7 @@ func openStore() (*storeDB, error) {
 	if rebuilt {
 		fmt.Println("store-sqlite: rebuilt search index from docs")
 	}
-	return &storeDB{DB: db, lockFd: fd}, nil
+	return &storeDB{DB: db, lockFd: fd, owner: owner}, nil
 }
 
 // acquireLock takes the exclusive non-blocking flock; the fd stays open for

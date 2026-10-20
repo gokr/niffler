@@ -34,18 +34,6 @@ func instanceSchema(write bool) map[string]any {
 		"additionalProperties": false, "description": desc, "x-harness": ext}
 }
 
-func validInstanceID(id string) bool {
-	if len(id) != 32 {
-		return false
-	}
-	for _, c := range id {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
-}
-
 func decodeInstanceArgs(raw json.RawMessage, dest any) error {
 	if !strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
 		return fmt.Errorf("expected JSON object")
