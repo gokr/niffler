@@ -29,6 +29,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   process, rewrites and re-enables, and never starts; `fleet_update` uses it in
   place of `install`.
 
+- `fleet_install` launches Incus containers with `boot.autostart=true` and
+  repairs an adopted container to the same policy. A container that never starts
+  runs no systemd, so the user unit and linger behind it were meaningless after a
+  host reboot: the instance vanished while its `var/nats-url` kept advertising a
+  dead bus. Lima has no per-VM equivalent (macOS `limactl autostart`, a host unit
+  on Linux), so that is reported, not faked. The bundled `niffler-harness` skill
+  gained the matching procedure, so an agent asked to make a remote instance
+  "always running" does it correctly instead of guessing.
+
 - Fleet transport waits now service NATS protocol traffic without running other
   handlers re-entrantly. Long installs could finish and save a verified receipt
   after the bus had disconnected the idle-looking component, losing the reply.

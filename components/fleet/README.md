@@ -22,9 +22,15 @@ complete existing installations are adopted without updates, rebuilds or
 provider setup. `fleet_update` moves an adopted installation forward: it verifies
 identity over the live catalog first, refuses a symlinked, unrelated or
 locally-modified checkout, fetches and checks out the resolved commit, runs
-`make build` in place (never `bootstrap.sh`), reinstalls and restarts the service,
-and advances the receipt's pinned `gitHash` only after the updated instance
-verifies. A failed update leaves the receipt at the last verified revision. Incomplete and symlinked roots refuse. Linger remains explicit for SSH; Lima and Incus install enable guest linger for ubuntu.
+`make build` in place (never `bootstrap.sh`), **refreshes** the unit contract and
+restarts the service, and advances the receipt's pinned `gitHash` only after the
+updated instance verifies. `refresh` (not `install`) matters here: `install`
+refuses a unit it did not just render, which is how a guest provisioned from an
+older revision keeps serving the old unit contract silently. Readiness after any
+of this is `bash scripts/server.sh persist <root>` on the guest, which also names
+the fix for whichever readiness check fails. A failed update leaves the receipt at
+the last verified revision. Incomplete and symlinked roots refuse. Linger remains
+explicit for SSH; Lima and Incus install enable guest linger for ubuntu.
 No credentials are sent.
 
 Receipts are atomic mode-0600 JSON compatible with the TUI version-1 schema:
@@ -55,8 +61,14 @@ or VMs are contacted. No global registry or prompt-prefix changes.
 
 `transport:incus` uses fixed `images:ubuntu/24.04` unprivileged system containers
 (not VMs or cloud images), root `/home/ubuntu/niffler`, ordinary user ubuntu,
-and explicit guest linger/user-manager startup. Default limits are 2 CPUs, 4GB
-RAM, 20GB disk; unsupported quota backends fail without dropping limits.
+and explicit guest linger/user-manager startup. Containers are launched with
+`boot.autostart=true` and an adopted container is repaired to the same policy:
+a guest that never starts runs no systemd, so the user unit and linger behind it
+are irrelevant after a host reboot. Lima has no per-VM equivalent — macOS has
+`limactl autostart`, a Linux management host needs a host unit — so it is
+reported in the install result and never claimed as covered. Default limits are
+2 CPUs, 4GB RAM, 20GB disk; unsupported quota backends fail without dropping
+limits.
 Incus records `root,size=` even where nothing enforces it, so Fleet verifies the
 pool before launching: `btrfs`/`zfs`/`lvm` enforce the limit, `dir` only with
 project quotas (`prjquota`). A `dir` pool on plain ext4 refuses instead of

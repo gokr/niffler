@@ -343,9 +343,14 @@ cd "$root"
 # prerequisite fails loudly here instead.
 make build
 """ & serviceEnv & """
-bash "$root/scripts/server.sh" install "$root"
-# start alone would leave the old process serving the previous build.
-bash "$root/scripts/server.sh" stop "$root"
+# refresh, not install: the checkout just moved to a new revision, so its
+# scripts/server.sh may render a different unit contract (a new restart policy,
+# a new Environment= line). install refuses a unit it did not just render, by
+# design; refresh is the explicit in-place replacement that keeps this guest on
+# the new contract instead of silently serving the old one.
+bash "$root/scripts/server.sh" refresh "$root"
+# refresh stops the old process (it must not keep serving the previous build)
+# but never starts one, so starting is this script's decision.
 bash "$root/scripts/server.sh" start "$root"
 """
 
@@ -396,6 +401,20 @@ proc vmInfo(run: CommandRunner, p: JsonNode): JsonNode =
 
 proc running(p, vm: JsonNode): bool =
   vm{"status"}.getStr() == "Running"
+
+proc ensureBootPolicy*(run: CommandRunner, p: JsonNode): bool =
+  ## A guest that never starts runs no systemd, so the user unit and linger
+  ## behind it are irrelevant after a host reboot. Incus records this per
+  ## container and fleet owns the container's lifecycle, so it is part of the
+  ## install contract rather than an operator nicety nobody would repeat.
+  ## Lima has no per-VM equivalent (macOS: `limactl autostart`; Linux: a host
+  ## unit), so it is reported, never faked. Returns true when a change was made.
+  if p["transport"].getStr() != "incus": return false
+  let vm = vmInfo(run, p)
+  if vm == nil: return false
+  if vm{"expanded_config"}{"boot.autostart"}.getStr() == "true": return false
+  discard checked(run, management(p, @["incus", "config", "set", p["target"].getStr(), "boot.autostart", "true"]))
+  true
 
 proc guestCommand(p: JsonNode, action: string): seq[string] =
   management(p, (if p["transport"].getStr() == "lima": @["limactl", action, "--tty=false", p["target"].getStr()] else: @["incus", action, p["target"].getStr()]))
@@ -502,7 +521,7 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
     if vm == nil:
       if transport == "incus": requireEnforcedDisk(run, p, disk)
       let create = if transport == "incus":
-          @["incus", "launch", "images:ubuntu/24.04", target, "--config", "security.privileged=false", "--config", "security.nesting=false", "--config", "limits.cpu=" & $cpus, "--config", "limits.memory=" & memory & "B", "--device", "root,size=" & disk & "B"]
+          @["incus", "launch", "images:ubuntu/24.04", target, "--config", "security.privileged=false", "--config", "security.nesting=false", "--config", "boot.autostart=true", "--config", "limits.cpu=" & $cpus, "--config", "limits.memory=" & memory & "B", "--device", "root,size=" & disk & "B"]
         else: @["limactl", "create", "--tty=false", "--name=" & target, "-"]
       discard checked(run, management(p, create), (if transport == "lima": $limaConfig(cpus, memory, disk) else: ""), timeoutMs = 600000)
       if transport == "lima":
@@ -510,8 +529,13 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
         discard checked(run, guestCommand(p, "start"), timeoutMs = 600000)
       if transport == "incus" and vmInfo(run, p) == nil: refuse("created container missing")
       p["createdVm"] = %true
-    elif not running(p, vm):
-      discard checked(run, guestCommand(p, "start"), timeoutMs = 180000)
+    else:
+      # An adopted container predates this contract: set the boot policy now,
+      # or the next host reboot strands it and the client can only report a dead
+      # bus. Lima has no per-VM equivalent and is documented, never faked.
+      discard ensureBootPolicy(run, p)
+      if not running(p, vm):
+        discard checked(run, guestCommand(p, "start"), timeoutMs = 180000)
   if transport == "incus" and previous == nil:
     discard guestRoot(run, p, incusInstallScript(root, revision), 3600000)
   elif transport == "lima" and previous == nil:
@@ -529,7 +553,7 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
       if attempt < 29: sleep(1000)
   if not verified: refuse("service did not verify; profile not saved")
   saveReceipt(path, p)
-  %*{"profile": path, "receipt": p, "text": (if transport in ["incus", "lima"]: "Verified receipt saved; enabled guest linger for ubuntu; temporary installer sudo grant removed. Provider configuration remains explicit." else: "Verified receipt saved; provider configuration and linger remain explicit.")}
+  %*{"profile": path, "receipt": p, "text": (if transport in ["incus", "lima"]: "Verified receipt saved; enabled guest linger for ubuntu; temporary installer sudo grant removed. Provider configuration remains explicit." & (if transport == "incus": " Container boot.autostart=true (survives a host reboot)." else: " Lima has no per-VM boot.autostart: run limactl autostart on macOS or give the VM a host unit on Linux, or a host reboot leaves it stopped.") else: "Verified receipt saved; provider configuration and linger remain explicit.")}
 
 proc revisionMatches(run: CommandRunner, p, identity: JsonNode, revision: string): bool =
   ## Catalogs advertise an abbreviated build hash. Verify the exact checkout

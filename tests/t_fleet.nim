@@ -284,6 +284,10 @@ proc main() =
   var networkType = "bridge"
   var guestHash = repeat('b', 40)
   var dirNoQuota = false
+  # An adopted container provisioned before boot.autostart was part of the
+  # contract; install must repair it instead of leaving a host reboot to strand
+  # the instance.
+  var bootAutostart = false
   let guestIdentity = identity.copy()
   guestIdentity["root"] = %"/home/ubuntu/niffler"
   let guestRunner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
@@ -302,12 +306,16 @@ proc main() =
       if "incus" in cmd:
         if guestMissing: return CommandResult(output: "[]")
         let vm = %*{"name": "fake-ct", "type": "container", "status": (if guestStopped: "Stopped" else: "Running"),
-          "expanded_config": {"security.privileged": (if unsafeGuest: "true" else: "false"), "security.nesting": "false"},
+          "expanded_config": {"security.privileged": (if unsafeGuest: "true" else: "false"), "security.nesting": "false",
+            "boot.autostart": (if bootAutostart: "true" else: "false")},
           "expanded_devices": {"eth0": {"type": "nic", "nictype": nicType}, "root": {"type": "disk", "path": "/", "pool": "default"}}}
         if managedNic: vm["expanded_devices"]["eth0"] = %*{"type": "nic", "network": "incusbr0"}
         return CommandResult(output: $(%*[vm]))
       return CommandResult(output: $(%*{"name": "fake-vm", "status": "Running", "config": limaConfig(2, "4G", "20G")}))
-    if "launch" in cmd: guestMissing = false
+    if "launch" in cmd:
+      guestMissing = false
+      if "boot.autostart=true" in cmd: bootAutostart = true
+    if "config" in cmd and "set" in cmd and "boot.autostart" in cmd: bootAutostart = true
     if "start" in cmd: guestStopped = false
     if input.contains("make build"): guestHash = resolvedSha
     if input.contains(" rev-parse HEAD"): return CommandResult(output: guestHash & "\n")
@@ -325,6 +333,8 @@ proc main() =
     let installedCt = install(guestRunner, ct)
     check("Incus created with fixed image and limits " & $hosted,
       ($commands).contains("images:ubuntu/24.04") and ($commands).contains("limits.cpu=2") and ($commands).contains("security.privileged=false") and ($commands).contains("root,size=20GB"))
+    check("created container starts with the host " & $hosted,
+      ($commands).contains("--config") and ($commands).contains("boot.autostart=true") and bootAutostart)
     let bootstrap = firstScript(scripts, "loginctl enable-linger")
     check("Incus bootstrap valid shell " & $hosted, nativeRunner(@["bash", "-n"], bootstrap, 1000).code == 0)
     check("guest-only bootstrap and temporary grant cleanup " & $hosted,
@@ -336,16 +346,27 @@ proc main() =
           if c[0] != "ssh" or c[^2] != "operator@hypervisor" or not c[^1].startsWith("'incus' '"): ok = false
         ok)
     commands.setLen(0); scripts.setLen(0)
+    bootAutostart = false  # an adopted container predates the contract
     discard install(guestRunner, ct)
     check("pinned Incus adoption no launch or root bootstrap " & $hosted,
       not ($commands).contains("launch") and not scripts.join("").contains("loginctl enable-linger"))
+    check("adoption sets the container boot policy " & $hosted,
+      bootAutostart and ($commands).contains("boot.autostart") and ($commands).contains("config") and ($commands).contains("set"))
+    commands.setLen(0)
+    discard install(guestRunner, ct)
+    check("boot policy already set is left alone " & $hosted,
+      not ($commands).contains("boot.autostart"))
     guestStopped = true
     commands.setLen(0)
     check("stopped pinned Incus update refuses before start", rejected(proc() = discard update(guestRunner, %*{"profile": ct["profile"], "revision": resolvedSha})) and commands.len == 1)
     guestStopped = false
     discard update(guestRunner, %*{"profile": ct["profile"], "revision": resolvedSha})
-    check("Incus update rebuilds as ubuntu " & $hosted,
-      guestHash == resolvedSha and firstScript(scripts, "make build").contains("server.sh\" stop"))
+    let rebuild = firstScript(scripts, "make build")
+    check("Incus update rebuilds as ubuntu " & $hosted, guestHash == resolvedSha and rebuild.len > 0)
+    # A new revision may render a different unit contract, so update refreshes
+    # the unit instead of calling install (which would refuse the old one).
+    check("Incus update refreshes the unit contract " & $hosted,
+      rebuild.contains("server.sh\" refresh") and not rebuild.contains("server.sh\" install"))
     commands.setLen(0); scripts.setLen(0)
     for actionName in ["probe", "status", "logs", "start", "stop", "vm_stop"]:
       discard action(guestRunner, actionName, ct["profile"].getStr())
