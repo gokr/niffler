@@ -288,7 +288,9 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
   identity — plus output-cap spelling per protocol and normalized
   `finish_reason` reporting.
 - `llm` — streaming chat adapter: `chat`, credential-free `llm_resolve`, the
-  live model-id source; token deltas, cancellation channel, history repair,
+  live model-id source, and `embed` (one embeddings call through a provider's
+  `embedModel`, with `embedBaseUrl` for a backend that serves vectors
+  elsewhere); token deltas, cancellation channel, history repair,
   named-provider table, and a minimal non-streaming example adapter.
 
 ### Extension, ecosystem and knowledge

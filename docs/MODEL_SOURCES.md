@@ -47,6 +47,40 @@ comp.run()
 The tool must be `hidden` — it is a registration surface for the `models`
 component, not something the LLM calls.
 
+## Declaring embed models
+
+An embedding model is not a chat model, so it gets its own extension and its
+own view (MANUAL.md "Embed model sources"). One tool may carry both markers:
+
+```nim
+comp.tools[^1].schema["x-embed-source"] = %*{"version": 1, "priority": 120}
+```
+
+and answer a patch over the embedding view instead of the chat catalog:
+
+```nim
+comp.tool(%*{"hidden": true}):
+  proc my_embed_source(version: int = 1): JsonNode =
+    ## Declare the embed models My Provider serves.
+    ## - version: models source protocol version
+    %*{"patch": {
+      "my-provider": {
+        "available": {
+          "my-embed-model": {"id": "my-embed-model", "name": "My Embed Model",
+                             "dimensions": 768, "limit": {"context": 8192}}
+        }
+      }
+    }}
+
+comp.tools[^1].schema["x-embed-source"] = %*{"version": 1, "priority": 120}
+```
+
+Nothing calls it to embed anything: `llm.embed` resolves the provider and
+posts to its endpoint itself, and `embedModel` on the provider record is what
+selects the model. Declare the metric and the window (`dimensions`,
+`limit.context`) here so a consumer can choose a model — and so the size of
+one vector is known before a store column is sized.
+
 ## Packaging
 
 Put the source in a normal `niffler.json` package (see the

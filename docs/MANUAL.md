@@ -79,7 +79,7 @@ A one-file index of every shipped capability (not a reference) is
 | `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect. Workspace-open auto-append (one append-only history entry on `ev.workspace.opened`) is **on by default but gated** (`docs/research/REPOMAP-GATES.md`): the workspace must have at least 50 covered files, and its rendered map must have at least 800 bytes, 25 symbols and 5 symbol-bearing files. A small/stub map is withheld and logged as `repo map withheld`; set `NIF_REPOMAP_AUTOAPPEND=0` to disable the append. The explicit `repo_map` tool is available regardless of these gates. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes. Parameters, tag tiers and append payload: [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
 | `builder` | Nim | required | compiles agent-written Nim/Go/TypeScript source with `build {lang, name, source, files?, defines?}`, and builds manifest-v2 plugin projects with `build_package {name, lang, sourceRoot, project, steps, artifact}` (approval-gated, on demand). Package projects keep their own dependency manifests and lockfiles; the builder stages them, expands only controlled SDK/output placeholders, executes bounded argv recipes, validates the declared `executable`/`node` artifact, and returns the published binary/runtime bundle. Recipes may combine toolchains (for example `npm ci` followed by `wails build`); recipes use a bounded argv tool set and cannot invoke a shell wrapper. `info` returns SDK paths, the global tool-naming rule, and both build flows |
-| `llm` | Go | required | streaming chat adapter — three hidden tools, none of them in a conversation's direct set: `chat` (one inference, `ev.llm.token` deltas, cancellation; `runner`-exempt, timeout `NIF_LLM_TIMEOUT_MS`), `llm_resolve` (the credential-free resolution probe clients call) and `llm_models_source` (the `x-models-source` v1 live-id source the `models` catalog calls) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example (it reads only `NIF_OPENAI_API_KEY`, `NIF_OPENAI_BASE_URL`, `NIF_OPENAI_MODEL` and `NIF_OPENAI_CONTEXT` — not `NIF_OPENAI_PROVIDER` — and always sends `max_tokens: 32768`, a hardcoded value with no knob); swap it in via `manifest.yaml` — comment `llm` out in the same edit, since `chat` is a globally unique tool name and a duplicate registration is refused; `make build` builds `var/bin/llm-openai` either way. Expect nothing beyond the chat contract: no `ev.llm.token` streaming, no cancel, no `finish_reason`, no `llm_resolve` (core degrades gracefully on the last one) |
+| `llm` | Go | required | streaming chat adapter — four hidden tools, none of them in a conversation's direct set: `chat` (one inference, `ev.llm.token` deltas, cancellation; `runner`-exempt, timeout `NIF_LLM_TIMEOUT_MS`), `llm_resolve` (the credential-free resolution probe clients call), `llm_models_source` (the `x-models-source` v1 live-id source the `models` catalog calls) and `embed` (one embeddings call through the provider's `embedModel`) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example (it reads only `NIF_OPENAI_API_KEY`, `NIF_OPENAI_BASE_URL`, `NIF_OPENAI_MODEL` and `NIF_OPENAI_CONTEXT` — not `NIF_OPENAI_PROVIDER` — and always sends `max_tokens: 32768`, a hardcoded value with no knob); swap it in via `manifest.yaml` — comment `llm` out in the same edit, since `chat` is a globally unique tool name and a duplicate registration is refused; `make build` builds `var/bin/llm-openai` either way. Expect nothing beyond the chat contract: no `ev.llm.token` streaming, no cancel, no `finish_reason`, no `llm_resolve` (core degrades gracefully on the last one) and no `embed` |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
@@ -1769,6 +1769,41 @@ URL and `anthropic` the Anthropic one (under `openai-chat` a `deepseek` or
 `claude-sonnet-4-6` (`anthropic`), and the two OAuth protocols infer their
 models.dev catalog id (`openai`/`anthropic`).
 
+#### Embeddings
+
+A provider may also carry an embedding model, in two optional fields that are
+deliberately separate from `model`: one chat model cannot express "chat on A,
+embeddings on B", which is the normal case for a gateway (Synthetic serves
+`syn:small:text` for chat and `hf:nomic-ai/nomic-embed-text-v1.5` for vectors).
+`embedModel` names it and `embedBaseUrl` points embeddings at a different base
+URL when the backend serves them elsewhere. Both ride through `provider_list`
+(the redacted summary), `provider_get`, `provider_export`/`provider_import`
+and `llm_resolve` (`embedModel`), so a client can show and edit them without
+an admin round-trip.
+
+The hidden `llm.embed` tool consumes them: it resolves the provider exactly as
+`chat` does (active provider, or an explicit `provider` arg), takes the model
+from `model` → `embedModel`, the base URL from `embedBaseUrl` → `baseUrl`, and
+posts `{model, input, dimensions?}` to `{base}/embeddings`. A result is
+`{ok, provider, model, dimensions, embeddings: [[float…]…], usage?}` with the
+vectors aligned to the inputs by `index`, not by response order. Runners ingest
+tool text, so this result is text-shaped: it is meant for ranking a candidate
+set the caller already holds, or for a caller that persists vectors itself
+(semantic `context_recall` additionally needs a store kind, a chunker and an
+incremental update path — a separate work item).
+
+Two limits, stated rather than papered over:
+
+- **OpenAI-compatible only.** Ollama works through its OpenAI shim
+  (`embedBaseUrl: http://localhost:11434/v1`); its native `/api/embed` is a
+  different request and response shape and is out of scope. `anthropic` and
+  `openai-codex` providers are refused with that fix named, instead of sending
+  a request the endpoint cannot answer.
+- **No guessed model.** A provider with no `embedModel` fails with
+  `provider "x" has no embedding model — set it with provider_add {embedModel: "…"}`;
+  a chat model id sent to `/embeddings` is a 400, so naming the fix is the only
+  useful answer.
+
 ### Wire protocols
 
 Each provider carries a `protocol` that `llm` routes on:
@@ -3355,7 +3390,9 @@ The effective catalog is rebuilt in this order:
 
 1. `NIF_MODELS_PATH`, the cached models.dev catalog, or the embedded seed.
 2. Registered `x-models-source` plugins, ascending by `priority` and then by
-   `component/tool`. A larger priority therefore wins.
+   `component/tool`. A larger priority therefore wins. An `x-embed-source`
+   declaration is registered the same way but patches a separate embedding
+   view (see "Embed model sources" below), never the chat catalog.
 3. `NIF_MODELS_OVERRIDE`, always last.
 
 Plugin and local layers are JSON Merge Patches (RFC 7396): objects merge,
@@ -3390,11 +3427,11 @@ cancels refresh work and shuts the component down.
 | Tool | Purpose |
 |---|---|
 | `models_providers` | provider connection metadata and configured status, never secret values |
-| `models_list` | filtered model search with capabilities, modalities, limits, and costs |
+| `models_list` | filtered model search with capabilities, modalities, limits, and costs; models that produce embeddings are marked `embedding: true`, and `embed: true\|false` filters to just those or just chat models |
 | `models_get` | exact provider/model descriptor for another component |
 | `models_resolve` | strict `provider/model` or globally unique bare-id resolution |
 | `models_refresh` | queue a refresh of models.dev and every live extension source: it returns immediately with the *current* provenance report plus `queued` and `force`, the work happens asynchronously (registration bursts are coalesced over 150 ms), so read `models_sources` again — or wait for `ev.models.updated` — to see the outcome; `force: true` bypasses the cache TTL |
-| `models_sources` | provenance, freshness, stale fallback, and error diagnostics |
+| `models_sources` | provenance, freshness, stale fallback, and error diagnostics (plus `embedModels`, the size of the embedding view) |
 
 All six tools are `onDemand`: they are absent from a conversation's frozen
 direct toolset, so the model reaches them through `discover` + `invoke`.
@@ -3416,7 +3453,7 @@ errors instead of timing out on the wire. Descriptor metadata is recursively
 redacted: secret-like keys (api keys, tokens, passwords, credentials,
 authorization headers, private keys, cookies) never reach a caller, at
 provider or model level. Argument shapes: `models_list` takes `status`,
-`provider`, `query` and `limit` (default 50, max 500); `models_get` requires
+`provider`, `query`, `embed` and `limit` (default 50, max 500); `models_get` requires
 `provider` + `model`; `models_providers`/`models_sources` take no arguments.
 List-style results are `{models|providers, count, total}` and are trimmed with
 `truncated: true` when they would exceed the bus payload limit, while one
@@ -3442,7 +3479,9 @@ fallback remains available if `models` is removed. Provider endpoints are
 classified by hostname, not URL substring. Interactive clients should call the
 hidden, credential-free `llm_resolve {model?}` rather than duplicating this
 precedence: it reports the effective global provider, optional conversation
-model override, catalog, context, and each value's provenance.
+model override, catalog, context, each value's provenance, and `embedModel`
+(empty when the resolved provider serves no embeddings), so a caller learns
+the embedding capability without making a call that would fail.
 
 ### Source plugins
 
@@ -3477,6 +3516,62 @@ a JSON Merge Patch (RFC 7396):
   }
 }
 ```
+
+### Embed model sources
+
+models.dev cannot discover embed models: its `modalities.output` is `["text"]`
+even for `text-embedding-3-large`, so the baseline carries almost none of them.
+A plugin fills that gap as **metadata, not implementation** — it declares which
+embed models a provider serves, their dimensions and context window, and
+nothing dispatches an inference call through it:
+
+```json
+{
+  "x-embed-source": {
+    "version": 1,
+    "priority": 120,
+    "provider": "synthetic",
+    "models": [
+      {"id": "hf:nomic-ai/nomic-embed-text-v1.5", "dimensions": 768, "context": 8192}
+    ]
+  },
+  "x-harness": {"hidden": true}
+}
+```
+
+The extension above is the *declaration* a component ships for humans and for
+`models_sources`; the tool that carries it is called exactly like a model
+source (`{version: 1}`) and answers a JSON Merge Patch over the **embedding
+view**, keyed by provider:
+
+```json
+{
+  "patch": {
+    "synthetic": {
+      "available": {
+        "hf:nomic-ai/nomic-embed-text-v1.5": {"id": "hf:nomic-ai/nomic-embed-text-v1.5",
+                                              "dimensions": 768, "limit": {"context": 8192}}
+      }
+    }
+  }
+}
+```
+
+That view is built per provider from (a) the provider's configured
+`embedModel` — always present, even with no metadata anywhere — and (b) models
+whose catalog `modalities.output` contains `embedding`, then patched by every
+`x-embed-source` in priority order. It is deliberately **not** the chat
+catalog: `models_list {embed: false}` proves the difference, and an embed model
+never becomes a chat choice. `models_list`, `models_get` and `models_resolve`
+read the view, so an embed model is discoverable next to the chat models it
+belongs with, marked `embedding: true`. A departed component drops its patch
+and its models in one step, exactly as a chat source does.
+
+The trust boundary is the point: `llm` resolves a provider and posts to its
+endpoint itself, so an embed call never runs through plugin code mid-request.
+Metadata is a read; delegation would be a timeout budget and an authority edge
+that buys nothing until a provider exists whose embeddings are neither
+OpenAI-compatible nor reachable as a plain HTTP POST.
 
 A complete worked source component — marker, tool, package layout and
 verification — is in [MODEL_SOURCES.md](MODEL_SOURCES.md).

@@ -6,6 +6,31 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Embeddings have a producer: a provider record can now name a second,
+  optional model in `embedModel` (plus `embedBaseUrl` when vectors are served
+  elsewhere), and the hidden `llm` tool `embed` calls `{base}/embeddings`
+  with it, returning one vector per input. One `model` field cannot express
+  "chat on A, embeddings on B", which is the normal gateway case. The model is
+  never guessed — a provider without `embedModel` fails naming
+  `provider_add {embedModel: …}` instead of sending a chat model id to
+  `/embeddings`, and the `anthropic`/`openai-codex` lanes are refused with the
+  Ollama-shim fix named. The capability is visible without a call through
+  `llm_resolve.embedModel`, `provider_list`/`provider_get` and
+  `NIF_OPENAI_EMBED_MODEL`/`NIF_OPENAI_EMBED_BASE_URL` for the environment
+  default.
+
+- `models` gained the matching metadata seam, `x-embed-source`: a plugin
+  declares the embed models a provider serves (dimensions, context window) and
+  the catalog exposes them in a **separate embedding view** — never in the
+  chat catalog, where an embedding model would be a 400 waiting to happen.
+  models.dev cannot discover embed models (its `modalities.output` is
+  `["text"]` even for `text-embedding-3-large`), so this is the only place
+  most of them exist. `models_list`/`models_get`/`models_resolve` read the
+  view and mark entries `embedding: true`; `models_list {embed: true|false}`
+  filters on it, `models_providers` reports each provider's configured
+  `embedModel`, and `models_sources` reports `embedModels`. A departed source
+  drops its patch and its models in one step, like a chat source.
+
 - The resident user service now uses `Restart=always`. `Restart=on-failure`
   left a persistent instance stopped after a clean exit or SIGTERM (treated as
   a clean termination by systemd). Crashes and OOM kills were already covered
