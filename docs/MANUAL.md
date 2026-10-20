@@ -2639,13 +2639,23 @@ locked by another harness will restart in a loop, so run one harness per root.
 
 Three separate things keep such an instance reachable, and each fails
 independently: the container or VM must start on host boot (an Incus container
-needs `incus config set <name> boot.autostart true` — a container that never
-starts runs no systemd), linger must be enabled for its user, and the unit must
-be enabled. When a checkout's `server.sh` changes, `install` **refuses** the
-unit it previously wrote (rendered text is compared, never adopted). Refresh
-explicitly: `server.sh stop`, remove the unit file, then `server.sh install` and
-`server.sh start`. A stale unit keeps serving the old contract silently
-otherwise.
+needs `boot.autostart=true` — a container that never starts runs no systemd;
+`fleet_install` sets it and repairs it on adoption, while Lima has no per-VM
+equivalent), linger must be enabled for its user, and the unit must be enabled.
+
+`bash scripts/server.sh persist <root>` reports that readiness instead of
+leaving it to inspection: it checks the installed unit against the checkout that
+should own it, the enable state, the active state, the restart policy and linger,
+and names the fix for each failure. Host boot policy is reported as what it is
+(`boot=container (lxc) - verify on the management host: incus config get <container>
+boot.autostart`) and never claimed as verified from inside the guest. It exits non-zero while anything is unproven.
+
+When a checkout's `server.sh` changes, `install` **refuses** the unit it
+previously wrote (rendered text is compared, never adopted — that is what stops a
+foreign service being inherited). `bash scripts/server.sh refresh <root>` is the
+explicit way forward: it proves the file is ours, stops the old process, rewrites
+and re-enables, and never starts. `fleet_update` runs `refresh` automatically
+when it moves a guest to a new revision.
 
 ### SSH and Lima provisioning
 

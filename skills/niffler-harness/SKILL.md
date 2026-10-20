@@ -160,6 +160,8 @@ variable carries the `NIF_` prefix (`NIF_OPENAI_*`, `NIF_NATS_URL`,
 | Broken build state | `make recover` (rebuild + wipe spawn records) |
 | Orphaned NATS after killing components | `make down` before a cold start |
 | Conversations look lost | they are not — read them from the store (recipe above) |
+| A remote instance is unreachable after a reboot | `server.sh persist <root>` there; host boot policy is the usual culprit (see "Keeping a remote instance always running") |
+| A client refuses a switch with `EOF` | the target's harness is not running: start it there (`server.sh start <root>`), then check `server.sh persist <root>` |
 
 ## Fleet provisioning
 
@@ -183,6 +185,57 @@ TUI; no automatic registry write or public NATS listener is needed:
 niffler-tui --instance worker --instance-import /absolute/path/to/worker.json
 niffler-tui --instance worker
 ```
+
+### Keeping a remote instance always running
+
+A provisioned instance is not automatically a *resident* one. `scripts/server.sh`
+is the single entry point for that (`install|refresh|start|status|logs|stop|linger|persist`),
+and it is the only supported way to change the unit. Three independent things
+keep an instance reachable, and each fails on its own:
+
+1. **The guest starts on host boot.** An Incus container needs
+   `boot.autostart=true` — a container that never starts runs no systemd, so
+   nothing inside can save it. `fleet_install` sets it at launch and repairs it
+   when adopting an existing container. Lima has no per-VM equivalent: on macOS
+   use `limactl autostart` (launchd), on a Linux management host give the VM a
+   host-level unit. Never claim this from inside the guest.
+2. **Linger is enabled** for the instance user (`loginctl enable-linger`), or a
+   user unit is stopped at logout.
+3. **The unit is enabled and its restart policy is `always`.** `on-failure`
+   leaves an instance dead after a *clean* exit — a stray SIGTERM or an OOM kill
+   reports success.
+
+Run the readiness report rather than reasoning about it:
+
+```bash
+bash scripts/server.sh persist "$root"   # exit 0 only when all guest-side checks pass
+```
+
+It names the fix for each failed check and reports the boot layer as something to
+verify on the management host (`boot=container (lxc) - verify on the management
+host: incus config get <container> boot.autostart`), never as covered by the guest.
+
+**A changed `server.sh` refuses the old unit.** `install` compares rendered
+text and refuses a unit it did not just write — never adopting unknown content is
+what stops a foreign service being inherited. After a checkout moves
+(`git pull`, `fleet_update`), use `refresh`: it proves the file is ours, stops
+the old process, rewrites, re-enables, and does not start. `fleet_update` does
+this automatically; do it by hand only on an instance you maintain directly:
+
+```bash
+bash scripts/server.sh refresh "$root" && bash scripts/server.sh start "$root"
+```
+
+Never hand-edit the unit or `rm` it to force an install: `refresh` exists
+precisely so an operator does not have to, and a deleted unit loses the enable
+symlink and the readiness trail. Service lifecycle is not VM lifecycle
+(`fleet_stop` ≠ `fleet_vm_stop`), and none of it deletes anything.
+
+For an **SSH** target (no guest transport), linger and the user manager are
+operator setup, never implicit: enable linger, start `user@$(id -u)` at least
+once, then run `install`/`start` and let `persist` confirm. On any target, obtain
+human approval before changing service lifecycle — it affects whether work
+continues after the operator disconnects.
 
 
 ### Incus and remote guest management

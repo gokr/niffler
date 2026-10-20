@@ -1525,11 +1525,21 @@ NIF_ROOT，停用 UI 自動退出和自動核准，使用核心擁有的隔離�
 而結束，它就會循環重啟，因此每個根目錄只執行一個 harness。
 
 讓這樣一個實例始終可達取決於三件互相獨立的事：容器或 VM 必須在主機開機時
-啟動（Incus 容器需要 `incus config set <name> boot.autostart true`——容器不
-啟動就不會執行 systemd）、其使用者必須啟用 linger、單元必須已啟用。當檢出中的
-`server.sh` 發生變化後，`install` 會**拒絕**它先前寫下的單元（比較渲染文字，
-從不接管）。請顯式更新：`server.sh stop`、刪除單元檔案，再 `server.sh install`
-與 `server.sh start`。否則過期的單元會靜默沿用舊契約。
+啟動（Incus 容器需要 `boot.autostart=true`——容器不啟動就不會執行 systemd；
+`fleet_install` 會設定它，並在採用既有容器時修補它；Lima 沒有按 VM 的等價項）、
+其使用者必須啟用 linger、單元必須已啟用。
+
+`bash scripts/server.sh persist <root>` 直接回報這些就緒狀態，而不留給人工檢查：
+它核對已安裝單元與其應對應的檢出、啟用狀態、執行狀態、重啟策略和 linger，
+並為每項失敗給出修正命令。主機開機策略只按其真實狀態回報
+（`boot=container (lxc) - verify on the management host: incus config get <container>
+boot.autostart`），絕不在 guest 內部聲稱已驗證。只要還有未證實的項目，它就以非零碼結束。
+
+當檢出中的 `server.sh` 發生變化後，`install` 會**拒絕**它先前寫下的單元
+（比較渲染文字，從不接管——這正是防止繼承外來服務的手段）。顯式前進的方式是
+`bash scripts/server.sh refresh <root>`：它先證明檔案由本檢出寫下，停止舊行程，
+重寫並重新啟用，且從不啟動。`fleet_update` 在把 guest 推進到新修訂時會自動
+執行 `refresh`。
 
 ### SSH and Lima provisioning
 
