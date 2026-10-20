@@ -38,10 +38,22 @@ type modelSource struct {
 	Tool      string `json:"tool"`
 	Priority  int    `json:"priority"`
 	Version   int    `json:"version"`
+	// Embed marks an x-embed-source declaration rather than an
+	// x-models-source one. Embed sources patch the embedding documents
+	// (dimensions, context) and never the chat catalog: models.dev cannot
+	// discover embed models (its modalities.output is ["text"] even for
+	// text-embedding-3-large), so this metadata has no baseline to correct.
+	Embed bool `json:"embed,omitempty"`
 }
 
 func (s modelSource) key() string {
-	return s.Component + "/" + s.Tool
+	base := s.Component + "/" + s.Tool
+	if s.Embed {
+		// One tool may declare both extensions; the suffix keeps the two
+		// registrations apart in the source and status maps.
+		return base + "#embed"
+	}
+	return base
 }
 
 type sourceStatus struct {
@@ -79,10 +91,16 @@ type catalogState struct {
 	cacheTTL     time.Duration
 	client       *http.Client
 
-	base           map[string]any
-	effective      map[string]any
-	sources        map[string]modelSource
-	patches        map[string]map[string]any
+	base      map[string]any
+	effective map[string]any
+	sources   map[string]modelSource
+	patches   map[string]map[string]any
+	// embedPatches holds x-embed-source patches, keyed like patches. The
+	// embedding documents derived from them live in embedEffective, a
+	// separate projection: an embed model is not a chat model, and folding
+	// one into the chat catalog would offer it as a chat choice.
+	embedPatches   map[string]map[string]any
+	embedEffective map[string]any
 	statuses       map[string]sourceStatus
 	baselineStatus sourceStatus
 	overrideStatus *sourceStatus
@@ -105,18 +123,20 @@ func newCatalogState(root string) *catalogState {
 	}
 
 	state := &catalogState{
-		root:         root,
-		cacheDir:     cacheDir,
-		cachePath:    filepath.Join(cacheDir, "api.json"),
-		sourceURL:    sourceURL,
-		sourcePath:   os.Getenv("NIF_MODELS_PATH"),
-		overridePath: os.Getenv("NIF_MODELS_OVERRIDE"),
-		offline:      envBool("NIF_MODELS_OFFLINE"),
-		cacheTTL:     envDuration("NIF_MODELS_CACHE_TTL", 5*time.Minute),
-		client:       &http.Client{Timeout: 12 * time.Second},
-		sources:      make(map[string]modelSource),
-		patches:      make(map[string]map[string]any),
-		statuses:     make(map[string]sourceStatus),
+		root:           root,
+		cacheDir:       cacheDir,
+		cachePath:      filepath.Join(cacheDir, "api.json"),
+		sourceURL:      sourceURL,
+		sourcePath:     os.Getenv("NIF_MODELS_PATH"),
+		overridePath:   os.Getenv("NIF_MODELS_OVERRIDE"),
+		offline:        envBool("NIF_MODELS_OFFLINE"),
+		cacheTTL:       envDuration("NIF_MODELS_CACHE_TTL", 5*time.Minute),
+		client:         &http.Client{Timeout: 12 * time.Second},
+		sources:        make(map[string]modelSource),
+		patches:        make(map[string]map[string]any),
+		embedPatches:   make(map[string]map[string]any),
+		embedEffective: make(map[string]any),
+		statuses:       make(map[string]sourceStatus),
 	}
 	state.loadInitialCatalog()
 	return state
@@ -355,7 +375,15 @@ func (c *catalogState) rebuildLocked() {
 		}
 		return sources[i].key() < sources[j].key()
 	})
+	embedSources := make([]modelSource, 0, len(sources))
 	for _, source := range sources {
+		if source.Embed {
+			// An embed source never shapes the chat catalog: its patch
+			// describes vectors, and a chat request for an embedding model
+			// is a 400 waiting to happen.
+			embedSources = append(embedSources, source)
+			continue
+		}
 		if patch := c.patches[source.key()]; patch != nil {
 			next = applyMergePatch(next, patch)
 		}
@@ -389,6 +417,7 @@ func (c *catalogState) rebuildLocked() {
 
 	normalizeCatalog(next)
 	c.effective = next
+	c.updateEmbedDocumentsLocked(next, embedSources)
 	c.updatedAt = time.Now().UTC()
 }
 
@@ -417,23 +446,101 @@ func numberValue(value any) (int, bool) {
 func sourcesFromRegistration(reg registration) []modelSource {
 	var sources []modelSource
 	for _, tool := range reg.Tools {
-		extension, ok := tool.Schema["x-models-source"].(map[string]any)
-		if !ok {
-			continue
+		for _, kind := range []struct {
+			key   string
+			embed bool
+		}{{"x-models-source", false}, {"x-embed-source", true}} {
+			extension, ok := tool.Schema[kind.key].(map[string]any)
+			if !ok {
+				continue
+			}
+			version, ok := numberValue(extension["version"])
+			if !ok || version != 1 {
+				continue
+			}
+			priority := defaultSourceOrder
+			if value, ok := numberValue(extension["priority"]); ok {
+				priority = value
+			}
+			sources = append(sources, modelSource{
+				Component: reg.Name, Tool: tool.Name, Priority: priority,
+				Version: version, Embed: kind.embed,
+			})
 		}
-		version, ok := numberValue(extension["version"])
-		if !ok || version != 1 {
-			continue
-		}
-		priority := defaultSourceOrder
-		if value, ok := numberValue(extension["priority"]); ok {
-			priority = value
-		}
-		sources = append(sources, modelSource{
-			Component: reg.Name, Tool: tool.Name, Priority: priority, Version: version,
-		})
 	}
 	return sources
+}
+
+// embeddingOutput marks a catalog model that produces vectors. models.dev
+// uses it on the handful of embed models it does list, which is the only
+// signal the baseline offers.
+const embeddingOutput = "embedding"
+
+// updateEmbedDocuments projects the embedding view of the catalog: per
+// provider, the configured embed model (from the chat provider record's
+// embedModel field) and the models known to produce vectors (from the
+// catalog's output modality, then x-embed-source patches, ascending by
+// priority like chat patches). A patch may add a model the baseline does not
+// list — which is the normal case, since models.dev has no embed metadata for
+// most providers.
+func (c *catalogState) updateEmbedDocumentsLocked(catalog map[string]any, embedSources []modelSource) {
+	documents := make(map[string]any)
+	providerDocument := func(providerID string) map[string]any {
+		document := objectValue(documents[providerID])
+		if document == nil {
+			document = map[string]any{}
+			documents[providerID] = document
+		}
+		if objectValue(document["available"]) == nil {
+			document["available"] = map[string]any{}
+		}
+		return document
+	}
+
+	providerIDs := make([]string, 0, len(catalog))
+	for providerID := range catalog {
+		providerIDs = append(providerIDs, providerID)
+	}
+	sort.Strings(providerIDs)
+	for _, providerID := range providerIDs {
+		provider := objectValue(catalog[providerID])
+		if provider == nil {
+			continue
+		}
+		if configured := stringValue(provider["embedModel"]); configured != "" {
+			document := providerDocument(providerID)
+			document["configured"] = configured
+			// A configured embed model is one this provider serves, even when
+			// no baseline metadata or source describes it: a caller asking
+			// what can be embedded must see it. A source patch still merges
+			// dimensions and window over this minimal descriptor.
+			available := document["available"].(map[string]any)
+			if _, declared := available[configured]; !declared {
+				available[configured] = map[string]any{"id": configured, "name": configured}
+			}
+		}
+		models := objectValue(provider["models"])
+		for modelID, rawModel := range models {
+			model := objectValue(rawModel)
+			if model == nil {
+				continue
+			}
+			modalities := objectValue(model["modalities"])
+			if modalities == nil || !arrayContains(modalities["output"], embeddingOutput) {
+				continue
+			}
+			providerDocument(providerID)["available"].(map[string]any)[modelID] = cloneObject(model)
+		}
+	}
+
+	for _, source := range embedSources {
+		patch := c.embedPatches[source.key()]
+		if patch == nil {
+			continue
+		}
+		documents = applyMergePatch(documents, patch)
+	}
+	c.embedEffective = documents
 }
 
 func (c *catalogState) register(data []byte) bool {
@@ -459,6 +566,8 @@ func (c *catalogState) replaceComponentSources(component string, next []modelSou
 	for key, source := range c.sources {
 		if source.Component == component {
 			delete(c.sources, key)
+			delete(c.patches, key)
+			delete(c.embedPatches, key)
 			delete(c.statuses, key)
 			changed = true
 		}
@@ -478,6 +587,17 @@ func (c *catalogState) replaceComponentSources(component string, next []modelSou
 		c.rebuildLocked()
 	}
 	return changed
+}
+
+// patchesFor selects the patch store a source writes to: chat sources shape
+// the chat catalog, embed sources shape the embedding documents.
+//
+// The caller holds c.mu.
+func (c *catalogState) patchesFor(source modelSource) map[string]map[string]any {
+	if source.Embed {
+		return c.embedPatches
+	}
+	return c.patches
 }
 
 func (c *catalogState) discover(ctx context.Context, comp *sdk.Component) error {
@@ -707,7 +827,7 @@ func (c *catalogState) refreshSource(ctx context.Context, comp *sdk.Component, s
 				err = fmt.Errorf("cache patch: %w", writeErr)
 			} else {
 				c.mu.Lock()
-				c.patches[source.key()] = patch
+				c.patchesFor(source)[source.key()] = patch
 				c.statuses[source.key()] = sourceStatus{
 					ID: source.key(), Kind: "plugin", Component: source.Component, Tool: source.Tool,
 					Priority: source.Priority, State: "active",
@@ -721,12 +841,13 @@ func (c *catalogState) refreshSource(ctx context.Context, comp *sdk.Component, s
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	patch := c.patches[source.key()]
+	patches := c.patchesFor(source)
+	patch := patches[source.key()]
 	cachedErr := ""
 	if patch == nil {
 		if cached, cacheErr := loadCatalogFileAsPatch(c.sourceCachePath(source)); cacheErr == nil {
 			patch = cached
-			c.patches[source.key()] = cached
+			patches[source.key()] = cached
 		} else if !os.IsNotExist(cacheErr) {
 			cachedErr = "; cached patch unreadable: " + truncate(cacheErr.Error(), 300)
 		}
@@ -777,6 +898,9 @@ func displayURL(raw string) string {
 }
 
 func (c *catalogState) sourceCachePath(source modelSource) string {
+	// One tool can declare both a chat and an embed source; "#embed" becomes
+	// "_embed" here, so the two last-known-good patches never overwrite
+	// each other.
 	return filepath.Join(c.cacheDir, "sources", safeName(source.Component)+"--"+safeName(source.Tool)+".json")
 }
 
@@ -941,6 +1065,12 @@ func (c *catalogState) providers(query string, configured *bool) []map[string]an
 		entry["id"] = id
 		entry["configured"] = isConfigured
 		entry["modelCount"] = len(objectValue(provider["models"]))
+		// The chat record's embedModel (or an x-embed-source declaration) is
+		// how a caller learns which model to name in llm.embed, without
+		// opening a provider form.
+		if configured := stringValue(objectValue(c.embedEffective[id])["configured"]); configured != "" {
+			entry["embedModel"] = configured
+		}
 		result = append(result, entry)
 	}
 	return result
@@ -954,7 +1084,10 @@ type listModelsArgs struct {
 	Reasoning  *bool  `json:"reasoning"`
 	ToolCall   *bool  `json:"toolCall"`
 	Configured *bool  `json:"configured"`
-	Limit      int    `json:"limit"`
+	// Embed filters on the embedding view: true = only models that produce
+	// vectors, false = only chat models. Nil means both.
+	Embed *bool `json:"embed"`
+	Limit int   `json:"limit"`
 }
 
 func (c *catalogState) models(args listModelsArgs) ([]map[string]any, int) {
@@ -988,14 +1121,35 @@ func (c *catalogState) models(args listModelsArgs) ([]map[string]any, int) {
 			continue
 		}
 		models := objectValue(provider["models"])
-		modelIDs := make([]string, 0, len(models))
+		// models.dev barely lists embed models, so the embedding view (the
+		// provider's configured embedModel plus x-embed-source patches) is
+		// the only place most of them exist. Merging it here keeps
+		// models_list/models_get/resolve a single surface for both kinds,
+		// with `embedding: true` marking which is which.
+		available := objectValue(objectValue(c.embedEffective[providerID])["available"])
+		modelIDs := make([]string, 0, len(models)+len(available))
 		for id := range models {
 			modelIDs = append(modelIDs, id)
+		}
+		for id := range available {
+			if _, chat := models[id]; !chat {
+				modelIDs = append(modelIDs, id)
+			}
 		}
 		sort.Strings(modelIDs)
 		for _, modelID := range modelIDs {
 			model := objectValue(models[modelID])
-			if model == nil || !modelMatches(modelID, model, query, args) {
+			_, isEmbed := available[modelID]
+			if model == nil && isEmbed {
+				model = objectValue(available[modelID])
+			}
+			if model == nil {
+				continue
+			}
+			if args.Embed != nil && isEmbed != *args.Embed {
+				continue
+			}
+			if !modelMatches(modelID, model, query, args) {
 				continue
 			}
 			total++
@@ -1006,6 +1160,9 @@ func (c *catalogState) models(args listModelsArgs) ([]map[string]any, int) {
 			entry["provider"] = providerID
 			entry["reference"] = providerID + "/" + modelID
 			entry["configured"] = isConfigured
+			if isEmbed {
+				entry["embedding"] = true
+			}
 			result = append(result, entry)
 		}
 	}
@@ -1064,16 +1221,24 @@ func (c *catalogState) get(providerID, modelID string) (map[string]any, bool) {
 		return nil, false
 	}
 	model := objectValue(objectValue(provider["models"])[modelID])
+	_, embedding := objectValue(objectValue(c.embedEffective[providerID])["available"])[modelID]
+	if model == nil {
+		model = objectValue(objectValue(objectValue(c.embedEffective[providerID])["available"])[modelID])
+	}
 	if model == nil {
 		return nil, false
 	}
-	return map[string]any{
+	result := map[string]any{
 		"provider":   providerMetadata(provider),
 		"model":      redactMetadata(model).(map[string]any),
 		"reference":  providerID + "/" + modelID,
 		"configured": providerConfigured(providerID, provider),
 		"updatedAt":  c.updatedAt.Format(time.RFC3339),
-	}, true
+	}
+	if embedding {
+		result["embedding"] = true
+	}
+	return result, true
 }
 
 func (c *catalogState) resolve(reference, providerID string) map[string]any {
@@ -1096,6 +1261,9 @@ func (c *catalogState) resolve(reference, providerID string) map[string]any {
 	if providerID != "" {
 		provider := objectValue(c.effective[providerID])
 		model := objectValue(objectValue(provider["models"])[reference])
+		if model == nil {
+			model = objectValue(objectValue(objectValue(c.embedEffective[providerID])["available"])[reference])
+		}
 		c.mu.RUnlock()
 		if model == nil {
 			return c.notFound(reference, providerID)
@@ -1116,6 +1284,10 @@ func (c *catalogState) resolve(reference, providerID string) map[string]any {
 	for candidateProvider, rawProvider := range c.effective {
 		models := objectValue(objectValue(rawProvider)["models"])
 		if objectValue(models[reference]) != nil {
+			exact = append(exact, match{candidateProvider, reference})
+			continue
+		}
+		if objectValue(objectValue(c.embedEffective[candidateProvider])["available"])[reference] != nil {
 			exact = append(exact, match{candidateProvider, reference})
 		}
 	}
@@ -1168,9 +1340,14 @@ func (c *catalogState) report() map[string]any {
 		}
 		return statuses[i].ID < statuses[j].ID
 	})
+	embedModels := 0
+	for _, rawDocument := range c.embedEffective {
+		embedModels += len(objectValue(objectValue(rawDocument)["available"]))
+	}
 	return map[string]any{
 		"providers": providers, "models": models, "sourceCount": len(c.sources),
-		"updatedAt": c.updatedAt.Format(time.RFC3339), "sources": statuses,
+		"embedModels": embedModels,
+		"updatedAt":   c.updatedAt.Format(time.RFC3339), "sources": statuses,
 	}
 }
 

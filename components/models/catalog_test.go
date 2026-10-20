@@ -177,3 +177,138 @@ func TestPathLastSegment(t *testing.T) {
 		t.Fatalf("pathLastSegment trailing slash: %s", got)
 	}
 }
+
+// An x-embed-source declaration is metadata, not an implementation: it says
+// which models produce vectors, their dimensions and window, so consumers can
+// discover and choose. Its patch must never land in the chat catalog (a chat
+// request for an embedding model is a 400), and it must show up in the
+// embedding view that models_list/models_get/resolve surface.
+func TestEmbedSourceFormsASeparateView(t *testing.T) {
+	state := &catalogState{
+		base: map[string]any{
+			"provider": map[string]any{
+				"id":     "provider",
+				"models": map[string]any{"chat": map[string]any{"id": "chat"}},
+			},
+			"synthetic": map[string]any{
+				"id":         "synthetic",
+				"embedModel": "hf:nomic-ai/nomic-embed-text-v1.5",
+				"models":     map[string]any{"syn:small:text": map[string]any{"id": "syn:small:text"}},
+			},
+		},
+		sources:  make(map[string]modelSource),
+		patches:  make(map[string]map[string]any),
+		statuses: make(map[string]sourceStatus),
+	}
+	source := modelSource{Component: "fixture", Tool: "fixture_embed", Priority: 100, Version: 1, Embed: true}
+	state.sources[source.key()] = source
+	state.embedPatches = map[string]map[string]any{source.key(): {
+		"provider": map[string]any{"available": map[string]any{
+			"embed-large": map[string]any{
+				"id": "embed-large", "name": "Embed Large",
+				"dimensions": 1024, "limit": map[string]any{"context": 8192},
+			},
+		}},
+	}}
+	state.rebuildLocked()
+
+	// It never enters the chat catalog proper: the provider's own model map
+	// is unchanged, so a chat completion cannot be asked of it by accident.
+	if _, inChat := objectValue(state.effective["provider"])["models"].(map[string]any)["embed-large"]; inChat {
+		t.Fatal("embed model leaked into the chat model map")
+	}
+	// Unfiltered listing is one surface for both kinds, flagged — but the
+	// chat-only filter must exclude the embed entry.
+	list, _ := state.models(listModelsArgs{Provider: "provider", Embed: boolPtr(false)})
+	if len(list) != 1 || list[0]["id"] != "chat" {
+		t.Fatalf("chat list = %#v", list)
+	}
+	both, _ := state.models(listModelsArgs{Provider: "provider"})
+	if len(both) != 2 {
+		t.Fatalf("unfiltered list = %#v", both)
+	}
+
+	// But discoverable through the embedding view, marked as such.
+	embedList, _ := state.models(listModelsArgs{Embed: boolPtr(true)})
+	references := map[string]map[string]any{}
+	for _, entry := range embedList {
+		references[stringValue(entry["reference"])] = entry
+	}
+	entry, ok := references["provider/embed-large"]
+	if !ok {
+		t.Fatalf("embed-model source not listed: %#v", embedList)
+	}
+	if entry["embedding"] != true || entry["dimensions"] != 1024 {
+		t.Fatalf("embed entry = %#v", entry)
+	}
+	// A provider's configured embedModel is part of the same view even when
+	// no source declares it.
+	if _, ok := references["synthetic/hf:nomic-ai/nomic-embed-text-v1.5"]; !ok {
+		t.Fatalf("configured embedModel not listed: %#v", embedList)
+	}
+	// The chat-only filter excludes embedding entries entirely.
+	chatOnly, _ := state.models(listModelsArgs{Embed: boolPtr(false)})
+	for _, entry := range chatOnly {
+		if entry["embedding"] == true {
+			t.Fatalf("chat-only filter leaked an embedding model: %#v", entry)
+		}
+	}
+
+	// models_get and resolve reach it, and report the flag.
+	get, found := state.get("provider", "embed-large")
+	if !found || get["embedding"] != true {
+		t.Fatalf("models_get lost the embed entry: %#v found=%v", get, found)
+	}
+	resolved := state.resolve("provider/embed-large", "")
+	if found, _ := resolved["found"].(bool); !found {
+		t.Fatalf("resolve lost the embed entry: %#v", resolved)
+	}
+	bare := state.resolve("embed-large", "")
+	if found, _ := bare["found"].(bool); !found {
+		t.Fatalf("resolve lost a bare embed id: %#v", bare)
+	}
+
+	// Provider metadata names the configured embed model.
+	providers := state.providers("", nil)
+	for _, provider := range providers {
+		if provider["id"] == "synthetic" && provider["embedModel"] != "hf:nomic-ai/nomic-embed-text-v1.5" {
+			t.Fatalf("provider embedModel = %#v", provider["embedModel"])
+		}
+	}
+}
+
+func TestSourcesFromRegistrationDiscoversEmbedSources(t *testing.T) {
+	var reg registration
+	if err := json.Unmarshal([]byte(`{
+		"name":"fixture",
+		"tools":[
+			{"name":"both","schema":{
+				"x-models-source":{"version":1,"priority":250},
+				"x-embed-source":{"version":1,"priority":120}}},
+			{"name":"embed-only","schema":{"x-embed-source":{"version":1}}},
+			{"name":"wrong-version","schema":{"x-embed-source":{"version":2}}}
+		]
+	}`), &reg); err != nil {
+		t.Fatal(err)
+	}
+	sources := sourcesFromRegistration(reg)
+	kinds := map[string]modelSource{}
+	for _, source := range sources {
+		kinds[source.key()] = source
+	}
+	if len(kinds) != 3 {
+		t.Fatalf("got %d sources, want 3: %#v", len(kinds), sources)
+	}
+	// The two extensions of one tool stay distinct, with their own priority.
+	if chat := kinds["fixture/both"]; chat.Embed || chat.Priority != 250 {
+		t.Fatalf("chat source = %#v", chat)
+	}
+	if embed := kinds["fixture/both#embed"]; !embed.Embed || embed.Priority != 120 {
+		t.Fatalf("embed source = %#v", embed)
+	}
+	if embed := kinds["fixture/embed-only#embed"]; !embed.Embed || embed.Priority != defaultSourceOrder {
+		t.Fatalf("embed-only source = %#v", embed)
+	}
+}
+
+func boolPtr(value bool) *bool { return &value }

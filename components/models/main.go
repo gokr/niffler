@@ -112,7 +112,7 @@ func main() {
 
 	comp.ToolConcurrent("models_list", map[string]any{
 		"type":        "object",
-		"description": "Search the effective model catalog after models.dev, plugin corrections, and local overrides are merged. Use this to compare model capabilities, limits, modalities, and prices before selection.",
+		"description": "Search the effective model catalog after models.dev, plugin corrections, and local overrides are merged. Entries that produce embeddings (from a provider's configured embedModel or an x-embed-source plugin) are marked embedding: true. Use this to compare model capabilities, limits, modalities, and prices before selection.",
 		"properties": map[string]any{
 			"provider":   map[string]any{"type": "string", "description": "Exact provider id"},
 			"query":      map[string]any{"type": "string", "description": "Case-insensitive id, name, family, or description substring"},
@@ -121,6 +121,7 @@ func main() {
 			"reasoning":  map[string]any{"type": "boolean"},
 			"toolCall":   map[string]any{"type": "boolean"},
 			"configured": map[string]any{"type": "boolean", "description": "Filter by whether a provider credential environment variable is set"},
+			"embed":      map[string]any{"type": "boolean", "description": "true = only models that produce embedding vectors, false = only chat models"},
 			"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum returned models (default 50)"},
 		},
 		"x-harness": map[string]any{"onDemand": true},

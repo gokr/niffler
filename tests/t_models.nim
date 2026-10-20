@@ -134,6 +134,86 @@ proc main() =
       sourceHidden = false
   check("model-source tool stays hidden from the LLM", sourceHidden, $catalog)
 
+  # --- x-embed-source: metadata, not an implementation. A plugin declares
+  # which embed models a provider serves; the models catalog carries them in
+  # an embedding view so a consumer can discover and choose one, without the
+  # model ever entering the chat catalog (a chat request for an embed model
+  # is a 400).
+  const embedSource = """
+    import niffler/sdk
+
+    let comp = newComponent("models-embed-fixture", "0.1.0")
+    comp.tool(%*{"hidden": true}):
+      proc fixture_embed_source(version: int = 1): JsonNode =
+        ## Declare embed models this fixture provider serves.
+        ## - version: models source protocol version
+        if version != 1:
+          return %*{"patch": {}}
+        %*{"patch": {
+          "fixture-provider": {"available": {
+            "fixture-embed": {"id": "fixture-embed", "name": "Fixture Embed",
+                              "dimensions": 768, "limit": {"context": 8192}}
+          }}
+        }}
+
+    comp.tools[^1].schema["x-embed-source"] = %*{"version": 1, "priority": 120}
+    comp.run()
+    """.dedent()
+
+  let embedBuilt = call(nc, "builder", "build",
+                        %*{"lang": "nim", "name": "models-embed-fixture",
+                           "source": embedSource}, 300_000)
+  check("builder builds an x-embed-source plugin", embedBuilt{"ok"}.getBool(false), $embedBuilt)
+  let embedSpawned = call(nc, "core", "spawn",
+                          %*{"name": "models-embed-fixture",
+                             "binary": embedBuilt{"binary"}.getStr("")}, 60_000)
+  check("core spawns the x-embed-source plugin", embedSpawned{"ok"}.getBool(false), $embedSpawned)
+
+  var embedSeen = false
+  for i in 0 ..< 100:
+    let r = call(nc, "models", "models_list",
+                 %*{"provider": "fixture-provider", "embed": true}, 5_000)
+    var found = false
+    for m in r{"models"}:
+      if m{"id"}.getStr("") == "fixture-embed":
+        found = m{"embedding"}.getBool(false) and m{"dimensions"}.getInt(0) == 768
+    if found:
+      embedSeen = true
+      break
+    sleep(200)
+  check("x-embed-source declares an embed model the catalog can list", embedSeen)
+
+  let embedGet = call(nc, "models", "models_get",
+                      %*{"provider": "fixture-provider", "model": "fixture-embed"})
+  check("models_get returns the declared embed descriptor",
+        embedGet{"embedding"}.getBool(false) and
+        embedGet{"model"}{"limit"}{"context"}.getInt(0) == 8192, $embedGet)
+
+  # The embed declaration must not become a chat choice.
+  let chatList = call(nc, "models", "models_list",
+                      %*{"provider": "fixture-provider", "embed": false})
+  var leaked = false
+  for m in chatList{"models"}:
+    if m{"id"}.getStr("") == "fixture-embed":
+      leaked = true
+  check("an embed source never enters the chat model list", not leaked, $chatList)
+
+  let embedRemoved = call(nc, "core", "remove", %*{"name": "models-embed-fixture"}, 60_000)
+  check("core removes the x-embed-source plugin", embedRemoved{"ok"}.getBool(false), $embedRemoved)
+  var embedGone = false
+  for i in 0 ..< 100:
+    let r = call(nc, "models", "models_list",
+                 %*{"provider": "fixture-provider", "embed": true}, 5_000)
+    var still = false
+    for m in r{"models"}:
+      if m{"id"}.getStr("") == "fixture-embed":
+        still = true
+    if not still:
+      embedGone = true
+      break
+    sleep(200)
+  check("a departed embed source drops its models", embedGone)
+
   let removed = call(nc, "core", "remove", %*{"name": "models-fixture"}, 60_000)
   check("core removes the model-source plugin", removed{"ok"}.getBool(false), $removed)
   var reverted = false
