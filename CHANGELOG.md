@@ -13,7 +13,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   migration are not yet active. Staged document ownership migrations preserve
   legacy rows. Store processes now bind their owner once at open; SQLite adopts
   its own pre-scoping rows exactly once and refuses a different identity, while
-  a shared TiDB dataset never adopts them implicitly.
+  a shared TiDB dataset never adopts them implicitly. Pre-scoping rows are moved
+  by an explicit, approval-gated `store_claim` (dry run by default, refuses
+  collisions, bounded batches).
 
 - Skill discovery now resolves workspace `.agents/skills`, user
   `~/.agents/skills`, then bundled skills. Project install/removal uses the

@@ -1289,6 +1289,18 @@ Instance registry infrastructure (both engines, hidden from the model):
   exact; nextAfter is present only when more rows remain. Times are database
   timestamp strings. Listing is read-effect; registration is write-effect.
 
+`store_claim {to, dryRun?, limit?, afterKind?, afterId?}` is the explicit,
+admin-only migration of pre-scoping documents into one instance. It is hidden,
+write-effect and approval-gated, and moves rows **only** from the unowned owner
+`''` to a valid instance id — never between two real instances. It reports
+`{ok, dryRun, to, examined, conflicts[], hasMore, nextAfterKind?, nextAfterId?,
+claimed?}`; when any examined document's `(kind, id)` is already owned by the
+target it refuses `claim-conflict` instead of overwriting it. Batches are capped
+at 1000 documents in `(kind, id)` order with an exclusive cursor, so a large
+history is claimed in resumable batches rather than one unbounded transaction.
+`dryRun` defaults to **true**. Neither engine adopts legacy rows implicitly:
+on a shared TiDB dataset `''` may be another instance's pre-scoping history.
+
 Registry metadata is not verified remote identity, connection routing or a
 permission grant. Hidden tools are not an authentication boundary: direct bus
 callers are trusted. No retirement/delete API or implicit shared configuration

@@ -61,9 +61,9 @@ pass. Repository status is not a claim that installed binaries were updated.
   legacy rows once and refuses a different identity; TiDB never adopts.
 - [x] Scope put/get/list/del/search, revision conflicts, selftest, and FTS;
   preserve verbatim values and correct pagination within a scope.
-- [ ] Document `NIF_INSTANCE_ID` as a bootstrap variable (manual + .env.example).
-- [ ] Explicit `store_claim` admin operation for TiDB legacy rows (dryRun,
-  reported counts, approval-gated). Never implicit.
+- [x] Document `NIF_INSTANCE_ID` as a bootstrap variable (manual + .env.example).
+- [x] Explicit `store_claim` admin operation for legacy rows (dry run by
+  default, collision refusal, bounded resumable batches, approval-gated).
 - [ ] Two-instance tests: same kind/id isolation; no foreign restore/recover,
   heartbeat execution, grants, leases or settings; metadata registry roundtrip.
 - [ ] Exercise TiDB against a real test database when available; don't treat

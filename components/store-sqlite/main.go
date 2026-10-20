@@ -116,6 +116,7 @@ func main() {
 
 	comp := sdk.New("store", "0.1.0")
 	comp.
+		Tool("store_claim", claimSchema(), claimHandler(db.DB, db.owner)).
 		Tool("instance_list", instanceSchema(false), instanceListHandler(db.DB)).
 		Tool("instance_register", instanceSchema(true), instanceRegisterHandler(db.DB)).
 		Tool("put", putSchema(), putHandler(db.DB, db.owner)).
