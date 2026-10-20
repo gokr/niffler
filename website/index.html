@@ -335,7 +335,10 @@
         share one running instance at once. A client boots the harness on
         demand, an autostarted core turns itself off when the last client
         leaves — and closing your terminal mid-task loses nothing: background
-        jobs keep running and wake the conversation when they settle.</p>
+        jobs keep running and wake the conversation when they settle.
+        Completion receipts are durable per conversation, so a client
+        reconnecting after a gap reconciles the finishes it missed — a turn
+        with no receipt reads as unknown, never as success.</p>
       <ul class="features">
         <li><strong>niffler-tui</strong><span data-i18n="cl.tui.p">the terminal chat client — a plugin that boots the harness on demand</span></li>
         <li><strong>cli</strong><span data-i18n="cl.cli.p">the headless driver: call tools, install packages, run whole turns from a script or CI</span></li>
