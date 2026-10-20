@@ -13,6 +13,9 @@ cc-plugin/node_modules/
 
 # Go
 *.exe
+# `go build` leaves a binary named after the package dir
+components/store-sqlite/store-sqlite
+components/store-tidb/store-tidb
 
 # OS
 .DS_Store
