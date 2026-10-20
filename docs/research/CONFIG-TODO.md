@@ -71,14 +71,17 @@ pass. Repository status is not a claim that installed binaries were updated.
 
 ### 3. Fleet registry in the store
 
-- [ ] Inventory fleet receipt files and TUI `instances.json`; define identity
-  registry versus controller-specific routes/pins/receipts. Keep document
-  payloads for transport details instead of SQL columns per transport.
-- [ ] Add store-backed fleet instance CRUD and named-instance lookup through
-  owner tools; retain live identity verification before remote actions.
+- [x] Inventory fleet receipt files and TUI `instances.json`; identity registry
+  (`instances` table) separated from controller routes (documents). Transport
+  details stay payload fields, not SQL columns.
+- [x] Store-backed fleet registry: `fleet_instances` (summaries, invalid entries
+  reported) and `fleet_instance_import`; install/update record verified
+  receipts. Live identity verification still gates every action.
 - [ ] Import existing records once; conflict/invalid/identity-drift refusals;
   retain explicit export/import as interchange, not the authoritative registry.
-- [ ] Migrate fleet install/adopt/update/lifecycle/delegation callers and tests.
+- [ ] Migrate lifecycle callers to address registry instances by identity rather
+  than a receipt path (today they still take `profile`, deliberately: the
+  registry is not authority). TUI consumption is a separate repository change.
 - [ ] TUI: consume registry through the bus, with minimal local bootstrap
   information for the first connection and explicit offline behavior.
 - [ ] Test outage, restart, migration, route/pin mismatch and multiple scopes.

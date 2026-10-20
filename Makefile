@@ -587,6 +587,9 @@ test-clean: var/bin/test_t_clean
 test-fleet: build var/bin/test_t_fleet
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet
 
+test-fleet-registry: build var/bin/test_t_fleet_registry
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_registry
+
 test-fleet-tasks: build var/bin/test_t_fleet_tasks
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_tasks
 

@@ -6,6 +6,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Fleet verified routes live in the store (kind `fleetinstance`, keyed by stable
+  instance identity) with `fleet_instances` and `fleet_instance_import`; install
+  and update record them after live identity verification. The registry grants
+  no authority — actions still verify identity and take an explicit profile.
+
 - Store engines add an `instances` metadata table and hidden validated
   registration/listing tools, preserving first-seen timestamps on refresh.
   Core checkpoints its persistent identity at boot; failures warn and do not
