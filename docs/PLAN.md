@@ -57,8 +57,16 @@ SSH management hosts for Incus/Lima (Multipass was the earlier VM backend). An a
 `niffler1` installed published main, verified the ordinary ubuntu service, guest
 linger, temporary sudo-rule removal, and matching TUI receipt import/native
 relay using a scratch client registry. Optional LSP servers/trafilatura and
-provider credentials are not part of the server bootstrap. SSH-hosted guest
-provisioning remains fake-transport-tested, not live-certified. This records branch validation, not a release claim.
+provider credentials are not part of the server bootstrap.
+
+An approved **SSH-hosted** Incus run on `wowbagger` (`host` routing through
+ordinary SSH) has since provisioned a container from published main, verified
+identity, guest linger, sudo-rule removal, loopback-only NATS, the relay over
+`ssh → incus exec → cli relay`, and qgroup-enforced 20 GB root volume. Its first
+attempt failed honestly on a host firewall conflict (Docker's legacy
+`FORWARD DROP` policy beating Incus's nftables rules), which the operator fixed
+with bridge-scoped ACCEPT rules; that policy is not yet persisted across reboot.
+This records branch validation, not a release claim.
 
 Provisioning and lifecycle are implemented in the optional Nim component, not
 manifest autostart. Matching TUI source has receipt import and switching, but

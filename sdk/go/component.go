@@ -157,6 +157,24 @@ type Component struct {
 
 const defaultConcurrentLimit = 16
 
+// dialTimeout bounds the initial NATS handshake. nats.go defaults to 2s, which
+// a relayed bus cannot always meet: a lane that reaches the harness through
+// `ssh … incus exec … cli relay` (or a SSH port-forward) pays process spawn plus
+// a fresh TCP connect before the INFO line arrives, measured at ~3s warm and
+// longer on a loaded host. The default silently failed those clients while
+// direct local connections stayed fast, so allow the relay's own budget.
+// NIF_NATS_DIAL_TIMEOUT (seconds) overrides it.
+const defaultDialTimeout = 15 * time.Second
+
+func dialTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("NIF_NATS_DIAL_TIMEOUT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 600 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return defaultDialTimeout
+}
+
 // defaultCallQueueLimit bounds accepted-but-not-yet-running calls. The queue
 // only ever holds work waiting on the serial worker or a free concurrent slot;
 // a full queue makes the NATS callback block instead of growing without bound,
@@ -806,6 +824,7 @@ func (c *Component) dial() (string, error) {
 		url = "nats://127.0.0.1:4222"
 	}
 	nc, err := nats.Connect(url,
+		nats.Timeout(dialTimeout()),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(time.Second),
 		nats.ReconnectHandler(func(*nats.Conn) { c.notifyReconnected() }))
@@ -971,6 +990,7 @@ func (c *Component) reconnectNow() error {
 	var lastErr error
 	for _, url := range c.reattachCandidates() {
 		nc, err := nats.Connect(url,
+			nats.Timeout(dialTimeout()),
 			nats.MaxReconnects(-1),
 			nats.ReconnectWait(time.Second),
 			nats.ReconnectHandler(func(*nats.Conn) { c.notifyReconnected() }))

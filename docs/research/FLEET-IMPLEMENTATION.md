@@ -23,7 +23,7 @@ is limited to audited read tools; background approvals remain planned.
 | Slice | Source status / remaining acceptance |
 |---|---|
 | 1–2 identity and persistent service | Implemented; service contracts use fake systemd; recorded real Multipass smoke passed |
-| 3–4 SSH/Multipass install/adopt/update | Implemented in Nim; real SSH and published-revision install/update smoke still pending |
+| 3–4 SSH/guest install/adopt/update | Implemented in Nim; real SSH-hosted Incus provisioning from published main passed on `wowbagger` (see PLAN); published-revision *update* over that route still pending |
 | 5 client switching | Matching TUI source implemented; verify/release separately; background approvals remain open |
 | 6 cross-instance delegation | Initial read-only slice: pinned durable jobs, explicit budgets, no replay of uncertain submissions, record-first runner notices; broad authority and remote cancellation remain open |
 | 7 reconnect inbox/artifacts | Local durable human completion feed implemented; remote jobs and artifact transfer remain open |

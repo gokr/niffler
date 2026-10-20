@@ -283,6 +283,7 @@ proc main() =
   var managedNic = false
   var networkType = "bridge"
   var guestHash = repeat('b', 40)
+  var dirNoQuota = false
   let guestIdentity = identity.copy()
   guestIdentity["root"] = %"/home/ubuntu/niffler"
   let guestRunner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
@@ -290,6 +291,13 @@ proc main() =
     let cmd = argv.join(" ")
     if "network" in cmd and "list" in cmd:
       return CommandResult(output: $(%*[{"name": "incusbr0", "type": networkType, "managed": true}]))
+    if "profile" in cmd and "device" in cmd and "root" in cmd:
+      return CommandResult(output: "default\n")
+    if "storage" in cmd and "list" in cmd:
+      return CommandResult(output: $(%*[{"name": "default", "driver": (if dirNoQuota: "dir" else: "btrfs"),
+        "config": {"source": (if dirNoQuota: "/var/lib/incus/storage-pools/default" else: "/var/lib/incus/disks/default.img")}}]))
+    if "findmnt" in cmd:
+      return CommandResult(output: "ext4 rw,relatime\n")
     if ("list" in cmd):
       if "incus" in cmd:
         if guestMissing: return CommandResult(output: "[]")
@@ -368,6 +376,18 @@ proc main() =
     networkType = "physical"
     check("managed physical network refuses", rejected(proc() = discard install(guestRunner, ct)))
     networkType = "bridge"; managedNic = false
+    # A pool that cannot enforce `root,size=` must refuse BEFORE launch, never
+    # hand back a receipt that claims a bounded disk nobody applies.
+    let freshCt = %*{"profile": tmp / ("quota-" & $hosted & ".json"), "transport": "incus", "target": "fake-ct", "root": "/home/ubuntu/niffler", "revision": repeat('b', 40)}
+    guestMissing = true; dirNoQuota = true
+    commands.setLen(0); scripts.setLen(0)
+    check("Incus dir pool without project quotas refuses before launch " & $hosted,
+      rejected(proc() = discard install(guestRunner, freshCt)) and not ($commands).contains("launch") and not scripts.join("").contains("loginctl enable-linger"))
+    dirNoQuota = false
+    commands.setLen(0)
+    discard install(guestRunner, freshCt)
+    check("quota-capable Incus pool proceeds to launch " & $hosted, ($commands).contains("launch") and ($commands).contains("root,size=20GB"))
+    guestMissing = false
     let rerouted = ct.copy(); rerouted["host"] = %"other"
     commands.setLen(0)
     check("host drift refuses before any transport", rejected(proc() = discard install(guestRunner, rerouted)) and commands.len == 0)

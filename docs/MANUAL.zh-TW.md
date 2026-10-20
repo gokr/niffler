@@ -1617,7 +1617,9 @@ sudo 或预装建置工具。直接 SSH 不自动啟用 linger。
 ```
 
 固定映像 images:ubuntu/24.04，預設 2 CPU、4GB 記憶體、20GB 根磁碟；不支持磁碟
-配额的後端直接报错，不靜默取消限制。所有 Incus 命令固定使用
+配额的後端直接报错，不靜默取消限制。Incus 在無法執行的池上也會記錄 `root,size=`，
+因此 Fleet 先校驗池：`btrfs`/`zfs`/`lvm` 會執行限制，`dir` 僅在檔案系統掛載了
+項目配额（`prjquota`）時執行；一般 ext4 上的 `dir` 池會在建立前拒絕。所有 Incus 命令固定使用
 `incus --force-local --project default`，即选定管理主機上的本機 daemon/default
 project。NIC 僅允许橋接/p2p 或已驗證的托管橋接網路，不允许 physical/SR-IOV。
 安装明确啟用訪客 ubuntu linger 與使用者管理器；僅新建安装需要 root 准备依賴，

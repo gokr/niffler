@@ -192,6 +192,9 @@ name as `target`, and `root:"/home/ubuntu/niffler"`. Fleet launches the fixed
 `images:ubuntu/24.04` system image (not cloud/VM), default 2 CPUs, 4GB memory,
 20GB root disk; `cpus`, `memory` and `disk` override these limits. A storage
 backend without root-disk quota support fails honestly; Fleet never drops limits.
+Incus records `root,size=` even where nothing enforces it, so Fleet verifies the
+pool first: `btrfs`/`zfs`/`lvm` enforce it, `dir` only with project quotas
+(`prjquota`); a `dir` pool on plain ext4 refuses before launch.
 No host mounts, passthrough devices, privileged containers or nesting are allowed;
 existing containers are checked through expanded configuration/devices.
 
@@ -200,7 +203,11 @@ supported Ubuntu/Debian host install Incus (`sudo apt install incus`), run
 `sudo incus admin init` to choose networking/storage, and add the operator with
 `sudo usermod -aG incus-admin "$USER"`; log in again and verify `incus list`.
 **incus-admin membership is host-root-equivalent**; grant it only to trusted
-operators. Do not grant broad host sudo for Fleet. Alternatively install
+operators. Do not grant broad host sudo for Fleet. On a Docker host, verify guest
+egress first: Docker's `iptables-legacy` `-P FORWARD DROP` shadows Incus's
+nftables rules, so add a bridge-scoped exception
+(`iptables -C FORWARD -i incusbr0 -j ACCEPT || iptables -I FORWARD 1 -i incusbr0 -j ACCEPT`,
+likewise `-o`), applied after any `iptables-persistent` restore. Alternatively install
 Lima 2.2.1 or newer from its official distribution, then verify `limactl --version`.
 No mounts or SSH key extraction are used.
 

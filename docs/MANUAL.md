@@ -2664,6 +2664,14 @@ name as `target`, and `root:"/home/ubuntu/niffler"`. Fleet launches the fixed
 `images:ubuntu/24.04` system image (not cloud/VM), default 2 CPUs, 4GB memory,
 20GB root disk; `cpus`, `memory` and `disk` override these limits. A storage
 backend without root-disk quota support fails honestly; Fleet never drops limits.
+Incus itself records `root,size=` whatever the backend is, so Fleet verifies the
+pool first: the `btrfs`, `zfs` and `lvm` drivers enforce the limit, while `dir`
+only does so when its filesystem is mounted with project quotas (`prjquota`).
+A `dir` pool on plain ext4 therefore refuses **before** the container is created
+(the guest would otherwise see the whole host filesystem while the receipt
+claimed a bounded disk); create a quota-capable pool and point the default
+profile at it (`incus storage create <pool> btrfs size=80GiB`, then
+`incus profile device set default root pool=<pool>`).
 No host mounts, passthrough devices, privileged containers or nesting are allowed;
 existing containers are checked through expanded configuration/devices.
 
@@ -2674,6 +2682,23 @@ supported Ubuntu/Debian host install Incus (`sudo apt install incus`), run
 **incus-admin membership is host-root-equivalent**; grant it only to trusted
 operators. Do not grant broad host sudo for Fleet. Alternatively install
 Lima 2.2.1 or newer from its official distribution, then verify `limactl --version`.
+
+On a host that also runs Docker, verify container egress before provisioning:
+Docker owns `iptables-legacy` with `-P FORWARD DROP`, while Incus writes its
+rules to nftables, so bridged guest traffic is discarded before those rules are
+consulted. Guest installs then fail with "Network is unreachable" while the host
+itself has working egress. Fix it with a bridge-scoped FORWARD exception
+(idempotent, and it does not widen the global policy):
+
+```bash
+iptables -C FORWARD -i incusbr0 -j ACCEPT || iptables -I FORWARD 1 -i incusbr0 -j ACCEPT
+iptables -C FORWARD -o incusbr0 -j ACCEPT || iptables -I FORWARD 1 -o incusbr0 -j ACCEPT
+```
+
+Persist it through the host's own mechanism (`iptables-persistent` restores can
+flush it, so apply it after that restore and after both daemons start). Do not
+disable Docker's iptables management: published ports and `host.docker.internal`
+routing depend on it.
 No mounts or SSH key extraction are used.
 
 Both guest transports accept optional `host:"operator@hypervisor"` (or an SSH

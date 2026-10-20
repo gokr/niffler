@@ -57,6 +57,10 @@ or VMs are contacted. No global registry or prompt-prefix changes.
 (not VMs or cloud images), root `/home/ubuntu/niffler`, ordinary user ubuntu,
 and explicit guest linger/user-manager startup. Default limits are 2 CPUs, 4GB
 RAM, 20GB disk; unsupported quota backends fail without dropping limits.
+Incus records `root,size=` even where nothing enforces it, so Fleet verifies the
+pool before launching: `btrfs`/`zfs`/`lvm` enforce the limit, `dir` only with
+project quotas (`prjquota`). A `dir` pool on plain ext4 refuses instead of
+saving a receipt whose bounded disk is fiction.
 Expanded configuration/devices reject privileged/nesting/raw configuration,
 host mounts and passthrough devices. All regular exec/probe/update/lifecycle and
 relay paths use noninteractive exec plus `runuser -u ubuntu` and explicit HOME;

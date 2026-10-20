@@ -68,6 +68,65 @@ ubuntu runuser/HOME, requires `/home/ubuntu/niffler`, validates guest/host names
 and rejects mixed transports. Multipass registry fields (even empty or alongside
 SSH) and receipts explicitly reject with new-receipt migration guidance.
 
-Live acceptance remains separately approved work: hypervisor availability,
-image boot, published-revision bootstrap, guest sudo/linger/user-service
-persistence, native binary stdio relay and optional SSH management-host routing.
+## Live smoke on this machine (2026-10-20)
+
+Authorized single-host smoke: Ubuntu 24.04 host, KVM available, `limactl 2.2.1`,
+qemu 8.2.2, enough disk. Instance `fleet-smoke`, created from the **Fleet-generated**
+config (`var/lima-smoke/fleet.yaml`, produced by `tests/lima_config_check.nim`),
+2 CPU / 4 GiB / 20 GiB, x86_64, image digest
+`sha256:6a81c375…7d5bb4d2` (the amd64 pin).
+
+Boot: 63 s from cached image to `READY`; qemu/KVM, no hostagent port
+forwarding except SSH.
+
+Verified inside the guest:
+
+- `ubuntu` uid 1000, `HOME=/home/ubuntu`, Ubuntu 24.04.5, kernel 6.8, x86_64.
+- 2 CPUs, ~3.9 GiB RAM, 19 GB root filesystem — the declared limits.
+- **No host paths**: `/home/gokr`, `/Users` and `/tmp/lima` absent; `mount` shows
+  no virtiofs/9p/sshfs entries at all.
+- Guest `127.0.0.1:4222` refuses, so the guest cannot reach a host-local bus.
+- Passwordless sudo for `ubuntu`, exactly as the config requests.
+- Outbound HTTPS works (image already digest-verified by Lima).
+
+Transport contract (`provision.remote` / `guard` / `probe`): a script piped to
+`limactl shell --workdir=/home/ubuntu <vm> bash -s` runs as `ubuntu` in
+`/home/ubuntu`; a guest `exit 7` surfaces as `limactl` exit 7 (checked without a
+pipeline, which had masked it in a first attempt); the probe's loopback-only URL
+regex accepts the generated `nats://127.0.0.1:<port>` form.
+
+Fleet `fleet_install {transport: lima, revision: main}` against this VM:
+
+- resolved and pinned `main` → `2ecaae8`, cloned and built in the guest
+  (~13 min: 40 binaries), and wrote a mode-0600 receipt pinning
+  `instanceId ef2b655323f6d2dc2e4fe8ebf9dc1437`, name `lima-fleet-smoke`,
+  root and `gitHash`.
+- The user service came up as `niffler-350014a71e60fe02.service`:
+  `Active: active (running)`, **`Linger=yes`**, ~221 MB RSS, 33 child components
+  registered (store, locks, agent, expert, fabric, lsp, repomap, …).
+- The service spawned its own isolated bus at `nats://127.0.0.1:33981`, bound to
+  `127.0.0.1` only; a host-side connect to that port is **refused**, so the
+  guest bus is not reachable from this machine.
+- `fleet_probe`, `fleet_status` and `fleet_logs` all verified the pinned identity
+  over the live catalog afterwards.
+
+Known gap found by the smoke: `fleet_install` writes the receipt and brings the
+service up, but the bus call that started it did not return to `cli` (killed
+after 20 min, no output, while the component stayed healthy — a later
+`fleet_probe` answered immediately). Needs diagnosis: a long-lived `install`
+reply path, not a transport fault.
+
+Delegation is **not** exercised end-to-end: the guest `.env` is the untouched
+`.env.example`, so the instance has no provider credentials and cannot run a
+turn. That is correct behaviour (Fleet never copies credentials); a delegated
+smoke needs explicit provider setup on an authorized guest.
+
+Teardown: `limactl stop fleet-smoke` / `limactl delete fleet-smoke` remain
+operator actions; Fleet still never deletes a guest.
+
+## Not covered
+
+- SSH-hosted guest provisioning (fake-transport tests only).
+- `fleet_update` against a published revision on a real guest.
+- Cross-instance delegation to a Lima peer (needs guest provider credentials).
+- macOS hosts (Seatbelt/VZ paths) — this smoke was Linux/KVM only.

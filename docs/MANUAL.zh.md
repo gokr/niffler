@@ -1381,7 +1381,9 @@ sudo 或预装构建工具。直接 SSH 不自动启用 linger。
 ```
 
 固定镜像 images:ubuntu/24.04，默认 2 CPU、4GB 内存、20GB 根磁盘；不支持磁盘
-配额的后端直接报错，不静默取消限制。所有 Incus 命令固定使用
+配额的后端直接报错，不静默取消限制。Incus 在无法执行的池上也会记录 `root,size=`，
+因此 Fleet 先校验池：`btrfs`/`zfs`/`lvm` 会执行限制，`dir` 仅在文件系统挂载了
+项目配额（`prjquota`）时执行；普通 ext4 上的 `dir` 池会在创建前拒绝。所有 Incus 命令固定使用
 `incus --force-local --project default`，即选定管理主机上的本地 daemon/default
 project。NIC 仅允许桥接/p2p 或已验证的托管桥接网络，不允许 physical/SR-IOV。
 安装明确启用访客 ubuntu linger 与用户管理器；仅新建安装需要 root 准备依赖，

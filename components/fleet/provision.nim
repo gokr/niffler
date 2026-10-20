@@ -393,6 +393,36 @@ proc running(p, vm: JsonNode): bool =
 proc guestCommand(p: JsonNode, action: string): seq[string] =
   management(p, (if p["transport"].getStr() == "lima": @["limactl", action, "--tty=false", p["target"].getStr()] else: @["incus", action, p["target"].getStr()]))
 
+proc requireEnforcedDisk*(run: CommandRunner, p: JsonNode, disk: string) =
+  ## Incus records `root,size=` in the device configuration whatever the backend
+  ## is, and the `dir` driver enforces it only where the filesystem carries
+  ## project quotas. Without this check an unquoted dir pool would hand the guest
+  ## the whole host filesystem while the receipt claims a bounded one, so refuse
+  ## instead of reporting a limit nobody applies. Other drivers apply it themselves.
+  var pool = ""
+  try:
+    pool = checked(run, management(p, @["incus", "profile", "device", "get", "default", "root", "pool"])).strip()
+  except Refusal:
+    refuse("cannot resolve the default profile's Incus storage pool to verify the " & disk & " root limit")
+  if pool.len == 0: refuse("cannot resolve the default profile's Incus storage pool to verify the " & disk & " root limit")
+  try:
+    let pools = parseJson(checked(run, management(p, @["incus", "storage", "list", "--format", "json"])))
+    if pools.kind != JArray: refuse("invalid Incus storage inventory")
+    var entry: JsonNode = nil
+    for item in pools:
+      if item{"name"}.getStr() == pool: entry = item
+    if entry == nil: refuse("invalid Incus storage inventory")
+    if entry{"driver"}.getStr() != "dir": return
+    let source = entry{"config"}{"source"}.getStr()
+    if source.len == 0: refuse("Incus pool '" & pool & "' has no source to inspect for a root-disk quota")
+    let shown = checked(run, management(p, @["findmnt", "-n", "-o", "FSTYPE,OPTIONS", "--target", source])).strip()
+    let parts = shown.splitWhitespace()
+    if parts.len >= 2 and ("prjquota" in parts[1] or "pquota" in parts[1]): return
+    refuse("Incus storage pool '" & pool & "' (dir) cannot enforce the " & disk &
+      " root limit: its filesystem is not mounted with project quotas. Create a zfs/btrfs/lvm pool or mount it with prjquota; Fleet never reports an unbounded guest as bounded")
+  except Refusal: raise
+  except CatchableError: refuse("invalid Incus storage inventory")
+
 proc incusInstallScript*(root, revision: string): string =
   ## Only bootstrap is root. The temporary grant belongs to this invocation;
   ## noclobber plus EXIT cleanup protect existing grants and failure paths.
@@ -463,6 +493,7 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
       if "mismatch" in e.msg or "invalid catalog" in e.msg: raise
   if transport in ["lima", "incus"]:
     if vm == nil:
+      if transport == "incus": requireEnforcedDisk(run, p, disk)
       let create = if transport == "incus":
           @["incus", "launch", "images:ubuntu/24.04", target, "--config", "security.privileged=false", "--config", "security.nesting=false", "--config", "limits.cpu=" & $cpus, "--config", "limits.memory=" & memory & "B", "--device", "root,size=" & disk & "B"]
         else: @["limactl", "create", "--tty=false", "--name=" & target, "-"]
