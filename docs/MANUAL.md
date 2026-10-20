@@ -3692,6 +3692,16 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component
 func (c *Component) OnReattached(h func(*Component)) *Component
 ```
 
+The re-attach above fires only after the grace elapses. A Go client that must
+reconcile durable state after *any* recovered connection — a short NATS
+reconnect included, e.g. re-scanning the activity feed — registers
+`OnReconnected`: it runs outside component locks, its initial `Connect` does
+not call it, and duplicate recovery hints are harmless.
+
+```go
+func (c *Component) OnReconnected(h func(*Component)) *Component
+```
+
 #### Idle work (`onIdle`)
 
 All three SDKs expose the same *idle seam* — a callback for work that no request

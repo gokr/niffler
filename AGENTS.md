@@ -75,7 +75,9 @@ working in every language.
   of leaving the component alive but deaf. A component that defers its announce
   (the Go SDK's `DeferAnnounce`, e.g. `mcp-bridge`) must register
   `onReattached` / `OnReattached` to re-publish its own contract on the fresh
-  connection; the
+  connection; a Go client that must reconcile durable state after *any*
+  recovered connection (a short reconnect included) registers `OnReconnected`.
+  The
   TypeScript SDK does not re-attach yet.
 - **An external runtime the harness must own gets a launcher component,
   enabled by a spawn record — never a manifest autostart.** `von` (the Python

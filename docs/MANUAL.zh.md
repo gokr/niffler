@@ -1999,6 +1999,12 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component
 func (c *Component) OnReattached(h func(*Component)) *Component
 ```
 
+前述的重新接入只有在宽限期过后才会触发。若 Go 客户端必须在*任何*已恢复的连接上协调持久状态——包括短暂的 NATS 重连（例如重新扫描 activity feed）——请注册 `OnReconnected`：它在组件锁之外运行，初始 `Connect` 不会调用它，重复的恢复提示无害。
+
+```go
+func (c *Component) OnReconnected(h func(*Component)) *Component
+```
+
 #### Idle work (`onIdle`)
 
 所有三个 SDK 都暴露相同的*空闲接缝*——用于没有请求可以承载的工作的回调（回收后台子进程、健康探针、缓存刷新）。`components/processes` 用它来在无人轮询的情况下注意到后台子进程的退出，这正是其退出通知得以实现的原因。
