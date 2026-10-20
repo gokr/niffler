@@ -8,7 +8,8 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Store engines add an `instances` metadata table and hidden validated
   registration/listing tools, preserving first-seen timestamps on refresh.
-  This is registry infrastructure only: document isolation and fleet registry
+  Core checkpoints its persistent identity at boot; failures warn and do not
+  block startup. This is registry infrastructure only: document isolation and fleet registry
   migration are not yet implemented.
 
 - Skill discovery now resolves workspace `.agents/skills`, user

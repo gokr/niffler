@@ -17,23 +17,24 @@ Columns:
   `var/instance-id`; primary key. Display names and roots are not unique keys.
 - `name`, `root`, `git_hash`: informational metadata, not connection routes,
   authority, permission grants or trusted proof of a remote identity.
-- `first_seen`, `last_seen`: database timestamps. Registry operations in a later
-  slice must preserve first_seen on refresh and validate identity at the tool
-  boundary for both engines (do not rely on TiDB CHECK support).
+- `first_seen`, `last_seen`: database timestamps. Registration preserves
+  first_seen on refresh and validates identity at the tool boundary for both
+  engines (do not rely on TiDB CHECK support).
 
-The next slice adds separate hidden `instance_register` and `instance_list`
-APIs in both engines, with strict registration validation, atomic refresh,
-preserved firstSeen, database lastSeen and bounded identity pagination. See
-WIRE.md "Store contract". No periodic writes, new env variables,
-retirement/deletion, core boot registration, document foreign keys or shared
-fallback are introduced. Registry refresh is internal informational bookkeeping,
-not an approval-gated fleet trust or route mutation.
+Separate hidden `instance_register` and `instance_list` APIs exist in both
+engines, with strict validation, atomic refresh and bounded identity pagination.
+Core registers its existing persistent identity after store convergence at boot,
+before restoring components. Failure warns without blocking normal startup.
+This contributes no prompt content and no remote authority. lastSeen records
+registration time, not an ongoing liveness heartbeat. No periodic writes, new
+env variables, retirement/deletion, document foreign keys or shared fallback
+are introduced. See WIRE.md "Store contract".
 
 ## Next slices
 
-1. Core registration using the implemented registry APIs. Separate read and
-   mutation schemas keep effects static; approval remains required for fleet
-   authority/route changes, not informational registry refresh.
+1. Core registration is implemented; its contract test compares metadata with
+   the catalog and var/instance-id. Restart refresh and store-restart recovery
+   can extend this baseline without implying a continuous heartbeat.
 2. Document instance dimension: same semantics for SQLite and TiDB; own-instance
    default for every operation, including search, selftest and CAS. Bind each
    store process to a stable identity before it accepts calls. No implicit

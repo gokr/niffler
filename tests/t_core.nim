@@ -72,6 +72,20 @@ proc main() =
     identitySnapshot{"instanceId"}.getStr() == instanceId and
     identityList{"name"}.getStr().len > 0, $identityList)
 
+  let instanceRegistry = call(nc, "store", "instance_list", %*{})
+  var ownInstance = newJNull()
+  if instanceRegistry{"items"} != nil and instanceRegistry{"items"}.kind == JArray:
+    for item in instanceRegistry{"items"}:
+      if item{"instanceId"}.getStr() == instanceId: ownInstance = item
+  check("core registers the same durable identity in the store",
+    instanceRegistry{"ok"}.getBool(false) and
+    ownInstance{"instanceId"}.getStr() == instanceId and
+    ownInstance{"name"}.getStr() == identityList{"name"}.getStr() and
+    ownInstance{"root"}.getStr() == root and
+    ownInstance{"gitHash"}.getStr() == identityList{"gitHash"}.getStr() and
+    ownInstance{"firstSeen"}.getStr().len > 0 and
+    ownInstance{"lastSeen"}.getStr().len > 0, $instanceRegistry)
+
   # catalog: shipped components registered, core tools exposed
   let cat = runCli(cliBin, url, @["catalog"], root = root)
   check("catalog lists store/bash/builder/plugins",

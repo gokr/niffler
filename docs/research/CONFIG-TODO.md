@@ -47,8 +47,12 @@ pass. Repository status is not a claim that installed binaries were updated.
   passed. `make test-store` and full `make test` passed (90 server tests).
   Registry API slice adds hidden validated instance_register/instance_list in
   both engines; make gotest, test-store and full make test passed (90 server
-  tests). Core registration and
-  document scoping are not implemented. See [INSTANCE-STORE.md](INSTANCE-STORE.md).
+  tests). Core boot registration added; test-core passed. First full gate:
+  89 passed, fleet-task wake test raced notice acknowledgement versus turn
+  completion. Narrow rerun passed; test now retries only explicit mid-turn
+  refusals before asserting budget decline. Narrow fleet-task test and full
+  make test passed (90 server tests); git diff --check passed.
+  Document scoping is not implemented. See [INSTANCE-STORE.md](INSTANCE-STORE.md).
 - [ ] Use existing persistent instance identity; define restore/clone behavior.
 - [ ] Scope put/get/list/del/search, revision conflicts, selftest, and FTS;
   preserve verbatim values and correct pagination within a scope.

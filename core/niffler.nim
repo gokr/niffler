@@ -556,6 +556,24 @@ proc main() =
                      activeTurn: new(ActiveTurn),
                      lockState: new(LockState),
                      uiReg: newUiRegistry())
+  # Informational registry only: the durable local identity remains the
+  # source of truth. Registration never contributes to the frozen prefix,
+  # grants remote authority, or changes ownership of existing documents.
+  # Best effort for older/restarting stores; do not block normal boot on a
+  # metadata checkpoint. A later core boot refreshes lastSeen (not a liveness
+  # heartbeat, and not evidence the instance is currently reachable).
+  if cat.components.hasKey("store"):
+    try:
+      let registered = dispatchSubjectCall(ct, "svc.store.call",
+        "instance_register", %*{"instanceId": instance.instanceId,
+          "name": instance.name, "root": root,
+          "gitHash": harnessGitHash(root)}, 5000)
+      if not registered{"ok"}.getBool(false):
+        echo "core: WARNING instance registration refused: " &
+             registered{"error"}.getStr("store refused")
+    except CatchableError as e:
+      echo "core: WARNING instance registration failed: " & e.msg
+
   # Session calls are routed through private forwarding inboxes instead of
   # blocking this core process on one runner. Each runner still serializes
   # calls for its own conversation; separate conversations can overlap.
