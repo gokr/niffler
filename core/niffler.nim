@@ -52,26 +52,20 @@ const natsMaxPayload = 8388608
 
 proc natsServerBinary(): tuple[binary: string, ours: bool] =
   ## The nats-server component (components/nats) builds into var/bin beside
-  ## this binary and wins when present — `make build` alone satisfies the bus
-  ## dependency, no PATH install (pure desktop). PATH remains the fallback for
-  ## hand-compiled dev runs without a full build. `ours` marks the component
-  ## build: only it understands the harness's `--max_payload` flag
-  ## extension.
+  ## this binary, and it is the ONLY bus we ever use: `make build` alone
+  ## satisfies the bus dependency, and a missing binary is a hard error
+  ## naming the fix. There is deliberately no fallback to a `nats-server` on
+  ## PATH — that fallback meant a clone could silently run a bus nobody
+  ## else uses (and, without our `--max_payload` flag, at the 1MiB default
+  ## where a large reply never arrives and looks like a store hang).
+  ## `ours` marks the component build: only it understands
+  ## `--max_payload`. Kept as a tuple so the call site reads as before.
   let local = getAppDir() / "nats-server"
-  if fileExists(local): return (local, true)
-  ("nats-server", false)
-
-proc writeNatsConfig(dir: string): string =
-  ## Config file raising max_payload for a nats-server that cannot take the
-  ## flag. The official binary accepts `max_payload` only from a config file
-  ## (its own help says so) — without this, a PATH fallback silently runs at
-  ## the 1MiB default and every reply over that size never arrives: the
-  ## caller waits out its full timeout and it looks like a store hang
-  ## instead of a bus limit. Verified against nats-server v2.11: a 2MB
-  ## publish returns "payload exceeds server max_payload" without this file
-  ## and succeeds with it, and CLI flags compose with the config.
-  result = dir / "nats-max-payload.conf"
-  writeFile(result, "max_payload: " & $natsMaxPayload & "\n")
+  if not fileExists(local):
+    raise newException(IOError, "nats-server is missing at " & local &
+      " — run `make build` (the bus is built from components/nats; no" &
+      " external nats-server is used)")
+  (local, true)
 
 proc spawnNats(ports: openArray[string]): tuple[process: Process, url, monitorUrl, binary: string] =
   ## NATS owns port allocation, so concurrent harnesses cannot win the same
@@ -83,17 +77,11 @@ proc spawnNats(ports: openArray[string]): tuple[process: Process, url, monitorUr
   try:
     let (bin, ours) = natsServerBinary()
     result.binary = bin
-    if not ours:
-      # A foreign nats-server: say so once, and raise its payload cap via the
-      # config-file route it does support.
-      echo "core: WARNING using " & bin & " from PATH (" & getAppDir() /
-           "nats-server not built) — run `make build` for the bundled bus"
     for port in ports:
-      var args = @["-a", "127.0.0.1", "-p", port, "-m", "-1"]
-      if ours:
-        args.add(["--max_payload", $natsMaxPayload])
-      else:
-        args.add(["-c", writeNatsConfig(portsDir)])
+      # `ours` is always true now (natsServerBinary refuses a missing
+      # bundled bus), so the payload cap always takes the flag route.
+      var args = @["-a", "127.0.0.1", "-p", port, "-m", "-1",
+                   "--max_payload", $natsMaxPayload]
       args.add(["--ports_file_dir", portsDir])
       result.process = startProcess(result.binary,
         args = args,

@@ -58,11 +58,14 @@ See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 ## Quick start
 
 Requirements: Nim 2.2.12+ and Go. `make setup` installs those and the other
-platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies. Node.js 20+
+platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies and
+ripgrep (the bus-contract tests shell out to `rg`; the `grep` component itself
+degrades to an actionable error without it). Node.js 20+
 and npm are optional — they serve TypeScript components, `npx` skills and
 npm-based MCP servers. Niffler uses the pure-Nim
 [natsnim](https://github.com/gokr/natsnim) client; no `libnats` or `cnats`
-installation is needed.
+installation is needed, and the bus itself is the `nats-server` this repo
+builds into `var/bin` — never an external install.
 
 For a one-line install, `scripts/bootstrap.sh` finds or creates the clone,
 installs the prerequisites, then runs `make setup`, `make release` and
@@ -112,14 +115,15 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 
 | Command | What it does |
 |---|---|
-| `make setup` | platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies |
-| `make build` | core + all components into `var/bin` (no UI toolchain) |
+| `make setup` | platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies and ripgrep |
+| `make build` | core + all components into `var/bin` (no UI toolchain; also builds the bundled `nats-server`) |
 | `make all` | `build` (the default target; the desktop UI is its own plugin now) |
 | `make run` | build, then start `./var/bin/niffler` (the terminal admin shell) |
 | `make install` | PATH entries for `niffler`, `niffler-cli`, `niffler-console`, plus `niffler-tui` on request |
 | `make install-tui` | `make install WITH_TUI=1`: the above plus the `niffler-tui` chat client |
 | `make install-lsp` | install the default language servers for the `lsp` component |
 | `make install-tools` | the agent CLI toolkit for bash: jq, yq, ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip, sqlite3 |
+| `make install-tools-rg` | just ripgrep (from the same table); `make setup` runs this one |
 | `make test` | the complete gate: the bus-contract suite (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
 | `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
 | `make test-<name>` | one component's contract test, e.g. `make test-fetch` |

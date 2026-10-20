@@ -82,6 +82,10 @@ proc testCoreSpawnedMonitor(root, observeBin, parentTmp: string) =
   copyFileWithPermissions(root / "var" / "bin" / "niffler",
                           testRoot / "var" / "bin" / "niffler")
   copyFileWithPermissions(observeBin, testRoot / "var" / "bin" / "observe")
+  # The bus too: core resolves nats-server from getAppDir(), so this mini-root
+  # needs our own bundled binary — we never ride an external nats-server.
+  copyFileWithPermissions(root / "var" / "bin" / "nats-server",
+                          testRoot / "var" / "bin" / "nats-server")
   writeFile(testRoot / "manifest.yaml", """
 components:
   - name: observe

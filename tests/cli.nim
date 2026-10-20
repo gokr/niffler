@@ -61,8 +61,9 @@ proc main() =
   let port = int(s.getLocalAddr()[1])
   s.close()
   let natsUrl = "nats://127.0.0.1:" & $port
-  let server = startProcess("nats-server", args = ["-p", $port],
-                            options = {poUsePath})
+  # Our own bundled bus (components/nats), never a PATH install.
+  let server = startProcess(root / "var" / "bin" / "nats-server",
+                            args = ["-p", $port], options = {poUsePath})
 
   var nc: NatsConnection
   var connected = false

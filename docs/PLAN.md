@@ -67,6 +67,19 @@ acknowledgement. Follow F1–F5 in the Fleet plan rather than the historical res
 ladders. Published-revision update and real-provider coding acceptance remain
 separate gates; the completed Linux Lima smoke does not certify macOS/VZ.
 
+Unattended work on a resident instance has one shipped piece of the missing
+approval half: `NIF_APPROVALS_DEFAULT=auto` (rendered by `scripts/server.sh`)
+gives conversations nobody has decided about auto approval, per conversation
+and overrideable by an explicit `/approvals ask`. It does NOT cover core's own
+gate, which is context-free — a direct call with no session or caller (the
+`core.spawn` inside `plugin_install`, a `cli`-driven `spawn`) still fails
+closed when no interactive client is registered, which is exactly what
+"background approval routing" remains for. Two reachability gaps accompany it:
+the broadcast fallback pre-denies on `clientCount() == 0` before asking, and
+`reapDeadClients` judges a registered client by local pid liveness, so a
+relayed/tunnelled client is never visible to that check (its directed
+`svc.approval.<caller>.request` routing still works).
+
 ## Recommended work order
 
 1. **Complete remote task delegation.** Follow [FLEET.md](FLEET.md): F1 durable

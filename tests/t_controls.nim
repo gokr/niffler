@@ -68,7 +68,10 @@ proc startProbe(tag: string, extra: seq[(string, string)] = @[]): Probe =
   result.nc = waitConnect(started.url)
   # NIF_AUTO_APPROVE=0 / NIF_AUTO_CONTINUE=0: the gate must be live, whatever
   # the ambient environment says (the suite may run under automation).
-  var env = @[("NIF_AUTO_APPROVE", "0"), ("NIF_AUTO_CONTINUE", "0")]
+  # NIF_APPROVALS_DEFAULT="" pins the same for the instance default, which the
+  # "instanceDefault" block below re-enables for its own probe.
+  var env = @[("NIF_AUTO_APPROVE", "0"), ("NIF_AUTO_CONTINUE", "0"),
+              ("NIF_APPROVALS_DEFAULT", "")]
   for kv in extra: env.add(kv)
   result.core = startComponent(result.sandbox.sandboxBin("niffler"),
                                started.url, root = result.sandbox.root,
@@ -317,6 +320,81 @@ proc main() =
     check("gate: the call was asked about and denied without a human",
           askSeen.len == 1 and toolText(nc, askSid).contains("approval denied"),
           "questions=" & $askSeen.len & " text=" & toolText(nc, askSid))
+
+  # -------------------------------------------------------------------------
+  # 2b. the instance default (NIF_APPROVALS_DEFAULT): the shape a resident
+  # remote instance needs — a conversation nobody has decided about inherits
+  # auto approval, the human's explicit ask overrides it for that one
+  # conversation, and clearing returns to the default.
+  block instanceDefault:
+    var p = startProbe("approvdefault", @[("NIF_APPROVALS_DEFAULT", "auto"),
+                                           ("NIF_MOCK_ROUNDS", "1"),
+                                           ("NIF_MOCK_TOOLCMD", "echo default-ok")])
+    defer: p.stopProbe()
+    let nc = p.nc
+
+    # a) an undecided conversation inherits the default
+    let freshSid = "default-fresh-" & $int(epochTime())
+    let fresh = call(nc, "core", "session", %*{"sessionId": freshSid}, 60_000)
+    check("instance default: an undecided conversation reads as auto",
+          fresh{"approvals"}.getStr("") == "auto", $fresh)
+
+    # b) the default reaches the GATE, not only the readback: the gated tool
+    # runs and nobody is asked
+    var defaultSeen: seq[JsonNode] = @[]
+    let defaultTurn = driveTurn(p, %*{"sessionId": freshSid,
+                                      "content": "run the gated tool"},
+                                answer = "silent", seen = defaultSeen)
+    check("instance default: the turn completes with no human reachable",
+          defaultTurn{"error"} == nil and
+          defaultTurn{"turnError"}.getStr("") == "", $defaultTurn)
+    check("instance default: the gated tool ran and nobody was asked",
+          defaultSeen.len == 0 and toolText(nc, freshSid).contains("default-ok"),
+          "questions=" & $defaultSeen.len & " text=" & toolText(nc, freshSid))
+
+    # c) an explicit ask overrides the default for THIS conversation
+    let askSid = "default-ask-" & $int(epochTime())
+    let askSet = call(nc, "core", "session",
+                      %*{"sessionId": askSid, "approvals": "ask"}, 60_000)
+    check("instance default: an explicit ask is accepted and echoed",
+          askSet{"approvals"}.getStr("") == "ask", $askSet)
+    let askHeader = call(nc, "store", "get",
+                         %*{"kind": "conversation", "id": askSid}, 15_000)
+    check("instance default: the explicit ask is persisted distinctly",
+          askHeader{"value"}{"approvals"}.getStr("") == "ask", $askHeader)
+    var askSeen: seq[JsonNode] = @[]
+    let askTurn = driveTurn(p, %*{"sessionId": askSid,
+                                  "content": "run the gated tool"},
+                            answer = "silent", seen = askSeen)
+    check("instance default: the override gates the tool again",
+          askTurn{"error"} == nil and askSeen.len == 1 and
+          toolText(nc, askSid).contains("approval denied"),
+          "questions=" & $askSeen.len & " text=" & toolText(nc, askSid))
+
+    # d) and it stays put across repeated reads — an implementation that
+    # rewrote the header with the EFFECTIVE mode would flip the human's
+    # choice back to the default, so the durable record is what must hold
+    var stable = true
+    for i in 0 ..< 3:
+      let again = call(nc, "core", "session", %*{"sessionId": askSid}, 60_000)
+      if again{"approvals"}.getStr("") != "ask": stable = false
+    let stableHeader = call(nc, "store", "get",
+                            %*{"kind": "conversation", "id": askSid}, 15_000)
+    check("instance default: the override survives repeated reads",
+          stable and stableHeader{"value"}{"approvals"}.getStr("") == "ask",
+          $stableHeader)
+
+    # e) clearing returns to the default, and persists SILENCE (not today's
+    # effective value) so a later change of the knob still applies
+    let cleared = call(nc, "core", "session",
+                       %*{"sessionId": askSid, "approvals": ""}, 60_000)
+    check("instance default: clearing returns to the default",
+          cleared{"approvals"}.getStr("") == "auto", $cleared)
+    let clearedHeader = call(nc, "store", "get",
+                             %*{"kind": "conversation", "id": askSid}, 15_000)
+    check("instance default: clearing persists silence, not the value",
+          clearedHeader{"value"}{"approvals"}.getStr("") == "",
+          $clearedHeader)
 
   # -------------------------------------------------------------------------
   # 3. a soft round limit asks; yes continues the turn, no ends it

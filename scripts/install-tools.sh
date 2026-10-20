@@ -37,6 +37,22 @@ installed=0
 failed=0
 updated=0
 
+# Optional filters: `install-tools.sh rg` installs only that entry from the
+# table below. `make setup` uses it to guarantee ripgrep, which the
+# bus-contract suite's grep/files tests shell out to (the component degrades
+# gracefully without it, the tests do not), without dragging the whole
+# toolkit into a prerequisite install. With no arguments every entry is
+# considered, exactly as before.
+only=("$@")
+wanted() {
+  [ "${#only[@]}" -eq 0 ] && return 0
+  local name
+  for name in "${only[@]}"; do
+    [ "$name" = "$1" ] && return 0
+  done
+  return 1
+}
+
 ok()   { echo "ok   $1"; }
 new()  { echo "ok   $1"; installed=$((installed+1)); }
 fail() { echo "FAIL $1 — $2"; }
@@ -89,6 +105,7 @@ sqlite3|sqlite3|sqlite3|
 
 while IFS='|' read -r cmd aptpkg brewpkg alt; do
   [ -n "$cmd" ] || continue
+  wanted "$cmd" || continue
   [ -n "$alt" ] || alt="$cmd"
   pkg="$aptpkg"
   [ "$PKGMGR" = "brew" ] && pkg="$brewpkg"
@@ -149,7 +166,9 @@ installTrafilatura() {
   return 1
 }
 
-if haveTrafilatura; then
+if ! wanted trafilatura; then
+  : # a filtered run that did not ask for it
+elif haveTrafilatura; then
   ok trafilatura
 elif trafilaturaWanted; then
   if installTrafilatura && haveTrafilatura; then
@@ -163,12 +182,20 @@ else
 fi
 
 echo
-if [ "$installed" -gt 0 ]; then
+if [ "$failed" -gt 0 ] && [ "${#only[@]}" -gt 0 ] && [ "${only[0]}" = "rg" ]; then
+  # The filtered run `make setup` depends on: ripgrep is a TEST prerequisite,
+  # not an optional nicety, so a failure here must be loud and fatal.
+  echo "install-tools: ripgrep is required for 'make test' (the grep/files tests"
+  echo "               shell out to rg) — install it before running the gate"
+  exit 1
+elif [ "$installed" -gt 0 ]; then
   echo "install-tools: $installed newly installed — none of these are required;"
   echo "               the agent simply falls back to coreutils without them"
 elif [ "$failed" -gt 0 ]; then
   echo "install-tools: $failed still missing after failed installs — see the FAIL lines above;"
   echo "               none of them are required, install manually when you want them"
+elif [ "${#only[@]}" -gt 0 ]; then
+  echo "install-tools: nothing to do — ${only[*]} already present"
 else
   echo "install-tools: nothing to do — the whole toolkit was already present"
 fi

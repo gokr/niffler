@@ -54,20 +54,19 @@ jobs:
         with:
           go-version: 'stable'
 
-      - name: Install nats-server
-        run: |
-          go install github.com/nats-io/nats-server/v2@latest
-          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      # No external nats-server: the bus is built from source by `make build`
+      # (components/nats) and resolved from var/bin — by core and by the
+      # tests alike. This step used to `go install` one, which the suite only
+      # picked up through PATH fallbacks that no longer exist.
 
-      # t_grep/t_files shell out to ripgrep (preinstalled on some runner
-      # images, not guaranteed — install when missing)
-      - name: ripgrep
-        run: "if ! command -v rg >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi"
-
+      # Native and Nim dependencies, plus ripgrep — `make setup` now includes
+      # it because the bus-contract suite's grep/files tests shell out to it
+      # (the grep component itself degrades gracefully without it).
       - name: Native and Nim dependencies
         run: |
           make install-native-deps
           make install-nim-deps
+          make install-tools-rg
 
       # The server gate (`make test-server`): core + components + the whole
       # bus-contract suite, each test owning a private NATS server.

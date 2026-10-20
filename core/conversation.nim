@@ -268,8 +268,9 @@ type
     maxCalls*: int           ## per-turn total tool-dispatch budget (0 = unlimited)
     maxTokens*: int          ## per-turn cumulative token budget (0 = unlimited)
     approvalMode*: string    ## this conversation's gate mode (/approvals):
-                             ## "" or "ask" gates every x-harness.approval
-                             ## tool, "auto" grants them without asking
+                             ## "ask" gates every x-harness.approval tool,
+                             ## "auto" grants them without asking, "" was
+                             ## never decided (the instance default applies)
     grantedRoots*: seq[string]
                              ## Human-granted extra roots for this conversation
                              ## (session {roots: {add, remove}}). These join the
@@ -547,6 +548,18 @@ proc ensureConversationHeader*(ct: CoreTools, convId: string) =
          "providerOverride": "", "modelOverride": "", "title": ""})
   except CatchableError:
     discard
+
+proc defaultApprovalMode*(): string =
+  ## The instance's DEFAULT gate mode for conversations the human has not
+  ## decided about (NIF_APPROVALS_DEFAULT): "auto" for a resident instance
+  ## nobody watches (a remote harness reached over cli/relay), "" for the
+  ## ordinary per-call configuration. Deliberately a FALLBACK, not a bypass:
+  ## the conversation header always wins when it carries a mode, so the human
+  ## can still switch a single conversation back to asking. That is the whole
+  ## difference from NIF_AUTO_APPROVE, which is consulted first in
+  ## approval.ask and therefore makes /approvals ask a no-op.
+  let mode = getEnv("NIF_APPROVALS_DEFAULT", "").strip().toLowerAscii()
+  if mode == "auto": "auto" else: ""
 
 proc loadConversationHeader(ct: CoreTools, convId: string): JsonNode =
   ## Return a mutable conversation header, or an empty header when store is
@@ -4407,8 +4420,26 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     entry.maxTokens = header{"maxTokens"}.getInt(0)
     # Conversation controls ride the same header: they are mutable (the human
     # may change them at any point) but must survive a runner resume, so a
-    # restarted runner re-applies exactly what the human last chose.
-    entry.approvalMode = header{"approvals"}.getStr("")
+    # restarted runner re-applies exactly what the human last chose. An ABSENT
+    # approvals key is the human's silence and falls back to the instance
+    # default (NIF_APPROVALS_DEFAULT); an explicit "ask" is a decision and
+    # never falls back — otherwise a default of auto would swallow it.
+    #
+    # The header read above may predate ensureConversationHeader's first write,
+    # and /approvals set reflects off the LIVE header rather than this entry,
+    # so a stale fallback could ping-pong against a human's explicit choice
+    # (set auto → next call reads a pre-write header, falls back to ask → set
+    # asks again → …): with a default of auto that is a dialog on every
+    # control call, against the very instance the knob exists for. Re-read once
+    # before trusting the key's absence; a dump that already carries a mode
+    # skips the round-trip.
+    var modeHeader = header
+    if modeHeader{"approvals"}.getStr("").len == 0:
+      let fresh = loadConversationHeader(ct, sessionId)
+      if fresh{"approvals"} != nil: modeHeader = fresh
+    let storedMode = modeHeader{"approvals"}.getStr("")
+    entry.approvalMode = if storedMode.len > 0: storedMode
+                         else: defaultApprovalMode()
     entry.grantedRoots = grantedRootsFor(ct, sessionId)
     let storedLimits = header{"limits"}
     if storedLimits != nil and storedLimits.kind == JObject:
@@ -4813,16 +4844,27 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       return %*{"error": "thinking must be low, medium, high or max (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})
-  # Conversation controls: presence of the key means set (empty `approvals`
+  # Conversation controls: presence of the key means set (an empty `approvals`
   # clears to ask, an all-zero `limits` object clears all three). They apply
   # from the NEXT turn on and are persisted before the turn runs, so a crash
   # mid-turn cannot lose a human's choice.
+  #
+  # `ask` is persisted as "ask", not as "" (it used to be: every non-auto
+  # value collapsed to ""). With an instance default of auto the empty value
+  # cannot express the human's decision to gate THIS conversation — the load
+  # site reads a missing key as "no decision" and falls back to auto — so the
+  # temporary "switch this one back to asking" would silently do nothing.
+  # Clearing (`""`) still means silence, i.e. back to the instance default.
   if hasApprovals:
     let mode = args{"approvals"}.getStr("").strip().toLowerAscii()
     if mode notin ["", "ask", "auto"]:
       return %*{"error": "approvals must be ask or auto (empty clears)"}
-    entry.approvalMode = if mode == "auto": "auto" else: ""
-    ct.updateConversationHeader(sessionId, %*{"approvals": entry.approvalMode})
+    entry.approvalMode = if mode.len > 0: mode else: defaultApprovalMode()
+    # Persist the DECISION, not the effective mode: "" is silence (the
+    # instance default applies now and may change later), while "ask"/"auto"
+    # are pinned choices. Writing the effective value would weld today's
+    # default into the header of every conversation that ever cleared it.
+    ct.updateConversationHeader(sessionId, %*{"approvals": mode})
   if hasRoots:
     let raw = args{"roots"}
     if raw.kind != JObject:

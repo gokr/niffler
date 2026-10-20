@@ -708,7 +708,7 @@ clean:
 # and Clang must exist before Nimble builds Futhark and BitBarrel.
 setup:
 	@set -e; for target in install-native-deps install-nim install-nim-deps \
-		install-go $(if $(filter 1,$(NIF_SERVER)),,install-node); do \
+		install-go install-tools-rg $(if $(filter 1,$(NIF_SERVER)),,install-node); do \
 		$(MAKE) --no-print-directory $$target; \
 	done
 	@echo "setup done — verify with 'make doctor', then 'make'"
@@ -734,10 +734,10 @@ doctor:
 	if [ -z "$$missing" ]; then echo "  Nim packages: OK"; \
 	else echo "  Nim packages MISSING:$$missing — run 'make install-nim-deps'"; fi
 	$(call check_tool,go,install-go)
-	@if [ -x var/bin/nats-server ] || command -v nats-server >/dev/null 2>&1; then \
-		echo "  nats-server: OK"; \
+	@if [ -x var/bin/nats-server ]; then \
+		echo "  nats-server: OK (bundled, var/bin)"; \
 	else \
-		echo "  nats-server: built from source by 'make build' (components/nats)"; \
+		echo "  nats-server: MISSING — 'make build' builds our own (components/nats); no external nats-server is ever used"; \
 	fi
 	@if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' 2>/dev/null; then \
 		echo "  node (20+): OK"; \
@@ -745,7 +745,8 @@ doctor:
 	$(call check_tool,npm,install-node)
 	@echo "Optional (generally useful on the CLI):"
 	$(call check_tool,jq,install-tools)
-	@echo "     agent CLI toolkit (yq, ripgrep, fd, fzf, bat, tree, htop, wget,"
+	$(call check_tool,rg,install-tools-rg)
+	@echo "     agent CLI toolkit (yq, fd, fzf, bat, tree, htop, wget,"
 	@echo "     zip, unzip, sqlite3): 'make install-tools'"
 	@echo "  (the bash dialog demo lives in examples/dialog — its nats CLI + zenity"
 	@echo "   dependencies are its own; see examples/dialog/README.md)"
@@ -835,6 +836,14 @@ install-nim-deps:
 # coreutils. See scripts/install-tools.sh for the set and why each is there.
 install-tools:
 	@bash scripts/install-tools.sh
+
+# Just ripgrep, from the same table: `setup` guarantees it because the
+# bus-contract suite's grep/files tests shell out to it (t_grep,
+# t_readscope, t_parallel). The grep COMPONENT degrades gracefully without
+# it — that is why the rest of the toolkit stays an optional extra — but a
+# green `make test` must not depend on an optional install.
+install-tools-rg:
+	@bash scripts/install-tools.sh rg
 
 install-node:
 	@# Node is OPTIONAL (Niffler core is Nim + Go): it serves TypeScript

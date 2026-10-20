@@ -26,6 +26,7 @@ render() {
     'Type=simple' "WorkingDirectory=$root" "Environment=NIF_ROOT=$root" \
     'Environment=NIF_NATS_URL=' 'Environment=NIF_NATS_SPAWN=1' \
     'Environment=NIF_AUTOSTART=0' 'Environment=NIF_AUTO_APPROVE=0' \
+    'Environment=NIF_APPROVALS_DEFAULT=auto' \
     "Environment=PATH=$HOME/.nimble/bin:/usr/local/bin:/usr/bin:/bin" \
     "ExecStart=$root/var/bin/niffler" 'Restart=always' 'RestartSec=3' \
     'StandardInput=null' 'KillMode=control-group' 'TimeoutStopSec=30' \

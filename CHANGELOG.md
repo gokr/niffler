@@ -114,6 +114,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Resident-instance identity, scoped Linux user-service lifecycle, birth-time
   agent/persona definitions with compatible toolset naming, opt-in heartbeat,
   and durable background-process completion delivery.
+- `make setup` now installs **ripgrep** (via the new filtered
+  `make install-tools-rg`, which runs just that entry of the CLI-toolkit
+  table). The `grep`/`files` tools stay optional-grade — they report exit 127
+  with an install hint without it — but the bus-contract suite's grep,
+  readscope and parallel tests shell out to `rg`, so a green `make test` must
+  not depend on an optional extra. `make doctor` lists it as a checked tool.
+- Our own `nats-server` (components/nats, built into `var/bin`) is now the
+  ONLY bus anywhere: the test helpers, `tests/cli.nim` and `t_observe`'s
+  mini-root all resolve it from `var/bin` and fail loudly if it is missing,
+  instead of falling back to a `nats-server` on `PATH`. CI no longer
+  `go install`s an external one. External-binary fallbacks meant the suite
+  could silently test a bus no user runs — and failed with a confusing
+  "did not publish a client port" wherever `PATH` had none.
+- `NIF_APPROVALS_DEFAULT` — the instance's DEFAULT gate mode for conversations
+  nobody has decided about, so a resident or remote harness can work
+  unattended. It is a FALLBACK, not a bypass: an explicit `/approvals ask`
+  still gates that one conversation and clearing returns to the default, which
+  makes it the right knob where `NIF_AUTO_APPROVE=1` is unsatisfiable (it is
+  consulted first and swallows the override). `scripts/server.sh` renders it
+  as `auto` for the persistent user service, keeping `NIF_AUTO_APPROVE=0`. An
+  explicit `ask` and "never decided" are now stored distinctly in the
+  conversation header (`approvals`).
 - Optional Nim `fleet` provisioning component with approval-gated SSH/Multipass
   install/adopt and lifecycle tools, pinned private receipts and native transport
   contracts. Replaces the interim Python helper and Python tests. Multipass TUI

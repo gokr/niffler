@@ -63,6 +63,7 @@ exit "${SERVER_TEST_FAIL:-0}"
   check("service forces isolated bus and persistent non-autoapproved core",
     "Environment=NIF_NATS_URL=\n" in unit and "Environment=NIF_NATS_SPAWN=1" in unit and
     "Environment=NIF_AUTOSTART=0" in unit and "Environment=NIF_AUTO_APPROVE=0" in unit and
+    "Environment=NIF_APPROVALS_DEFAULT=auto" in unit and
     "WorkingDirectory=" & root in unit and "Environment=NIF_ROOT=" & root in unit)
   check("install enables but does not start", "--user enable" in readFile(log) and "--user start" notin readFile(log))
   # A resident server comes back from a crash or a stray kill; only an explicit
@@ -142,8 +143,15 @@ exit "${SERVER_TEST_FAIL:-0}"
   check("server bootstrap adopts worktree", bootstrap.exitCode == 0 and "adopting this checkout" in bootstrap.output)
   check("server bootstrap omits TUI and extras", "would run: make install-tui" notin bootstrap.output and "would ask about optional" notin bootstrap.output)
   let setup = execCmdEx("cd " & quoteShell(repo) & " && make -n setup NIF_SERVER=1")
+  # Anchor on the loop's TARGET LIST, not a raw substring: the prerequisite
+  # recipes make -n echoes also mention their own targets, and the list gained
+  # install-tools-rg (ripgrep, a test prerequisite) after this check was
+  # written — a literal "install-go ; do" broke on that, not on a regression.
+  var setupTargets = ""
+  if setup.exitCode == 0:
+    setupTargets = setup.output.split("for target in")[^1].split("; do")[0]
   check("server setup omits optional Node", setup.exitCode == 0 and
-    "install-node; do" notin setup.output and "install-go ; do" in setup.output,
+    "install-go" in setupTargets and "install-node" notin setupTargets,
     setup.output)
   # Explicit remote client options must never start a local core, even when
   # the selected client exits unsuccessfully. Preserve this former Python check.

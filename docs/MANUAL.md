@@ -105,7 +105,7 @@ A one-file index of every shipped capability (not a reference) is
 | `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) — both tools are on demand and neither declares `x-harness.effect`, so the fabric batch host schedules even `logfile_search` as a write |
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server (the child is the separate `mcp-bridge` binary — `var/bin/mcp-bridge`, built by `make build`, path overridable with `NIF_MCP_BRIDGE_BIN`; it has no manifest entry and is never started by hand); tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
-| `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and preferred by core over a PATH install, so no NATS prerequisite is needed. Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it — `make doctor` reports `nats-server: OK` or explains that it is built from source by `make build` |
+| `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and the **only** bus Niffler ever uses — core and the test suite both resolve it from `var/bin`, and there is deliberately no fallback to a `nats-server` on `PATH` (a development clone that rode an external binary would be testing a bus no user runs). Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it: `make doctor` reports `nats-server: OK (bundled, var/bin)` or says that `make build` builds it |
 
 `components/` no longer holds a bash demo: the SDK-free `dialog` component
 moved to `examples/dialog/dialog.sh`, with a README of its own, out of the
@@ -627,6 +627,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query; accepted range 100–100000, applies to `logfile_paths` too, and the truncation is reported as `directoryTruncated` | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed, and every `/limit` keep-going question is answered with yes (it implies `NIF_AUTO_CONTINUE`). For headless automation only; never set it in a session you care about | unset |
 | `NIF_AUTO_CONTINUE` | `1` → a turn that reaches one of the conversation's soft limits (`/limit`) keeps going without asking (`NIF_AUTO_APPROVE=1` implies it). For headless automation only | unset |
+| `NIF_APPROVALS_DEFAULT` | `auto` → conversations nobody has decided about **start in auto approval** (as if `/approvals auto` had been set): gated tools are granted loudly, per conversation. This is the resident/remote alternative to `NIF_AUTO_APPROVE` — it is a FALLBACK, so an explicit `/approvals ask` still gates that one conversation, and clearing (`/approvals` with an empty argument) returns it to the default. Any other value (or unset) means the ordinary per-call gate. Nuance worth knowing: the conversation header is the record of a human's decision, so an unreadable header (store outage) counts as undecided and the default applies — on an `auto` instance a store outage therefore opens the gate rather than stalling it | unset (`auto` in `server.sh`'s user service) |
 | `NIF_LOCK_TTL_MS` | write-lease lifetime for the `locks` component (docs/research/WRITE-ARBITRATION.md). A lease is released when its call finishes; the TTL is the backstop for a runner that dies mid-call, after which the path is claimable again | `600000` |
 | `NIF_MAX_TURN_ROUNDS` | hard LLM-round ceiling per turn; an explicit per-session `maxRounds` may narrow it | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | estimated-token cap on a conversation's direct toolset for `invoke {sticky: true}` promotion; a promotion that would exceed it is deferred and reported in the tool result | `4000` |
@@ -899,8 +900,9 @@ cli run --quiet --export=/tmp/t.jsonl 'audit'           # no events, plus transc
   `--bus` attaches to whatever is there (the serving root is reported).
 - **Inputs**: the prompt (positional or `--prompt`), `--session` to continue a
   persisted conversation, `--cwd`, `--provider`, `--model`, `--thinking`,
-  `--approvals ask|auto` (the conversation's gate mode; default the harness
-  default, `ask`).
+  `--approvals ask|auto` (the conversation's gate mode; the instance default
+  when unset — `NIF_APPROVALS_DEFAULT`, i.e. `ask`), and the driver answers
+  approval requests on the turn's behalf (see below).
 - **Output lines**, in order: `start` (conversation, bus, home, owned,
   caller), `event` (every `ev.session.<id>.*` frame of the turn), `approval`
   (a gated tool was offered to the driver), `mcp` (declared server bootstrap),
@@ -985,6 +987,13 @@ included):
   (`timeoutMs`, 300 s) and is denied (the log says `timed out after Ns —
   denying`); a `/limit` keep-going question has its own shorter window (120 s).
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
+- `NIF_APPROVALS_DEFAULT=auto` is the milder alternative for a resident
+  instance nobody watches: it sets the gate mode of conversations nobody has
+  decided about, per conversation and loudly, instead of bypassing the gate
+  process-wide. An explicit `/approvals ask` still wins, so the human can
+  re-gate the one conversation they are looking at. Prefer it over
+  `NIF_AUTO_APPROVE` on an instance you also attach to interactively —
+  `NIF_AUTO_APPROVE` is consulted first and swallows that override.
 - Core's own destructive tools are named `spawn`, `kill`, `remove` and
   `conversation_delete`; they are gated by name inside `handleCoreTool`, not
   through a schema, so `x-harness.approval` appears on component tools only.
@@ -1018,8 +1027,12 @@ gated tool is granted, and core says so loudly in its log
 (`core: approval auto-granted for <tool> (this conversation is in approval
 mode: auto)`), because a silent grant is exactly what the gate exists to
 prevent. The setting is persisted in the conversation header (`approvals`), so
-a resumed conversation in a session runner logs the same line. `/approvals ask` (or `/approvals` with an
-empty argument) restores the normal gate. Use it for a conversation you have
+a resumed conversation in a session runner logs the same line. `/approvals ask`
+restores the normal gate — and is persisted as `ask`, distinctly from an
+empty argument, which *clears* the setting back to the instance default
+(`NIF_APPROVALS_DEFAULT`, i.e. the ordinary gate unless the instance opted
+into auto). That distinction is what lets a human temporarily re-gate a
+single conversation on an instance whose default is auto. Use it for a conversation you have
 decided to trust end to end; the per-tool "don't ask again" record is still
 available for narrower trust. A client's auto-approve action writes a durable
 record (store kind `approval`, id `<sessionId>:<key>` — clients write it, not
@@ -2920,6 +2933,9 @@ inference. Scheduling reserves attempts before publishing, so a crash can lose
 a tick rather than duplicate work. Status reports attempts, not completion;
 results are in the conversation transcript. Heartbeats never grant approvals
 or keep a harness alive: resident servers must run without `NIF_AUTOSTART=1`.
+A scheduled turn inherits its conversation's gate mode like any other turn, so
+the unattended-scheduling story is `NIF_APPROVALS_DEFAULT=auto` (or that one
+conversation's `/approvals auto`) rather than a per-heartbeat permission.
 See [the component guide](../components/heartbeat/README.md) for limits.
 
 ### Agent definitions
@@ -3804,8 +3820,9 @@ runner's `session: llm call dur=`. The `llm` line lands in
 ### Monitoring
 
 When core spawns nats-server it uses distinct loopback client and HTTP ports,
-then writes (the binary is the built component `var/bin/nats-server` from
-`components/nats` when present, else a PATH `nats-server`):
+then writes (the binary is always the built component `var/bin/nats-server`
+from `components/nats` — there is no PATH fallback; a missing one is a loud
+"run `make build`"):
 
 ```text
 var/nats-url
@@ -4425,6 +4442,10 @@ make install-tui    # same, installing the niffler-tui terminal client quietly
                     # (= make install WITH_TUI=1)
 make uninstall      # remove those PATH entries again
 make install-lsp    # install the lsp component's default language servers
+make install-tools-rg  # just ripgrep (part of `make setup`; the bus-contract
+                    # tests shell out to `rg`)
+make install-tools  # the rest of the agent CLI toolkit (jq, yq, fd, fzf, bat,
+                    # tree, htop, wget, zip, unzip, sqlite3) — all optional
 make install-jev    # install the Von runtime for jev (opt-in, ~5.4 GB;
                     # never part of `make setup`)
 make von-up         # enable the supervised Von launcher (persisted spawn
@@ -4441,7 +4462,8 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
 - **Headless service mode** (no tty, for UIs/automation):
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null` —
   serves `svc.core.call`; approval-requiring tools are denied unless a UI
-  is attached or `NIF_AUTO_APPROVE=1`.
+  is attached or `NIF_AUTO_APPROVE=1` (or the conversation's gate mode is
+  auto, e.g. through `NIF_APPROVALS_DEFAULT=auto`).
 - **Attach to any bus**: `NIF_NATS_URL=nats://host:4222` (even remote), or
   start your own nats-server on the default port before core — core reuses
   a bus on `127.0.0.1:4222` only when the core answering it serves **this

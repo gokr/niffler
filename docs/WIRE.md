@@ -940,11 +940,16 @@ the ordinary session call (`svc.session.<id>.call`, tool `session`):
 {"sessionId": "conv-…"}                    // status readback, runs no turn
 ```
 
-- **`approvals`** is this conversation's gate mode: `""`/`"ask"` (the
-default) gates every `x-harness.approval` tool as described above; `"auto"`
+- **`approvals`** is this conversation's gate mode: `""` (was never
+decided — the instance default applies, `NIF_APPROVALS_DEFAULT`, i.e. the
+ordinary gate unless the instance opted into auto) or `"ask"` gates every
+`x-harness.approval` tool as described above; `"auto"`
 grants them without asking any client, loudly (`core: approval auto-granted
 for <tool>`) — a silent grant is exactly what the gate exists to prevent.
-It applies from the NEXT turn on and, unlike the frozen scoping arguments,
+The two non-auto values are stored distinctly: an explicit `"ask"` is the
+human's decision and outranks the instance default, while `""` clears back
+to it. It applies from the NEXT turn on and, unlike the frozen scoping
+arguments,
 may be changed at any point in a conversation's life.
 - **`limits`** are SOFT budgets: `rounds` (LLM rounds per turn, 1–200),
 `tokens` (cumulative per turn) and `seconds` (wall clock per turn, checked
