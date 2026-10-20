@@ -5,6 +5,15 @@ in [MANUAL.md](MANUAL.md), protocol in [WIRE.md](WIRE.md), and unscheduled ideas
 in the [research backlog](research/BACKLOG.md). Design notes are history unless
 explicitly identified as the current target below.
 
+## Active branch: configuration framework
+
+`feat/settings` is implementing component-owned, schema-described settings and
+instance-aware storage, including moving fleet instance records out of JSON
+files and into the store. Track delivery and validation in
+[CONFIG-TODO.md](research/CONFIG-TODO.md); [CONFIG.md](research/CONFIG.md) records
+the design. Shared-scope policy, migration and wire details remain proposals
+until resolved in the checklist; they are not shipped behavior.
+
 ## Baseline
 
 Reconciled against local `main` at `6300a06`. This is source status, not a fresh
