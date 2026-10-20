@@ -6,6 +6,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The resident user service now uses `Restart=always`. `Restart=on-failure`
+  left a persistent instance stopped after a clean exit or SIGTERM (treated as
+  a clean termination by systemd). Crashes and OOM kills were already covered
+  by `on-failure`; the change also covers clean exits. An explicit
+  `server.sh stop` still sticks. `tests/t_server.nim` pins the policy, and the
+  manual names the three independent requirements for a reachable resident
+  instance (guest autostart, linger, enabled unit) plus the explicit unit
+  refresh a `server.sh` change requires.
+
 - Fleet transport waits now service NATS protocol traffic without running other
   handlers re-entrantly. Long installs could finish and save a verified receipt
   after the bus had disconnected the idle-looking component, losing the reply.

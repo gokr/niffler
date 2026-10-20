@@ -49,6 +49,10 @@ proc main() =
     "Environment=NIF_AUTOSTART=0" in unit and "Environment=NIF_AUTO_APPROVE=0" in unit and
     "WorkingDirectory=" & root in unit and "Environment=NIF_ROOT=" & root in unit)
   check("install enables but does not start", "--user enable" in readFile(log) and "--user start" notin readFile(log))
+  # A resident server comes back from a crash or a stray kill; only an explicit
+  # stop (which systemd never restarts) leaves it down.
+  check("service restarts on any exit, not just failure",
+    "Restart=always\n" in unit and "Restart=on-failure" notin unit)
   check("idempotent install preserves unit", run("install").exitCode == 0 and readFile(unitPath) == unit)
   for action in ["start", "status", "logs", "stop"]:
     check("scoped " & action, run(action).exitCode == 0)

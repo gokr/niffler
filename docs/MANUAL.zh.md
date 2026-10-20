@@ -1282,6 +1282,19 @@ NIF_ROOT，禁用 UI 自动退出和自动批准，使用核心拥有的隔离�
 linger，也不使用 sudo。在 SSH/VM 目标执行这些生命周期操作前须取得人类
 批准。测试使用假的 systemd 命令，不操作主机服务管理器。
 
+常驻服务在**任何**退出码上都会重启（`Restart=always`），不只是失败时：
+崩溃、OOM 被杀、误发 SIGTERM 造成的干净退出都会让它回到服务状态。显式的
+`server.sh stop`（或 `systemctl --user stop`）是操作者的决定，systemd 会遵从。
+`Restart=always` 必然是无条件的——若进程因为存储文件被另一个 harness 锁住
+而退出，它就会循环重启，因此每个根目录只运行一个 harness。
+
+让这样一个实例始终可达取决于三件互相独立的事：容器或 VM 必须在主机启动时
+启动（Incus 容器需要 `incus config set <name> boot.autostart true`——容器不
+启动就不会运行 systemd）、其用户必须启用 linger、单元必须已启用。当检出中的
+`server.sh` 发生变化后，`install` 会**拒绝**它此前写下的单元（比较渲染文本，
+从不接管）。请显式刷新：`server.sh stop`、删除单元文件，再 `server.sh install`
+与 `server.sh start`。否则过期的单元会静默沿用旧契约。
+
 ### SSH and Lima provisioning
 
 可选 **Nim `fleet` 组件**通过普通 SSH 或 `limactl shell` 安装或采用 Linux

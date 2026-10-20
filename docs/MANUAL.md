@@ -2630,6 +2630,23 @@ linger, logout/reboot persistence is not guaranteed; ask an administrator about
 operations affect host lifecycle: obtain human approval before running them on
 an SSH/VM target. Tests use fake systemd commands, not the host service manager.
 
+A resident server restarts on **any** exit (`Restart=always`), not only on
+failure: a crash, an OOM kill and a clean exit caused by a stray SIGTERM all
+return it to service. An explicit `server.sh stop` (or `systemctl --user stop`)
+is the operator's decision and systemd honours it. `Restart=always` is
+necessarily unconditional — a process that exits because its store file is
+locked by another harness will restart in a loop, so run one harness per root.
+
+Three separate things keep such an instance reachable, and each fails
+independently: the container or VM must start on host boot (an Incus container
+needs `incus config set <name> boot.autostart true` — a container that never
+starts runs no systemd), linger must be enabled for its user, and the unit must
+be enabled. When a checkout's `server.sh` changes, `install` **refuses** the
+unit it previously wrote (rendered text is compared, never adopted). Refresh
+explicitly: `server.sh stop`, remove the unit file, then `server.sh install` and
+`server.sh start`. A stale unit keeps serving the old contract silently
+otherwise.
+
 ### SSH and Lima provisioning
 
 The optional **Nim `fleet` component** installs or adopts Linux instances over
