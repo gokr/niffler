@@ -30,6 +30,58 @@ registration time, not an ongoing liveness heartbeat. No periodic writes, new
 env variables, retirement/deletion, document foreign keys or shared fallback
 are introduced. See WIRE.md "Store contract".
 
+## Document ownership foundation (staged)
+
+New migrations add `docs.instance_id` and change the primary key to
+`(instance_id, kind, id)`. Legacy rows remain under `''`; neither migration
+claims them for a connecting instance. SQLite preserves rowids, timestamps,
+verbatim values and revisions, so the existing FTS rows remain valid.
+
+Handlers capture an owner at construction for put/get/list/del/search and
+selftest. Tests construct two owners against one database to exercise duplicate
+keys, independent CAS, list cursors, ranked/unranked search and deletion.
+SQLite FTS queries constrain the joined authoritative document's instance_id;
+FTS stays derived by document rowid. Global bm25 statistics are not per-instance
+ranking statistics; isolation guarantees returned documents, not independent
+relevance scores.
+
+**Normal process wiring still uses the legacy owner in this staged slice.**
+This is not yet a safely shared deployment. The next slice must resolve stable
+identity and explicit legacy adoption before passing that owner to every
+handler. There is no caller-supplied scope argument or implicit fallback.
+TiDB DDL still needs live DSN validation. Ownership rollback refuses scoped data
+rather than merge conflicting keys; TiDB down migration deliberately refuses.
+
+## Binding and legacy adoption (design for the next slice)
+
+Binding an owner is the step that makes scoping active, and it is where local
+history could appear to vanish. The two engines need different rules because
+their sharing models differ:
+
+- **SQLite (single-writer local file).** The file *is* that instance's data, so
+  before serving traffic the store resolves its identity (`NIF_INSTANCE_ID`,
+  else `$NIF_ROOT/var/instance-id`) and, exactly once, adopts legacy `''` rows
+  for its own identity — a scoped `UPDATE ... WHERE instance_id = ''`, so
+  history, revisions, rowids and FTS rows stay valid. The adoption is recorded
+  in the database itself, so a restart cannot re-adopt rows another process
+  created under `''`, and an already-bound database refuses a different
+  identity instead of silently swapping the view.
+- **TiDB (network-shared dataset).** No implicit adoption, ever: there the
+  empty owner may legitimately mean "another instance's pre-scoping rows". The
+  engine refuses to boot without an explicit identity, and adopting legacy rows
+  is an explicit, reported admin operation (`store_claim {from, to, dryRun}`),
+  never a side effect of the first client to connect.
+- **Tests and direct bus callers** keep working: a store started with no
+  identity source stays on the legacy owner, so the existing contract suite is
+  unchanged. That is a test/development path, not a shared deployment mode.
+- `NIF_INSTANCE_ID` becomes a real (still small) bootstrap variable, so a root
+  that is recreated — container rebuild, ephemeral CI checkout — keeps its
+  identity instead of orphaning its rows.
+
+Binding must be visible: `selftest` and the registry should report the bound
+owner, so "which dataset am I actually looking at" is answerable without
+guessing.
+
 ## Next slices
 
 1. Core registration is implemented; its contract test compares metadata with

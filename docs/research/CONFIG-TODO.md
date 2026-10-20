@@ -52,7 +52,10 @@ pass. Repository status is not a claim that installed binaries were updated.
   completion. Narrow rerun passed; test now retries only explicit mid-turn
   refusals before asserting budget decline. Narrow fleet-task test and full
   make test passed (90 server tests); git diff --check passed.
-  Document scoping is not implemented. See [INSTANCE-STORE.md](INSTANCE-STORE.md).
+  Ownership-column migrations and owner-captured handlers now added with
+  two-owner database tests. Existing process wiring still uses legacy owner;
+  stable identity binding and adoption remain pending. make gotest, test-store
+  and full make test passed (90 server tests). See [INSTANCE-STORE.md](INSTANCE-STORE.md).
 - [ ] Use existing persistent instance identity; define restore/clone behavior.
 - [ ] Scope put/get/list/del/search, revision conflicts, selftest, and FTS;
   preserve verbatim values and correct pagination within a scope.

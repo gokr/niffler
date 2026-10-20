@@ -10,7 +10,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   registration/listing tools, preserving first-seen timestamps on refresh.
   Core checkpoints its persistent identity at boot; failures warn and do not
   block startup. This is registry infrastructure only: document isolation and fleet registry
-  migration are not yet implemented.
+  migration are not yet active. Staged document ownership migrations preserve
+  legacy rows; owner-captured SQL handlers have isolation tests, but normal
+  processes still use the legacy owner pending identity binding/adoption.
 
 - Skill discovery now resolves workspace `.agents/skills`, user
   `~/.agents/skills`, then bundled skills. Project install/removal uses the

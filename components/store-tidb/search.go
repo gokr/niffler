@@ -163,14 +163,14 @@ func searchSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"kind":  map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message)"},
-			"query": map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)"},
+			"kind":     map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message)"},
+			"query":    map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)"},
 			"idPrefix": map[string]any{"type": "string", "description": "Restrict to ids with this prefix — e.g. one conversation's messages: <convId>:"},
-			"rank": map[string]any{"type": "boolean", "description": "Request relevance ordering; this engine has no index and answers unranked in id order (ranked: false, issue #94)"},
-			"snippet": map[string]any{"type": "boolean", "description": "Attach a best-effort span-marked one-line `snippet` per hit (the first matched word in [brackets])"},
-			"offset": map[string]any{"type": "integer", "description": "Ranked paging only; ignored here — use `after`"},
-			"limit": map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
-			"after": map[string]any{"type": "string", "description": "Exclusive id cursor from a previous page (default = first page)"},
+			"rank":     map[string]any{"type": "boolean", "description": "Request relevance ordering; this engine has no index and answers unranked in id order (ranked: false, issue #94)"},
+			"snippet":  map[string]any{"type": "boolean", "description": "Attach a best-effort span-marked one-line `snippet` per hit (the first matched word in [brackets])"},
+			"offset":   map[string]any{"type": "integer", "description": "Ranked paging only; ignored here — use `after`"},
+			"limit":    map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
+			"after":    map[string]any{"type": "string", "description": "Exclusive id cursor from a previous page (default = first page)"},
 		},
 		"required": []string{"kind", "query"},
 		"description": "Search stored documents of a kind by text — the server-side filter for session browsers: " +
@@ -223,7 +223,8 @@ func naiveSnippet(text string, terms []string, maxBytes int) string {
 	return b.String()
 }
 
-func searchHandler(db *sql.DB) sdk.ToolHandler {
+func searchHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -263,8 +264,8 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		cursor := after
 		skipped := 0
 		for {
-			query := `SELECT id, rev, value FROM docs WHERE kind = ? AND id > ?`
-			qargs := []any{kind, cursor}
+			query := `SELECT id, rev, value FROM docs WHERE instance_id = ? AND kind = ? AND id > ?`
+			qargs := []any{instance, kind, cursor}
 			if idPrefix != "" {
 				query += ` AND id LIKE ?`
 				qargs = append(qargs, likePrefix(idPrefix))
@@ -328,4 +329,3 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		return sdk.OK(out), nil
 	}
 }
-

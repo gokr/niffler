@@ -185,10 +185,10 @@ func indexDocIn(tx *sql.Tx, rowid int64, kind, id string, value []byte) error {
 // indexDoc indexes the document written at (kind, id) in the caller's
 // transaction — looks the rowid up (same tx sees its own write) and hands
 // off to indexDocIn.
-func indexDoc(tx *sql.Tx, kind, id string, value []byte) error {
+func indexDoc(tx *sql.Tx, instance, kind, id string, value []byte) error {
 	var rowid int64
-	if err := tx.QueryRow(`SELECT rowid FROM docs WHERE kind = ? AND id = ?`,
-		kind, id).Scan(&rowid); err != nil {
+	if err := tx.QueryRow(`SELECT rowid FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`,
+		instance, kind, id).Scan(&rowid); err != nil {
 		return fmt.Errorf("index lookup: %w", err)
 	}
 	return indexDocIn(tx, rowid, kind, id, value)
@@ -278,14 +278,14 @@ func searchSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"kind":  map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message)"},
-			"query": map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)"},
+			"kind":     map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message)"},
+			"query":    map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)"},
 			"idPrefix": map[string]any{"type": "string", "description": "Restrict to ids with this prefix — e.g. one conversation's messages: <convId>:"},
-			"rank": map[string]any{"type": "boolean", "description": "Order by relevance (bm25) instead of id; pages by `offset`, not `after`"},
-			"snippet": map[string]any{"type": "boolean", "description": "Attach a span-marked one-line `snippet` per hit (the matched text in [brackets])"},
-			"offset": map[string]any{"type": "integer", "description": "Ranked paging only: skip this many hits (default 0)"},
-			"limit": map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
-			"after": map[string]any{"type": "string", "description": "Id-order paging only: exclusive id cursor from a previous page (default = first page)"},
+			"rank":     map[string]any{"type": "boolean", "description": "Order by relevance (bm25) instead of id; pages by `offset`, not `after`"},
+			"snippet":  map[string]any{"type": "boolean", "description": "Attach a span-marked one-line `snippet` per hit (the matched text in [brackets])"},
+			"offset":   map[string]any{"type": "integer", "description": "Ranked paging only: skip this many hits (default 0)"},
+			"limit":    map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
+			"after":    map[string]any{"type": "string", "description": "Id-order paging only: exclusive id cursor from a previous page (default = first page)"},
 		},
 		"required": []string{"kind", "query"},
 		"description": "Search stored documents of a kind by text — the server-side filter for session browsers: " +
@@ -309,7 +309,8 @@ func likePrefix(prefix string) string {
 	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(prefix) + "%"
 }
 
-func searchHandler(db *sql.DB) sdk.ToolHandler {
+func searchHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -347,8 +348,8 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 			snip = "snippet(docs_fts, 1, '[', ']', '…', 12)"
 		}
 		query := "SELECT d.id, d.rev, d.value, " + snip + ` FROM docs_fts, docs d
-			 WHERE docs_fts MATCH ? AND docs_fts.kind = ? AND d.rowid = docs_fts.rowid`
-		qargs := []any{match, kind}
+			 WHERE docs_fts MATCH ? AND docs_fts.kind = ? AND d.rowid = docs_fts.rowid AND d.instance_id = ?`
+		qargs := []any{match, kind, instance}
 		if idPrefix != "" {
 			query += ` AND d.id LIKE ? ESCAPE '\'`
 			qargs = append(qargs, likePrefix(idPrefix))
