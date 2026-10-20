@@ -56,6 +56,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the scoped service so the verified revision is actually running. Update
   verification handles abbreviated catalog hashes and independently checks the
   full checkout SHA, including no-op detection.
+- Read-only `context_status` core tool reports one conversation's stored
+  context health without mutating it: window, last-persisted usage, the shared
+  warn/trim thresholds and output reserve, the lossy-trim watermark
+  (`trimThrough`) with structured loss attribution and a canonical recall ref,
+  the installed projection's coverage, and retained compaction-input metadata
+  (presence is not a retryability verdict). During a session turn an omitted
+  `sessionId` inspects the current conversation. Threshold arithmetic is shared
+  with admission so the reported lines are the numbers admission acts on.
+
 
 - Human completion reconciliation: hidden read-only `activity_list` pages the
   latest durable completion per conversation; `ev.activity` pushes confirmed

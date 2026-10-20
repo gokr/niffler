@@ -167,8 +167,9 @@ assume a tool you saw in one context exists in another:
 - `catalog` (op list/schemas) — what is registered; `status` — live
   component processes; `doctor` — one-shot health probe; `prompt_preview` —
   a conversation's frozen direct tools and prompt provenance;
-  `session_info` — a conversation's summary; `conversation_delete` — remove
-  a conversation.
+  `session_info` — a conversation's summary; `context_status` — a
+  conversation's stored context health (window, usage, thresholds, loss);
+  `conversation_delete` — remove a conversation.
 - `models_list` / `models_sources` — the effective model catalog
   (models.dev + plugin patches + local override) is the authority on
   capabilities, limits, context windows and prices; never hardcode model
