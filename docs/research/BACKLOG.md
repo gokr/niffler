@@ -135,6 +135,28 @@ in the manual and active plan.
   ([CODEWHALE-TUI.md](CODEWHALE-TUI.md) §2–4).
 - **Context inspector** — the prompt decomposed layer by layer
   ([CODEWHALE-TUI.md](CODEWHALE-TUI.md) §6).
+- **Gateway target on tool cards** — a card reading only `discover` or
+  `invoke` hides what the call aimed at. Render a display-only suffix from the
+  arguments — `discover(fabric)`, `invoke(fetch)`, `invoke(git.git_status)` —
+  falling back to the bare name when there is no single target (a query only,
+  several tools, malformed args). The wire tool name never changes. Tool
+  results are stored without their call arguments, so a reloaded transcript
+  must pair each tool message with the assistant `tool_call` that produced it
+  by `tool_call_id` before rendering. The SPA implementation died with the
+  in-repo `ui/` tree; this now belongs in `niffler-tui`
+  (`review/codebase-improvements` `ff809df`, kept as design).
+- **Transcript paging on load** — one `store list` call renders a single page,
+  and the store caps a page at 1000 rows, so a long conversation looks like it
+  begins mid-transcript. Follow `hasMore`/`nextAfter` to the end, in order,
+  when loading history. `niffler-tui` has its own paging
+  (`storePageLimit`); verify it covers initial load, not only older-history
+  fetches (`review/codebase-improvements` `0dd8260`).
+- **Generated help from one key-binding source** — `/help` listed the command
+  registry (so it could not go stale on commands) but named only three key
+  combos, leaving the composer's own keys and the approval prompt undocumented.
+  Generate both lists from the binding table so prose cannot drift; the TUI
+  equivalent is the "key/help single authority" row above
+  (`review/codebase-improvements` `1e5e6a6`).
 - **Gate/approval receipts + approval axes** — decision risk × presentation
   stakes ([CODEWHALE-TUI.md](CODEWHALE-TUI.md) §5,
   [OPENHANDS.md](OPENHANDS.md) §3.9).
