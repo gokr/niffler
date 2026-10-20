@@ -64,9 +64,18 @@ type Provider struct {
 	OAuth    *OAuthCredential `json:"oauth,omitempty"`
 	BaseURL  string           `json:"baseUrl"`
 	Model    string           `json:"model"`
-	Catalog  string           `json:"catalog"` // models.dev provider id for context lookup
-	Context  int              `json:"context"` // explicit context window override (0 = auto)
-	Plugin   string           `json:"plugin"`  // component that hooks provider-specific tools (optional)
+	// EmbedModel is the embedding model this provider serves (optional). It is
+	// deliberately separate from Model: a backend commonly serves chat on one
+	// model and embeddings on another, and the embedding endpoint takes no chat
+	// roles. Empty means "this provider offers no embeddings", which the llm
+	// component reports instead of guessing a model the endpoint would 400.
+	EmbedModel string `json:"embedModel,omitempty"`
+	// EmbedBaseURL overrides BaseURL for embeddings only, for a backend that
+	// serves them elsewhere. Empty means "same base URL as chat".
+	EmbedBaseURL string `json:"embedBaseUrl,omitempty"`
+	Catalog      string `json:"catalog"` // models.dev provider id for context lookup
+	Context      int    `json:"context"` // explicit context window override (0 = auto)
+	Plugin       string `json:"plugin"`  // component that hooks provider-specific tools (optional)
 	// StripPrefix models a gateway (LLMgateway, devpass) that routes on the
 	// canonical id and rejects vendor-prefixed ids like "alibaba/glm-5.2".
 	// When set, the llm component sends the model id without the "vendor/"
@@ -77,17 +86,21 @@ type Provider struct {
 // providerSummary is the only provider shape intended for interactive clients.
 // It deliberately contains no credential value.
 type providerSummary struct {
-	Nickname  string `json:"nickname"`
-	AuthType  string `json:"authType"`
-	Protocol  string `json:"protocol"`
-	BaseURL   string `json:"baseUrl"`
-	Model     string `json:"model"`
-	Catalog   string `json:"catalog"`
-	Context   int    `json:"context"`
-	Plugin    string `json:"plugin"`
-	Active    bool   `json:"active"`
-	HasKey    bool   `json:"hasKey"` // compatibility name: true for any usable credential
-	ExpiresAt int64  `json:"expiresAt,omitempty"`
+	Nickname string `json:"nickname"`
+	AuthType string `json:"authType"`
+	Protocol string `json:"protocol"`
+	BaseURL  string `json:"baseUrl"`
+	Model    string `json:"model"`
+	// EmbedModel/EmbedBaseURL mirror Provider; surfaced so interactive clients
+	// can show and edit the embedding model without an admin round-trip.
+	EmbedModel   string `json:"embedModel,omitempty"`
+	EmbedBaseURL string `json:"embedBaseUrl,omitempty"`
+	Catalog      string `json:"catalog"`
+	Context      int    `json:"context"`
+	Plugin       string `json:"plugin"`
+	Active       bool   `json:"active"`
+	HasKey       bool   `json:"hasKey"` // compatibility name: true for any usable credential
+	ExpiresAt    int64  `json:"expiresAt,omitempty"`
 	// StripPrefix mirrors Provider; surfaced so interactive clients can show
 	// and toggle it without an admin round-trip.
 	StripPrefix bool `json:"stripPrefix"`
@@ -100,18 +113,20 @@ func summarizeProvider(p Provider, active bool) providerSummary {
 		expiresAt = p.OAuth.Expires
 	}
 	return providerSummary{
-		Nickname:    p.Nickname,
-		AuthType:    p.AuthType,
-		Protocol:    p.Protocol,
-		BaseURL:     p.BaseURL,
-		Model:       p.Model,
-		Catalog:     p.Catalog,
-		Context:     p.Context,
-		Plugin:      p.Plugin,
-		Active:      active,
-		HasKey:      p.hasCredential(),
-		ExpiresAt:   expiresAt,
-		StripPrefix: p.StripPrefix,
+		Nickname:     p.Nickname,
+		AuthType:     p.AuthType,
+		Protocol:     p.Protocol,
+		BaseURL:      p.BaseURL,
+		Model:        p.Model,
+		EmbedModel:   p.EmbedModel,
+		EmbedBaseURL: p.EmbedBaseURL,
+		Catalog:      p.Catalog,
+		Context:      p.Context,
+		Plugin:       p.Plugin,
+		Active:       active,
+		HasKey:       p.hasCredential(),
+		ExpiresAt:    expiresAt,
+		StripPrefix:  p.StripPrefix,
 	}
 }
 
@@ -125,13 +140,15 @@ func environmentProvider() Provider {
 		model = defaultModel
 	}
 	return Provider{
-		Nickname: "default",
-		AuthType: authAPIKey,
-		Protocol: protocolOpenAI,
-		APIKey:   os.Getenv("NIF_OPENAI_API_KEY"),
-		BaseURL:  baseURL,
-		Model:    model,
-		Catalog:  os.Getenv("NIF_OPENAI_PROVIDER"),
+		Nickname:     "default",
+		AuthType:     authAPIKey,
+		Protocol:     protocolOpenAI,
+		APIKey:       os.Getenv("NIF_OPENAI_API_KEY"),
+		BaseURL:      baseURL,
+		Model:        model,
+		EmbedModel:   os.Getenv("NIF_OPENAI_EMBED_MODEL"),
+		EmbedBaseURL: os.Getenv("NIF_OPENAI_EMBED_BASE_URL"),
+		Catalog:      os.Getenv("NIF_OPENAI_PROVIDER"),
 	}
 }
 
@@ -329,31 +346,35 @@ func main() {
 		"type":        "object",
 		"description": "Add or update an API-key LLM provider in the store. Use provider_oauth_start for ChatGPT or Claude subscription login. Optionally set active.",
 		"properties": map[string]any{
-			"nickname":    map[string]any{"type": "string", "description": "Provider nickname (e.g. deepseek, openrouter, local)"},
-			"apiKey":      map[string]any{"type": "string", "description": "API key / secret"},
-			"protocol":    map[string]any{"type": "string", "enum": []string{protocolOpenAI, protocolAnthropic}, "description": "Wire API (default openai-chat)"},
-			"baseUrl":     map[string]any{"type": "string", "description": "Optional base URL (defaults by nickname/protocol)"},
-			"model":       map[string]any{"type": "string", "description": "Default model id"},
-			"catalog":     map[string]any{"type": "string", "description": "models.dev provider id for context lookup (optional)"},
-			"context":     map[string]any{"type": "integer", "description": "Explicit context window in tokens (0 = auto)"},
-			"plugin":      map[string]any{"type": "string", "description": "Component name of an optional provider plugin (e.g. provider-deepseek)"},
-			"stripPrefix": map[string]any{"type": "boolean", "description": "Strip the vendor/ prefix from model ids before sending (gateways that route on the canonical id, e.g. devpass)"},
-			"active":      map[string]any{"type": "boolean", "description": "Make this the active provider now (default true if none active)"},
+			"nickname":     map[string]any{"type": "string", "description": "Provider nickname (e.g. deepseek, openrouter, local)"},
+			"apiKey":       map[string]any{"type": "string", "description": "API key / secret"},
+			"protocol":     map[string]any{"type": "string", "enum": []string{protocolOpenAI, protocolAnthropic}, "description": "Wire API (default openai-chat)"},
+			"baseUrl":      map[string]any{"type": "string", "description": "Optional base URL (defaults by nickname/protocol)"},
+			"model":        map[string]any{"type": "string", "description": "Default model id"},
+			"embedModel":   map[string]any{"type": "string", "description": "Embedding model this provider serves (optional; separate from the chat model)"},
+			"embedBaseUrl": map[string]any{"type": "string", "description": "Base URL for embeddings when it differs from the chat base URL (optional)"},
+			"catalog":      map[string]any{"type": "string", "description": "models.dev provider id for context lookup (optional)"},
+			"context":      map[string]any{"type": "integer", "description": "Explicit context window in tokens (0 = auto)"},
+			"plugin":       map[string]any{"type": "string", "description": "Component name of an optional provider plugin (e.g. provider-deepseek)"},
+			"stripPrefix":  map[string]any{"type": "boolean", "description": "Strip the vendor/ prefix from model ids before sending (gateways that route on the canonical id, e.g. devpass)"},
+			"active":       map[string]any{"type": "boolean", "description": "Make this the active provider now (default true if none active)"},
 		},
 		"required":  []string{"nickname", "apiKey"},
 		"x-harness": map[string]any{"approval": "always", "timeoutMs": 30000, "onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
-			Nickname    string `json:"nickname"`
-			APIKey      string `json:"apiKey"`
-			Protocol    string `json:"protocol"`
-			BaseURL     string `json:"baseUrl"`
-			Model       string `json:"model"`
-			Catalog     string `json:"catalog"`
-			Context     int    `json:"context"`
-			Plugin      string `json:"plugin"`
-			StripPrefix bool   `json:"stripPrefix"`
-			Active      *bool  `json:"active"`
+			Nickname     string `json:"nickname"`
+			APIKey       string `json:"apiKey"`
+			Protocol     string `json:"protocol"`
+			BaseURL      string `json:"baseUrl"`
+			Model        string `json:"model"`
+			EmbedModel   string `json:"embedModel"`
+			EmbedBaseURL string `json:"embedBaseUrl"`
+			Catalog      string `json:"catalog"`
+			Context      int    `json:"context"`
+			Plugin       string `json:"plugin"`
+			StripPrefix  bool   `json:"stripPrefix"`
+			Active       *bool  `json:"active"`
 		}
 		if err := decodeArgs(raw, &args); err != nil {
 			return nil, err
@@ -378,16 +399,18 @@ func main() {
 			return nil, errors.New("context must be non-negative")
 		}
 		p := Provider{
-			Nickname:    args.Nickname,
-			AuthType:    authAPIKey,
-			Protocol:    args.Protocol,
-			APIKey:      args.APIKey,
-			BaseURL:     args.BaseURL,
-			Model:       args.Model,
-			Catalog:     args.Catalog,
-			Context:     args.Context,
-			Plugin:      args.Plugin,
-			StripPrefix: args.StripPrefix,
+			Nickname:     args.Nickname,
+			AuthType:     authAPIKey,
+			Protocol:     args.Protocol,
+			APIKey:       args.APIKey,
+			BaseURL:      args.BaseURL,
+			Model:        args.Model,
+			EmbedModel:   args.EmbedModel,
+			EmbedBaseURL: args.EmbedBaseURL,
+			Catalog:      args.Catalog,
+			Context:      args.Context,
+			Plugin:       args.Plugin,
+			StripPrefix:  args.StripPrefix,
 		}.withDefaults()
 
 		// existing rev for upsert
@@ -440,29 +463,33 @@ func main() {
 		"type":        "object",
 		"description": "Update non-secret provider settings while preserving its stored credential. A non-empty apiKey rotates an API-key credential.",
 		"properties": map[string]any{
-			"nickname":    map[string]any{"type": "string"},
-			"apiKey":      map[string]any{"type": "string", "description": "Optional replacement API-key credential; omitted preserves the current credential"},
-			"protocol":    map[string]any{"type": "string", "enum": []string{protocolOpenAI, protocolCodex, protocolAnthropic}},
-			"baseUrl":     map[string]any{"type": "string"},
-			"model":       map[string]any{"type": "string"},
-			"catalog":     map[string]any{"type": "string"},
-			"context":     map[string]any{"type": "integer", "minimum": 0},
-			"plugin":      map[string]any{"type": "string"},
-			"stripPrefix": map[string]any{"type": "boolean", "description": "Strip the vendor/ prefix from model ids before sending"},
+			"nickname":     map[string]any{"type": "string"},
+			"apiKey":       map[string]any{"type": "string", "description": "Optional replacement API-key credential; omitted preserves the current credential"},
+			"protocol":     map[string]any{"type": "string", "enum": []string{protocolOpenAI, protocolCodex, protocolAnthropic}},
+			"baseUrl":      map[string]any{"type": "string"},
+			"model":        map[string]any{"type": "string"},
+			"embedModel":   map[string]any{"type": "string", "description": "Embedding model this provider serves; an empty string clears it"},
+			"embedBaseUrl": map[string]any{"type": "string", "description": "Embeddings base URL; an empty string falls back to baseUrl"},
+			"catalog":      map[string]any{"type": "string"},
+			"context":      map[string]any{"type": "integer", "minimum": 0},
+			"plugin":       map[string]any{"type": "string"},
+			"stripPrefix":  map[string]any{"type": "boolean", "description": "Strip the vendor/ prefix from model ids before sending"},
 		},
 		"required":  []string{"nickname"},
 		"x-harness": map[string]any{"hidden": true, "approval": "always", "timeoutMs": 30000},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
-			Nickname    string  `json:"nickname"`
-			APIKey      *string `json:"apiKey"`
-			Protocol    *string `json:"protocol"`
-			BaseURL     *string `json:"baseUrl"`
-			Model       *string `json:"model"`
-			Catalog     *string `json:"catalog"`
-			Context     *int    `json:"context"`
-			Plugin      *string `json:"plugin"`
-			StripPrefix *bool   `json:"stripPrefix"`
+			Nickname     string  `json:"nickname"`
+			APIKey       *string `json:"apiKey"`
+			Protocol     *string `json:"protocol"`
+			BaseURL      *string `json:"baseUrl"`
+			Model        *string `json:"model"`
+			EmbedModel   *string `json:"embedModel"`
+			EmbedBaseURL *string `json:"embedBaseUrl"`
+			Catalog      *string `json:"catalog"`
+			Context      *int    `json:"context"`
+			Plugin       *string `json:"plugin"`
+			StripPrefix  *bool   `json:"stripPrefix"`
 		}
 		if err := decodeArgs(raw, &args); err != nil {
 			return nil, err
@@ -507,6 +534,14 @@ func main() {
 		}
 		if args.Model != nil {
 			p.Model = strings.TrimSpace(*args.Model)
+		}
+		// An empty string is the documented way to clear an embed model, so
+		// this is not treated as "unset" (that is what omitting it means).
+		if args.EmbedModel != nil {
+			p.EmbedModel = strings.TrimSpace(*args.EmbedModel)
+		}
+		if args.EmbedBaseURL != nil {
+			p.EmbedBaseURL = strings.TrimSpace(*args.EmbedBaseURL)
 		}
 		if args.Catalog != nil {
 			p.Catalog = strings.TrimSpace(*args.Catalog)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -112,5 +113,57 @@ func TestListProviderModelsNoCacheFails(t *testing.T) {
 	_, _, cached, err := listProviderModels(p, false)
 	if err == nil || cached {
 		t.Fatalf("expected failure with no cache available, got cached=%v err=%v", cached, err)
+	}
+}
+
+// The embed model is a second, optional model field on the provider record:
+// one `model` cannot express "chat on A, embeddings on B". It must survive
+// the export/import round trip (the whole struct is marshaled), reach
+// providerSummary so a client can show and edit it without an admin
+// round-trip, and clear with an empty string.
+func TestEmbedModelRoundTrip(t *testing.T) {
+	p := Provider{Nickname: "synthetic", AuthType: authAPIKey, Protocol: protocolOpenAI,
+		APIKey: "sk-test", BaseURL: "https://api.synthetic.new/openai/v1",
+		Model: "syn:small:text", EmbedModel: "hf:nomic-ai/nomic-embed-text-v1.5",
+		EmbedBaseURL: "https://api.synthetic.new/v1"}.withDefaults()
+
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Provider
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.EmbedModel != p.EmbedModel || restored.EmbedBaseURL != p.EmbedBaseURL {
+		t.Fatalf("embed fields lost in the export round trip: %#v", restored)
+	}
+	if restored.Model != "syn:small:text" {
+		t.Fatalf("chat model changed: %q", restored.Model)
+	}
+
+	summary := summarizeProvider(restored, true)
+	if summary.EmbedModel != p.EmbedModel || summary.EmbedBaseURL != p.EmbedBaseURL {
+		t.Fatalf("providerSummary dropped the embed fields: %#v", summary)
+	}
+	if summary.Model != "syn:small:text" {
+		t.Fatalf("summary chat model = %q", summary.Model)
+	}
+
+	// An empty embed model is the way to clear it, and it is omitted from the
+	// wire shape rather than sent as an empty string.
+	cleared := summarizeProvider(Provider{Nickname: "synthetic", AuthType: authAPIKey,
+		APIKey: "sk-test", BaseURL: "https://example.test/v1"}, false)
+	encoded, err := json.Marshal(cleared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "embedModel") {
+		t.Fatalf("cleared embed model still serialized: %s", encoded)
+	}
+
+	// withDefaults must not invent an embed model the endpoint would 400 on.
+	if got := (Provider{Nickname: "x", APIKey: "k"}).withDefaults().EmbedModel; got != "" {
+		t.Fatalf("withDefaults invented an embed model: %q", got)
 	}
 }
