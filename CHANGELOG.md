@@ -6,6 +6,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Instruction discovery now uses AGENTS files only, at conversation birth and
+  during lazy subdirectory reads. `CLAUDE.md`/`CLAUDE.MD` are no longer loaded
+  automatically; existing persisted system prompts remain unchanged.
+
 - Replace supported Multipass transport with native Lima provisioning/relay; preserve SSH and Incus. Old Multipass profiles explicitly require new verified Lima receipts. Digest-pinned Ubuntu images, no host mounts or credential forwarding; real Lima smoke pending authorization.
 
 

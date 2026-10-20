@@ -49,7 +49,7 @@ components:
 
   # The conversation constitution: session runners ask svc.systemprompt.call
   # once per conversation for the real system prompt (product prompt + the
-  # repo's AGENTS.md/CLAUDE.md chain). Absent/slow/broken → core's minimal
+  # repo's AGENTS instruction chain). Absent/slow/broken → core's minimal
   # baked-in fallback. Replace this component to replace the constitution.
   - name: systemprompt
     build: {lang: nim, src: components/systemprompt/main.nim}

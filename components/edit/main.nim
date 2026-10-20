@@ -456,8 +456,7 @@ type SeenEntry = object
 
 var gLazyInstructions = initTable[string, bool]()
 
-const instructionCandidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
-                               "CLAUDE.md", "CLAUDE.MD"]
+const instructionCandidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD"]
 const localInstruction = "AGENTS.local.md"
 
 proc lazyInstructionText(session, target: string): string =

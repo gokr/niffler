@@ -3455,8 +3455,8 @@ itself.
    `<project_context>`/`<project_instructions path="...">` tags after the
    product prompt:
    - per directory, first hit wins: `AGENTS.override.md`, `AGENTS.md`,
-     `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (one file per directory —
-     `AGENTS.md` shadows a `CLAUDE.md` next to it; symlinks are followed;
+     `AGENTS.MD` (one primary file per directory; symlinks are followed;
+     `CLAUDE.md` and `CLAUDE.MD` are not automatically loaded;
      `AGENTS.local.md` is added in addition, never as a candidate: it never
      shadows the primary file, and it is collected for every directory of the
      walk, not only lazily);
@@ -3472,7 +3472,7 @@ itself.
      ancestor walk would otherwise apply the same logical repo scope twice;
    - lazy loading: a `read` that enters a directory *below* the harness
      root appends any newly discovered `AGENTS.override.md`/`AGENTS.md`/
-     `AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD` (+ `AGENTS.local.md`) for the
+     `AGENTS.MD` (+ `AGENTS.local.md`) for the
      directories on the path, each wrapped in `<lazy_project_instructions
      path="…">`, once per session — a monorepo subtree stays out of the
      frozen head until the model actually enters it.

@@ -247,6 +247,34 @@ proc main() =
         directPrompt.contains("harness root") and
         not directPrompt.contains(root), directPrompt)
 
+  # CLAUDE-only directories must not contribute either supported spelling.
+  # Local AGENTS instructions remain additive even without a primary file.
+  for name in ["CLAUDE.md", "CLAUDE.MD"]:
+    let dir = root / (if name == "CLAUDE.md": "claude-lower" else: "claude-upper")
+    createDir(dir)
+    writeFile(dir / name, "FOREIGN-INSTRUCTIONS-MUST-NOT-LOAD\n")
+    writeFile(dir / "AGENTS.local.md", "ADDITIVE-LOCAL-INSTRUCTIONS\n")
+    let prompt = call(nc, "systemprompt", "systemprompt",
+      %*{"cwd": dir}, 10_000){"systemPrompt"}.getStr("")
+    check(name & " alone is ignored; local AGENTS still loads",
+      not prompt.contains("FOREIGN-INSTRUCTIONS-MUST-NOT-LOAD") and
+      prompt.contains("ADDITIVE-LOCAL-INSTRUCTIONS"), prompt)
+    writeFile(dir / "AGENTS.MD", "UPPERCASE-AGENTS-INSTRUCTIONS\n")
+    writeFile(dir / "AGENTS.override.md", "OVERRIDE-AGENTS-INSTRUCTIONS\n")
+    let overridden = call(nc, "systemprompt", "systemprompt",
+      %*{"cwd": dir}, 10_000){"systemPrompt"}.getStr("")
+    check("AGENTS override priority remains intact beside " & name,
+      overridden.contains("OVERRIDE-AGENTS-INSTRUCTIONS") and
+      overridden.contains("ADDITIVE-LOCAL-INSTRUCTIONS") and
+      not overridden.contains("UPPERCASE-AGENTS-INSTRUCTIONS") and
+      not overridden.contains("FOREIGN-INSTRUCTIONS-MUST-NOT-LOAD"), overridden)
+    removeFile(dir / "AGENTS.override.md")
+    let uppercase = call(nc, "systemprompt", "systemprompt",
+      %*{"cwd": dir}, 10_000){"systemPrompt"}.getStr("")
+    check("AGENTS.MD compatibility remains intact beside " & name,
+      uppercase.contains("UPPERCASE-AGENTS-INSTRUCTIONS") and
+      not uppercase.contains("FOREIGN-INSTRUCTIONS-MUST-NOT-LOAD"), uppercase)
+
   # --- workspace ancestor walk: inside root only -----------------------------
   # A context file in an ancestor of cwd is injected while the walk stays
   # inside the harness root; a file ABOVE the root must never leak in (the

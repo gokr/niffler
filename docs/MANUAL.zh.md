@@ -1865,8 +1865,8 @@ OAuth、环境凭据、headers、请求转换和原生 API
 2. 仓库的本地上下文文件，Pi 风格，在产品提示之后包裹在
    `<project_context>`/`<project_instructions path="...">` 标签中：
    - 每个目录，首次命中胜出：`AGENTS.override.md`、`AGENTS.md`、
-     `AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD`（每个目录一个文件——
-     `AGENTS.md` 遮蔽旁边的 `CLAUDE.md`；符号链接被跟随；
+     `AGENTS.MD`（每个目录一个主要文件；跟随符号链接；
+     不再自动加载 `CLAUDE.md` 和 `CLAUDE.MD`；
      `AGENTS.local.md` 是额外添加的，绝不是候选：它绝不
      遮蔽主文件，并且它为遍历的每个目录收集，而不仅是惰性收集）；
    - 从会话的 cwd **向上到 harness 根
@@ -1879,7 +1879,7 @@ OAuth、环境凭据、headers、请求转换和原生 API
      否则祖先遍历会应用同一逻辑仓库范围两次；
    - 惰性加载：进入 harness
      根*之下*目录的 `read` 会为路径上的目录追加任何新发现的 `AGENTS.override.md`/`AGENTS.md`/
-     `AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD`（+ `AGENTS.local.md`），每个包裹在 `<lazy_project_instructions
+     `AGENTS.MD`（+ `AGENTS.local.md`），每个包裹在 `<lazy_project_instructions
      path="…">` 中，每个会话一次——monorepo 子树在模型实际进入之前
      不进入冻结头部。
 3. 每个会话的 `<workspace>` 尾部，仅在

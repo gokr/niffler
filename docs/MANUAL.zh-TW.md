@@ -2019,8 +2019,8 @@ system prompt 不是 LLM 呼叫的工具 —— 它是每個會話開始時所�
 2. 儲存庫的本機 context 檔案，Pi 風格，在產品 prompt 之後以
    `<project_context>`/`<project_instructions path="...">` 標籤包住：
    - 每個目錄，先命中者勝：`AGENTS.override.md`、`AGENTS.md`、
-     `AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD`（每個目錄一個檔案 ——
-     `AGENTS.md` 會遮蔽旁邊的 `CLAUDE.md`；符號連結會被跟隨；
+     `AGENTS.MD`（每個目錄一個主要檔案；跟隨符號連結；
+     不再自動載入 `CLAUDE.md` 和 `CLAUDE.MD`；
      `AGENTS.local.md` 是額外加入，絕不作為候選：它絕不
      遮蔽主要檔案，且會為走訪的每個目錄收集，而非僅
      延遲收集）；
@@ -2033,7 +2033,7 @@ system prompt 不是 LLM 呼叫的工具 —— 它是每個會話開始時所�
    - worktree 遮蔽規則：當 harness 根目錄是主儲存庫下的 `git worktree` 時，主儲存庫根目錄的 context 檔案會被跳過 ——
      否則祖先走訪會將同一邏輯儲存庫範圍套用兩次；
    - 延遲載入：進入 harness 根目錄*之下*目錄的 `read` 會為路徑上的目錄附加任何新發現的 `AGENTS.override.md`/`AGENTS.md`/
-     `AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD`（+ `AGENTS.local.md`），每個以 `<lazy_project_instructions
+     `AGENTS.MD`（+ `AGENTS.local.md`），每個以 `<lazy_project_instructions
      path="…">` 包住，每個會話一次 —— monorepo 子樹會留在
      凍結的頭部之外，直到 model 實際進入它。
 3. 每個會話的 `<workspace>` 尾端，僅在會話的 cwd **不是** harness 根目錄時附加：它會指出工作
