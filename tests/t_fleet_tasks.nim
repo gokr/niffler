@@ -141,16 +141,23 @@ proc main() =
     if c.storeGet("fleetjob", "idle-settlement").value{"delivered"}.getBool(false): break
     sleep(100)
   check("idle parent automatically woken", c.storeGet("fleetjob", "idle-settlement").value{"delivered"}.getBool(false))
-  seedNotice("budget-settlement", "origin")
-  # delivered is stamped when the runner appends/acks the notice, BEFORE
-  # the automatic wake turn finishes. Do not mistake that durable ack for
-  # runner idleness: under pooled-suite load the next call can still be busy.
-  # Retry only that explicit refusal; other errors must fail the assertion.
+  # The budget decline must be observed while a notice is actually pending.
+  # Two timing facts make a single shot racy: `delivered` is stamped when the
+  # runner appends/acks a notice BEFORE that turn finishes (so a wake turn
+  # started by the previous check can still drain a freshly seeded notice),
+  # and a busy runner refuses with "busy". Re-seed and retry until the runner
+  # is idle with a pending notice; only then does the answer mean anything.
   var declined = newJNull()
   for attempt in 0..<100:
+    var delivered = false
+    try:
+      delivered = c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(true)
+    except CatchableError:
+      delivered = true  # not created yet (or already swept): (re)seed
+    if delivered:
+      seedNotice("budget-settlement", "origin")
     declined = call(nc, "core", "session", %*{"sessionId": "origin", "wake": true}, 60000)
-    if declined{"error"}.getStr("") !=
-        "the conversation is mid-turn — retry when the turn finishes": break
+    if declined{"wake"}.getStr("") == "declined": break
     sleep(100)
   check("wake budget declines with notice pending", declined{"wake"}.getStr("") == "declined" and
     not c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false), $declined)
