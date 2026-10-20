@@ -113,8 +113,16 @@ Fleet `fleet_install {transport: lima, revision: main}` against this VM:
 Known gap found by the smoke: `fleet_install` writes the receipt and brings the
 service up, but the bus call that started it did not return to `cli` (killed
 after 20 min, no output, while the component stayed healthy — a later
-`fleet_probe` answered immediately). Needs diagnosis: a long-lived `install`
-reply path, not a transport fault.
+`fleet_probe` answered immediately).
+
+Follow-up: an isolated bus with `ping_interval: 200ms`, `ping_max: 2`
+reproduces reply loss with a blocking handler in seconds. Fleet's subprocess
+wait never serviced the single-threaded Nim client's socket, so the server
+could disconnect it before the reply. The transport now pumps protocol traffic
+while waiting (not queued tool handlers); `tests/t_fleet_heartbeat.nim` verifies
+an unserviced negative control loses the reply while the connected runner
+returns it and remains usable. This establishes the failure mechanism, not a
+repeat of the original 13-minute VM installation.
 
 Delegation is **not** exercised end-to-end: the guest `.env` is the untouched
 `.env.example`, so the instance has no provider credentials and cannot run a

@@ -15,8 +15,9 @@ proc schema(properties: JsonNode, required: seq[string], description: string): J
 proc handler(name: string): ToolHandler =
   result = proc(c: Component, args: JsonNode): JsonNode =
     var logs: seq[string]
+    let transport = connectedRunner(c)
     let runner: CommandRunner = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
-      result = nativeRunner(argv, input, timeoutMs)
+      result = transport(argv, input, timeoutMs)
       logs.add(result.logPath)
     try:
       result = if name == "install": install(runner, args)

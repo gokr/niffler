@@ -6,6 +6,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Fleet transport waits now service NATS protocol traffic without running other
+  handlers re-entrantly. Long installs could finish and save a verified receipt
+  after the bus had disconnected the idle-looking component, losing the reply.
+  Install/update/lifecycle and delegation-worker transports share the fix; a
+  fast-heartbeat bus regression includes an unserviced negative control.
+
 - Replace supported Multipass transport with native Lima provisioning/relay; preserve SSH and Incus. Old Multipass profiles explicitly require new verified Lima receipts. Digest-pinned Ubuntu images, no host mounts or credential forwarding; real Lima smoke pending authorization.
 
 

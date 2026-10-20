@@ -11,7 +11,8 @@ type
 
 proc refuse(message: string) {.noreturn.} = raise newException(Refusal, message)
 
-proc nativeRunner*(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+proc nativeRunnerWithWait*(argv: seq[string], input: string, timeoutMs: int,
+                           onWait: proc() {.closure.}): CommandResult =
   ## No shell joining; stderr is private and never mixed into catalog JSON.
   let scratch = getEnv("NIF_ROOT", getCurrentDir()) / "var" / "fleet" / "transport"
   createDir(scratch)
@@ -51,6 +52,9 @@ proc nativeRunner*(argv: seq[string], input: string, timeoutMs: int): CommandRes
     if waitpid(pid, status, WNOHANG) == pid:
       reaped = true
       break
+    # The Nim bus client has no reader thread. Keep protocol traffic moving
+    # during long installs without dispatching another handler re-entrantly.
+    if onWait != nil: onWait()
     sleep(20)
   if not reaped:
     killGroup(pid, SIGKILL)
@@ -63,6 +67,9 @@ proc nativeRunner*(argv: seq[string], input: string, timeoutMs: int): CommandRes
     result.code = 125
     return
   result.output = readFile(outp)
+
+proc nativeRunner*(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+  nativeRunnerWithWait(argv, input, timeoutMs, nil)
 
 proc checked(run: CommandRunner, argv: seq[string], input = "", timeoutMs = 60000): string =
   let r = run(argv, input, timeoutMs)

@@ -254,6 +254,7 @@ var/bin/fleet: $(call NIM_SRCS,fleet) $(SDK_NIM) $(NIM_CONF) | var/bin
 
 var/bin/test_t_fleet: $(call NIM_SRCS,fleet) var/bin/fleet
 var/bin/test_t_fleet_tasks: $(call NIM_SRCS,fleet) var/bin/fleet
+var/bin/test_t_fleet_heartbeat: $(call NIM_SRCS,fleet) var/bin/nats-server
 var/bin/test_t_fleet_faults: $(call NIM_SRCS,fleet) var/bin/fleet var/bin/fixture-fleet-fault-store
 var/bin/cli: $(call NIM_SRCS,cli)
 var/bin/test_t_relay: $(call NIM_SRCS,cli) var/bin/cli

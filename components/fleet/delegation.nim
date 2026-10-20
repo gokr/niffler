@@ -6,6 +6,18 @@ import natsnim
 import niffler/sdk
 import provision
 
+proc connectedRunner*(c: Component): CommandRunner =
+  ## Service protocol traffic only while waiting for a transport child. Do not
+  ## dispatch queued handlers: install/update must remain serialized.
+  var lastPump = 0.0
+  result = proc(argv: seq[string], input: string, timeoutMs: int): CommandResult =
+    nativeRunnerWithWait(argv, input, timeoutMs, proc() =
+      if epochTime() - lastPump >= 0.1:
+        lastPump = epochTime()
+        # Flush pumps PING/PONG and queues incoming messages without invoking
+        # component handlers. Failure must not replay a remote mutation.
+        discard natsConnection_FlushTimeout(c.nc.conn, 50))
+
 proc refuse(s: string) {.noreturn.} = raise newException(ValueError, s)
 proc owner*(args: JsonNode): string =
   result = args{"__session", "session"}.getStr("")
@@ -274,4 +286,4 @@ proc workerMain*() =
   let c = newComponent("fleet-worker", "0.1.0")
   c.nc = connect(getEnv("NIF_NATS_URL"))
   defer: c.nc.close()
-  c.reconcileJob(paramStr(2), nativeRunner)
+  c.reconcileJob(paramStr(2), connectedRunner(c))
