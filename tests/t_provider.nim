@@ -6,9 +6,69 @@
 ## active-fallback on removal. Ends by proving llm resolves the active
 ## stored provider for its chat calls.
 
-import std/[json, os, osproc, strutils, times]
+import std/[json, net, os, osproc, strutils, times]
 import natsnim
 import helpers
+
+const embedStub = """
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        size = int(self.headers.get('content-length') or 0)
+        body = json.loads(self.rfile.read(size) or b'{}')
+        with open(sys.argv[2], 'a') as log:
+            log.write(json.dumps({"path": self.path,
+                                  "auth": self.headers.get('Authorization') or "",
+                                  "body": body}) + "\n")
+        data = [{"object": "embedding", "index": i,
+                 "embedding": [float(i) + 0.5, 1.0, 2.0]}
+                for i in range(len(body.get("input") or []))]
+        out = json.dumps({"object": "list", "model": body.get("model"), "data": data,
+                          "usage": {"prompt_tokens": len(data),
+                                    "total_tokens": len(data)}}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+    def log_message(self, *args):
+        pass
+
+HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+
+proc startEmbedServer(sandboxRoot, logPath: string): (Process, int) =
+  ## A minimal OpenAI-compatible /embeddings endpoint on a free loopback
+  ## port; it appends each request (path, auth, body) to `logPath` so the
+  ## test can assert what llm actually sent. The stub is a scratch script in
+  ## the test's own sandbox — no extra toolchain, no extra fixture binary.
+  var port = 0
+  let probe = newSocket()
+  probe.bindAddr(Port(0), "127.0.0.1")
+  port = int(probe.getLocalAddr()[1])
+  probe.close()
+  createDir(sandboxRoot / "var")
+  let script = sandboxRoot / "var" / "embed-stub.py"
+  writeFile(script, embedStub)
+  let p = startProcess("python3", args = [script, $port, logPath],
+                       options = {poUsePath})
+  for _ in 0 ..< 100:
+    try:
+      let sock = newSocket()
+      sock.connect("127.0.0.1", Port(port))
+      sock.close()
+      break
+    except CatchableError:
+      sleep(50)
+  return (p, port)
+
+proc embedRequests(logPath: string): seq[JsonNode] =
+  if not fileExists(logPath): return
+  for line in lines(logPath):
+    if line.strip().len > 0:
+      result.add(parseJson(line))
 
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
@@ -110,6 +170,83 @@ proc main() =
   let afterUpdate = call(nc, "provider", "provider_active", newJObject())
   check("provider_update preserves the stored API key",
         afterUpdate{"provider"}{"apiKey"}.getStr("") == "sk-test-deepseek-2", $afterUpdate)
+
+  # --- embed model: a second, optional model field on the record. One
+  # `model` cannot express "chat on A, embeddings on B", which is the normal
+  # case for a gateway. It must round-trip through the redacted summary, the
+  # hidden full read, export and import, and llm must see it.
+  let embedSet = call(nc, "provider", "provider_update", %*{
+    "nickname": "deepseek",
+    "embedModel": "deepseek-embed",
+    "embedBaseUrl": "https://api.deepseek.com/embed"
+  })
+  check("provider_update stores an embed model beside the chat model",
+        embedSet{"ok"}.getBool(false) and
+        embedSet{"provider"}{"embedModel"}.getStr("") == "deepseek-embed" and
+        embedSet{"provider"}{"embedBaseUrl"}.getStr("") == "https://api.deepseek.com/embed" and
+        embedSet{"provider"}{"model"}.getStr("") == "deepseek-chat", $embedSet)
+  let embedFull = call(nc, "provider", "provider_get", %*{"nickname": "deepseek"})
+  check("provider_get carries the embed fields for internal routing",
+        embedFull{"provider"}{"embedModel"}.getStr("") == "deepseek-embed" and
+        embedFull{"provider"}{"embedBaseUrl"}.getStr("") == "https://api.deepseek.com/embed", $embedFull)
+  let embedResolved = call(nc, "llm", "llm_resolve", %*{"provider": "deepseek"})
+  check("llm_resolve surfaces the embed model as a capability",
+        embedResolved{"embedModel"}.getStr("") == "deepseek-embed", $embedResolved)
+  # An empty string is the documented way to clear it.
+  let embedCleared = call(nc, "provider", "provider_update", %*{
+    "nickname": "deepseek", "embedModel": ""
+  })
+  check("provider_update clears the embed model with an empty string",
+        embedCleared{"ok"}.getBool(false) and
+        embedCleared{"provider"}{"embedModel"}.getStr("") == "", $embedCleared)
+  let noEmbed = call(nc, "llm", "llm_resolve", %*{"provider": "deepseek"})
+  check("a cleared embed model is reported as absent, not guessed",
+        noEmbed{"embedModel"}.getStr("") == "", $noEmbed)
+
+  # --- llm.embed refuses a provider with no embed model, naming the fix
+  # (a guess would reach the endpoint as a 400 on a chat model id).
+  let noEmbedCall = call(nc, "llm", "embed", %*{"input": ["hello"], "provider": "deepseek"})
+  check("llm.embed names the missing embed model and its fix",
+        noEmbedCall{"error"}.getStr("").contains("no embedding model") and
+        noEmbedCall{"error"}.getStr("").contains("provider_add"), $noEmbedCall)
+
+  # --- llm.embed against a stub OpenAI-compatible endpoint: the model comes
+  # from embedModel, the request goes to embedBaseUrl, and the vectors come
+  # back aligned with the inputs.
+  let embedLog = sandbox.root / "var" / "embed-calls.jsonl"
+  let (embedProc, embedPort) = startEmbedServer(sandbox.root, embedLog)
+  try:
+    let embedBase = "http://127.0.0.1:" & $embedPort & "/v1"
+    let withEmbed = call(nc, "provider", "provider_update", %*{
+      "nickname": "openrouter",
+      "embedModel": "hf:nomic-ai/nomic-embed-text-v1.5",
+      "embedBaseUrl": embedBase
+    })
+    check("provider_update stores the embed model and its own base URL",
+          withEmbed{"ok"}.getBool(false), $withEmbed)
+    let embedded = call(nc, "llm", "embed", %*{
+      "input": ["cat", "dog"], "provider": "openrouter"
+    }, 30_000)
+    check("llm.embed returns one vector per input",
+          embedded{"ok"}.getBool(false) and
+          embedded{"model"}.getStr("") == "hf:nomic-ai/nomic-embed-text-v1.5" and
+          embedded{"dimensions"}.getInt(0) == 3 and
+          embedded{"embeddings"}.len == 2 and
+          embedded{"embeddings"}[1][0].getFloat(0) == 1.5, $embedded)
+    let calls = embedRequests(embedLog)
+    check("llm.embed posts to embedBaseUrl/embeddings with the embed model",
+          calls.len == 1 and
+          calls[0]{"path"}.getStr("") == "/v1/embeddings" and
+          calls[0]{"body"}{"model"}.getStr("") == "hf:nomic-ai/nomic-embed-text-v1.5" and
+          calls[0]{"body"}{"input"}.len == 2 and
+          calls[0]{"auth"}.getStr("") == "Bearer sk-test-openrouter", $calls)
+    let tooMany = call(nc, "llm", "embed", %*{
+      "input": newJArray(), "provider": "openrouter"
+    })
+    check("llm.embed refuses an empty input array", tooMany{"error"} != nil, $tooMany)
+  finally:
+    embedProc.terminate()
+    embedProc.close()
 
   # --- list: redacted keys, active marker
   let list = call(nc, "provider", "provider_list", newJObject())

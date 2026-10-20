@@ -425,7 +425,7 @@ func TestSanitizeMessagesStripsPriorTurnsReasoning(t *testing.T) {
 			ToolCalls: []openai.ToolCall{
 				{ID: "c1", Type: openai.ToolTypeFunction,
 					Function: openai.FunctionCall{Name: "bash", Arguments: `{}`}},
-				}},
+			}},
 		{Role: openai.ChatMessageRoleTool, Content: "{}"},
 	}
 	sanitizeMessages(msgs)
@@ -979,5 +979,133 @@ func TestOpenAIMessagesShapeForStrictProviders(t *testing.T) {
 		if _, ok := m["content"].(string); !ok {
 			t.Fatalf("messages[%d] (%v) needs string content, got: %v", i, m["role"], m)
 		}
+	}
+}
+
+// resolveEmbedEndpoint is where the three decisions of an embedding call are
+// made: the model (call override → the provider's embedModel → a named
+// failure), the base URL (EmbedBaseURL → BaseURL), and the credential that
+// comes from the same resolution as chat. A silent fallback to the chat model
+// would reach the endpoint as a 400, which is what the error prevents.
+func TestEmbedHandlerNamesTheMissingEmbedModel(t *testing.T) {
+	withEnv(t, map[string]string{
+		"NIF_OPENAI_API_KEY":  "sk-env",
+		"NIF_OPENAI_BASE_URL": "https://api.example.test/v1",
+		"NIF_OPENAI_MODEL":    "chat-model",
+	}, map[string]string{"NIF_LLM_PROVIDERS": "", "NIF_OPENAI_EMBED_MODEL": ""})
+
+	endpoint, err := resolveEmbedEndpoint(nil, "", "")
+	if err == nil {
+		t.Fatalf("resolved an embedding endpoint with no embed model: %#v", endpoint)
+	}
+	if !strings.Contains(err.Error(), "no embedding model") || !strings.Contains(err.Error(), "provider_add") {
+		t.Fatalf("error must name the fix: %v", err)
+	}
+	if strings.Contains(err.Error(), "chat-model") {
+		t.Fatalf("error offered the chat model as a fallback: %v", err)
+	}
+}
+
+func TestEmbedHandlerPostsToTheEmbeddingRoute(t *testing.T) {
+	var gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"model":  "hf:nomic-ai/nomic-embed-text-v1.5",
+			"data": []map[string]any{
+				// Deliberately out of order: the handler indexes by `index`.
+				{"object": "embedding", "index": 1, "embedding": []float32{0.3, 0.4}},
+				{"object": "embedding", "index": 0, "embedding": []float32{0.1, 0.2}},
+			},
+			"usage": map[string]any{"prompt_tokens": 7, "total_tokens": 7},
+		})
+	}))
+	defer server.Close()
+	withEnv(t, map[string]string{
+		"NIF_OPENAI_API_KEY":        "sk-env",
+		"NIF_OPENAI_BASE_URL":       server.URL + "/chat-only/v1",
+		"NIF_OPENAI_EMBED_MODEL":    "hf:nomic-ai/nomic-embed-text-v1.5",
+		"NIF_OPENAI_EMBED_BASE_URL": server.URL + "/v1",
+	}, map[string]string{"NIF_LLM_PROVIDERS": "", "NIF_OPENAI_MODEL": "chat-model"})
+
+	result, err := embedHandler(nil, json.RawMessage(`{"input": ["cat", "dog"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/embeddings" {
+		t.Fatalf("path = %q, want the EmbedBaseURL route", gotPath)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["model"] != "hf:nomic-ai/nomic-embed-text-v1.5" {
+		t.Fatalf("body model = %v", sent["model"])
+	}
+	if inputs, _ := sent["input"].([]any); len(inputs) != 2 {
+		t.Fatalf("body input = %v", sent["input"])
+	}
+
+	got := result.(map[string]any)
+	embeddings := got["embeddings"].([][]float32)
+	if len(embeddings) != 2 || embeddings[0][0] != 0.1 || embeddings[1][0] != 0.3 {
+		t.Fatalf("embeddings not aligned by index: %v", embeddings)
+	}
+	if got["dimensions"] != 2 || got["model"] != "hf:nomic-ai/nomic-embed-text-v1.5" {
+		t.Fatalf("result = %#v", got)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["prompt_tokens"] != 7 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+// A provider whose protocol has no OpenAI-compatible /embeddings route is
+// refused with the fix named, instead of sending a chat-shaped request.
+func TestEmbedHandlerRefusesForeignProtocol(t *testing.T) {
+	withEnv(t, map[string]string{
+		"NIF_OPENAI_API_KEY":        "sk-env",
+		"NIF_OPENAI_EMBED_MODEL":    "some-embed-model",
+		"NIF_OPENAI_EMBED_BASE_URL": "https://api.example.test/v1",
+		"NIF_LLM_PROVIDERS":         `{"claude": {"protocol": "anthropic", "apiKey": "sk-a", "baseUrl": "https://api.anthropic.com", "embedModel": "e"}}`,
+		"NIF_OPENAI_BASE_URL":       "https://api.example.test/v1",
+	}, nil)
+	if _, err := embedHandler(nil, json.RawMessage(`{"input": ["x"], "provider": "claude"}`)); err == nil ||
+		!strings.Contains(err.Error(), "OpenAI-compatible") {
+		t.Fatalf("anthropic lane accepted an embeddings call: %v", err)
+	}
+}
+
+func TestEmbedHandlerRejectsShapelessInput(t *testing.T) {
+	for name, args := range map[string]string{
+		"missing input": `{}`,
+		"empty input":   `{"input": []}`,
+		"blank entry":   `{"input": ["ok", " "]}`,
+		"bad dims":      `{"input": ["ok"], "dimensions": -1}`,
+	} {
+		if _, err := embedHandler(nil, json.RawMessage(args)); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+}
+
+// The capability is visible from llm_resolve so a caller can decide before
+// making a call that would fail.
+func TestResolveReportsEmbedModel(t *testing.T) {
+	withEnv(t, map[string]string{
+		"NIF_OPENAI_API_KEY":     "sk-env",
+		"NIF_OPENAI_BASE_URL":    "https://api.example.test/v1",
+		"NIF_OPENAI_MODEL":       "chat-model",
+		"NIF_OPENAI_EMBED_MODEL": "embed-model",
+	}, map[string]string{"NIF_LLM_PROVIDERS": ""})
+	result, err := resolveHandler(nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.(map[string]any)["embedModel"]; got != "embed-model" {
+		t.Fatalf("llm_resolve embedModel = %v", got)
 	}
 }

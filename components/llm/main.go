@@ -60,14 +60,19 @@ const (
 )
 
 type provider struct {
-	BaseURL   string `json:"baseUrl"`
-	APIKey    string `json:"apiKey"`
-	Model     string `json:"model"`
-	Context   int    `json:"context"`
-	Catalog   string `json:"catalog"`
-	Protocol  string `json:"protocol"`
-	AuthType  string `json:"authType"`
-	AccountID string `json:"accountId"`
+	BaseURL string `json:"baseUrl"`
+	APIKey  string `json:"apiKey"`
+	Model   string `json:"model"`
+	// EmbedModel is the provider's embedding model (empty = the provider
+	// serves no embeddings). EmbedBaseURL overrides BaseURL for embeddings
+	// only; both mirror the provider component's records.
+	EmbedModel   string `json:"embedModel"`
+	EmbedBaseURL string `json:"embedBaseUrl"`
+	Context      int    `json:"context"`
+	Catalog      string `json:"catalog"`
+	Protocol     string `json:"protocol"`
+	AuthType     string `json:"authType"`
+	AccountID    string `json:"accountId"`
 	// StripPrefix models a gateway that routes on the canonical id and
 	// rejects vendor-prefixed ids ("alibaba/glm-5.2"); send "glm-5.2".
 	StripPrefix bool `json:"stripPrefix"`
@@ -335,8 +340,8 @@ func catalogOwners(ctx context.Context, c *sdk.Component, model string) []string
 // modelsResolveAnswer is the models_resolve result the guard reads: a unique
 // owner arrives as the resolved descriptor, an ambiguous bare id as its matches.
 type modelsResolveAnswer struct {
-	Found   bool     `json:"found"`
-	Matches []string `json:"matches"`
+	Found    bool     `json:"found"`
+	Matches  []string `json:"matches"`
 	Provider struct {
 		ID string `json:"id"`
 	} `json:"provider"`
@@ -406,12 +411,14 @@ func loadProviders() (map[string]provider, error) {
 	}
 	ps := map[string]provider{
 		defaultProvider: {
-			BaseURL:  base,
-			APIKey:   os.Getenv("NIF_OPENAI_API_KEY"),
-			Model:    model,
-			Catalog:  os.Getenv("NIF_OPENAI_PROVIDER"),
-			Protocol: protocolOpenAI,
-			AuthType: authAPIKey,
+			BaseURL:      base,
+			APIKey:       os.Getenv("NIF_OPENAI_API_KEY"),
+			Model:        model,
+			EmbedModel:   os.Getenv("NIF_OPENAI_EMBED_MODEL"),
+			EmbedBaseURL: os.Getenv("NIF_OPENAI_EMBED_BASE_URL"),
+			Catalog:      os.Getenv("NIF_OPENAI_PROVIDER"),
+			Protocol:     protocolOpenAI,
+			AuthType:     authAPIKey,
 		},
 	}
 	if v := os.Getenv("NIF_LLM_PROVIDERS"); v != "" {
@@ -488,11 +495,13 @@ type registryResponse struct {
 			Access    string `json:"access"`
 			AccountID string `json:"accountId"`
 		} `json:"oauth"`
-		BaseURL     string `json:"baseUrl"`
-		Model       string `json:"model"`
-		Catalog     string `json:"catalog"`
-		Context     int    `json:"context"`
-		StripPrefix bool   `json:"stripPrefix"`
+		BaseURL      string `json:"baseUrl"`
+		Model        string `json:"model"`
+		EmbedModel   string `json:"embedModel"`
+		EmbedBaseURL string `json:"embedBaseUrl"`
+		Catalog      string `json:"catalog"`
+		Context      int    `json:"context"`
+		StripPrefix  bool   `json:"stripPrefix"`
 	} `json:"provider"`
 }
 
@@ -535,15 +544,17 @@ func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (
 		authType = authAPIKey
 	}
 	return provider{
-		BaseURL:     resp.Provider.BaseURL,
-		APIKey:      credential,
-		Model:       resp.Provider.Model,
-		Catalog:     resp.Provider.Catalog,
-		Context:     resp.Provider.Context,
-		Protocol:    protocol,
-		AuthType:    authType,
-		AccountID:   accountID,
-		StripPrefix: resp.Provider.StripPrefix,
+		BaseURL:      resp.Provider.BaseURL,
+		APIKey:       credential,
+		Model:        resp.Provider.Model,
+		EmbedModel:   resp.Provider.EmbedModel,
+		EmbedBaseURL: resp.Provider.EmbedBaseURL,
+		Catalog:      resp.Provider.Catalog,
+		Context:      resp.Provider.Context,
+		Protocol:     protocol,
+		AuthType:     authType,
+		AccountID:    accountID,
+		StripPrefix:  resp.Provider.StripPrefix,
 	}, resp.Provider.Nickname, source, true
 }
 
@@ -656,6 +667,153 @@ func logTiming(c *sdk.Component, format string, args ...any) {
 		return
 	}
 	_ = c.Log("debug", fmt.Sprintf(format, args...), nil)
+}
+
+// ---------------------------------------------------------------------------
+// Embeddings
+//
+// One HTTP shape covers the providers this component already speaks through
+// OpenAI-compatible chat: POST {base}/embeddings with {model, input}. It is
+// deliberately a raw vector producer — ranking a candidate set the caller
+// already holds, or persisting the vectors itself, is the caller's business
+// (a store-backed semantic recall is a separate work item). The model comes
+// from the provider's embedModel, never from a guess: an endpoint handed a
+// chat model answers 400, so a missing embedModel is reported with the fix.
+
+type embedArgs struct {
+	Input      []string `json:"input"`
+	Model      string   `json:"model"`
+	Provider   string   `json:"provider"`
+	Dimensions int      `json:"dimensions"`
+}
+
+// maxEmbedInputs bounds one call: providers enforce their own batch limits,
+// but a runaway array must fail here with a readable message instead of as a
+// transport megabyte-limit timeout.
+const maxEmbedInputs = 256
+
+// embedEndpoint is the resolved destination of one embedding call.
+type embedEndpoint struct {
+	Model     string
+	BaseURL   string
+	APIKey    string
+	Protocol  string
+	Provider  string
+	AccountID string
+}
+
+// resolveEmbedEndpoint applies the precedence embedModel → call override and
+// EmbedBaseURL → BaseURL, and refuses (naming the fix) when the provider has
+// no embedding model configured.
+func resolveEmbedEndpoint(c *sdk.Component, providerName, modelOverride string) (embedEndpoint, error) {
+	p, name, _, err := resolveProvider(c, providerName)
+	if err != nil {
+		return embedEndpoint{}, err
+	}
+	model := strings.TrimSpace(modelOverride)
+	if model == "" {
+		model = strings.TrimSpace(p.EmbedModel)
+	}
+	if model == "" {
+		return embedEndpoint{}, fmt.Errorf(
+			"provider %q has no embedding model — set it with provider_add {embedModel: \"...\"} (or NIF_OPENAI_EMBED_MODEL for the environment default)", name)
+	}
+	baseURL := strings.TrimSpace(p.EmbedBaseURL)
+	if baseURL == "" {
+		baseURL = p.BaseURL
+	}
+	if baseURL == "" {
+		return embedEndpoint{}, fmt.Errorf("provider %q has no base URL for embeddings", name)
+	}
+	return embedEndpoint{
+		Model: model, BaseURL: baseURL, APIKey: p.APIKey,
+		Protocol: p.Protocol, Provider: name, AccountID: p.AccountID,
+	}, nil
+}
+
+func embedHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
+	var args embedArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("bad embed args: %w", err)
+	}
+	if len(args.Input) == 0 {
+		return nil, fmt.Errorf("input required: a non-empty array of strings")
+	}
+	if len(args.Input) > maxEmbedInputs {
+		return nil, fmt.Errorf("input has %d entries; at most %d per call", len(args.Input), maxEmbedInputs)
+	}
+	for index, text := range args.Input {
+		if strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("input[%d] is empty; omit it instead of embedding a blank string", index)
+		}
+	}
+	if args.Dimensions < 0 {
+		return nil, fmt.Errorf("dimensions must be positive (0 = the model's default)")
+	}
+	endpoint, err := resolveEmbedEndpoint(c, args.Provider, args.Model)
+	if err != nil {
+		return nil, err
+	}
+	if endpoint.Protocol != "" && endpoint.Protocol != protocolOpenAI {
+		// Ollama's native /api/embed and the Anthropic/Codex lanes are
+		// different request shapes; refusing beats sending a chat-shaped
+		// request the endpoint cannot answer. Ollama is reachable through
+		// its OpenAI shim (baseUrl http://localhost:11434/v1).
+		return nil, fmt.Errorf("provider %q speaks %s, which has no OpenAI-compatible /embeddings route; point embedBaseUrl at an OpenAI-compatible endpoint (Ollama: http://localhost:11434/v1)",
+			endpoint.Provider, endpoint.Protocol)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), embedTimeoutMs())
+	defer cancel()
+	cfg := openai.DefaultConfig(endpoint.APIKey)
+	cfg.BaseURL = endpoint.BaseURL
+	cfg.HTTPClient = &retryAfterHTTPClient{base: cfg.HTTPClient}
+	client := openai.NewClientWithConfig(cfg)
+	response, err := client.CreateEmbeddings(ctx, openai.EmbeddingRequestStrings{
+		Input: args.Input, Model: openai.EmbeddingModel(endpoint.Model), Dimensions: args.Dimensions,
+	})
+	if err != nil {
+		// No context-window classification here: /embeddings has no chat
+		// window to blame, and a wrong model id must surface verbatim.
+		return nil, err
+	}
+	// The response order is not contractual; index each vector so a caller
+	// can align vectors with inputs without assuming order.
+	vectors := make([][]float32, len(response.Data))
+	for _, item := range response.Data {
+		if item.Index < 0 || item.Index >= len(vectors) {
+			return nil, fmt.Errorf("provider %q returned embedding index %d for %d inputs",
+				endpoint.Provider, item.Index, len(vectors))
+		}
+		vectors[item.Index] = item.Embedding
+	}
+	for index, vector := range vectors {
+		if len(vector) == 0 {
+			return nil, fmt.Errorf("provider %q returned no vector for input[%d]", endpoint.Provider, index)
+		}
+	}
+	result := map[string]any{
+		"ok": true, "provider": endpoint.Provider, "model": endpoint.Model,
+		"dimensions": len(vectors[0]), "embeddings": vectors,
+	}
+	// Missing fields are omitted, never invented as zero.
+	if response.Usage.TotalTokens > 0 || response.Usage.PromptTokens > 0 {
+		result["usage"] = map[string]any{
+			"prompt_tokens": response.Usage.PromptTokens,
+			"total_tokens":  response.Usage.TotalTokens,
+		}
+	}
+	return result, nil
+}
+
+// embedTimeoutMs mirrors chatTimeoutMs: embeddings are short, but a batch of
+// long inputs against a cold local model is not instant.
+func embedTimeoutMs() time.Duration {
+	if v := os.Getenv("NIF_LLM_EMBED_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 120 * time.Second
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -1491,6 +1649,10 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		"vision": resolved.Vision, "visionSource": resolved.VisionSource,
 		"protocol": resolved.Provider.Protocol, "authType": resolved.Provider.AuthType,
 		"hasKey": resolved.Provider.APIKey != "",
+		// Embedding capability, resolved here for the same reason hasKey is:
+		// resolution is where a caller learns what is configured, without
+		// paying for a failing embed call to find out. Empty = no embeddings.
+		"embedModel": resolved.Provider.EmbedModel,
 	}
 	// A fallback window is a guess, and the context guard measures against it:
 	// the common cause is a drifted pin — a model chosen under one provider
@@ -1555,6 +1717,26 @@ func main() {
 	// cancellation subscription, stream accumulators, and result. The only
 	// package maps are read-only. Opting in prevents independent sessions
 	// and subagents from serializing behind one long model request.
+	// Concurrent for the same reason as chat: an embedding call is an
+	// independent HTTP request and must never queue behind a streaming
+	// completion. Runner-exempt because core's compaction/recall machinery
+	// may reach it mid-turn.
+	comp.ToolConcurrent("embed", map[string]any{
+		"type":        "object",
+		"description": "Embed text through the active provider's embedding model, returning one float vector per input. Use it to rank a candidate set you already hold or to persist vectors yourself; the model comes from the provider's embedModel.",
+		"properties": map[string]any{
+			"input": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+				"description": "Texts to embed, in order (max 256)"},
+			"model": map[string]any{"type": "string",
+				"description": "Override the provider's embedModel"},
+			"provider": map[string]any{"type": "string",
+				"description": "Provider nickname (default: the provider component's active provider)"},
+			"dimensions": map[string]any{"type": "integer",
+				"description": "Requested vector length, when the model supports truncation (0 = model default)"},
+		},
+		"required":  []string{"input"},
+		"x-harness": map[string]any{"hidden": true, "runner": true, "timeoutMs": 120000},
+	}, embedHandler)
 	comp.ToolConcurrent("chat", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
