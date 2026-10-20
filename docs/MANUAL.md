@@ -526,7 +526,7 @@ missing binaries are skipped at boot with a warning. Rebuild them with
 | **Environment / `.env`** | all `NIF_*` variables (table below): boot & bus, LLM connection, per-component tuning. `.env` (root, gitignored) holds secrets and local overrides; shell env wins; reference copy with defaults in `.env.example` | process lifetime — components read env once at boot, so a change needs `core.kill` + `core.spawn`. A variable *exported in the shell that started core* is inherited by every child and needs a harness restart instead |
 | **The store** (kind table in [The store](#the-store)) | conversation headers, messages, the `provider` registry (credentials included), frozen per-conversation toolsets, the slash table, plugin/component install records, subagent job/lineage records, fabric programs, MCP server configs | durable — the harness's database |
 | **Conversation header** (`conversation` kind) | per-conversation choice: provider, providerOverride, model, modelOverride, thinking, profile, title, budgets/token meters — set through the `session` call (`/model`, `/effort` in UIs) and echoed in turn results | per conversation |
-| **Home / project files** | skills trees (project `.agents|.claude|.opencode/skills` > bundled `skills/` > home `~/.niffler/skills` + agent-standard dirs > `~/.config/opencode/skills`, then the tree compiled into the binary as the last resort); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
+| **Home / project files** | skills: workspace `.agents/skills` > `~/.agents/skills` > bundled `skills/` (compiled fallback); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
 | **Edit undo + seen state** | Not a home file any more: one **store document per (conversation, file)** — kinds `edit-undo` (last pre-edit bytes, for `undo_last_edit`) and `edit-seen` (observed digest/size/lines, for unchanged-read stubs and the `E_STALE` gate), ids `<session>:<absolute path>`. Scoped to the conversation that owns them and deleted with it (`conversation_delete` sweeps both kinds). They used to share `$XDG_CONFIG_HOME/niffler-edit/undo.json`, rewritten in full on every mutation — machine-global, unbounded, and the reason a 27-file bulk replacement once held the edit component's pump for 53 s. Deleting the documents loses only undo history and read stubs, never file content | durable, store-backed |
 | **`var/`** (gitignored) | `bin/` built binaries, `logs/` bus JSONL and per-component JSONL (`.1`…`.N` rotations) plus child logs, `models/` catalog cache, `nats-url`/`nats-pid` bus claiming, `processes/` spools (`pN.out`/`pN.err` per start, wiped at boot; ids continue from the persisted counter instead of restarting at `p1`), `repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached), `fetch/`, `captures/`, `store.db` (the SQLite engine's file — the only file-backed engine) plus its `.lock`, which exactly one `store` process may hold at a time | mixed durable state and regenerable output; never delete wholesale |
 | **Browser localStorage** | display only: reasoning/tool-card detail levels, locale (`niffler-think`, `niffler-tools`) | per browser |
@@ -586,7 +586,6 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
 | `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
 | `NIF_FETCH_ALLOW_PRIVATE` | `1` (also `true`/`yes`) allows the `fetch` tool to contact loopback/private/link-local destinations; use only for trusted local development services | unset (blocked) |
-| `NIF_SKILLS_BUNDLED_DIR` | explicit location of the `skills` component's bundled tree, replacing `<repo>/skills` and its `$NIF_ROOT/skills` fallback. A path that does not exist makes discovery serve the compiled-in copies (dir `(baked)`) | `<repo>/skills` |
 | `NIF_MCP_DIRECT_THRESHOLD` | number of cached tools a configured `expose: direct` MCP server may publish directly; larger servers are deferred to progressive discovery | `10` |
 | `NIF_MCP_BRIDGE_BIN` | explicit path of the mcp-bridge binary | `<root>/var/bin/mcp-bridge` |
 | `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll — the kept tail is `min(2 MiB, cap div 2)` and the value is not validated, so a cap at or below zero empties a spool | `33554432` |
@@ -1627,29 +1626,23 @@ discovery](#progressive-tool-discovery)). Loading a skill appends its text
 to history — nothing here rewrites the frozen prompt prefix, so a
 `skill_load` costs a cache read, not a cache miss.
 
-Discovery covers the bundled skills shipped in the repo plus the standard
-agent directories (first match per skill name wins — project beats bundled
-beats home beats config):
+Skills resolve by name in this order:
 
 | Source | Directories |
 |---|---|
-| project | `$NIF_ROOT/.agents/skills`, `$NIF_ROOT/.claude/skills`, `$NIF_ROOT/.opencode/skills` |
-| bundled | `<repo>/skills` — the checkout this binary was compiled in (a build-time path); `$NIF_ROOT/skills` is the fallback for relocated deployments, and `NIF_SKILLS_BUNDLED_DIR` overrides both — never removable |
-| home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
-| config | `~/.config/opencode/skills` (where `npx skills add -g -a opencode` installs) |
+| project | `<conversation workspace>/.agents/skills` (direct bus calls without workspace context use `$NIF_ROOT`) |
+| home | `~/.agents/skills` |
+| bundled | `<repo>/skills`, then `$NIF_ROOT/skills` for relocated deployments; never removable |
 
-Within a source the directories are tried in the order listed, so
-`~/.agents/skills/nats` is served over `~/.claude/skills/nats`. Discovery is
-a **fresh walk on every call** — no cached registry, no store records, no
-refresh op — so a
-`skill_install` or another agent's `npx skills add` is visible immediately.
-The walk does not descend into **symlinked directories**: a skill that only
-reaches a scanned directory through a symlink is not discovered, and
-`skill_audit` does not list it either; nor is a **symlinked SKILL.md** file
-yielded, so a skill whose SKILL.md is a link to a real file elsewhere is
-invisible as well (a symlink farm such as
-`~/.claude/skills → ~/.agents/skills` is therefore invisible — harmless when
-the link target is scanned anyway, silent when it is not).
+First match wins; every call scans afresh. The workspace arrives as private
+per-call context and never changes a frozen prompt. `skill_audit` shows
+shadowed and invalid copies. Foreign-agent home/project directories and XDG
+opencode trees are no longer scanned; explicitly copy/import their skill trees
+into a supported directory. The old Niffler `~/.niffler/skills` directory is
+also an explicit migration source, not a discovery root; existing files are
+not moved or overwritten automatically. `NIF_SKILLS_BUNDLED_DIR` is removed.
+The walk does not follow symlinked directories or SKILL.md files; copy real
+skill trees rather than linking them.
 
 Bundled skills (`todo-markdown` — keep todo state in a repo TODO.md,
 not in tool state; `niffler-tools` — which tool fits which job;
@@ -1673,7 +1666,7 @@ wins by name, so a checkout is unaffected by the fallback.
 | `skill_resources {name}` | the skill's `references/`, `scripts/`, `assets/` files, one level deep — a file in `references/sub/x.md`, or a symlinked file, is neither listed nor readable |
 | `skill_resource {name, path}` | read one resource on demand |
 | `skill_audit` | read-only, unmerged inventory of every SKILL.md on disk — plus names served only by the compiled-in fallback (dir `(baked)`): marks the active winner per name and every shadowed/invalid copy (invalid = unreadable SKILL.md, unparseable frontmatter, or no name even after falling back to the directory name — a SKILL.md that omits `name:` is accepted under its directory's name; discoveries merge in `skill_list`, so shadowing is only visible here) |
-| `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.niffler/skills` (default) or `$NIF_ROOT/.opencode/skills` |
+| `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.agents/skills` (default) or `<conversation workspace>/.agents/skills` |
 | `skill_remove {name}` | delete a skill from a Niffler-managed directory only |
 
 - `skill_search` is a read-only HTTP call to `https://skills.sh/api/search`
@@ -1682,11 +1675,11 @@ wins by name, so a checkout is unaffected by the fallback.
   namespace. Install is: search →
   `skill_install {repo, skill}` → approval dialog → done.
 
-- Skills installed with `npx skills add <owner>/<repo>` (the skills.sh
-  ecosystem CLI) land in the standard dirs above and are discovered without
-  reinstall; `skill_install` exists so Niffler works without Node, via plain
-  git. It copies only SKILL.md trees — no code runs — and accepts
-  `owner/name`, github.com URLs and `file://` local repos (hermetic tests).
+- Existing skills in foreign-agent directories require explicit copying into
+  workspace `.agents/skills` or user `~/.agents/skills`. `skill_install`
+  imports from a repository without Node, via plain git. It copies SKILL.md
+  trees without running code and accepts `owner/name`, GitHub URLs and local
+  `file://` repositories.
 - Repos holding several skills (e.g. `vercel-labs/agent-skills`) require the
   `skill` parameter; `skill_install` lists the candidates when it is missing.
   The parameter matches a skill's name or its directory basename.
@@ -1696,8 +1689,8 @@ wins by name, so a checkout is unaffected by the fallback.
   mirror by pointing `repo` at one — and copies the whole skill directory,
   resources included. It refuses a name whose destination already exists
   (`skill_remove` first); the result reports `source: home|project`.
-- `skill_remove` refuses anything outside `~/.niffler/skills` and
-  `$NIF_ROOT/.opencode/skills` — skills other agents installed into shared
+- `skill_remove` refuses anything outside `~/.agents/skills` and
+  `<conversation workspace>/.agents/skills` — skills other agents installed into shared
   dirs are removed with their own tooling.
 - Install and remove carry `x-harness.approval: "always"` (they write outside
   `var/`).

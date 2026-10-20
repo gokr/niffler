@@ -6,6 +6,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Skill discovery now resolves workspace `.agents/skills`, user
+  `~/.agents/skills`, then bundled skills. Project install/removal uses the
+  conversation workspace; foreign-agent/XDG directories are no longer scanned.
+  Removed `NIF_SKILLS_BUNDLED_DIR`; compiled fallback tests use a build fixture.
+
 - Instruction discovery now uses AGENTS files only, at conversation birth and
   during lazy subdirectory reads. `CLAUDE.md`/`CLAUDE.MD` are no longer loaded
   automatically; existing persisted system prompts remain unchanged.

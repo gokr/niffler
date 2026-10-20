@@ -2,7 +2,7 @@
 ##
 ## Boots the skills component alone against a private NATS server with a
 ## fake HOME (so global paths are hermetic) and a scratch NIF_ROOT holding
-## fixture skill dirs. Covers: discovery across project/home/config
+## fixture skill dirs. Covers: workspace/home/bundled discovery and ignored legacy
 ## sources with first-wins dedup; skill_load progressive disclosure;
 ## skill_resource reads; install from a LOCAL git repo (file:// support,
 ## no network) — single-skill repos install directly, multi-skill repos
@@ -56,12 +56,28 @@ proc main() =
   createDir(root / ".agents" / "skills" / "projskill" / "references")
   writeFile(root / ".agents" / "skills" / "projskill" / "references" /
             "notes.md", "proj notes")
-  writeSkill(fakeHome / ".niffler" / "skills" / "homeskill",
+  writeSkill(fakeHome / ".agents" / "skills" / "homeskill",
              "homeskill", "Home fixture skill for testing",
              "# Home Skill\n\nDo the home thing.\n", tags = "test, home")
   writeSkill(root / "var" / "xdg-config" / "opencode" / "skills" /
              "configskill", "configskill", "Config fixture skill",
              "# Config Skill\n\nFrom XDG.\n")
+
+  for legacy in [".claude", ".opencode"]:
+    writeSkill(root / legacy / "skills" / "legacy-project",
+      "legacy-project", "Foreign project skill", "Must not load.")
+    writeSkill(fakeHome / legacy / "skills" / "legacy-home",
+      "legacy-home", "Foreign home skill", "Must not load.")
+  writeSkill(fakeHome / ".niffler" / "skills" / "legacy-agents",
+    "legacy-agents", "Legacy Niffler skill", "Must not load implicitly.")
+  let workspace = root / "workspace"
+  writeSkill(workspace / ".agents" / "skills" / "projskill",
+    "projskill", "Workspace-specific fixture", "WORKSPACE-ONLY-CONTENT")
+  createDir(workspace / ".agents" / "skills" / "projskill" / "references")
+  writeFile(workspace / ".agents" / "skills" / "projskill" / "references" / "notes.md",
+    "workspace resource")
+  writeSkill(fakeHome / ".agents" / "skills" / "niffler-harness",
+    "niffler-harness", "User overrides bundled", "USER-WINS-OVER-BUNDLED")
 
   # a local git repo with two skills for install
   let pkgDir = tempRoot("skpkg")
@@ -91,12 +107,22 @@ proc main() =
     names.add(item{"name"}.getStr(""))
   check("list finds project skill", "projskill" in names, names.join(","))
   check("list finds home skill", "homeskill" in names, names.join(","))
-  check("list finds config skill", "configskill" in names, names.join(","))
+  check("legacy XDG skills are not scanned", "configskill" notin names, names.join(","))
   # Bundled skills (repo skills/ tree; compiled into the binary as a
   # last-resort source when no disk tree exists) must always surface and
   # load — whatever the deployment ships.
   check("bundled harness skill discovered", "niffler-harness" in names,
         names.join(","))
+  check("foreign agent directories are not scanned",
+    "legacy-project" notin names and "legacy-home" notin names and
+    "legacy-agents" notin names, names.join(","))
+  let userOverride = call(nc, "skills", "skill_load", %*{"name": "niffler-harness"})
+  check("user skills shadow bundled skills",
+    userOverride{"skill"}{"source"}.getStr() == "home" and
+    userOverride{"content"}.getStr() == "USER-WINS-OVER-BUNDLED", $userOverride)
+  let audit = call(nc, "skills", "skill_audit", %*{})
+  check("audit exposes shadowed bundled skill", audit{"shadowedCount"}.getInt() >= 1, $audit)
+  removeDir(fakeHome / ".agents" / "skills" / "niffler-harness")
   let bh = call(nc, "skills", "skill_load", %*{"name": "niffler-harness"})
   check("bundled harness skill loadable, docs map present",
         bh{"ok"}.getBool(false) and
@@ -135,6 +161,18 @@ proc main() =
         $shadow)
   removeDir(root / ".agents" / "skills" / "homeskill")
 
+  let ws = %*{"root": workspace, "roots": [workspace]}
+  let wsLoad = call(nc, "skills", "skill_load", %*{"name": "projskill", "__workspace": ws})
+  check("workspace context selects conversation skills, not harness skills",
+    wsLoad{"content"}.getStr() == "WORKSPACE-ONLY-CONTENT", $wsLoad)
+  let wsResource = call(nc, "skills", "skill_resource", %*{
+    "name": "projskill", "path": "references/notes.md", "__workspace": ws})
+  check("workspace context also applies to resources",
+    wsResource{"content"}.getStr() == "workspace resource", $wsResource)
+  let rootLoad = call(nc, "skills", "skill_load", %*{"name": "projskill"})
+  check("workspace does not leak between calls",
+    rootLoad{"content"}.getStr().contains("Do the project thing."), $rootLoad)
+
   # --- loading / resources -------------------------------------------------
   let ld = call(nc, "skills", "skill_load", %*{"name": "projskill"})
   check("skill_load returns content", ld{"ok"}.getBool(false) and
@@ -171,7 +209,7 @@ proc main() =
   check("skill_install ok", inst{"ok"}.getBool(false) and
         inst{"skill"}.getStr("") == "reposkill" and
         inst{"source"}.getStr("") == "home" and
-        fileExists(fakeHome / ".niffler" / "skills" / "reposkill" / "SKILL.md"),
+        fileExists(fakeHome / ".agents" / "skills" / "reposkill" / "SKILL.md"),
         $inst)
 
   let la = call(nc, "skills", "skill_list", %*{})
@@ -193,10 +231,23 @@ proc main() =
   let proj = call(nc, "skills", "skill_install",
                   %*{"repo": "file://" & repoDir, "skill": "otherskill",
                      "global": false})
-  check("project install lands in .opencode/skills",
+  check("project install lands in .agents/skills",
         proj{"ok"}.getBool(false) and
-        fileExists(root / ".opencode" / "skills" / "otherskill" / "SKILL.md"),
+        fileExists(root / ".agents" / "skills" / "otherskill" / "SKILL.md"),
         $proj)
+
+  let wsInstall = call(nc, "skills", "skill_install", %*{
+    "repo": "file://" & repoDir, "skill": "otherskill", "global": false,
+    "__workspace": ws})
+  check("project install uses the conversation workspace",
+    wsInstall{"ok"}.getBool(false) and
+    fileExists(workspace / ".agents" / "skills" / "otherskill" / "SKILL.md"), $wsInstall)
+  let wsRemove = call(nc, "skills", "skill_remove", %*{
+    "name": "otherskill", "__workspace": ws})
+  check("project removal uses the same conversation workspace",
+    wsRemove{"ok"}.getBool(false) and
+    not dirExists(workspace / ".agents" / "skills" / "otherskill") and
+    dirExists(root / ".agents" / "skills" / "otherskill"), $wsRemove)
 
   # --- online search (network-gated: real skills.sh registry) ---------------
   let sq = call(nc, "skills", "skill_search", %*{"query": "x"})
@@ -217,14 +268,14 @@ proc main() =
           $so)
 
   # --- removal (managed dirs only) -----------------------------------------
-  let wrong = call(nc, "skills", "skill_remove", %*{"name": "projskill"})
-  check("remove refuses shared/project fixture dir",
+  let wrong = call(nc, "skills", "skill_remove", %*{"name": "niffler-tools"})
+  check("remove refuses bundled dir",
         not wrong{"ok"}.getBool(false) and
         wrong{"error"}.getStr().contains("not Niffler-managed"), $wrong)
 
   let rem = call(nc, "skills", "skill_remove", %*{"name": "reposkill"})
   check("skill_remove ok", rem{"ok"}.getBool(false) and
-        not dirExists(fakeHome / ".niffler" / "skills" / "reposkill"), $rem)
+        not dirExists(fakeHome / ".agents" / "skills" / "reposkill"), $rem)
   let lr = call(nc, "skills", "skill_list", %*{})
   var afterRemove = newSeq[string]()
   for item in lr{"skills"}:
@@ -240,8 +291,7 @@ proc main() =
   # <repo>/skills tree, and NIF_ROOT/skills may be missing too. Discovery
   # must still serve the SKILL.md copies compiled into the binary (source
   # "bundled", dir "(baked)") so the self-knowledge set survives. Point the
-  # bundled tree at a missing path to exercise exactly that, and prove the
-  # project/home/config sources are unaffected by it.
+  # compile-time bundled-tree fixture at a missing path to exercise fallback.
   stopProcess(compProc)
   compProc = nil
   var regSub: ptr natsSubscription
@@ -249,11 +299,9 @@ proc main() =
                                            "reg.publish".cstring)
   check("subscribe reg.publish for the baked phase", checkStatus(subSt))
   discard natsConnection_Flush(nc.conn)
-  let bakedProc = startComponent(repoRoot / "var" / "bin" / "skills", url,
+  let bakedProc = startComponent(repoRoot / "var" / "bin" / "fixture-skills-baked", url,
                                  root = root,
-                                 extra = [("HOME", fakeHome),
-                                          ("NIF_SKILLS_BUNDLED_DIR",
-                                           root / "no-such-bundled-tree")])
+                                 extra = [("HOME", fakeHome)])
   defer: stopProcess(bakedProc)
   check("baked phase component registers",
         waitRegisteredOn(regSub, "skills"))
@@ -283,9 +331,9 @@ proc main() =
   var fixtureNames = newSeq[string]()
   for item in bfixtures{"skills"}:
     fixtureNames.add(item{"name"}.getStr(""))
-  check("baked: project/home/config discovery is unaffected",
+  check("baked: workspace/user discovery works; legacy XDG stays ignored",
         "projskill" in fixtureNames and "homeskill" in fixtureNames and
-        "configskill" in fixtureNames, fixtureNames.join(","))
+        "configskill" notin fixtureNames, fixtureNames.join(","))
 
   let ba = call(nc, "skills", "skill_audit", %*{})
   var bakedRows = 0
@@ -298,7 +346,7 @@ proc main() =
       inc diskRows
       if e{"status"}.getStr("") == "invalid": inc invalidRows
   check("baked: skill_audit reports baked-only rows beside the disk copies",
-        bakedRows >= 4 and diskRows >= 3 and invalidRows == 0 and
+        bakedRows >= 4 and diskRows >= 2 and invalidRows == 0 and
         ba{"shadowedCount"}.getInt(-1) == 0, $ba)
 
   let brem = call(nc, "skills", "skill_remove", %*{"name": "niffler-harness"})
@@ -314,6 +362,7 @@ proc main() =
   # no core and no store, so the check reads the component's own reg.publish
   # (the shape a catalog ingests: name, description, tool, params) — declared
   # but rejected registrations are the reason both halves matter.
+  stopProcess(bakedProc)
   var slashSub: ptr natsSubscription
   let slashSt = natsConnection_SubscribeSync(addr slashSub, nc.conn,
                                              "reg.publish".cstring)
