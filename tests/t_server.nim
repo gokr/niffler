@@ -17,7 +17,20 @@ proc main() =
   writeFile(root / "var" / "bin" / "niffler", "#!/bin/sh\nexit 0\n")
   setFilePermissions(root / "var" / "bin" / "niffler", {fpUserRead, fpUserWrite, fpUserExec})
   let log = root / "calls"
-  for name in ["systemctl", "journalctl", "loginctl"]:
+  # The fakes answer unit state from the environment so `persist` can be driven
+  # through every readiness combination without touching a real service manager.
+  const systemctlStub = """#!/bin/sh
+printf '%s\n' "systemctl $*" >> "$SERVER_TEST_LOG"
+case "$*" in
+  *" is-enabled "*) echo "${SERVER_TEST_ENABLED:-enabled}" ;;
+  *" is-active "*) echo "${SERVER_TEST_ACTIVE:-active}" ;;
+  *" show "*) echo "${SERVER_TEST_RESTART:-always}" ;;
+esac
+exit "${SERVER_TEST_FAIL:-0}"
+"""
+  writeFile(fake / "systemctl", systemctlStub)
+  setFilePermissions(fake / "systemctl", {fpUserRead, fpUserWrite, fpUserExec})
+  for name in ["journalctl", "loginctl"]:
     writeFile(fake / name, "#!/bin/sh\nprintf '%s\\n' \"" & name & " $*\" >> \"$SERVER_TEST_LOG\"\n" &
       (if name == "loginctl": "echo \"${SERVER_TEST_LINGER:-no}\"\n" else: "") &
       "exit \"${SERVER_TEST_FAIL:-0}\"\n")
@@ -31,6 +44,9 @@ proc main() =
     delEnv("SERVER_TEST_LOG")
     delEnv("SERVER_TEST_FAIL")
     delEnv("SERVER_TEST_LINGER")
+    delEnv("SERVER_TEST_ENABLED")
+    delEnv("SERVER_TEST_ACTIVE")
+    delEnv("SERVER_TEST_RESTART")
   putEnv("PATH", fake & ":" & oldPath)
   putEnv("XDG_CONFIG_HOME", config)
   putEnv("SERVER_TEST_LOG", log)
@@ -70,6 +86,58 @@ proc main() =
   removeFile(unitPath)
   createSymlink(root / "niffler.nimble", unitPath)
   check("symlinked service refuses", run("install").exitCode != 0)
+  # A unit from an older scripts/server.sh must be refreshable — that is the
+  # only way a changed contract (a new restart policy, a new Environment=
+  # line) reaches an already-provisioned instance, since install refuses it.
+  removeFile(unitPath)
+  putEnv("SERVER_TEST_LINGER", "no")
+  let fresh = run("install")
+  check("refresh baseline install", fresh.exitCode == 0, fresh.output)
+  let current = readFile(unitPath)
+  writeFile(unitPath, current.replace("Restart=always", "Restart=on-failure"))
+  check("install refuses a stale contract", run("install").exitCode != 0)
+  let stale = run("persist")
+  check("persist reports the stale unit and how to fix it",
+    stale.exitCode != 0 and "unit=stale" in stale.output and "server.sh refresh" in stale.output, stale.output)
+  putEnv("SERVER_TEST_LOG", log)
+  writeFile(log, "")
+  let refreshed = run("refresh")
+  check("refresh replaces a stale unit", refreshed.exitCode == 0 and readFile(unitPath) == current, refreshed.output)
+  let refreshLog = readFile(log)
+  check("refresh stops the old process and never starts one",
+    "--user stop niffler-" in refreshLog and "--user start" notin refreshLog, refreshLog)
+  check("refresh keeps the unit enabled", "--user enable niffler-" in refreshLog, refreshLog)
+  check("refresh is idempotent", run("refresh").exitCode == 0 and readFile(unitPath) == current)
+  writeFile(unitPath, "foreign installation\n")
+  check("refresh refuses a unit it did not write", run("refresh").exitCode != 0 and readFile(unitPath) == "foreign installation\n")
+  removeFile(unitPath)
+  check("refresh without a unit points at install", "run install" in run("refresh").output)
+  # Readiness: the report must never claim persistence it cannot prove (host
+  # boot policy is invisible from inside the guest), and must name each fix.
+  discard run("install")
+  putEnv("SERVER_TEST_LINGER", "yes")
+  let ready = run("persist")
+  check("persist is green only with linger, an enabled active unit and restart=always",
+    ready.exitCode == 0 and "guest-side persistence OK" in ready.output, ready.output)
+  check("persist never claims boot survival from inside the guest",
+    "boot=" in ready.output and "NOT persistent" notin ready.output, ready.output)
+  # The stale restart policy is the exact defect this contract exists for: a
+  # clean exit (stray SIGTERM) left the instance dead under on-failure.
+  putEnv("SERVER_TEST_RESTART", "on-failure")
+  let weak = run("persist")
+  check("persist flags a restart policy that drops a clean exit",
+    weak.exitCode != 0 and "does not survive a clean exit" in weak.output, weak.output)
+  putEnv("SERVER_TEST_RESTART", "always")
+  for kind in [("SERVER_TEST_ENABLED", "disabled"), ("SERVER_TEST_ACTIVE", "inactive")]:
+    putEnv(kind[0], kind[1])
+    let down = run("persist")
+    check("persist flags a " & kind[1] & " unit", down.exitCode != 0 and kind[1] in down.output and "NOT persistent yet" in down.output, down.output)
+    putEnv(kind[0], (if kind[0] == "SERVER_TEST_ENABLED": "enabled" else: "active"))
+  putEnv("SERVER_TEST_LINGER", "no")
+  let notReady = run("persist")
+  check("persist fails without linger and names the fix",
+    notReady.exitCode != 0 and "NOT persistent yet" in notReady.output and "loginctl enable-linger" in notReady.output, notReady.output)
+  putEnv("SERVER_TEST_LINGER", "yes")
   let bootstrap = execCmdEx("cd " & quoteShell(repo) & " && bash scripts/bootstrap.sh --server --dry-run")
   check("server bootstrap adopts worktree", bootstrap.exitCode == 0 and "adopting this checkout" in bootstrap.output)
   check("server bootstrap omits TUI and extras", "would run: make install-tui" notin bootstrap.output and "would ask about optional" notin bootstrap.output)

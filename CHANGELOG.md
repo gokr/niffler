@@ -15,6 +15,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instance (guest autostart, linger, enabled unit) plus the explicit unit
   refresh a `server.sh` change requires.
 
+- `scripts/server.sh persist <root>` is that readiness report: it checks the
+  installed unit against the checkout that should own it, enable/active state,
+  the restart policy and linger, names the fix for each failure, and exits
+  non-zero while anything is unproven. Host boot policy is reported as what it
+  is, never claimed as verified from inside the guest.
+
+- `scripts/server.sh refresh <root>` is how a changed unit contract reaches an
+  existing instance. `install` refuses a unit it did not just render (that is
+  what stops a foreign service being inherited), which previously stranded every
+  already-provisioned guest the moment `render()` changed — the only way forward
+  was to hand-delete the unit. `refresh` proves the file is ours, stops the old
+  process, rewrites and re-enables, and never starts; `fleet_update` uses it in
+  place of `install`.
+
 - Fleet transport waits now service NATS protocol traffic without running other
   handlers re-entrantly. Long installs could finish and save a verified receipt
   after the bus had disconnected the idle-looking component, losing the reply.
