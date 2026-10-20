@@ -142,7 +142,16 @@ proc main() =
     sleep(100)
   check("idle parent automatically woken", c.storeGet("fleetjob", "idle-settlement").value{"delivered"}.getBool(false))
   seedNotice("budget-settlement", "origin")
-  let declined = call(nc, "core", "session", %*{"sessionId": "origin", "wake": true}, 60000)
+  # delivered is stamped when the runner appends/acks the notice, BEFORE
+  # the automatic wake turn finishes. Do not mistake that durable ack for
+  # runner idleness: under pooled-suite load the next call can still be busy.
+  # Retry only that explicit refusal; other errors must fail the assertion.
+  var declined = newJNull()
+  for attempt in 0..<100:
+    declined = call(nc, "core", "session", %*{"sessionId": "origin", "wake": true}, 60000)
+    if declined{"error"}.getStr("") !=
+        "the conversation is mid-turn — retry when the turn finishes": break
+    sleep(100)
   check("wake budget declines with notice pending", declined{"wake"}.getStr("") == "declined" and
     not c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false), $declined)
   discard call(nc, "core", "session", %*{"sessionId": "origin", "content": "Human returned"}, 60000)
