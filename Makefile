@@ -73,7 +73,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 .PHONY: help all build components components-inner run down down-here \
          test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
-        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-server-lifecycle test-fleet \
+        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-fleet-admission test-server-lifecycle test-fleet \
         test-retry-unit test-ctx-accounting test-context-status test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
@@ -115,6 +115,9 @@ help-tests:
 	@echo '  test-bench           Node benchmark infrastructure unit tests; not a model eval'
 	@echo '  test-clean           Cleanup contract only; no full build or live store access'
 	@echo '  test-fleet           Mocked provisioning tests; no real SSH/VM mutations'
+	@echo '  test-fleet-tasks     Two-instance task smoke (real bus/runners, mock model)'
+	@echo '  test-fleet-admission Durable admission + receipt contracts'
+	@echo '  test-fleet-faults    Record/dispatch/append/ack crash windows'
 	@echo '  test-server-lifecycle  Isolated server lifecycle contract'
 	@echo '  test-<component>     Focused contracts, e.g. test-store, test-core, test-edit'
 	@echo '  test-store-tidb       Needs NIF_STORE_TIDB_DSN pointing at a test database'
@@ -262,6 +265,8 @@ var/bin/fleet: $(call NIM_SRCS,fleet) $(SDK_NIM) $(NIM_CONF) | var/bin
 
 var/bin/test_t_fleet: $(call NIM_SRCS,fleet) var/bin/fleet
 var/bin/test_t_fleet_tasks: $(call NIM_SRCS,fleet) var/bin/fleet
+var/bin/test_t_fleet_admission: core/admission.nim
+var/bin/test_t_fleet_admission_e2e: $(CORE_NIM) var/bin/session var/bin/niffler
 var/bin/test_t_fleet_heartbeat: $(call NIM_SRCS,fleet) var/bin/nats-server
 var/bin/test_t_fleet_faults: $(call NIM_SRCS,fleet) var/bin/fleet var/bin/fixture-fleet-fault-store
 var/bin/cli: $(call NIM_SRCS,cli)
@@ -599,6 +604,9 @@ test-fleet: build var/bin/test_t_fleet
 
 test-fleet-tasks: build var/bin/test_t_fleet_tasks
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_tasks
+
+test-fleet-admission: build var/bin/test_t_fleet_admission
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_admission
 
 test-fleet-faults: build var/bin/test_t_fleet_faults
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_faults

@@ -22,6 +22,7 @@ import ../sdk/niffler/agentdefs
 import catalog
 import compaction
 import dispatch
+import admission
 import attachments
 import approval
 import supervisor
@@ -4342,6 +4343,33 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     elif agentExisting.len > 0 and agentExisting != agentAsked:
       return %*{"error": "agent is birth-only; start a new conversation"}
   let content = args{"content"}.getStr("")
+  # Durable admission (docs/FLEET.md §4, slice F1): an opted-in call carries
+  # `admission: {key, policyVersion}` — a requester-chosen idempotency key —
+  # and the runner records the immutable birth settings BEFORE any turn can
+  # start. That record is what makes a lost reply reconcilable: an exact retry
+  # returns the existing acceptance or terminal receipt and runs nothing, a
+  # crash between accept and start is provably safe to resume, and a crash
+  # after start is honestly unknown instead of a silent second execution.
+  # Ordinary turns carry no key and are untouched.
+  let admissionKey = requestedAdmissionKey(args)
+  let admissionPolicy = requestedAdmissionPolicy(args)
+  if hasAdmissionRequest(args):
+    # `admission` present at all means the caller depends on idempotency; a
+    # key we cannot honor is refused rather than silently dropped.
+    if not validAdmissionKey(admissionKey):
+      return %*{"error": "admission key must be 1..128 of [A-Za-z0-9._:-]",
+                 "code": "admission-invalid"}
+    if admissionPolicy != admissionPolicyVersion:
+      return %*{"error": "unsupported admission policyVersion " &
+                          $admissionPolicy & " (this harness accepts " &
+                          $admissionPolicyVersion & ")",
+                 "code": "admission-unsupported"}
+    if content.len == 0:
+      return %*{"error": "an admitted turn needs content",
+                 "code": "admission-invalid"}
+    if args{"wake"}.getBool(false) or args{"notice"} != nil:
+      return %*{"error": "an admitted turn cannot be a wake or heartbeat",
+                 "code": "admission-invalid"}
   # Autonomous wake (components/agent settle path): a session call with
   # `wake: true` runs a turn whose only purpose is folding pending
   # background-settlement notices into an IDLE conversation — the parent
@@ -5308,6 +5336,95 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     status["modelOverride"] = %entry.modelOverride
     return status
 
+  # --- durable admission (docs/FLEET.md §4, slice F1) ----------------------
+  # Read/accept BEFORE the user message is appended: a duplicate or refused
+  # admission must leave the transcript untouched, and an accepted one must be
+  # durable before the turn it authorizes can start.
+  var admissionRec: JsonNode = nil
+  var admissionRev = 0
+  if admissionKey.len > 0:
+    let settings = birthSettings(args, entry.workspace)
+    let digest = admissionDigest(settings)
+    let docId = admissionDocId(sessionId, admissionKey)
+    var created = false
+    try:
+      let existing = ct.storeGetItem(admissionKind, docId)
+      if existing.value == nil:
+        discard ct.storePutRev(admissionKind, docId,
+          newAdmission(sessionId, admissionKey, digest, settings),
+          expectRev = -1)
+        created = true
+      else:
+        admissionRec = existing.value
+        admissionRev = existing.rev
+    except CatchableError as e:
+      # Either the store refused the create (a concurrent caller won the race)
+      # or it is unreachable. Both are answered by re-reading: an admitted turn
+      # is never started on an unverified record.
+      try:
+        let reread = ct.storeGetItem(admissionKind, docId)
+        if reread.value == nil:
+          return %*{"error": "admission not durable: " & e.msg}
+        admissionRec = reread.value
+        admissionRev = reread.rev
+      except CatchableError as e2:
+        return %*{"error": "admission not durable: " & e2.msg}
+    if admissionRec != nil:
+      if not admissionMatches(admissionRec, digest):
+        return %*{"error": "admission key already used for different work",
+                   "code": "admission-conflict",
+                   "recordedDigest": admissionRec{"digest"}.getStr(""),
+                   "requestDigest": digest}
+      case admissionRec{"state"}.getStr("")
+      of admissionStateSettled:
+        # An exact retry of a finished activation: report its receipt and run
+        # NOTHING. Not a success verdict — the receipt says what the worker
+        # observed, never that the report is factually right.
+        return %*{"ok": true, "sessionId": sessionId, "admissionReplay": true,
+                  "admission": publicAdmission(admissionRec),
+                  "reply": "", "outcome": "replayed"}
+      of admissionStateRunning:
+        # A turn may already be (or have been) running. Refuse rather than
+        # guess: the requester reconciles this activation's receipt instead of
+        # running it twice.
+        return %*{"error": "admission already started; its receipt decides" &
+                            " this activation's outcome, not a second turn",
+                   "code": "admission-busy",
+                   "admission": publicAdmission(admissionRec)}
+      of admissionStateAccepted:
+        discard  # maybe ours after the CAS below
+      else:
+        return %*{"error": "admission record has an unknown state",
+                   "code": "admission-conflict"}
+    try:
+      # accepted/absent → running, compare-and-set: exactly one caller may
+      # start this activation, and only on a record it just proved durable.
+      var running = if created:
+                      newAdmission(sessionId, admissionKey, digest, settings)
+                    else: admissionRec.copy()
+      running["state"] = %admissionStateRunning
+      running["startedAt"] = %epochTime()
+      admissionRev = ct.storePutRev(admissionKind, docId, running,
+        expectRev = admissionRev)
+      admissionRec = running
+    except CatchableError as e:
+      # The accepted → running CAS did not commit: either a concurrent caller
+      # took it (busy, refuse) or the store is unreachable (no turn may run
+      # unaccounted — an untouched `accepted` record still lets a later exact
+      # retry start it).
+      try:
+        let current = ct.storeGetItem(admissionKind, docId)
+        if current.value{"state"}.getStr("") != admissionStateAccepted:
+          return %*{"error": "admission already started",
+                     "code": "admission-busy",
+                     "admission": publicAdmission(current.value)}
+        return %*{"error": "admission start not durable (still accepted): " &
+                            e.msg, "code": "admission-unconfirmed",
+                     "admission": publicAdmission(current.value)}
+      except CatchableError as e2:
+        return %*{"error": "admission start unverifiable: " & e2.msg,
+                   "code": "admission-unconfirmed"}
+
   if attachRefs.len > 0:
     # Stamp the refs with the key persistMsg will allocate for this message
     # (nextMsgKey peeks it) and store the bytes under it BEFORE the append,
@@ -5378,6 +5495,42 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
                       entry.limitRounds, entry.limitTokens, entry.limitSeconds,
                       entry.allowlist, turnError)
+  # Terminal admission receipt (docs/FLEET.md §4): the activation's outcome,
+  # turnId and usage for exactly this turn, committed before the human
+  # activity receipt so a requester that lost the reply can reconcile this
+  # activation without a second execution. A turn whose transcript writes
+  # failed leaves the record `running` — an honest unknown, never a receipt
+  # for history that is not durably there.
+  if admissionRec != nil:
+    let transcriptCommitted =
+      entry.persister.persistenceFailures == failuresBeforeTurn
+    let settlement = settleAdmission(admissionRec, turnAcct.turnId,
+      turnAcct.outcome, turnAcct.usageJson(), reply,
+      (if reply.len > 0: contentDigest(reply) else: ""),
+      transcriptCommitted)
+    try:
+      admissionRev = ct.storePutRev(admissionKind,
+        admissionDocId(sessionId, admissionKey), settlement,
+        expectRev = admissionRev)
+      admissionRec = settlement
+    except CatchableError as e:
+      # A lost terminal write is retried once against the durable record; a
+      # second failure leaves `running`, which is exactly the honest answer
+      # (a turn ran, its receipt is not confirmed).
+      try:
+        let current = ct.storeGetItem(admissionKind,
+          admissionDocId(sessionId, admissionKey))
+        if current.value != nil and
+            current.value{"state"}.getStr("") == admissionStateRunning:
+          admissionRev = ct.storePutRev(admissionKind,
+            admissionDocId(sessionId, admissionKey), settlement,
+            expectRev = current.rev)
+          admissionRec = settlement
+        else:
+          echo "core: WARNING admission receipt not confirmed: " & e.msg
+      except CatchableError as e2:
+        echo "core: WARNING admission receipt not confirmed: " & e.msg &
+             " / " & e2.msg
   # Separate human unread state from agent notices and provider history. A
   # failed transcript write suppresses this receipt even if the store recovered.
   if entry.persister.persistenceFailures == failuresBeforeTurn:
@@ -5418,6 +5571,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                   "cwd": entry.workspace}
   if turnError.len > 0:
     sessionResult["turnError"] = %turnError
+  if admissionRec != nil:
+    sessionResult["admission"] = publicAdmission(admissionRec)
   return sessionResult
 
 # ---------------------------------------------------------------------------
@@ -5581,7 +5736,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
       case env.tool
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
           "session_prepare", "session_info", "activity_list", "prompt_preview",
-          "context_status", "doctor",
+          "context_status", "doctor", "admission_get",
           "conversation_delete", "toolset", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:

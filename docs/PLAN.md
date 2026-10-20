@@ -58,8 +58,11 @@ read-only remote tasks with durable parent notices are implemented. Local Lima
 bootstrap and SSH-hosted Incus provisioning have live evidence; the original
 long-bootstrap lost-reply mechanism has a tested heartbeat-pump fix.
 
-Still open: worker-side idempotent task admission and activation receipts;
-human-approved unattended coding profiles; active cancellation, steering and
+Durable worker admission is implemented (F1: versioned capability negotiation,
+immutable birth-policy digest, idempotent admission, activation-bound terminal
+receipts) with narrow contracts and a real store/runner test; multi-activation
+records and receipt retention remain open. Also still open: human-approved
+unattended coding profiles; active cancellation, steering and
 continuation; sequenced blocked/completion notices; a human task inbox; scoped
 artifact retrieval and verification evidence. Existing read-only tasks explicitly
 use `ask`, not auto approval. Human seen state stays separate from agent notice

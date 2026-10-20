@@ -51,6 +51,72 @@ Retries recover record-before-notify and append-before-ack crashes. Human
 activity and client seen markers remain independent. Frozen prefixes do not
 change; only appended notice messages enter model history.
 
+## Durable task admission
+
+A delegated turn that cannot be retried safely either runs twice or is lost.
+Both sides therefore speak an idempotency contract; it is generic (Fleet holds
+a pointer, core owns the record) and versioned, so an unsupported peer refuses
+*before* dispatch.
+
+A session call may carry `admission: {key, policyVersion}` (or the bare string
+shorthand) alongside `content`. `key` is 1..128 bytes of `[A-Za-z0-9._:-]` and
+belongs to the caller; the worker never invents one. Present-but-unusable
+admission is refused (`code: admission-invalid`), never downgraded to an
+ordinary turn — the caller would believe its work was idempotently recorded.
+An unsupported `policyVersion` refuses with `code: admission-unsupported`.
+Admitted turns need `content` and cannot be wakes or heartbeats.
+
+Peers advertise the capability as `admissionPolicyVersion` in catalog
+`components` and `snapshot` (alongside `taskScopeVersion`). This harness
+defines `admissionPolicyVersion: 1`; a requester that requires admission
+refuses a peer without it.
+
+Store kind `admission`, id `<sessionId>:<key>`, one record per activation:
+
+| Field | Meaning |
+|---|---|
+| `digest` | SHA-256 over canonical JSON of the normalized birth settings: `policyVersion`, `workspace`, `content`, sorted unique `tools`, `maxRounds`/`maxCalls`/`maxTokens` (0 = unset), plus `agent`/`model`/`provider`/`thinking`/`toolset` only when non-empty. Approval mode, titles, wake markers and retry-only fields are not birth authority |
+| `state` | `accepted` → `running` → `settled` |
+| `activation` | Activation number (1 for the current one-shot slice) |
+| `turnId`,`outcome`,`turnOutcome`,`usage` | The terminal receipt of *this* activation, written with it |
+| `transcriptCommitted`,`replyDigest`,`replyChars` | Whether the turn's transcript writes all landed, and the identity/size of the reply |
+
+Lifecycle rules, in order:
+
+1. Read the record. Absent → write `accepted` with `expectRev: -1` (create
+   only). A concurrent creator's `rev-conflict` is answered by re-reading, never
+   by overwriting.
+2. Present with a different `digest` → refuse `admission-conflict`. An accepted
+   admission is immutable; this is what makes "same key, different work"
+   impossible.
+3. `settled` → return `{ok:true, admissionReplay:true, admission:{…}}` and run
+   nothing. The receipt is what the worker observed, never a factual-success
+   verdict.
+4. `running` → refuse `admission-busy` with the receipt. A turn may have
+   started, so a second one is a replay; the caller reconciles instead.
+5. `accepted` → compare-and-set to `running` **before** appending the user
+   message or calling a provider. A failed CAS re-reads: another caller won
+   (`admission-busy`) or the store is unreachable, in which case the untouched
+   `accepted` record still permits a later exact retry
+   (`admission-unconfirmed`, no turn started).
+
+After the turn, the terminal receipt is committed with `expectRev` against the
+`running` revision, retried once against the durable record. A turn whose
+transcript writes failed stays `running` (an honest unknown) instead of
+recording a receipt for history that is not durably there. A settled response
+carries `admission:{…}`; the ordinary fields are unchanged.
+
+Hidden read-only core tool `admission_get {session,key}` returns
+`{ok,known}` — `known:false` plus a note when nothing was admitted under that
+key, otherwise `{state,ageSeconds,admission:{…}}`. It never starts, resumes or
+repairs work. Requester tool `fleet_task_receipt {jobId}` exposes the same
+receipt, cached on the job pointer.
+
+Unreachable, unknown and receipt-less remain neither interruption nor success.
+The admission record does not extend authority: a caller cannot widen a peer's
+ceiling by naming a profile in it, and the record is read from the same store
+its writer owns.
+
 ## Human completion activity
 
 Hidden read-only core tool `activity_list {after?:string,limit?:1..1000}`

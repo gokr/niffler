@@ -95,6 +95,17 @@ for name in ["status", "result"]:
     "Read an owned remote task's durable status or cached bounded report. Unreachable and unknown do not mean failed or successful; no submission replay. Completion is pushed automatically."),
     taskReader(name),
     %*{"onDemand": true, "effect": "read", "sessionContext": true})
+discard comp.tool("fleet_task_receipt", schema(%*{
+  "jobId": {"type": "string"}}, @["jobId"],
+  "Read the worker's own durable admission receipt for an owned task: the activation it admitted, the birth-policy digest, the lifecycle state (accepted = provably not started, running = a turn may have started, settled = that activation's terminal turnId/outcome/usage) and whether its transcript was durably committed. A read only — it never starts, resumes or replays a turn. Unknown, unreachable and receipt-less are not interruption or success."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    let j = authorized(c, args).value
+    %*{"jobId": j["id"], "state": j{"state"}.getStr("unknown"),
+      "remoteSession": j["sessionId"],
+      "admission": (if j{"admissionReceipt"} == nil: newJNull() else: j["admissionReceipt"]),
+      "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
+      "checkedAt": j{"checkedAt"}.getFloat(0)},
+  %*{"onDemand": true, "effect": "read", "sessionContext": true})
 discard comp.tool("fleet_task_cancel", schema(%*{"jobId": {"type": "string"}}, @["jobId"],
   "Cancel a queued task before dispatch. An already attempted or unknown submission cannot be cancelled by this slice; inspect the pinned peer and cancel its remote session there. Never claims a remote cancellation succeeded."),
   proc(c: Component, args: JsonNode): JsonNode =

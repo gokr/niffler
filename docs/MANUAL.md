@@ -3001,6 +3001,43 @@ A declined wake leaves the notice pending. Human activity/seen state is separate
 on a remote transport. Full transcripts remain on the worker under `remoteSession`.
 No general mailbox, artifact transfer or automatic retry of uncertain work.
 
+#### Durable admission (F1)
+
+Each job carries one idempotency key, the job id itself, and the worker records
+it before any turn runs (docs/WIRE.md "Durable task admission"):
+
+```json
+{"admission": {"key": "fleet-<jobid>", "policyVersion": 1}}
+```
+
+The worker's record keeps the normalized birth settings and their digest, so a
+retry can only ever return the existing acceptance or terminal receipt — never
+start a second turn, and never reinterpret the same key as different work.
+That makes a lost reply reconcilable: a submission whose round trip died can be
+inspected instead of guessed at.
+
+Three outcomes you will see in practice:
+
+- **The peer lacks the capability.** Catalog `components`/`snapshot` carry
+  `admissionPolicyVersion`; a peer without version 1 is refused *before*
+  dispatch rather than after a task has already started.
+- **The admission is replayed.** The job settles with the worker's receipt
+  (`admissionReplay: true`) and spends nothing.
+- **The activation is already running.** The task stays unknown on purpose:
+  `fleet_task_receipt {jobId}` (and the worker's own
+  `admission_get {session, key}`) show what was admitted and what the last
+  activation did. Neither tool starts, resumes or repairs work.
+
+A settled admission still is not a verified task: `transcriptCommitted` says the
+worker's history is durable, not that its report is right. A turn whose
+`transcriptCommitted` is false (or an activation left `running` past any plausible
+budget) stays unknown; check the worker conversation before reusing a key.
+Treating an admission as a receipt for *permission* also fails: the digest
+records the settings that were accepted, it never widens the peer's ceiling.
+
+`make test-fleet-admission` covers the record/idempotency contracts,
+`t_fleet_admission_e2e` the real store-plus-runner behavior with the mock model.
+
 `make test-fleet-tasks` is an isolated two-instance real-NATS/mock-model smoke;
 its guest transport executes scripts only inside test roots, never SSH or VMs.
 `NIF_FLEET_TASK_WORKERS=0` disables transport workers (maintenance/test use),

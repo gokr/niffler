@@ -42,7 +42,7 @@ Example target interaction:
 | Task submission | `fleet_task_submit`, owner-bound durable `fleetjob`, explicit read-tool allowlist and round/call/token budgets | Named task peers, coding authority, agent/model selection, continuation |
 | Result | `fleet_task_status` and cached bounded `fleet_task_result`, remote-session pointer | Paged task-specific detail and artifact retrieval |
 | Notification | Durable `fleet-settled` notice; runner append before ack; canonical-history dedup; bounded idle wake and busy-turn drain | Blocked/approval-needed notices and a human job inbox |
-| Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption | Durable remote admission and per-activation terminal receipts |
+| Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption; durable worker admission with an activation-bound terminal receipt ([WIRE.md](WIRE.md) "Durable task admission") | Multi-activation/continuation records and a receipt retention policy |
 | Cancellation | `fleet_task_cancel` cancels only queued, undispatched tasks | Confirmed cancellation of active remote work |
 | Approval | Submission approval locally; worker explicitly receives `approvals: ask`; read-only task tools | Explicitly approved unattended coding mode; no default auto mode today |
 | Scheduling | Optional heartbeat, durable admission marks, daily attempt cap | Cron, daily token/cost budgets, retention and completion integration |
@@ -262,6 +262,39 @@ identity changes, paging and stale receipts. No unverified replay.
 
 **Exit:** an accepted task can always be identified and reconciled after a
 transport failure, without inferring acceptance or running it twice.
+
+**Status: implemented (core seam + requester binding).** The generic contract is
+[docs/WIRE.md](WIRE.md) "Durable task admission":
+
+- `core/admission.nim` — pure record/idempotency module (no store or bus), shared
+  by the runner and the system core so there is exactly one spelling of the
+  policy version, key shape, birth-settings digest and receipt vocabulary.
+- `handleSessionCall` reads/accepts the admission **before** appending the user
+  message or calling a provider, compare-and-sets `accepted → running`, and
+  commits the terminal receipt (turnId, outcome, usage, reply digest,
+  `transcriptCommitted`) before the human activity receipt. A turn whose
+  transcript writes failed stays `running` (honest unknown).
+- Catalog `components`/`snapshot` advertise `admissionPolicyVersion: 1`;
+  `fleet` refuses a peer without it before dispatch, binds each job to
+  `admission.key = <jobid>`, reads the worker receipt after submitting (a read,
+  never a replay) and prefers it to the latest-per-session activity record.
+- Read-only surfaces: hidden `admission_get {session,key}` on the worker and
+  `fleet_task_receipt {jobId}` on the requester.
+- Present-but-unusable admission is refused, never downgraded to an ordinary
+  turn; session refusals now carry their own `code` (`admission-conflict`,
+  `-busy`, `-unconfirmed`, `-invalid`, `-unsupported`) instead of a generic
+  runner error.
+
+**Evidence:** `tests/t_fleet_admission.nim` (record, key shape, digest
+normalization, lifecycle) and `tests/t_fleet_admission_e2e.nim` (real store +
+runner + mock model: accept-before-start, exact replay spending no provider
+round trip, conflicting digest refused, `running` refuses, `admission_get`
+answers). `t_fleet_tasks` and `t_fleet_faults` still pass.
+
+**Still open in F1:** multi-activation records (continuation), a retention
+policy for terminal receipts, and the store-outage-before/after-commit and
+requester-restart matrices as explicit contracts rather than incidental
+coverage; paging applies once more than one activation exists per key.
 
 ### F2 — One unattended coding task
 

@@ -5,6 +5,10 @@ import checksums/sha1
 import natsnim
 import niffler/sdk
 import provision
+# The admission contract (key shape, policy version, receipt vocabulary) is
+# core's generic seam — importing the pure module keeps the requester and the
+# worker from drifting into two spellings of one protocol.
+import ../../core/admission
 
 proc connectedRunner*(c: Component): CommandRunner =
   ## Service protocol traffic only while waiting for a transport child. Do not
@@ -25,6 +29,13 @@ proc owner*(args: JsonNode): string =
 proc jobId*(session, requestId: string): string =
   if requestId.len < 1 or requestId.len > 128: refuse("requestId must be 1..128 bytes")
   "fleet-" & ($secureHash($(%*[session, requestId]))).toLowerAscii()
+
+proc admissionKey*(id: string): string =
+  ## The worker-side idempotency key of one job = its local id. One job is one
+  ## activation, so the job id IS the stable admission identity: a retry after
+  ## a lost reply re-presents the same key and the worker either reports the
+  ## existing acceptance/receipt or refuses a second turn.
+  id
 proc validateTask*(args: JsonNode) =
   if args{"content"}.getStr("").len notin 1..65536: refuse("content must be 1..65536 bytes")
   validateRoot(args{"cwd"}.getStr(""))
@@ -56,6 +67,12 @@ url=$(< "$root/var/nats-url")
 proc validateCapabilities*(catalog, schemas, task: JsonNode) =
   if catalog{"taskScopeVersion"}.getInt(0) != 1:
     refuse("peer lacks model-originated tool scope enforcement")
+  # Durable admission (docs/FLEET.md §4, slice F1): without the worker's
+  # idempotency record a lost reply can never be reconciled, and retrying could
+  # run the task twice. An older peer is refused BEFORE anything is dispatched.
+  if catalog{"admissionPolicyVersion"}.getInt(0) != admissionPolicyVersion:
+    refuse("peer lacks durable task admission (admissionPolicyVersion " &
+           $admissionPolicyVersion & ")")
   let comps = catalog{"components"}
   if comps == nil or comps.kind != JObject: refuse("malformed peer catalog")
   var available: seq[string]
@@ -64,7 +81,8 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
     for name in names:
       if name.kind != JString: refuse("malformed tool name")
       available.add(name.getStr())
-  for name in ["session", "session_prepare", "get", "list", "catalog"]:
+  for name in ["session", "session_prepare", "admission_get", "get", "list",
+               "catalog"]:
     if name notin available: refuse("peer lacks " & name)
   let entries = schemas{"tools"}
   if entries == nil or entries.kind != JArray: refuse("malformed schema snapshot")
@@ -107,7 +125,9 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
   if p == nil or getFilePermissions(path) != {fpUserRead, fpUserWrite}:
     refuse("private verified receipt required (0600)")
   let j = %*{"id": id, "sessionId": id, "owner": session, "profile": path,
-    "receipt": p, "task": task, "state": "queued", "createdAt": epochTime(), "checkedAt": 0}
+    "receipt": p, "task": task, "state": "queued", "createdAt": epochTime(),
+    "checkedAt": 0, "admission": {"key": admissionKey(id),
+      "policyVersion": admissionPolicyVersion}}
   discard c.requestOk("store", "put", %*{"kind": "fleetjob", "id": id, "value": j, "expectRev": -1})
   publicJob(j)
 
@@ -149,10 +169,33 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       var task = j["task"].copy()
       task["sessionId"] = %id
       task["approvals"] = %"ask"
+      # The worker-side idempotency key (docs/FLEET.md §4, slice F1): the peer
+      # records this key and the birth-settings digest before running a turn,
+      # so re-presenting it can only report the existing acceptance/receipt —
+      # never run the work twice.
+      var admission = newJObject()
+      admission["key"] = %admissionKey(id)
+      admission["policyVersion"] = %admissionPolicyVersion
+      task["admission"] = admission
       # Short request timeout is NOT a turn deadline. The remote runner owns
       # the finite round/call/token budgets; no unsupported maxSeconds field.
       try: discard remoteCall(run, p, "session", task, 1)
       except CatchableError: discard
+    # The worker's durable receipt is read on EVERY reconcile, not only right
+    # after a submission: the case it exists for is exactly the one where the
+    # submission's own reply was lost (and the job sits in `submitting` or
+    # `unknown`). It is a READ, so it can never start, resume or replay a turn,
+    # and it turns an unknown activation into an authoritative answer whenever
+    # the worker knows one.
+    try:
+      let admissionDoc = remoteCall(run, p, "admission_get",
+        %*{"session": id, "key": admissionKey(id)})
+      if admissionDoc{"known"}.getBool(false):
+        j["admissionReceipt"] = admissionDoc
+      else:
+        j.delete("admissionReceipt")
+    except CatchableError:
+      discard # the receipt stays an honest unknown; activity may still settle
     let completion = remoteCall(run, p, "list", %*{"kind": "activity", "idPrefix": id, "limit": 2})
     var receipt: JsonNode
     let completions = completion{"items"}
@@ -161,7 +204,53 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       if entry{"id"}.getStr("") == id: receipt = entry{"value"}
     # The task owns one activation only. A later human turn can replace the
     # latest-per-session activity receipt; never attribute that to our task.
-    if receipt != nil and receipt{"sessionId"}.getStr("") == id and receipt{"seq"}.getInt(0) == 1:
+    # The worker's admission receipt is preferred where it exists: it is bound
+    # to this exact activation (key + digest) rather than being the latest turn
+    # of a session, and it states whether the transcript is durable.
+    let admissionState = j{"admissionReceipt", "admission", "state"}.getStr("")
+    if admissionState == "settled":
+      let admissionDoc = j{"admissionReceipt", "admission"}
+      var after = ""
+      var reply = ""
+      var transcriptComplete = false
+      var userMessages = 0
+      for pageNo in 0..<32:
+        let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
+        let entries = page{"items"}
+        if entries == nil or entries.kind != JArray: refuse("invalid transcript")
+        for entry in entries:
+          if not entry{"id"}.getStr("").startsWith(id & ":"): refuse("foreign transcript")
+          let role = entry{"value", "role"}.getStr("")
+          if role == "user" and entry{"value", "notice"} == nil and
+              entry{"value", "mail"} == nil:
+            inc userMessages
+          if userMessages > 1:
+            transcriptComplete = true
+            reply = "[summary unavailable: unmarked user/steer boundary; inspect remote transcript]"
+            break
+          if role == "assistant":
+            reply = summary(entry{"value", "content"}.getStr(""))
+        if transcriptComplete: break
+        if not page{"hasMore"}.getBool(false):
+          transcriptComplete = true
+          break
+        let next = page{"nextAfter"}.getStr("")
+        if next <= after: refuse("invalid transcript cursor")
+        after = next
+      if not transcriptComplete: reply = summary("[transcript scan capped; report may be partial] " & reply)
+      j["state"] = %"settled"
+      j["completion"] = %*{"sessionId": id,
+        "turnId": admissionDoc{"turnId"}.getStr(""),
+        "seq": admissionDoc{"activation"}.getInt(1),
+        "outcome": admissionDoc{"outcome"}.getStr("unknown"),
+        "source": "worker-admission"}
+      j["notice"] = %*{"kind": "fleet-settled", "jobId": id,
+        "remoteSession": id, "activation": admissionDoc{"activation"}.getInt(1),
+        "status": admissionDoc{"outcome"}.getStr("unknown"),
+        "transcriptCommitted": admissionDoc{"transcriptCommitted"}.getBool(false),
+        "summary": reply, "summaryLimit": 2048}
+      j["delivered"] = %false
+    elif receipt != nil and receipt{"sessionId"}.getStr("") == id and receipt{"seq"}.getInt(0) == 1:
       # Activity certifies a completed turn, not factual task success. Retrieve
       # a bounded reply only from this session, then commit notice WITH job.
       var after = ""
@@ -198,6 +287,11 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         "remoteSession": id, "status": receipt{"outcome"}.getStr("unknown"),
         "summary": reply, "summaryLimit": 2048}
       j["delivered"] = %false
+    elif admissionState == "running" and epochTime() - j{"admissionReceipt", "ageSeconds"}.getFloat(0) > 3600:
+      # A turn may have started, but its receipt is far older than any task
+      # budget allows and no activity receipt exists. Still not success or
+      # interruption: name it unknown, keep the pointer for a human.
+      j["state"] = %"unknown"
     else:
       j["state"] = %"unknown"
     j["reachable"] = %true

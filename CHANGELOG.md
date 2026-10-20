@@ -146,6 +146,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Durable Fleet task admission (F1, `docs/WIRE.md` "Durable task admission"):
+  a delegated turn now carries a requester-chosen idempotency key, and the
+  worker records it with the normalized birth settings and their SHA-256
+  digest *before* appending the message or calling a provider. An exact retry
+  returns the existing acceptance or terminal receipt and runs nothing; the
+  same key with different work is refused; a record left `running` refuses
+  instead of guessing. The terminal receipt is bound to the activation
+  (turnId, outcome, usage, reply digest) and states whether the transcript was
+  durably committed — a turn whose writes failed stays unknown. Peers advertise
+  `admissionPolicyVersion` and are refused before dispatch without it, so
+  `fleet` can reconcile a lost reply instead of replaying work. New read-only
+  surfaces: hidden `admission_get {session,key}` on the worker and
+  `fleet_task_receipt {jobId}` on the requester; neither starts or resumes
+  anything. Session refusals keep their own code (`admission-conflict`,
+  `-busy`, `-unconfirmed`, `-invalid`, `-unsupported`) instead of a generic
+  runner error. Opt-in per call: ordinary turns are unchanged.
+
 - Image capability gating: `llm_resolve` reports whether the resolved model
   can be SENT image parts (`vision`/`visionSource`, from the catalog's
   `modalities.input`), echoed in the turn status frame. A text-only model gets
