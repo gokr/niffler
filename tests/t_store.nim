@@ -49,6 +49,31 @@ proc main() =
   secondStore.close()
   check("store rejects a second writer", secondCode != -1 and secondCode != 0)
 
+  # Instance metadata is a separate bounded registry, not free-form docs.
+  let identityA = repeat('a', 32)
+  let identityB = repeat('b', 32)
+  for identity in [identityB, identityA]:
+    let registered = call(nc, "store", "instance_register", %*{
+      "instanceId": identity, "name": "same label", "root": "/same/root", "gitHash": ""})
+    check("instance registration " & identity, registered{"ok"}.getBool(false), $registered)
+  let instances = call(nc, "store", "instance_list", %*{"limit": 1})
+  check("instance registry pages in identity order",
+    instances{"items"}.len == 1 and
+    instances{"items"}[0]{"instanceId"}.getStr() == identityA and
+    instances{"hasMore"}.getBool(false) and
+    instances{"nextAfter"}.getStr() == identityA, $instances)
+  let refreshed = call(nc, "store", "instance_register", %*{
+    "instanceId": identityA, "name": "renamed", "root": "/new/root", "gitHash": "abc"})
+  let refreshedList = call(nc, "store", "instance_list", %*{"limit": 1})
+  check("registration refresh retains firstSeen",
+    refreshed{"ok"}.getBool(false) and
+    refreshedList{"items"}[0]{"name"}.getStr() == "renamed" and
+    refreshedList{"items"}[0]{"firstSeen"} == instances{"items"}[0]{"firstSeen"}, $refreshedList)
+  let invalidInstance = call(nc, "store", "instance_register", %*{
+    "instanceId": "bad", "name": "x", "root": "/x", "gitHash": ""})
+  check("instance registry rejects malformed identity",
+    invalidInstance{"code"}.getStr() == "bad-request", $invalidInstance)
+
   # put/get round trip
   let p1 = call(nc, "store", "put",
                 %*{"kind": "test", "id": "doc1", "value": %*{"hello": "world"}})

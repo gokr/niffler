@@ -45,7 +45,10 @@ pass. Repository status is not a claim that installed binaries were updated.
 - [ ] Add `instances` registry and document instance dimension to both engines.
   Schema-only registry migrations and preservation tests added; `make gotest`
   passed. `make test-store` and full `make test` passed (90 server tests).
-  Registry tools and document scoping are not implemented. See [INSTANCE-STORE.md](INSTANCE-STORE.md).
+  Registry API slice adds hidden validated instance_register/instance_list in
+  both engines; make gotest, test-store and full make test passed (90 server
+  tests). Core registration and
+  document scoping are not implemented. See [INSTANCE-STORE.md](INSTANCE-STORE.md).
 - [ ] Use existing persistent instance identity; define restore/clone behavior.
 - [ ] Scope put/get/list/del/search, revision conflicts, selftest, and FTS;
   preserve verbatim values and correct pagination within a scope.

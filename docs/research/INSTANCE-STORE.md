@@ -21,15 +21,19 @@ Columns:
   slice must preserve first_seen on refresh and validate identity at the tool
   boundary for both engines (do not rely on TiDB CHECK support).
 
-No periodic writes, new env variables, registry tools, retirement/deletion,
-core boot registration, document foreign keys or shared fallback are introduced
-by this schema slice. These need the next contract and tests.
+The next slice adds separate hidden `instance_register` and `instance_list`
+APIs in both engines, with strict registration validation, atomic refresh,
+preserved firstSeen, database lastSeen and bounded identity pagination. See
+WIRE.md "Store contract". No periodic writes, new env variables,
+retirement/deletion, core boot registration, document foreign keys or shared
+fallback are introduced. Registry refresh is internal informational bookkeeping,
+not an approval-gated fleet trust or route mutation.
 
 ## Next slices
 
-1. Registry owner API and core registration: separate read and mutation tool
-   schemas, explicit validation, bounded pagination and per-operation approvals.
-   A mixed op tool cannot declare different static effects for each operation.
+1. Core registration using the implemented registry APIs. Separate read and
+   mutation schemas keep effects static; approval remains required for fleet
+   authority/route changes, not informational registry refresh.
 2. Document instance dimension: same semantics for SQLite and TiDB; own-instance
    default for every operation, including search, selftest and CAS. Bind each
    store process to a stable identity before it accepts calls. No implicit

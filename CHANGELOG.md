@@ -6,6 +6,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Store engines add an `instances` metadata table and hidden validated
+  registration/listing tools, preserving first-seen timestamps on refresh.
+  This is registry infrastructure only: document isolation and fleet registry
+  migration are not yet implemented.
+
 - Skill discovery now resolves workspace `.agents/skills`, user
   `~/.agents/skills`, then bundled skills. Project install/removal uses the
   conversation workspace; foreign-agent/XDG directories are no longer scanned.

@@ -110,6 +110,8 @@ func main() {
 
 	comp := sdk.New("store", "0.1.0")
 	comp.
+		Tool("instance_list", instanceSchema(false), instanceListHandler(db.DB)).
+		Tool("instance_register", instanceSchema(true), instanceRegisterHandler(db.DB)).
 		Tool("put", putSchema(), putHandler(db.DB)).
 		Tool("get", getSchema(), getHandler(db.DB)).
 		Tool("list", listSchema(), listHandler(db.DB)).

@@ -1272,6 +1272,29 @@ a `selftest` request to every registered component that implements one
 
 ## Store contract (`svc.store.call`)
 
+Instance registry infrastructure (both engines, hidden from the model):
+
+- `instance_register {instanceId, name, root, gitHash}` atomically inserts or
+  refreshes metadata in the `instances` table. `instanceId` is exactly 32
+  lowercase hexadecimal characters. All fields are required strings; name,
+  root and gitHash are bounded to 255, 4096 and 64 UTF-8 bytes respectively;
+  NUL/CR/LF and unknown fields refuse `bad-request`. Refresh preserves
+  `firstSeen`, replaces supplied metadata and updates database `lastSeen`.
+  Returns `{ok: true, instanceId}`. This internal write carries no human
+  approval requirement: it records observations, never grants authority.
+- `instance_list {after?, limit?}` returns
+  `{ok, items: [{instanceId, name, root, gitHash, firstSeen, lastSeen}], hasMore,
+  nextAfter?}` in ascending identity order. `after` is an exclusive full ID;
+  `limit` defaults to 100 and must be 1..1000. One-row lookahead makes hasMore
+  exact; nextAfter is present only when more rows remain. Times are database
+  timestamp strings. Listing is read-effect; registration is write-effect.
+
+Registry metadata is not verified remote identity, connection routing or a
+permission grant. Hidden tools are not an authentication boundary: direct bus
+callers are trusted. No retirement/delete API or implicit shared configuration
+fallback is provided. The registry alone does not scope existing documents;
+instance-aware document ownership is separate work.
+
 The store's bus contract is the artifact; every engine implements exactly
 these tools (docs/MANUAL.md "Store engines"). `put` / `get` / `del` carry
 `{kind, id, value?, expectRev?}`; docs are opaque JSON, ids sort
