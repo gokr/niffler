@@ -11,6 +11,7 @@ material across them.
 | Why is something core rather than a component? | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | What capabilities exist? | [FEATURES.md](FEATURES.md) — index, not reference |
 | What should we build next? | [PLAN.md](PLAN.md) — current status and acceptance work |
+| How do we finish remote task delegation? | [FLEET.md](FLEET.md) — active plan, authority, receipts, notices and artifacts |
 | How do I orchestrate tools and subagents? | [FABRIC_GUIDE.md](FABRIC_GUIDE.md) |
 | How does the context projection work? | [COMPACTION.md](COMPACTION.md) — conceptual model; operating knobs stay in the manual |
 | How do I extend the model catalog? | [MODEL_SOURCES.md](MODEL_SOURCES.md) |
@@ -26,8 +27,9 @@ material across them.
   The older sandbox notes retain superseded proposals, not current promises.
 - **Fleet:** [manual](MANUAL.md#ssh-and-lima-provisioning),
   [component reference](../components/fleet/README.md) and
-  [delivery status](research/FLEET-IMPLEMENTATION.md).
-  Provisioning is implemented; cross-instance task delegation is not.
+  [active delivery plan](FLEET.md).
+  Provisioning and read-only task delegation are implemented; unattended coding
+  tasks and the full inbox/artifact workflow remain open.
 
 ## Maintenance
 

@@ -1,4 +1,9 @@
-# Fleet implementation — delivery plan
+# Fleet implementation — historical delivery schedule
+
+> Superseded as an active checklist by [docs/FLEET.md](../FLEET.md).
+> Retained for the earlier implementation sequence and historical smoke notes.
+> In particular, Lima provisioning has since been smoke-tested on Linux/KVM;
+> see [LIMA-VALIDATION.md](LIMA-VALIDATION.md). Status claims below are historical.
 
 > VM backend update: current Fleet/TUI use native Lima, not Multipass. Legacy
 > Multipass profiles explicitly refuse and require newly provisioned/verified

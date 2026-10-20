@@ -1,5 +1,11 @@
 # Remote instances, resident agents and the `/niffler` switcher
 
+> **Archived design history.** The active task-delivery plan has moved to
+> [docs/FLEET.md](../FLEET.md), covering shipped behavior, remaining coding-task
+> authority, unattended approvals, admission/verification receipts, notices,
+> inbox, task controls and artifacts. The original proposal below is retained
+> for citations; its timelines, tool names and status claims are not current.
+
 > Design history, with implementation status in [FLEET-IMPLEMENTATION.md](FLEET-IMPLEMENTATION.md)
 > and the [manual](../MANUAL.md#ssh-and-lima-provisioning). Identity,
 > service lifecycle, Nim provisioning, persona/agent definitions and heartbeat

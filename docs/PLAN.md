@@ -18,7 +18,7 @@ worktrees have been removed; their commits are included in `main`.
 |---|---|---|
 | Write arbitration | Durable `locks` peer; session dispatch claims; path-bound and opaque writers; harness-state claims for plugins; explicit no-claim declarations; nested Fabric calls; restart/outage/TTL contracts | Automatic worktree allocation/ownership; fencing or confirmed termination for writers that outlive leases; evidence-based completion adjudication is a separate feature |
 | Sandboxing | Opt-in synchronous Linux bwrap shell guard; launch-time checks, environment clearing, network isolation and configured masks; partial component mask checks; pure versioned conversation-policy model | Persisted effective conversation policy and human controls; uniform dispatch propagation; approved-root enforcement; conditional grants; migration from global masks; background execution; Seatbelt and real Mac validation |
-| Fleet | Persistent identity; Linux user service; approved SSH/Multipass/Incus install/adopt/update and lifecycle; pinned private receipts; native relay; agent definitions and opt-in heartbeat; durable human completion feed; initial read-only fleet task slice with pinned jobs and durable runner notices | Real SSH-hosted guest provisioning and published-revision update smoke; released-client integration; background approval routing; broader task authority, confirmed remote cancellation and artifacts |
+| Fleet | SSH/Incus/Lima provisioning and lifecycle; pinned receipts; native relay and TUI switching; agent definitions/heartbeat; bounded read-only tasks and durable parent notices | Idempotent worker admission/activation receipts; authorized unattended coding; active cancellation/continuation; inbox, background approvals and artifacts; see [FLEET.md](FLEET.md) |
 | Vision path | Tool results may carry `images` (`docs/WIRE.md` "Tool results"): core validates them against the byte-sniffed allowlist, stores them as attachment docs under the tool message, and materializes them through the same budget/projection rule as a dropped image; `read` answers an image path with the image plus a caption; elision drops refs with text so a superseded screenshot leaves the projection | Re-encoding an oversized capture (reported today, never silently downscaled — needs an image codec in a component plus a bound on its output); provider-specific degradation beyond the honest elision marker; TUI-side rendering of tool images |
 
 ### Write arbitration: usable foundation, not a sandbox
@@ -50,54 +50,30 @@ context, not competing delivery checklists. The snapshot model alone does not
 persist or enforce a conversation sandbox. Do not call an approved unconfined
 builder, MCP server or native Fabric guest sandboxed.
 
-### Fleet: remote operations, not remote task orchestration yet
+### Fleet: finish the remote-task workflow
 
-Merged Incus support adds native unprivileged containers and optional
-SSH management hosts for Incus/Lima (Multipass was the earlier VM backend). An approved local Incus smoke on
-`niffler1` installed published main, verified the ordinary ubuntu service, guest
-linger, temporary sudo-rule removal, and matching TUI receipt import/native
-relay using a scratch client registry. Optional LSP servers/trafilatura and
-provider credentials are not part of the server bootstrap.
+The authoritative delivery plan is [FLEET.md](FLEET.md). Provisioning over SSH,
+Incus and Lima, stable identity, private receipts, TUI switching, and bounded
+read-only remote tasks with durable parent notices are implemented. Local Lima
+bootstrap and SSH-hosted Incus provisioning have live evidence; the original
+long-bootstrap lost-reply mechanism has a tested heartbeat-pump fix.
 
-An approved **SSH-hosted** Incus run on `wowbagger` (`host` routing through
-ordinary SSH) has since provisioned a container from published main, verified
-identity, guest linger, sudo-rule removal, loopback-only NATS, the relay over
-`ssh → incus exec → cli relay`, and qgroup-enforced 20 GB root volume. Its first
-attempt failed honestly on a host firewall conflict (Docker's legacy
-`FORWARD DROP` policy beating Incus's nftables rules), which the operator fixed
-with bridge-scoped ACCEPT rules; that policy is not yet persisted across reboot.
-This records branch validation, not a release claim.
-
-Provisioning and lifecycle are implemented in the optional Nim component, not
-manifest autostart. Matching TUI source has receipt import and switching, but
-that repository and installed client versions must be verified separately.
-The historical Multipass smoke passed; it does not validate Lima or replace real SSH or
-published-revision download/update acceptance. No public NATS listener,
-credential copying, shared bus namespace or distributed locks are implied.
-
-`activity_list` / `ev.activity` are implemented on `main`: latest durable
-completion per conversation, session-ID pagination and per-session sequence
-reconciliation. They are not a remote fleet-job ledger. Process-completion
-record-before-notify/ack/recovery is also implemented. Heartbeat still lacks
-cron, daily token accounting, admission-ledger retention and an integrated
-completion-delivery surface. See [FLEET-IMPLEMENTATION.md](research/FLEET-IMPLEMENTATION.md)
-and [components/fleet/README.md](../components/fleet/README.md).
+Still open: worker-side idempotent task admission and activation receipts;
+human-approved unattended coding profiles; active cancellation, steering and
+continuation; sequenced blocked/completion notices; a human task inbox; scoped
+artifact retrieval and verification evidence. Existing read-only tasks explicitly
+use `ask`, not auto approval. Human seen state stays separate from agent notice
+acknowledgement. Follow F1–F5 in the Fleet plan rather than the historical research
+ladders. Published-revision update and real-provider coding acceptance remain
+separate gates; the completed Linux Lima smoke does not certify macOS/VZ.
 
 ## Recommended work order
 
-1. **Finish fleet cross-instance task delegation first.** Start with one persisted
-   requester job pointing to one remote root conversation. Use explicit peer
-   authority and per-task budgets; reconcile after disconnect or requester restart
-   without duplicate submission. Distinguish unreachable/running/settled; keep
-   remote subagent notices with their remote parent, human seen state separate
-   from model acknowledgement, and retrieve results/artifacts explicitly.
-   Unattended approval-requiring work must fail closed unless authority was
-   explicitly granted; background UI approval routing can be a separate slice.
-   Include failure/timeout/restart/identity-mismatch contracts and a live two-instance
-   roundtrip. Fold real SSH/published-revision install/update and matching-TUI
-   reconnect/completion checks into acceptance on human-approved targets. Release
-   client changes separately; do not silently treat unreachable as interrupted.
-   Completion adjudication is not a prerequisite for useful delegation.
+1. **Complete remote task delegation.** Follow [FLEET.md](FLEET.md): F1 durable
+   worker admission/activation receipts, F2 explicitly authorized unattended coding,
+   F3 task control and actionable notices, F4 inbox/artifacts, F5 live acceptance
+   and compatible releases. The outcome is “assign a coding task to another
+   Niffler and get a reviewable result back,” not just remote management or badges.
 2. **Finish one vertical conversation-sandbox slice.** Persist and resume the
    effective policy; provide a human-only update seam; propagate it through
    serial/parallel/invoke/nested dispatch; enforce it first on filesystem tools.
@@ -133,7 +109,3 @@ ledger, settings UI or research shelf into prerequisites for the above slices.
 - Preserve old design links; mark superseded notes rather than deleting evidence.
   Refresh affected localized docs after English; client-only help belongs to the
   client repository. See [the documentation index](README.md).
-
-### Lima transport replacement
-
-Native Lima provisioning/lifecycle and matching TUI relay implemented in isolated fleet-lima worktrees; SSH/Incus preserved. Multipass profiles explicitly require migration. Real Lima smoke pending separate human authorization. No delegation implementation changes.
