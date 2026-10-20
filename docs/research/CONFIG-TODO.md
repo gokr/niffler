@@ -43,6 +43,9 @@ pass. Repository status is not a claim that installed binaries were updated.
 ### 2. Instance-aware document storage
 
 - [ ] Add `instances` registry and document instance dimension to both engines.
+  Schema-only registry migrations and preservation tests added; `make gotest`
+  passed. `make test-store` and full `make test` passed (90 server tests).
+  Registry tools and document scoping are not implemented. See [INSTANCE-STORE.md](INSTANCE-STORE.md).
 - [ ] Use existing persistent instance identity; define restore/clone behavior.
 - [ ] Scope put/get/list/del/search, revision conflicts, selftest, and FTS;
   preserve verbatim values and correct pagination within a scope.
@@ -117,6 +120,14 @@ pass. Repository status is not a claim that installed binaries were updated.
   production restart, migration or plugin release from source edits alone.
 
 ## Work log
+
+- Committed baseline: 71dfaad (design/tracking), 75e22cf (AGENTS-only),
+  bdd8760 (workspace and shared user skill roots). Scratch files excluded.
+- Started instance-store foundation: new instances-table migrations in both
+  engines, SQLite legacy-document preservation test and DSN-gated TiDB test.
+  `make gotest`, `make test-store` and full `make test` exited 0 (90 server
+  tests). Logs: `.scratch/instances-*-test.log`. Live TiDB validation remains
+  conditional on a test DSN.
 
 - Started: recovered discussion; captured instance-scoping and fleet-registry
   requirements. First bounded code slice: AGENTS-only instruction discovery.
