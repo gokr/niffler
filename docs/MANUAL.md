@@ -1925,6 +1925,35 @@ and the OAuth start/complete/cancel flow) behind the approval prompt.
   naming the pair and the window it got instead — the drift that once let a
   healthy transcript measure 262% of a 128k fallback and trim itself.
 
+### Pinned providers never reroute
+
+A conversation's `provider` pin is resolved once per turn (`llm_resolve`) and
+then travels with every chat call of that turn, so the model id and the backend
+it belongs to cannot drift apart. Two rules make that hold when resolution
+itself fails:
+
+- A **named** provider is only ever answered by that name — its store record,
+  then the environment table's entry of the same name (`default` from
+  `NIF_OPENAI_*`, or a `NIF_LLM_PROVIDERS` entry). If neither can answer, `llm`
+  says which one failed: *the provider registry did not answer* (a bus/registry
+  failure, worth a retry) versus *unknown provider “x”* with the configured
+  nicknames listed (a wrong pin, worth fixing). The registry lookup retries
+  once before giving up, so a store busy writing a transcript does not fail a
+  turn. An **empty** pin is not a name: the active provider, then
+  `NIF_OPENAI_*`, serves it as before — which keeps `--minimal` boots (no
+  `provider` component) working.
+- Core **refuses** a pinned turn it cannot resolve instead of running it
+  without a provider: the turn ends with `cannot resolve this conversation's
+  pinned provider “x” … refusing the turn rather than running it against a
+  different provider`. Before this rule the failure was swallowed, the chat call
+  went out with the conversation's model and no provider, so `llm` fell back to
+  the harness-global active provider — one UI's provider switch, or a momentary
+  registry blip, then moved every ongoing conversation onto another backend,
+  where the model id it still carried was refused on every turn. Clearing the
+  pin (`session {provider: "", model: ""}`) or repairing the provider record is
+  the way out; `provider_list` shows what this harness actually has, and the
+  TUI already clears an unresolvable pin when it loads a conversation.
+
 ## Hooks
 
 The `hooks` component (off by default — an autostart flag, not a build one:

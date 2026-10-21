@@ -6,6 +6,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- A conversation's provider pin can no longer be silently rerouted. Two
+  cooperating fixes for the same failure: a registry lookup that failed
+  transiently (the `provider` component restarting, the store busy, a
+  `--minimal` boot) used to be reported — and, worse, handled — as
+  `unknown provider "synthetic" (have: default)`. `llm` now distinguishes
+  *the registry did not answer* from *this harness has no such nickname*
+  (`classifyProviderReply`), retries the lookup once, and answers a **named**
+  provider only by that name: the store record, then the environment table's
+  entry of the same name. Core, in turn, no longer swallows a failed turn
+  resolution: a pinned conversation whose provider cannot be resolved now ends
+  its turn with `cannot resolve this conversation's pinned provider … refusing
+  the turn rather than running it against a different provider` instead of
+  sending its model to whatever provider was active — which is how one UI's
+  provider switch, or a momentary blip, moved every ongoing conversation onto
+  another backend. An unpinned conversation still falls back to the active
+  provider and `NIF_OPENAI_*` exactly as before, so `--minimal` keeps working.
+  `tests/t_provider_pin.nim` pins both halves end to end.
+
 - Embeddings have a producer: a provider record can now name a second,
   optional model in `embedModel` (plus `embedBaseUrl` when vectors are served
   elsewhere), and the hidden `llm` tool `embed` calls `{base}/embeddings`
