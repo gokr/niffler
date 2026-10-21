@@ -78,6 +78,23 @@ refresh() {
 persist() {
   local failed=0 virt enabled active policy state
   printf 'niffler-server: root=%s\n' "$root"
+  # A user-manager query needs the session bus. `incus shell box` (or any
+  # non-login `su`) has no logind session, so XDG_RUNTIME_DIR and
+  # DBUS_SESSION_BUS_ADDRESS are unset and every systemctl --user call returns
+  # "Failed to connect to bus". That is a property of THIS SHELL, not of the
+  # instance — the unit can be perfectly persistent while this process cannot
+  # see it. Treating the empty answer as "disabled/inactive" reported
+  # "NOT persistent yet" and told the operator to reinstall a healthy service,
+  # which is worse than saying nothing.
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    printf '%s\n' 'niffler-server: cannot reach the systemd user manager from this shell'
+    printf '%s\n' '  (no XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS — a non-login shell: `incus shell`, or `su` without a logind session)'
+    printf '%s\n' '  retry from a real login session, or export:'
+    printf '%s\n' "    XDG_RUNTIME_DIR=/run/user/$(id -u)"
+    printf '%s\n' "    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus"
+    printf '%s\n' 'niffler-server: UNKNOWN — the unit state could not be read (this is not a verdict)'
+    return 2
+  fi
   if [[ ! -f "$path" || -L "$path" ]]; then
     printf 'niffler-server: unit=missing %s\n  run: scripts/server.sh install %s\n' "$path" "$root"
     return 1
@@ -107,7 +124,10 @@ persist() {
   fi
   state=$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null) || state=unknown
   printf 'niffler-server: linger=%s\n' "$state"
-  if [[ "$state" != yes ]]; then
+  if [[ "$state" == unknown ]]; then
+    printf '%s\n' '  cannot read linger from here (no logind session); check `loginctl show-user' "$(id -un)" '-p Linger` in a login shell'
+    failed=1
+  elif [[ "$state" != yes ]]; then
     printf '%s\n' '  run (as this instance administrator): loginctl enable-linger; a user unit without linger is stopped at logout'
     failed=1
   fi

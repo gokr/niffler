@@ -1587,7 +1587,7 @@ topic `niffler-component` are discoverable without any registry:
 | `plugin_search {query?}` | GitHub topic search; returns repo, description, stars, plus the winning `query` and per-attempt diagnostics — GitHub ANDs the words, so a zero-hit query is retried with fewer of them |
 | `plugin_installed` | the packages installed on this harness |
 | `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component via the builder (`build` for v1, `build_package` for v2), then `spawn` each service component (approved). Installing a package whose record and checkout are both live is an error, not a re-install — use `plugin_update`, or `plugin_remove` first; a record whose checkout is gone (var/plugins wiped by hand, store kept) is stale and is repaired by a fresh install; the clone is shallow (`--depth 1`) and v1 Go packages carry an untracked `go.work` for manual builds |
-| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt when the pull moves HEAD or the installed artifacts are stale/missing; a record whose checkout is gone is reinstalled from scratch at its recorded ref |
+| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt when the pull moves HEAD or the installed artifacts are stale/missing; a record whose checkout is gone is reinstalled from scratch at its recorded ref. A **branch** pin never graduates to a release here, deliberately — a branch install tracks its branch, and `main` is routinely ahead of the newest release, so repointing it at a tag would silently downgrade it. To adopt a release from a branch install: `plugin_remove`, then `plugin_install {repo, version: "vX.Y.Z"}` (install refuses while a record exists) |
 | `plugin_remove {package}` | `core.remove` every supervised component, delete the clone, drop the record |
 
 - Install/update/remove all carry `x-harness.approval: "always"` — they
@@ -3174,9 +3174,25 @@ user's SSH key, or a deploy key) and still be unable to open a PR.
 #### Making a token
 
 Create it **as the identity the instance should act as** — do not mint it from
-an account you would not want the instance to write as. Prefer a **fine-grained
-personal access token** over a classic one, and scope it to exactly what the
-job needs:
+an account you would not want the instance to write as.
+
+> [!IMPORTANT]
+> A **fine-grained** token cannot write to a repository owned by **another
+> personal account**, even when that account has been added and has accepted an
+> invitation as a collaborator with `Contents: Read and write`. GitHub's
+> [Outside Collaborator support for Fine-grained PATs](https://github.com/github/roadmap/issues/601)
+> item is still open. The symptoms are maddening because everything *looks*
+> right: the token lists the repo, the repo reports `push: true`, the
+> permission is ticked — and every write answers
+> `403 Resource not accessible by personal access token`, while reads succeed
+> and `git push` over SSH keeps working (SSH never uses the token).
+>
+> Use a **classic** token with the `repo` scope in that shape instead (the
+> machine-user case: one account collaborating on another account's repo), or
+> install a **GitHub App** on the repo, which acts independently of any user.
+
+Otherwise prefer a fine-grained personal access token, scoped to exactly what
+the job needs:
 
 1. GitHub → Settings → Developer settings → **Personal access tokens →
    Fine-grained tokens** → *Generate new token* (log in as the machine user if
@@ -3192,9 +3208,12 @@ job needs:
    token that outlives the experiment.
 5. Copy the `github_pat_…` value once — GitHub will not show it again.
 
-A classic token (`repo`, `read:org`, …) also works but grants across every repo
-the account can see. Use one only if fine-grained scoping cannot express what
-you need.
+A classic token (`repo`, `read:org`, …) also works and **grants across every
+repo the account can see**, which is the price of it — but it is the required
+shape for the outside-collaborator case above, and the quickest way to confirm
+that restriction is what you are hitting. It also makes the two kinds easy to
+tell apart: `gh auth status` prints `Token scopes: 'repo'` for a classic token
+and no scope line at all for a fine-grained one.
 
 #### Where to put it
 

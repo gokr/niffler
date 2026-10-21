@@ -68,6 +68,27 @@ TEST_LOCK  := bash scripts/with-build-lock.sh -s
 # build generation and exports this marker to the inner sub-make).
 BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 
+# store-sqlite compiles C for sqlite-vec, and that C does `#include "sqlite3.h"`
+# while mattn/go-sqlite3 ships the amalgamation as `sqlite3-binding.h`. Point
+# cgo at mattn's own header — never the system one, which is a different SQLite
+# version than the one mattn links in. Shared here so the build and `make
+# gotest` cannot drift apart.
+#
+# The snippet is spliced into a single-quoted `bash -c '...'` recipe, so it must
+# contain NO single quotes of its own — they would close the outer quoting and
+# fail with a bare "syntax error: unexpected end of file". It also avoids double
+# quotes around go's -f format: they survive as literal characters, so the path
+# ends up as ""/path/to/mod"" and cp reports a missing file. A module path has
+# no spaces, so the format needs no quoting at all. mattn ships the header
+# read-only, so `cp` lands a 444 file that a second run cannot overwrite —
+# remove it first and make the shim writable, or every build after the first
+# fails with "Permission denied".
+SQLITE_VEC_INC = shim="$${TMPDIR:-/tmp}/niffler-sqlite-inc"; mkdir -p "$$shim"; \
+	mattn=$$(go list -m -f={{.Dir}} github.com/mattn/go-sqlite3); \
+	[ -n "$$mattn" ] || { echo "store-sqlite: cannot locate mattn/go-sqlite3" >&2; exit 1; }; \
+	rm -f "$$shim/sqlite3.h"; cp "$$mattn/sqlite3-binding.h" "$$shim/sqlite3.h"; \
+	chmod u+w "$$shim/sqlite3.h"
+
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components components-inner run down down-here \
@@ -178,12 +199,25 @@ var/bin/session: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
 # the only prerequisite is a C compiler — which building Nim already needs.
 # No libsqlite3-dev, no runtime .so, no extension loading.
 #
+# That claim needs one include path to hold. sqlite-vec's cgo package compiles
+# its own C with `-DSQLITE_CORE`, which makes its header `#include "sqlite3.h"`,
+# while mattn ships the amalgamation as `sqlite3-binding.h` — so a bare C
+# compiler is NOT enough and the build dies with "sqlite3.h: No such file or
+# directory". Installing libsqlite3-dev would satisfy it but compile the
+# extension against the SYSTEM SQLite, a different version from the one mattn
+# links in (3.45 vs its vendored 3.46 at the time of writing) — an ABI mismatch
+# waiting to happen. Instead point cgo at mattn's own amalgamation header,
+# resolved through `go list` so it follows whatever version go.mod pins. Nothing
+# is copied into the repo or the module cache; the shim dir is rebuilt per build.
+#
 # -tags sqlite_fts5 is NOT optional: mattn ships FTS5 off by default, and the
 # store's search index (migration 00002, `docs_fts`) is built on it — without
 # the tag `CREATE VIRTUAL TABLE … USING fts5` fails at boot.
 var/bin/store-sqlite: $(wildcard components/store-sqlite/*.go) components/store-sqlite/go.mod components/store-sqlite/go.sum \
     $(wildcard components/store-sqlite/migrations/*.sql) $(SDK_GO) | var/bin
-	$(BUILD_WRAP) bash -c 'cd components/store-sqlite && CGO_ENABLED=1 go build -tags sqlite_fts5 -o ../../var/bin/store-sqlite .'
+	@$(BUILD_WRAP) bash -c 'set -e; cd components/store-sqlite; \
+		$(SQLITE_VEC_INC); \
+		CGO_ENABLED=1 CGO_CFLAGS="-I$$shim" go build -tags sqlite_fts5 -o ../../var/bin/store-sqlite .'
 
 # store-tidb — the TiDB/MySQL engine (M4): a network-shared store, many
 # harnesses can serve from one cluster. Selected at boot
@@ -590,13 +624,26 @@ var/bin/test_t_llm_modelpin: var/bin/llm var/bin/models
 var/bin/test_t_provider_pin: var/bin/llm var/bin/models
 
 # The full gate, self-contained: core + components + the bus-contract suite
-# (each test owns a private NATS server and a temporary root).
-test: test-server
+# (each test owns a private NATS server and a temporary root), plus the bench
+# adapter tests when Node is available.
+test: test-server test-bench
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
+#
+# Deliberately does NOT depend on test-bench: the suite is pure Nim/Go and a
+# stock harness install has no Node — requiring it made `make test-server`
+# abort with `node: command not found` before running a single contract test.
+# `make test` still covers both, and CI runs test-bench as its own step (the
+# runners ship Node), so the benchmark adapters keep their coverage.
 test-bench:
 	@mkdir -p var
-	node --test bench/tests/*.test.mjs
+	@if ! command -v node >/dev/null 2>&1; then \
+		echo "test-bench: SKIPPED — Node is not installed (only the benchmark"; \
+		echo "  adapters need it; the bus-contract gate does not). Run"; \
+		echo "  'make install-node' to cover them."; \
+	else \
+		node --test bench/tests/*.test.mjs; \
+	fi
 
 .PHONY: test-clean
 test-clean: var/bin/test_t_clean
@@ -620,7 +667,7 @@ test-codingartifact: build var/bin/test_t_codingartifact
 test-fleet-faults: build var/bin/test_t_fleet_faults
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_faults
 
-test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
+test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
 
@@ -715,7 +762,9 @@ gotest:
 	cd components/provider && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...
 	cd components/llm-openai && go test ./... && go vet ./...
-	cd components/store-sqlite && CGO_ENABLED=1 go test -tags sqlite_fts5 ./... && CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...
+	cd components/store-sqlite && bash -c 'set -e; $(SQLITE_VEC_INC); \
+		CGO_ENABLED=1 CGO_CFLAGS="-I$$shim" go test -tags sqlite_fts5 ./... && \
+		CGO_ENABLED=1 CGO_CFLAGS="-I$$shim" go vet -tags sqlite_fts5 ./...'
 	cd components/store-tidb && go test ./... && go vet ./...
 	cd components/nats && go test ./... && go vet ./...
 
@@ -771,7 +820,7 @@ doctor:
 	fi
 	@if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' 2>/dev/null; then \
 		echo "  node (20+): OK"; \
-	else echo "  node: MISSING or too old — run 'make install-node'"; fi
+	else echo "  node: MISSING or too old — optional: only the bench adapter tests ('make test-bench') need it; 'make install-node' to add it"; fi
 	$(call check_tool,npm,install-node)
 	@echo "Optional (generally useful on the CLI):"
 	$(call check_tool,jq,install-tools)
