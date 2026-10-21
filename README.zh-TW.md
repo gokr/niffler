@@ -27,7 +27,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 
 ## Quick start
 
-需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）加上 Nimble 相依項目。Node.js 20+ 與 npm 是選用的——它們用於 TypeScript 元件、`npx` 技能與以 npm 為基礎的 MCP 伺服器。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`。
+需求：Nim 2.2.12+ 與 Go。`make setup` 會安裝這些以及其他平台先決條件（Ubuntu/macOS）、Nimble 相依項目與 ripgrep（匯流排合約測試會呼叫 `rg`；`grep` 元件本身在沒有它時會降級為可操作的錯誤）。Node.js 20+ 與 npm 是選用的——它們用於 TypeScript 元件、`npx` 技能與以 npm 為基礎的 MCP 伺服器。Niffler 使用純 Nim 的 [natsnim](https://github.com/gokr/natsnim) 用戶端；不需要安裝 `libnats` 或 `cnats`，匯流排本身就是本儲存庫建置到 `var/bin` 的 `nats-server`——絕不使用外部安裝。
 
 一行安裝：`scripts/bootstrap.sh` 會找到或建立複製、安裝先決條件，然後執行 `make setup`、`make release` 與 `make install-tui`：
 `curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`。
@@ -60,14 +60,15 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 | 命令 | 作用 |
 |---|---|
-| `make setup` | 安裝平台依賴（Ubuntu/macOS）和 Nimble 依賴套件 |
-| `make build` | core + 全部元件建置到 `var/bin`（不含 UI 工具鏈） |
+| `make setup` | 安裝平台依賴（Ubuntu/macOS）以及 Nimble 依賴套件和 ripgrep |
+| `make build` | core + 全部元件建置到 `var/bin`（不含 UI 工具鏈；同時建置隨附的 `nats-server`） |
 | `make all` | `build`（預設目標；桌面 UI 已是獨立外掛） |
 | `make run` | 建置後啟動 `./var/bin/niffler`（終端管理 shell） |
 | `make install` | 安裝 `niffler`、`niffler-cli`、`niffler-console` 的 PATH 項目（終端上會詢問是否安裝 TUI） |
 | `make install-tui` | `make install WITH_TUI=1`：上面的全部，外加 `niffler-tui` 聊天用戶端 |
 | `make install-lsp` | 安裝 `lsp` 元件的預設語言伺服器 |
 | `make install-tools` | agent 的 CLI 工具箱（經 bash 使用）：jq、yq、ripgrep、fd、fzf、bat、tree、htop、wget、zip、unzip、sqlite3 |
+| `make install-tools-rg` | 僅 ripgrep（來自同一張表）；`make setup` 會執行它 |
 | `make test` | 完整測試門：匯流排契約測試套件（UI 自身的測試與型別檢查在 `gokr/niffler-ui`） |
 | `make test-server` | 匯流排契約測試套件（每個測試自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 單一元件的契約測試，例如 `make test-fetch` |

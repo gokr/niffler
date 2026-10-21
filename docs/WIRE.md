@@ -1444,12 +1444,10 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
 - One message = one envelope. NDJSON for stdio streams (pipewrap) — same
   codec, line-delimited.
 - One envelope still has to fit the NATS `max_payload`. Core spawns the
-  bundled `components/nats` build with `--max_payload 8388608` (8MiB — a
-  Niffler flag extension; the official binary only accepts it via config
-  file) because an `llm` `chat` request carries the whole conversation. A
-  PATH `nats-server` fallback (hand-compiled dev runs) gets the same 8MiB
-  via a generated config file — verified against the official binary; a
-  stock 1MiB cap makes oversized publishes time out instead of failing
-  loudly. Core also checks the connected bus's cap at boot and warns when
-  it is below the harness's 8MiB. A publish over the cap fails and
-  reports the size against the server's `max_payload`.
+  bundled `components/nats` build — the only bus it ever uses — with
+  `--max_payload 8388608` (8MiB; a Niffler flag extension) because an `llm`
+  `chat` request carries the whole conversation. A missing bundled binary is
+  a hard error naming `make build`, never a fallback to a PATH `nats-server`.
+  Core also checks the connected bus's cap at boot and warns when it is
+  below the harness's 8MiB. A publish over the cap fails and reports the
+  size against the server's `max_payload`.
