@@ -2926,6 +2926,102 @@ its guest transport executes scripts only inside test roots, never SSH or VMs.
 `NIF_FLEET_TASK_WORKERS=0` disables transport workers (maintenance/test use),
 without disabling pending-notice delivery.
 
+### GitHub CLI and a token
+
+`make install-tools` installs the [`gh`](https://cli.github.com) binary, which
+lets an instance open pull requests, read issues and inspect workflow runs.
+The binary alone does nothing, and the one thing worth understanding is *why*:
+
+**`gh` cannot reuse an SSH key.** An SSH key authenticates the **git
+transport** only (`git push`/`git clone` over `git@github.com:…`). Every `gh`
+command talks to the **REST API**, which wants a bearer token. So a box that
+pushes fine over SSH still answers `gh pr create` with
+
+```
+To get started with GitHub CLI, please run: gh auth login
+Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.
+```
+
+That is not a misconfiguration to chase — it is two different credentials for
+two different protocols. An instance can push as its own identity (a machine
+user's SSH key, or a deploy key) and still be unable to open a PR.
+
+#### Making a token
+
+Create it **as the identity the instance should act as** — do not mint it from
+an account you would not want the instance to write as. Prefer a **fine-grained
+personal access token** over a classic one, and scope it to exactly what the
+job needs:
+
+1. GitHub → Settings → Developer settings → **Personal access tokens →
+   Fine-grained tokens** → *Generate new token* (log in as the machine user if
+   that is the identity you provisioned).
+2. **Repository access**: *Only select repositories* → pick only the repos the
+   instance may touch. Never "All repositories" for an unattended box.
+3. **Permissions** (nothing else):
+   - `Contents: Read and write` — needed to push, or `Read` if it only reads.
+   - `Pull requests: Read and write` — to open and comment on PRs.
+   - `Metadata: Read` is added automatically and is mandatory.
+4. **Expiration**: set one. An instance credential with no expiry is a
+   permanent grant nobody revisits; 90 days with a calendar reminder beats a
+   token that outlives the experiment.
+5. Copy the `github_pat_…` value once — GitHub will not show it again.
+
+A classic token (`repo`, `read:org`, …) also works but grants across every repo
+the account can see. Use one only if fine-grained scoping cannot express what
+you need.
+
+#### Where to put it
+
+Put it where `gh` looks **and nowhere a repo can reach it**:
+
+```bash
+# as the user that runs the harness (not root), on the instance:
+read -rs GH_TOKEN_PASTE        # paste; nothing echoes, no shell history
+printf '%s' "$GH_TOKEN_PASTE" | gh auth login --with-token
+unset GH_TOKEN_PASTE
+gh auth status                 # verify which account + scopes answered
+```
+
+`gh` writes the token to `$XDG_CONFIG_HOME/gh/hosts.yml` (default
+`~/.config/gh/hosts.yml`, mode 0600) and reads it from there afterwards. That
+location is outside any checkout, which is the point.
+
+**Do not** put a GitHub token in `.env` in the harness root. That file sits
+*inside* the repo directory, is read by every component's dotenv loader, and is
+the first thing a stray `git add -A` would sweep up. It is the right home for an
+LLM key; it is the wrong home for a credential that can rewrite repositories.
+
+If you would rather not have the token on disk at all, export `GH_TOKEN` in the
+service's environment instead — then `gh` never writes it, but the value is
+visible in `/proc/<pid>/environ` to anything running as that user. On a
+single-tenant box that is a wash; on a shared one, `hosts.yml` (0600) is
+tighter.
+
+#### Scope it to what the instance is allowed to do
+
+This is the same trust question as approvals, and it composes with them: a
+resident instance running `NIF_APPROVALS_DEFAULT=auto` (see
+[Approvals](#approvals)) will auto-grant `bash` and `git`, so a write-capable
+token there means **an unattended agent can open and push PRs with no human in
+the loop**. That is a legitimate posture, but choose it deliberately. Two
+cheap limits, in order of value:
+
+- **Protect the default branch** (require a pull request + review). Then the
+  token's write access produces *proposals*, which is what you want from a
+  worker, and `main` still needs a human.
+- **Scope the token to the repos the worker actually owns** and give it
+  `Contents: Read` + `Pull requests: Read and write` where it should only
+  propose.
+
+Verify from the instance with `gh auth status` (shows the account, host and
+scopes) and a harmless read such as `gh pr list -R owner/repo`. Note that
+`gh auth status` prints the account but never the token.
+
+Revoking: delete the token on GitHub (Settings → Developer settings → the token
+→ *Delete*), or `gh auth logout` on the instance. Revocation is per-token, so a
+compromised instance never forces a password change for the human account.
+
 ### Scheduled turns (heartbeat)
 
 Heartbeat is built by `make build` but enabled only through an approved
@@ -4452,7 +4548,7 @@ make install-lsp    # install the lsp component's default language servers
 make install-tools-rg  # just ripgrep (part of `make setup`; the bus-contract
                     # tests shell out to `rg`)
 make install-tools  # the rest of the agent CLI toolkit (jq, yq, fd, fzf, bat,
-                    # tree, htop, wget, zip, unzip, sqlite3) — all optional
+                    # tree, htop, wget, zip, unzip, sqlite3, gh) — all optional
 make install-jev    # install the Von runtime for jev (opt-in, ~5.4 GB;
                     # never part of `make setup`)
 make von-up         # enable the supervised Von launcher (persisted spawn
@@ -4503,7 +4599,8 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
 | UI banner: bus unreachable | core autostart still in progress or failed — start `./var/bin/niffler` in a terminal to see boot errors |
 | `core: WARNING missing binary for <name>` on boot | run `make build` |
 | llm error HTTP 401/403 | check the active provider's key or token first (`provider_status` for a redacted view of what is in effect, `provider_list` for `expiresAt`); only with no stored provider active does `NIF_OPENAI_API_KEY` in `.env` or the shell environment decide |
-| "approval denied" in headless mode | expected: no human reachable. Attach the UI, use `make run`, or set `NIF_AUTO_APPROVE=1` knowingly |
+| "approval denied" in headless mode | expected: no human reachable. Attach the UI, use `make run`, set `NIF_APPROVALS_DEFAULT=auto` for a resident instance (per conversation, still overridable — prefer it to `NIF_AUTO_APPROVE=1`, which is a permanent bypass), or set `NIF_AUTO_APPROVE=1` knowingly |
+| `gh` says "please run gh auth login" though `git push` works | expected: SSH authenticates git transport, `gh` needs a REST token — a different credential. See [GitHub CLI and a token](#github-cli-and-a-token) |
 | two stores fight over the same data file (`var/store.db`) | single-writer rule — only one core per root; experiment in a temp `NIF_ROOT` copy |
 | boot refuses: "this harness has conversation history in var/barrel-db" | barrel storage was removed in 0.4.0: the engines are SQLite (default) and TiDB. Move the old data with a 0.3.x checkout (`niffler-store-migrate`), or start fresh — `var/barrel-db` is never touched |
 | orphaned `nats-server` | a manually started `nats-server`, a non-Linux host (no PDEATHSIG to reap it), or a stale `var/nats-pid` left by SIGKILL — check the pid file (core verifies pid + comm, so a stale file is ignored), then `pkill -f nats-server` |

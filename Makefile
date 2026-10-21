@@ -746,8 +746,9 @@ doctor:
 	@echo "Optional (generally useful on the CLI):"
 	$(call check_tool,jq,install-tools)
 	$(call check_tool,rg,install-tools-rg)
+	$(call check_tool,gh,install-tools)
 	@echo "     agent CLI toolkit (yq, fd, fzf, bat, tree, htop, wget,"
-	@echo "     zip, unzip, sqlite3): 'make install-tools'"
+	@echo "     zip, unzip, sqlite3, gh): 'make install-tools'"
 	@echo "  (the bash dialog demo lives in examples/dialog — its nats CLI + zenity"
 	@echo "   dependencies are its own; see examples/dialog/README.md)"
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"

@@ -18,6 +18,13 @@
 #   zip       pack archives
 #   unzip     unpack archives
 #   sqlite3   read the store database directly (var/store.db debugging)
+#   gh        the GitHub CLI: open pull requests, inspect runs, read issues.
+#             Deliberately its OWN entry rather than folded into the bulk set,
+#             because the binary alone does nothing: every API call needs a
+#             token, and it cannot reuse an SSH key (SSH authenticates git
+#             transport only, the REST API wants a bearer token). See
+#             docs/MANUAL.md "GitHub CLI and a token" for the setup, and note
+#             that install-tools never creates or stores a credential.
 #   trafilatura
 #             better HTML-to-text for the fetch component (strips nav/
 #             boilerplate); without it fetch falls back to its built-in
@@ -101,6 +108,7 @@ wget|wget|wget|
 zip|zip|zip|
 unzip|unzip|unzip|
 sqlite3|sqlite3|sqlite3|
+gh|gh|gh|
 '
 
 while IFS='|' read -r cmd aptpkg brewpkg alt; do
