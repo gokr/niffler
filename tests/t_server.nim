@@ -120,6 +120,20 @@ exit "${SERVER_TEST_FAIL:-0}"
   let ready = run("persist")
   check("persist is green only with linger, an enabled active unit and restart=always",
     ready.exitCode == 0 and "guest-side persistence OK" in ready.output, ready.output)
+  # A shell that cannot reach the user manager (incus shell / su without a logind
+  # session) must say UNKNOWN, never a verdict: the fake systemctl fails here, so
+  # every --user answer is empty — exactly what produced the old false
+  # "NOT persistent yet" against a perfectly healthy unit.
+  putEnv("SERVER_TEST_FAIL", "1")
+  let unreachable = run("persist")
+  delEnv("SERVER_TEST_FAIL")
+  check("persist reports UNKNOWN (not a verdict) when the user manager is unreachable",
+    unreachable.exitCode == 2 and "cannot reach the systemd user manager" in unreachable.output and
+    "UNKNOWN" in unreachable.output and "NOT persistent yet" notin unreachable.output and
+    "guest-side persistence OK" notin unreachable.output, unreachable.output)
+  check("persist names the bus variables that fix an unreachable manager",
+    "XDG_RUNTIME_DIR=" in unreachable.output and
+    "DBUS_SESSION_BUS_ADDRESS=unix:path=" in unreachable.output, unreachable.output)
   check("persist never claims boot survival from inside the guest",
     "boot=" in ready.output and "NOT persistent" notin ready.output, ready.output)
   # The stale restart policy is the exact defect this contract exists for: a

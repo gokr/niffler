@@ -616,13 +616,26 @@ var/bin/test_t_llm_modelpin: var/bin/llm var/bin/models
 var/bin/test_t_provider_pin: var/bin/llm var/bin/models
 
 # The full gate, self-contained: core + components + the bus-contract suite
-# (each test owns a private NATS server and a temporary root).
-test: test-server
+# (each test owns a private NATS server and a temporary root), plus the bench
+# adapter tests when Node is available.
+test: test-server test-bench
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
+#
+# Deliberately does NOT depend on test-bench: the suite is pure Nim/Go and a
+# stock harness install has no Node — requiring it made `make test-server`
+# abort with `node: command not found` before running a single contract test.
+# `make test` still covers both, and CI runs test-bench as its own step (the
+# runners ship Node), so the benchmark adapters keep their coverage.
 test-bench:
 	@mkdir -p var
-	node --test bench/tests/*.test.mjs
+	@if ! command -v node >/dev/null 2>&1; then \
+		echo "test-bench: SKIPPED — Node is not installed (only the benchmark"; \
+		echo "  adapters need it; the bus-contract gate does not). Run"; \
+		echo "  'make install-node' to cover them."; \
+	else \
+		node --test bench/tests/*.test.mjs; \
+	fi
 
 .PHONY: test-clean
 test-clean: var/bin/test_t_clean
@@ -637,7 +650,7 @@ test-fleet-tasks: build var/bin/test_t_fleet_tasks
 test-fleet-faults: build var/bin/test_t_fleet_faults
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_faults
 
-test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest test-bench
+test-server: build $(TEST_BINS) $(FIXTURE_BINS) gotest
 	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
 		bash scripts/run-tests.sh -- $(TEST_BINS)
 
@@ -790,7 +803,7 @@ doctor:
 	fi
 	@if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' 2>/dev/null; then \
 		echo "  node (20+): OK"; \
-	else echo "  node: MISSING or too old — run 'make install-node'"; fi
+	else echo "  node: MISSING or too old — optional: only the bench adapter tests ('make test-bench') need it; 'make install-node' to add it"; fi
 	$(call check_tool,npm,install-node)
 	@echo "Optional (generally useful on the CLI):"
 	$(call check_tool,jq,install-tools)

@@ -77,3 +77,9 @@ jobs:
       # checks in its own repository; nothing here depends on it.)
       - name: make test-server
         run: make -j4 test-server
+
+      # The benchmark adapter tests are separate from the bus contract and need
+      # Node, which a stock harness install does not have — so `make test-server`
+      # no longer pulls them in. CI runs them explicitly, so they keep coverage.
+      - name: make test-bench
+        run: make test-bench
