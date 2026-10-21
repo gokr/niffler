@@ -199,6 +199,56 @@ proc main() =
   let a1again = acquire("conv-a", "call-1", @[ws / "a.txt"])
   check("same call re-claim ok", a1again{"ok"}.getBool(false), $a1again)
 
+  # ── a conversation supersedes its OWN stale claim, and only its own ──
+  # The reported bug: stopping a long write (ESC+ESC) left its claim live for
+  # the whole lease lifetime (transport timeout + 60s, minimum 10 minutes), so
+  # the conversation could not retry its own file and every other conversation
+  # was locked out of a write that had already stopped. A conversation is one
+  # serial writer, so a live claim of its own over the same paths can only be a
+  # leftover when it starts a new call.
+  let stale = acquire("conv-stale", "stale-1", @[ws / "stale.txt"],
+                      tool = "bash")
+  check("a writer claims a file", stale{"ok"}.getBool(false), $stale)
+  let foreign = acquire("conv-foreign", "foreign-1", @[ws / "stale.txt"])
+  check("another conversation is refused by that claim",
+        not foreign{"ok"}.getBool(true) and
+        foreign{"holder"}.getStr("") == "conv-stale", $foreign)
+
+  # The retry: a NEW call id from the same conversation. Before the fix this
+  # was refused by its own abandoned claim, which is what wedged the workspace.
+  let retry = acquire("conv-stale", "stale-2", @[ws / "stale.txt"],
+                      tool = "bash")
+  check("a conversation is not blocked by its own stale claim",
+        retry{"ok"}.getBool(false), $retry)
+  # The stale claim is gone, not merely shadowed — otherwise it would still be
+  # head of the table for the next acquire.
+  let foreignAfter = acquire("conv-foreign", "foreign-2", @[ws / "stale.txt"])
+  check("the superseded claim no longer holds the file",
+        not foreignAfter{"ok"}.getBool(true) and
+        foreignAfter{"holder"}.getStr("") == "conv-stale", $foreignAfter)
+  check("the superseded claim is not reported as a holder",
+        not ($foreignAfter).contains("stale-1"), $foreignAfter)
+
+  # Superseding is not a licence to drop unrelated work: a disjoint claim of
+  # the same conversation is a different write and must survive.
+  let disjoint = acquire("conv-stale", "stale-3", @[ws / "other.txt"])
+  check("a disjoint same-conversation claim ok", disjoint{"ok"}.getBool(false),
+        $disjoint)
+  discard acquire("conv-stale", "stale-4", @[ws / "stale.txt"])
+  let stillHeld = acquire("conv-foreign", "foreign-3", @[ws / "other.txt"])
+  check("a disjoint claim of the same conversation stays guarded",
+        not stillHeld{"ok"}.getBool(true) and
+        stillHeld{"holder"}.getStr("") == "conv-stale", $stillHeld)
+
+  # A refusal must still be a refusal: supersede runs before the conflict
+  # check, so a foreign holder is reported, never cleared.
+  let foreignHeld = acquire("conv-stale", "stale-5", @[ws / "a.txt"])
+  check("a foreign holder is never superseded",
+        not foreignHeld{"ok"}.getBool(true) and
+        foreignHeld{"holder"}.getStr("") == "conv-a", $foreignHeld)
+  for id in ["conv-stale:stale-2", "conv-stale:stale-3", "conv-stale:stale-4"]:
+    discard call(nc, "locks", "lock_release", %*{"leaseId": id})
+
   # ── an opaque (root) writer excludes a path-bound one ──
   # Two conversations hold leases under the root at this point (conv-a's a.txt
   # and conv-b's b.txt), so the claim is refused — but WHICH conflicting holder

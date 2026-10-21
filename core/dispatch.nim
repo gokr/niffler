@@ -2250,11 +2250,25 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   if writePaths.len > 0:
     discard acquireWriteLease(ct, tool, lockCallId, writePaths, timeoutMs)
   var writeCompleted = false
+  var writeCancelled = false
   defer:
-    # A timeout/cancel is not proof the remote writer stopped. Keep its claim
-    # until expiry rather than allowing another write immediately. Successful
-    # replies (including cooperative partial replies) acknowledge completion.
-    if lockCallId.len > 0 and writeCompleted:
+    # A TRANSPORT TIMEOUT is not proof the remote writer stopped (the callee
+    # may still be running with nobody waiting), so its claim is kept until
+    # expiry rather than allowing another write immediately.
+    #
+    # A TURN CANCEL is different evidence. The cancel side-channel is
+    # cooperative and synchronous: publishing cancel.<component> makes the
+    # callee abandon the work and answer (bash kills the command's process
+    # group, then replies), and the dispatch below waits out that grace period
+    # before it raises. So a cancel that reaches here has already stopped the
+    # writer — and by construction nobody will ever report this call done.
+    # Holding the claim anyway wedges the conversation's own retry for the
+    # whole lifetime (transport timeout + 60s, minimum 10 minutes) and locks
+    # other conversations out of a file that is no longer being written.
+    # "Stopped, not wedged" is the contract; the locks component also clears a
+    # stale same-session claim on acquire, which covers a runner that died
+    # before reaching this point.
+    if lockCallId.len > 0 and (writeCompleted or writeCancelled):
       releaseWriteLease(ct, lockCallId)
 
   # Cancel-aware tools (x-harness.sessionId): inject the live session id
@@ -2318,6 +2332,13 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   try:
     result = dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
     writeCompleted = true
+  except TurnCancelled:
+    # The dispatch above published the cancel side-channel and waited out the
+    # grace period for the callee to abandon the work: the writer has stopped,
+    # so the claim can go now instead of pinning the workspace to its TTL for
+    # a turn that is already over.
+    writeCancelled = true
+    raise
   except ComponentCallError:
     # A terminal error reply also acknowledges the handler finished. Keeping
     # this claim would make a failed edit block its own next attempt.

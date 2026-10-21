@@ -12,6 +12,7 @@
 
 import std/[json, os, osproc, strutils, times]
 import natsnim
+import envelope
 import helpers
 
 proc compileMock(llmBin, repoRoot: string) =
@@ -203,6 +204,93 @@ proc main() =
   let afterLong = call(nc, "locks", "lock_status", %*{"sessionId": "conv-long"})
   check("completed writer releases its dispatch claims",
     afterLong{"count"}.getInt(-1) == 0, $afterLong)
+
+  # A stopped turn must not leave its claim behind. The bug: pressing stop
+  # while a long write ran ended the turn, but the lease stayed live for its
+  # whole lifetime (transport timeout + 60s, minimum 10 minutes) — so the
+  # conversation could not retry its own file and every other conversation was
+  # locked out of a write that had already stopped. The stop kills the writer
+  # synchronously (cancel.<component>, then a grace period for the callee's
+  # reply), so the claim is released with the turn.
+  #
+  # Scripted as: one bash round that writes and sleeps, a second turn in the
+  # same conversation is refused as busy while it runs, then __cancel on the
+  # steer channel.
+  putEnv("NIF_MOCK_ROUNDS", "2")
+  putEnv("NIF_MOCK_TOOLJSON", $(%*[{"name": "bash", "arguments": {
+    "command": "printf stopped > " & (root / "ws" / "cancelled.txt") &
+               "; sleep 30", "timeoutMs": 60000}}]))
+
+  let cancelSid = "conv-cancel"
+  let inbox = "_INBOX.cancel." & $int(epochTime())
+  var replySub: ptr natsSubscription
+  doAssert checkStatus(natsConnection_SubscribeSync(
+    addr replySub, nc.conn, inbox.cstring))
+  defer: natsSubscription_Destroy(replySub)
+  let callEnv = callEnvelope("session",
+    %*{"sessionId": cancelSid, "content": "write, then linger",
+       "cwd": root / "ws"})
+  doAssert checkStatus(natsConnection_PublishRequest(
+    nc.conn, "svc.core.call".cstring, inbox.cstring,
+    callEnv.encode().cstring, callEnv.encode().len.cint))
+
+  # Wait until the writer really holds something.
+  var heldByCancel: JsonNode
+  let claimUntil = epochTime() + 60.0
+  while epochTime() < claimUntil:
+    let status = call(nc, "locks", "lock_status", %*{"sessionId": cancelSid})
+    for lease in status{"leases"}:
+      if lease{"tool"}.getStr("") == "bash": heldByCancel = lease
+    if heldByCancel != nil: break
+    sleep(100)
+  check("the running write holds a real dispatch claim", heldByCancel != nil,
+        $heldByCancel)
+
+  # Stop it, the way the two-channel stop does.
+  nc.publish("svc.session." & cancelSid & ".steer",
+    Envelope(v: 1, id: "cancel-" & cancelSid, kind: ekEvent,
+             payload: %*{"__cancel": true}).encode())
+
+  # The turn must end promptly, and its claim must be gone with it.
+  var turnEnded = false
+  var turnPayload: JsonNode
+  let endUntil = epochTime() + 45.0
+  var msg: ptr natsMsg
+  while epochTime() < endUntil:
+    if natsSubscription_NextMsg(addr msg, replySub, 200) == NATS_OK:
+      let reply = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if reply.kind == ekResult:
+        turnPayload = reply.args
+        turnEnded = true
+        break
+  check("the cancelled turn ends", turnEnded, $turnPayload)
+  if turnPayload != nil:
+    check("it ends as cancelled",
+          turnPayload{"turnError"}.getStr("").contains("cancelled"),
+          $turnPayload)
+
+  var released = false
+  let releaseUntil = epochTime() + 15.0
+  while epochTime() < releaseUntil:
+    let status = call(nc, "locks", "lock_status", %*{"sessionId": cancelSid})
+    if status{"count"}.getInt(-1) == 0:
+      released = true
+      break
+    sleep(100)
+  check("a stopped turn releases its claim instead of pinning it to the TTL",
+        released, $(call(nc, "locks", "lock_status", %*{"sessionId": cancelSid})))
+
+  # And the consequence: another conversation can write that tree now.
+  let afterCancel = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "ws", "roots": [root / "ws"],
+    "paths": [root / "ws" / "cancelled.txt"],
+    "sessionId": "conv-after-cancel", "tool": "edit",
+    "callId": "after-cancel"}, 10000)
+  check("another conversation may write the stopped turn's tree",
+        afterCancel{"ok"}.getBool(false), $afterCancel)
+  discard call(nc, "locks", "lock_release",
+               %*{"leaseId": "conv-after-cancel:after-cancel"})
 
   # Harness-state arbitration (WRITE-ARBITRATION phase 2). plugins writes
   # $NIF_ROOT/var/plugins and var/bin — NOT the conversation workspace. Before

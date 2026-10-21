@@ -285,6 +285,33 @@ proc hLockAcquire(c: Component, args: JsonNode): JsonNode =
     return %*{"ok": false, "error": "lock_acquire needs at least one path"}
 
   let stripes = stripesFor(paths)
+  let leaseId = leaseIdFor(sessionId, callId)
+  # A conversation is one serial writer — its runner serves one turn at a time,
+  # and writers never share a parallel wave — so a live claim of its OWN over
+  # these paths can only be a leftover when it starts a new call: an abandoned
+  # wait (the human stopped the tool while it ran, and the dispatch never
+  # observed a terminal reply), a runner that died between dispatch and
+  # release, or a release that failed on a store hiccup. Left in place it
+  # wedges the conversation's own retry for the whole lease lifetime (transport
+  # timeout + 60s, minimum 10 minutes) and keeps every other conversation out
+  # for a write that is not happening any more.
+  #
+  # Only claims that OVERLAP this request go: a disjoint claim is not a
+  # leftover but a different write, and it stays guarded. Another session's
+  # claims are never touched — they still deny below.
+  var superseded: seq[string]
+  for l in sweep(gLeases, now):
+    if l.leaseId != leaseId and l.sessionId == sessionId and
+        overlaps(l.stripes, stripes):
+      superseded.add(l.leaseId)
+  for id in superseded:
+    try:
+      discard forgetLease(c, id)
+    except CatchableError:
+      # Store outage: leave it in the table so the conflict check below denies
+      # rather than dropping a claim we could not durably delete.
+      discard
+
   # Live leases only: an expired claim is not a holder (the document itself is
   # removed by the idle sweep). The compare is in-memory — the whole table is
   # walked, but on strings, not over the bus.
@@ -294,7 +321,6 @@ proc hLockAcquire(c: Component, args: JsonNode): JsonNode =
               "holder": holder.sessionId, "holderTool": holder.tool,
               "error": denial(paths, holder, now)}
 
-  let leaseId = leaseIdFor(sessionId, callId)
   let ttl = if args{"ttlMs"}.getInt(0) > 0: args{"ttlMs"}.getInt(defaultTtlMs())
             else: defaultTtlMs()
   let lease = Lease(leaseId: leaseId, sessionId: sessionId, tool: tool,
