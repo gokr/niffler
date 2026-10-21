@@ -1677,10 +1677,17 @@ proc stopTokenStream*(ct: CoreTools) =
   ct.tokenStream.session = ""
   ct.tokenStream.cb = nil
 
+const resolveRetryDelayMs = 750
+  ## Pause before the one retry of a failed turn resolution. Long enough for a
+  ## store busy with a transcript write to answer, short enough that a human
+  ## does not notice it on the failure path.
+
 proc resolveTurnConfig(ct: CoreTools, p: var Persister,
                        providerOverride, modelOverride: string): JsonNode =
   ## Resolve the backend once for a turn using this conversation's provider
-  ## pin; an empty pin deliberately falls back to the harness default.
+  ## pin; an empty pin deliberately falls back to the harness default. Raises
+  ## when llm_resolve fails — the caller decides whether the conversation may
+  ## continue without an answer (an unpinned one may; a pinned one must not).
   var resolveArgs = newJObject()
   if providerOverride.len > 0:
     resolveArgs["provider"] = %providerOverride
@@ -3226,10 +3233,58 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # Resolve once before the turn so the context guard sees the selected
   # model's effective window before inference. The resolved model is then
   # pinned across every tool round in this turn.
+  #
+  # A PINNED conversation must never run against a provider it did not choose.
+  # Resolution failing here used to be swallowed (`discard`), which left
+  # `resolvedProvider` empty: the chat call then carried the conversation's
+  # model with no provider, so llm resolved its ACTIVE provider (or the
+  # NIF_OPENAI_* default) — one UI's provider switch, or a transient registry
+  # blip, silently moved every ongoing conversation to another backend and the
+  # model id it still carried was then rejected there (or worse, accepted by a
+  # provider that guessed at it). Retry once (blips are transient), then REFUSE
+  # the turn with the reason instead of rerouting it.
   var selectedModel = modelOverride
   var resolvedProvider = ""
-  try:
-    var status = resolveTurnConfig(ct, p, providerOverride, modelOverride)
+  var resolveStatus: JsonNode = nil
+  var resolveFailure = ""
+  for attempt in 0 ..< 2:
+    try:
+      resolveStatus = resolveTurnConfig(ct, p, providerOverride, modelOverride)
+      resolveFailure = ""
+      break
+    except CatchableError as e:
+      resolveFailure = e.msg
+      if attempt == 0: sleep(resolveRetryDelayMs)
+  # A resolution that names a different provider than the pin is the same bug
+  # one layer down (a fallback inside the llm component): refuse it too. A
+  # case-only difference is not a reroute.
+  if resolveStatus != nil and providerOverride.len > 0:
+    let resolved = resolveStatus{"provider"}.getStr("").strip()
+    if resolved.len > 0 and cmpIgnoreCase(resolved, providerOverride) != 0:
+      resolveFailure = "resolution answered with provider \"" & resolved &
+        "\" instead of the pinned \"" & providerOverride & "\""
+      resolveStatus = nil
+  if resolveStatus == nil:
+    if providerOverride.len > 0:
+      let failMsg = "llm error: cannot resolve this conversation's pinned " &
+        "provider \"" & providerOverride & "\" (" &
+        (if resolveFailure.len > 0: resolveFailure else: "no answer") &
+        ") — refusing the turn rather than running it against a different " &
+        "provider. Retry; if it persists, check the provider component and " &
+        "re-pin the conversation."
+      p.persistMsg(%*{"role": "error", "content": failMsg,
+                      "error": "llm", "turnId": turnId},
+                   %*{"startedAt": epochTime(), "durationMs": 0})
+      turnError = failMsg
+      finishTurn("error", err = failMsg)
+      return failMsg
+    # No pin: the harness default IS this conversation's provider, so a
+    # resolution failure changes nothing about routing. Say so in the log —
+    # the turn continues on the old/replaced-llm path the discard served.
+    echo "core: WARNING llm_resolve failed (" & resolveFailure &
+         ") — continuing without a resolved window/capability"
+  else:
+    let status = resolveStatus
     status["turnId"] = %turnId
     resolvedProvider = status{"provider"}.getStr("")
     selectedModel = status{"model"}.getStr(selectedModel)
@@ -3249,8 +3304,6 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       materializeProjection(ct, messages, false)
     if onEvent != nil:
       onEvent("status", status)
-  except CatchableError:
-    discard  # older/replaced llm components can still serve chat
 
   # Tag approvals raised during this turn with the active session so the UI
   # can offer/apply per-conversation auto-approve. Cleared when the turn ends
