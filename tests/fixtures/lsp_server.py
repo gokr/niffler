@@ -111,7 +111,9 @@ def main():
             uri = msg["params"]["textDocument"]["uri"]
             last_open_uri = uri
             if "wobbly" not in uri:
-                time.sleep(DIAG_DELAY)
+                # Async checks must tolerate a reply beyond the former 8s
+                # budget, without slowing every ordinary fixture request.
+                time.sleep(9.0 if "slow-async" in uri else DIAG_DELAY)
                 write_frame({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
                              "params": {"uri": uri, "diagnostics": []}})
                 continue
