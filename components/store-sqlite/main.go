@@ -69,8 +69,9 @@ import (
 	"syscall"
 	"time"
 
+	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
+	_ "github.com/mattn/go-sqlite3" // cgo; vendors its own amalgamation, built with -tags sqlite_fts5
 	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite" // pure Go, no cgo — keeps the zero-prereq build story
 
 	sdk "niffler.dev/sdk"
 )
@@ -244,7 +245,7 @@ func openStore() (*storeDB, error) {
 		"&_journal_mode=WAL" + // crash safety + concurrent readers (sqlite3 CLI, DuckDB attach)
 		"&_busy_timeout=10000" + // wait, don't error, when another process holds the write lock
 		"&_pragma=synchronous(NORMAL)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		_ = syscall.Close(fd)
 		return nil, fmt.Errorf("open %s: %w", dbPath, err)
@@ -253,6 +254,19 @@ func openStore() (*storeDB, error) {
 	// also means exactly one SQLite write lock and no SQLITE_BUSY in practice.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	// sqlite-vec must be reachable on the connection before any vector table
+	// is created or queried. Loaded via sqlite3_auto_extension, which applies
+	// to every connection this process opens (sqlite-vec compiles its C in
+	// with the driver — nothing is loaded from disk at runtime).
+	vec.Auto()
+	var vecVersion string
+	if err := db.QueryRow(`SELECT vec_version()`).Scan(&vecVersion); err != nil {
+		db.Close()
+		_ = syscall.Close(fd)
+		return nil, fmt.Errorf("sqlite-vec is not available in this build: %w "+
+			"(build with CGO_ENABLED=1 — the Makefile target does)", err)
+	}
+	fmt.Println("store-sqlite: sqlite-vec", vecVersion)
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		_ = syscall.Close(fd)
@@ -471,10 +485,18 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 		if expectRev == -1 {
 			res, err := tx.Exec(`INSERT INTO docs (kind,id,rev,value,updated_at)
 				VALUES (?,?,1,?,CURRENT_TIMESTAMP) ON CONFLICT(kind,id) DO NOTHING`, kind, id, string(value))
-			if err != nil { return nil, fmt.Errorf("put create: %w", err) }
-			if n, _ := res.RowsAffected(); n == 0 { return sdk.ErrCode("already exists", "rev-conflict"), nil }
-			if err := indexDoc(tx, kind, id, value); err != nil { return nil, err }
-			if err := tx.Commit(); err != nil { return nil, err }
+			if err != nil {
+				return nil, fmt.Errorf("put create: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return sdk.ErrCode("already exists", "rev-conflict"), nil
+			}
+			if err := indexDoc(tx, kind, id, value); err != nil {
+				return nil, err
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, err
+			}
 			return sdk.OK(map[string]any{"rev": int64(1)}), nil
 		}
 
