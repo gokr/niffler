@@ -46,6 +46,34 @@ func fitListResult(key string, items []map[string]any, total int) map[string]any
 	return result
 }
 
+// modelsDeclaration is this owner's declaration (docs/research/CONFIG-CONTRACT.md).
+// Catalog CONTENT stays a cache under var/models; these are the refresh
+// POLICY values an operator actually chooses.
+var modelsDeclaration = map[string]any{
+	"domain": "models.refresh", "version": 1, "owner": "models",
+	"ownerTool": "models_config", "title": "Model catalog refresh",
+	"description": "Where the model catalog comes from and when it is refreshed.",
+	"kind":        modelsSettingsKind, "id": modelsSettingsID, "application": "immediate",
+	"schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"offline": map[string]any{"type": "boolean", "default": false,
+				"x-config": map[string]any{
+					"title":       "Offline",
+					"description": "Never fetch the remote catalog; use the cache, seed data or a local baseline file."}},
+			"cacheTtlSeconds": map[string]any{"type": "number", "minimum": 0, "maximum": 604800,
+				"default": 300, "x-config": map[string]any{
+					"title":       "Cache TTL (seconds)",
+					"description": "How long a downloaded catalog is considered fresh. 0 always re-fetches."}},
+			"refreshIntervalSeconds": map[string]any{"type": "number", "minimum": 0, "maximum": 604800,
+				"default": 3600, "x-config": map[string]any{
+					"title":       "Background refresh interval (seconds)",
+					"description": "How often the catalog is refreshed in the background. 0 disables the timer; changes take effect on the next restart of this component."}},
+		},
+		"additionalProperties": false,
+	},
+}
+
 func main() {
 	root := os.Getenv("NIF_ROOT")
 	if root == "" {
@@ -70,6 +98,7 @@ func main() {
 	ctx, shutdownCancel := context.WithCancel(signalCtx)
 
 	comp := sdk.New("models", "0.1.0")
+	catalog.comp = comp
 	comp.Tap("reg.publish", func(_ *sdk.Component, _ string, data []byte) {
 		if catalog.register(data) {
 			requestRefresh(false)
@@ -201,6 +230,18 @@ func main() {
 		return report, nil
 	})
 
+	// Owner side of the configuration surface: config forwards validated,
+	// approval-gated changes here, and this writes its OWN record.
+	comp.Tool("models_config", sdk.OwnerToolSchema("models.refresh",
+		"models catalog refresh policy"), func(c *sdk.Component, raw json.RawMessage) (any, error) {
+		var args sdk.OwnerArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return map[string]any{"ok": false, "code": "bad-request",
+				"error": "invalid args: " + err.Error()}, nil
+		}
+		return c.OwnerOp(catalog.owner, args, 8*time.Second), nil
+	})
+
 	comp.ToolConcurrent("models_sources", map[string]any{
 		"type":        "object",
 		"description": "Show catalog provenance and health: models.dev baseline, registered plugin patches, stale fallbacks, and the optional local override. Use this to diagnose questionable model metadata.",
@@ -210,11 +251,23 @@ func main() {
 		return catalog.report(), nil
 	})
 
+	// Configuration surface (slice 4). The idle handler must be registered
+	// BEFORE Connect: the SDK starts the idle loop inside Connect, so a handler
+	// added afterwards never runs. Its first tick is after registration, when a
+	// request has a connection to use. Re-declaring until it lands means an
+	// owner that starts before the config component is not a permanent miss.
+	declared := false
+	comp.OnIdle(500*time.Millisecond, func(c *sdk.Component) {
+		if declared {
+			return
+		}
+		declared = c.DeclareConfig(modelsDeclaration, 5*time.Second)
+	})
 	if err := comp.Connect(); err != nil {
 		fmt.Fprintln(os.Stderr, "models:", err)
 		os.Exit(1)
 	}
-	interval := envDuration("NIF_MODELS_REFRESH_INTERVAL", time.Hour)
+	interval := catalog.refreshIntervalNow(envDuration("NIF_MODELS_REFRESH_INTERVAL", time.Hour))
 	var worker sync.WaitGroup
 	worker.Add(1)
 	go func() {

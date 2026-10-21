@@ -6,6 +6,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- `models` publishes its catalog refresh policy as the `models.refresh` domain
+  (`offline`, `cacheTtlSeconds`, `refreshIntervalSeconds`), so an operator can
+  take the catalog offline or change its freshness without editing files. New
+  Go owner helper `sdk/go/configowner.go` mirrors the Nim one, so owners in
+  either SDK follow the same protocol. `NIF_MODELS_*` keeps working as the
+  migration path.
 - `logfile` publishes its retention and scan limits as the `logfile.retention`
   domain (`maxBytes`, `keep`, `maxFiles`, `scanBytes`, `directoryEntries`).
   Values are read from a snapshot refreshed on the idle seam, so the rotation

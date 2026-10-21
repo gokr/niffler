@@ -88,6 +88,43 @@ type catalogState struct {
 	overrideStatus *sourceStatus
 	overridePatch  map[string]any
 	updatedAt      time.Time
+	// owner settings (config surface, slice 4): read per call so a change
+	// applies on the next refresh without rebuilding the catalog state.
+	owner sdk.OwnerStore
+	comp  *sdk.Component
+}
+
+const (
+	modelsSettingsKind = "models-settings"
+	modelsSettingsID   = "main"
+)
+
+// settings returns the owner's stored values (empty when unreachable: a store
+// outage keeps the env/default behaviour rather than blanking the catalog).
+func (c *catalogState) settings() map[string]any {
+	if c.comp == nil {
+		return map[string]any{}
+	}
+	values, _ := c.comp.LoadOwnerValues(c.owner, 3*time.Second)
+	return values
+}
+
+// offlineNow and cacheTTLNow read the setting per call: a config_patch must
+// take effect on the next refresh, and the declaration promises "immediate".
+func (c *catalogState) offlineNow() bool {
+	return sdk.SettingBool(c.settings(), "offline", "NIF_MODELS_OFFLINE", c.offline)
+}
+
+func (c *catalogState) cacheTTLNow() time.Duration {
+	seconds := sdk.SettingFloat(c.settings(), "cacheTtlSeconds",
+		"NIF_MODELS_CACHE_TTL_SECONDS", c.cacheTTL.Seconds())
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func (c *catalogState) refreshIntervalNow(fallback time.Duration) time.Duration {
+	seconds := sdk.SettingFloat(c.settings(), "refreshIntervalSeconds",
+		"NIF_MODELS_REFRESH_INTERVAL_SECONDS", fallback.Seconds())
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func newCatalogState(root string) *catalogState {
@@ -105,6 +142,7 @@ func newCatalogState(root string) *catalogState {
 	}
 
 	state := &catalogState{
+		owner:        sdk.OwnerStore{Kind: modelsSettingsKind, ID: modelsSettingsID},
 		root:         root,
 		cacheDir:     cacheDir,
 		cachePath:    filepath.Join(cacheDir, "api.json"),
@@ -593,7 +631,7 @@ func (c *catalogState) refreshBaseline(ctx context.Context, force bool) error {
 		c.mu.Unlock()
 		return nil
 	}
-	if c.offline {
+	if c.offlineNow() {
 		return nil
 	}
 	if !force && c.cacheFresh() {
@@ -634,11 +672,12 @@ func (c *catalogState) setBaselineError(err error) {
 }
 
 func (c *catalogState) cacheFresh() bool {
-	if c.cacheTTL <= 0 {
+	ttl := c.cacheTTLNow()
+	if ttl <= 0 {
 		return false
 	}
 	info, err := os.Stat(c.cachePath)
-	return err == nil && time.Since(info.ModTime()) < c.cacheTTL
+	return err == nil && time.Since(info.ModTime()) < ttl
 }
 
 func (c *catalogState) fetchCatalog(ctx context.Context) (map[string]any, error) {
