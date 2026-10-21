@@ -1044,6 +1044,60 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	// endpoint and, when its id cache is stale, probe /models in the
 	// background so the models component can publish served ids catalog-wide.
 	maybeProbeLiveModels(streamCtx, c, resolved)
+	return chatDispatchRetrying(streamCtx, c, resolved, model, args, output)
+}
+
+// chatDispatchRetrying runs the protocol dispatch and, when the provider
+// refuses the requested reasoning_effort VALUE, drops that field and tries
+// once more.
+//
+// A model's declared effort ladder cannot be trusted as a constraint:
+// measured against Synthetic's own /models metadata, one alias declared
+// none/low/medium/high yet rejected `max`, while three others accepted values
+// they never declared. So the effort is treated as a preference — an answer
+// without it beats a failed turn over a sampling knob. The log line keeps a
+// silently degraded turn diagnosable.
+func chatDispatchRetrying(streamCtx context.Context, c *sdk.Component, resolved resolvedConfig,
+	model string, args chatArgs, output int) (any, error) {
+	v, err := chatDispatch(streamCtx, c, resolved, model, args, output)
+	if err == nil || args.ReasoningEffort == "" || !isEffortRejection(err) {
+		return v, err
+	}
+	log.Printf("WARN chat status=effort-rejected provider=%s model=%s effort=%s: %v - retrying without reasoning_effort",
+		resolved.ProviderName, model, args.ReasoningEffort, err)
+	retryArgs := args
+	retryArgs.ReasoningEffort = ""
+	return chatDispatch(streamCtx, c, resolved, model, retryArgs, output)
+}
+
+// isEffortRejection reports whether an error is the provider refusing the
+// reasoning_effort value, rather than anything else about the request.
+func isEffortRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *openai.APIError
+	if !errors.As(err, &apiErr) || apiErr.HTTPStatusCode != http.StatusBadRequest {
+		return false
+	}
+	body := strings.ToLower(apiErr.Message)
+	// Azure Content-filter wrappers carry their real reason in InnerError;
+	// it is a struct with its own code, not a message body.
+	// An unknown enum member comes back as a literal/enum validation error
+	// naming the field; require both the field and a validation word so an
+	// unrelated 400 that happens to mention effort is not swallowed.
+	mentionsEffort := strings.Contains(body, "reasoning_effort") ||
+		strings.Contains(body, "reasoning effort")
+	mentionsRejection := strings.Contains(body, "literal_error") ||
+		strings.Contains(body, "validation") ||
+		strings.Contains(body, "not a valid") ||
+		strings.Contains(body, "invalid") ||
+		strings.Contains(body, "unsupported")
+	return mentionsEffort && mentionsRejection
+}
+
+func chatDispatch(streamCtx context.Context, c *sdk.Component, resolved resolvedConfig,
+	model string, args chatArgs, output int) (any, error) {
 	switch resolved.Provider.Protocol {
 	case protocolCodex:
 		v, err := chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,

@@ -4965,8 +4965,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       "modelOverride": entry.modelOverride})
   if args.kind == JObject and args.hasKey("thinking"):
     entry.thinkingEffort = args{"thinking"}.getStr("").strip()
-    if entry.thinkingEffort notin ["", "low", "medium", "high", "max"]:
-      return %*{"error": "thinking must be low, medium, high or max (empty clears)"}
+    if entry.thinkingEffort notin ["", "none", "minimal", "low", "medium",
+                                   "high", "xhigh", "max"]:
+      return %*{"error": "thinking must be none, minimal, low, medium, high, xhigh or max (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})
   # Conversation controls: presence of the key means set (an empty `approvals`
