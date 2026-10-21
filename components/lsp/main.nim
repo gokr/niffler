@@ -269,7 +269,7 @@ type DiagJob = object
 
 const
   DIAG_IDLE_MS = 250            # idle tick: one job per tick, pump stays responsive
-  DIAG_ASYNC_BUDGET_MS = 8_000  # per job: enough for a warm server, not a cold one
+  DIAG_ASYNC_BUDGET_MS = 20_000 # per job: allow slower post-edit checks to finish
   DIAG_JOB_TTL_SECS = 600.0     # a conversation that moved on is not waited for
   DIAG_CONTEXT_LINES = 3        # diagnostics just outside the edit still matter
   DIAG_ASYNC_MAX_LINES = 8      # cap on in-range diagnostics delivered per edit

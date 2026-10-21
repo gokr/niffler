@@ -5,6 +5,14 @@ import checksums/sha1
 import natsnim
 import niffler/sdk
 import provision
+# The admission contract (key shape, policy version, receipt vocabulary) is
+# core's generic seam — importing the pure module keeps the requester and the
+# worker from drifting into two spellings of one protocol.
+import niffler/admission
+# Same reason: the task-policy contract (control-plane set, effective-policy
+# shape, honest confinement wording) must not drift between peers.
+import niffler/taskpolicy
+import niffler/codingartifact
 
 proc connectedRunner*(c: Component): CommandRunner =
   ## Service protocol traffic only while waiting for a transport child. Do not
@@ -25,16 +33,59 @@ proc owner*(args: JsonNode): string =
 proc jobId*(session, requestId: string): string =
   if requestId.len < 1 or requestId.len > 128: refuse("requestId must be 1..128 bytes")
   "fleet-" & ($secureHash($(%*[session, requestId]))).toLowerAscii()
+
+proc admissionKey*(id: string): string =
+  ## The worker-side idempotency key of one job = its local id. One job is one
+  ## activation, so the job id IS the stable admission identity: a retry after
+  ## a lost reply re-presents the same key and the worker either reports the
+  ## existing acceptance/receipt or refuses a second turn.
+  id
+proc taskMode*(args: JsonNode): string =
+  ## "ask" (the original read-only slice) or "unattended" (F2). An absent
+  ## `mode` is the read-only slice, so an existing caller keeps exactly the
+  ## authority it had.
+  ##
+  ## The RECORDED grant answers too: validation runs again on the stored job
+  ## during reconciliation, and by then the mode lives beside the grant fields
+  ## it describes instead of in the caller's original argument.
+  var mode = args{"mode"}.getStr("").strip()
+  if mode.len == 0: mode = args{"task", "mode"}.getStr("").strip()
+  if mode.len == 0: return "ask"
+  if mode notin ["ask", "unattended"]:
+    refuse("mode must be 'ask' or 'unattended'")
+  mode
+
+proc profileName*(args: JsonNode): string =
+  ## The operator profile this task asks for. Accepted from the caller's
+  ## `taskProfile` (the submit argument) or from the recorded grant
+  ## (`task.profile`), because validation runs again on the stored job during
+  ## reconciliation — by then the grant is the durable copy, not the call.
+  result = args{"taskProfile"}.getStr("").strip()
+  if result.len == 0: result = args{"task", "profile"}.getStr("").strip()
+
 proc validateTask*(args: JsonNode) =
   if args{"content"}.getStr("").len notin 1..65536: refuse("content must be 1..65536 bytes")
   validateRoot(args{"cwd"}.getStr(""))
   let tools = args{"tools"}
   if tools == nil or tools.kind != JArray or tools.len notin 1..16:
     refuse("explicit tools required (1..16)")
-  for t in tools:
-    let name = t.getStr("")
-    if name notin ["read", "grep", "git_status", "git_diff", "git_log", "git_show", "git_blame"]:
-      refuse("first slice permits only audited file/search/git read tools")
+  if taskMode(args) == "ask":
+    for t in tools:
+      let name = t.getStr("")
+      if name notin ["read", "grep", "git_status", "git_diff", "git_log", "git_show", "git_blame"]:
+        refuse("the read-only slice permits only audited file/search/git read tools" &
+               " (use mode 'unattended' with an approved task profile for coding)")
+  else:
+    # Unattended authority is granted by the WORKER's operator profile, which
+    # the requester cannot read; it may only name tools it wants and must never
+    # smuggle control-plane machinery through as a request.
+    if profileName(args).len == 0:
+      refuse("unattended mode needs a `taskProfile` naming an operator profile")
+    for t in tools:
+      let name = t.getStr("")
+      if name.len == 0: refuse("tools entries must be non-empty")
+      if isControlPlane(name):
+        refuse("tool '" & name & "' is control-plane machinery and cannot be requested")
   for (key, maximum) in [("maxRounds", 32), ("maxCalls", 100), ("maxTokens", 100000)]:
     if args{key}.getInt(0) notin 1..maximum: refuse(key & " out of bounds")
 
@@ -51,11 +102,29 @@ url=$(< "$root/var/nats-url")
   if result.hasKey("args"): result = result["args"]
   if result.kind != JObject or result.hasKey("error") or
       (result{"ok"} != nil and not result{"ok"}.getBool(true)):
-    refuse("peer refused call")
+    # Name the peer's own reason: "peer refused call" told an operator nothing
+    # about whether the refusal was authority, identity, capability or a
+    # transient failure, and those call for completely different actions.
+    var why = result{"error"}.getStr("")
+    if why.len == 0: why = result{"message"}.getStr("")
+    let code = result{"code"}.getStr("")
+    refuse("peer refused " & tool & ": " &
+           (if why.len > 0: why else: "no reason given") &
+           (if code.len > 0: " [" & code & "]" else: ""))
 
 proc validateCapabilities*(catalog, schemas, task: JsonNode) =
   if catalog{"taskScopeVersion"}.getInt(0) != 1:
     refuse("peer lacks model-originated tool scope enforcement")
+  # Durable admission (docs/FLEET.md §4, slice F1): without the worker's
+  # idempotency record a lost reply can never be reconciled, and retrying could
+  # run the task twice. An older peer is refused BEFORE anything is dispatched.
+  if catalog{"admissionPolicyVersion"}.getInt(0) != admissionPolicyVersion:
+    refuse("peer lacks durable task admission (admissionPolicyVersion " &
+           $admissionPolicyVersion & ")")
+  if taskMode(task) == "unattended" and
+      catalog{"taskPolicyVersion"}.getInt(0) != taskPolicyVersion:
+    refuse("peer lacks unattended task policy enforcement (taskPolicyVersion " &
+           $taskPolicyVersion & ")")
   let comps = catalog{"components"}
   if comps == nil or comps.kind != JObject: refuse("malformed peer catalog")
   var available: seq[string]
@@ -64,10 +133,22 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
     for name in names:
       if name.kind != JString: refuse("malformed tool name")
       available.add(name.getStr())
-  for name in ["session", "session_prepare", "get", "list", "catalog"]:
+  for name in ["session", "session_prepare", "admission_get", "get", "list",
+               "catalog"]:
     if name notin available: refuse("peer lacks " & name)
   let entries = schemas{"tools"}
   if entries == nil or entries.kind != JArray: refuse("malformed schema snapshot")
+  # Two different questions, decided by the task's own mode:
+  #
+  # - the read-only slice (mode ask) may only name audited READ tools: it is a
+  #   bounded investigation, and a write-shaped tool there would be authority
+  #   the requester never approved;
+  # - an unattended task may name writers, but its schema must still not be
+  #   control-plane or an orchestrator. That second class is the single-hop
+  #   boundary (docs/FLEET.md §3) and it applies in every mode, so `invoke`,
+  #   `fabric`, `agent*`, `fleet_*` and friends are refused whatever the
+  #   operator's profile says — and the worker re-checks it too.
+  let unattended = taskMode(task) == "unattended"
   for t in task["tools"]:
     let name = t.getStr()
     var found = false
@@ -76,16 +157,21 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
       let schema = entry{"schema"}
       if schema == nil or schema.kind != JObject: refuse("missing tool schema")
       let x = schema{"x-harness"}
-      if x == nil or x{"effect"}.getStr("") != "read" or
-          x{"sessionContext"}.getBool(false) or x{"noSpawn"}.getBool(false) or
+      if x == nil:
+        refuse("task tool '" & name & "' declares no x-harness contract")
+      if x{"sessionContext"}.getBool(false) or x{"noSpawn"}.getBool(false) or
           x{"runner"}.getBool(false) or x{"hidden"}.getBool(false):
-        refuse("task tools must be read-only non-orchestrators")
+        refuse("task tool '" & name & "' is orchestrator or runner machinery")
+      if not unattended and x{"effect"}.getStr("") != "read":
+        refuse("the read-only slice permits only read-effect tools (got '" &
+               name & "'); use mode 'unattended' for coding authority")
       found = name in available
     if not found: refuse("peer tool unavailable: " & name)
 
 proc publicJob*(j: JsonNode): JsonNode =
   result = j.copy()
-  for key in ["task", "receipt", "profile"]: result.delete(key)
+  for key in ["task", "receipt", "profile"]:
+    if result.hasKey(key): result.delete(key)
 proc authorized*(c: Component, args: JsonNode): StoreItem =
   result = c.storeGet("fleetjob", args{"jobId"}.getStr(""))
   if result.value{"owner"}.getStr("") != owner(args): refuse("foreign fleet job")
@@ -96,6 +182,26 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
   var task = newJObject()
   for key in ["content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"]:
     task[key] = args[key]
+  let mode = taskMode(args)
+  if mode == "unattended":
+    # The immutable grant this job carries: which operator profile, and the
+    # scope the requesting human approved. Folded into the job record BEFORE
+    # dispatch, so the same requestId can never be reused with a wider grant
+    # (the comparison below) and the requester knows exactly what it asked the
+    # peer for even if the peer refuses.
+    task["mode"] = %"unattended"
+    task["taskProfile"] = %profileName(args)
+    # The authority the human approved, hashed and recorded BEFORE dispatch.
+    # The worker recomputes it from what actually arrives and refuses a
+    # mismatch, so a grant mutated in transit or by a later edit cannot run
+    # work under authority nobody approved (docs/WIRE.md "Task policy").
+    task["grantDigest"] = %grantDigest(%*{
+      "profile": profileName(args), "tools": args["tools"],
+      "maxRounds": args{"maxRounds"}, "maxCalls": args{"maxCalls"},
+      "maxTokens": args{"maxTokens"}})
+  else:
+    task["mode"] = %"ask"
+    task["approvals"] = %"ask"
   let path = receiptPath(args{"profile"}.getStr(""))
   try:
     let previous = c.storeGet("fleetjob", id).value
@@ -107,7 +213,9 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
   if p == nil or getFilePermissions(path) != {fpUserRead, fpUserWrite}:
     refuse("private verified receipt required (0600)")
   let j = %*{"id": id, "sessionId": id, "owner": session, "profile": path,
-    "receipt": p, "task": task, "state": "queued", "createdAt": epochTime(), "checkedAt": 0}
+    "receipt": p, "task": task, "state": "queued", "createdAt": epochTime(),
+    "checkedAt": 0, "admission": {"key": admissionKey(id),
+      "policyVersion": admissionPolicyVersion}}
   discard c.requestOk("store", "put", %*{"kind": "fleetjob", "id": id, "value": j, "expectRev": -1})
   publicJob(j)
 
@@ -148,11 +256,59 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       discard remoteCall(run, p, "session_prepare", %*{"sessionId": id})
       var task = j["task"].copy()
       task["sessionId"] = %id
-      task["approvals"] = %"ask"
-      # Short request timeout is NOT a turn deadline. The remote runner owns
-      # the finite round/call/token budgets; no unsupported maxSeconds field.
-      try: discard remoteCall(run, p, "session", task, 1)
+      if taskMode(j["task"]) == "unattended":
+        # Unattended: hand the worker the grant (its operator profile ∩ the
+        # tools/workspace/budgets this human approved) and let IT resolve the
+        # effective policy before any work runs. Deliberately no blanket
+        # `approvals: auto` on the wire — that would be a claim, and the
+        # worker's own intersection is what actually grants anything.
+        task["task"] = %*{"profile": j["task"]{"taskProfile"}.getStr(""),
+                          "workspace": j["task"]{"cwd"}.getStr(""),
+                          "tools": j["task"]["tools"].copy(),
+                          "maxRounds": j["task"]{"maxRounds"},
+                          "maxCalls": j["task"]{"maxCalls"},
+                          "maxTokens": j["task"]{"maxTokens"},
+                          "grantDigest": j["task"]{"grantDigest"}.getStr("")}
+        # Deliberately NOT `approvals: auto` or any invented value: the
+        # approval gate in the peer accepts only ask/auto, and an unattended
+        # task's auto grants come from its task policy, not from this field.
+        if task.hasKey("approvals"): task.delete("approvals")
+      else:
+        task["approvals"] = %"ask"
+        if task.hasKey("task"): task.delete("task")
+      # The worker-side idempotency key (docs/FLEET.md §4, slice F1): the peer
+      # records this key and the birth-settings digest before running a turn,
+      # so re-presenting it can only report the existing acceptance/receipt —
+      # never run the work twice.
+      var admission = newJObject()
+      admission["key"] = %admissionKey(id)
+      admission["policyVersion"] = %admissionPolicyVersion
+      task["admission"] = admission
+      # The request timeout is NOT a turn deadline — the remote runner owns
+      # the finite round/call/token budgets and there is no supported
+      # maxSeconds field. It must still outlive the peer's own runner startup:
+      # the first call to a fresh conversation spawns that runner (seconds on a
+      # loaded machine), and a timeout shorter than the spawn loses the
+      # submission before it is even admitted. A lost reply is recoverable
+      # (durable admission + activity receipt); a too-short wait just makes it
+      # the common case.
+      try: discard remoteCall(run, p, "session", task, 15)
       except CatchableError: discard
+    # The worker's durable receipt is read on EVERY reconcile, not only right
+    # after a submission: the case it exists for is exactly the one where the
+    # submission's own reply was lost (and the job sits in `submitting` or
+    # `unknown`). It is a READ, so it can never start, resume or replay a turn,
+    # and it turns an unknown activation into an authoritative answer whenever
+    # the worker knows one.
+    try:
+      let admissionDoc = remoteCall(run, p, "admission_get",
+        %*{"session": id, "key": admissionKey(id)})
+      if admissionDoc{"known"}.getBool(false):
+        j["admissionReceipt"] = admissionDoc
+      elif j.hasKey("admissionReceipt"):
+        j.delete("admissionReceipt")
+    except CatchableError:
+      discard # the receipt stays an honest unknown; activity may still settle
     let completion = remoteCall(run, p, "list", %*{"kind": "activity", "idPrefix": id, "limit": 2})
     var receipt: JsonNode
     let completions = completion{"items"}
@@ -161,7 +317,73 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       if entry{"id"}.getStr("") == id: receipt = entry{"value"}
     # The task owns one activation only. A later human turn can replace the
     # latest-per-session activity receipt; never attribute that to our task.
-    if receipt != nil and receipt{"sessionId"}.getStr("") == id and receipt{"seq"}.getInt(0) == 1:
+    # The worker's admission receipt is preferred where it exists: it is bound
+    # to this exact activation (key + digest) rather than being the latest turn
+    # of a session, and it states whether the transcript is durable.
+    let admissionState = j{"admissionReceipt", "admission", "state"}.getStr("")
+    if admissionState == "settled":
+      let admissionDoc = j{"admissionReceipt", "admission"}
+      var after = ""
+      var reply = ""
+      var transcriptComplete = false
+      var userMessages = 0
+      for pageNo in 0..<32:
+        let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
+        let entries = page{"items"}
+        if entries == nil or entries.kind != JArray: refuse("invalid transcript")
+        for entry in entries:
+          if not entry{"id"}.getStr("").startsWith(id & ":"): refuse("foreign transcript")
+          let role = entry{"value", "role"}.getStr("")
+          if role == "user" and entry{"value", "notice"} == nil and
+              entry{"value", "mail"} == nil:
+            inc userMessages
+          if userMessages > 1:
+            transcriptComplete = true
+            reply = "[summary unavailable: unmarked user/steer boundary; inspect remote transcript]"
+            break
+          if role == "assistant":
+            reply = summary(entry{"value", "content"}.getStr(""))
+        if transcriptComplete: break
+        if not page{"hasMore"}.getBool(false):
+          transcriptComplete = true
+          break
+        let next = page{"nextAfter"}.getStr("")
+        if next <= after: refuse("invalid transcript cursor")
+        after = next
+      if not transcriptComplete: reply = summary("[transcript scan capped; report may be partial] " & reply)
+      j["state"] = %"settled"
+      j["completion"] = %*{"sessionId": id,
+        "turnId": admissionDoc{"turnId"}.getStr(""),
+        "seq": admissionDoc{"activation"}.getInt(1),
+        "outcome": admissionDoc{"outcome"}.getStr("unknown"),
+        "source": "worker-admission"}
+      j["notice"] = %*{"kind": "fleet-settled", "jobId": id,
+        "remoteSession": id, "activation": admissionDoc{"activation"}.getInt(1),
+        "status": admissionDoc{"outcome"}.getStr("unknown"),
+        "transcriptCommitted": admissionDoc{"transcriptCommitted"}.getBool(false),
+        "summary": reply, "summaryLimit": 2048}
+      # The authority the work ran under, echoed into the notice so the parent
+      # conversation states it instead of assuming it (docs/FLEET.md §5).
+      if admissionDoc{"taskPolicy"} != nil and
+          admissionDoc{"taskPolicy"}.kind == JObject:
+        var notice = newJObject()
+        for key, value in j["notice"]: notice[key] = value
+        notice["taskPolicyDigest"] =
+          %admissionDoc["taskPolicy"]{"digest"}.getStr("")
+        notice["confinement"] =
+          %admissionDoc["taskPolicy"]{"confinement"}.getStr("")
+        # The change itself, not just a description of it (docs/FLEET.md §6):
+        # the commit this activation produced against the base it started from,
+        # plus a one-line rendering a human can read without opening anything.
+        # A prose report beside a SHA is checkable; prose alone is a claim.
+        let artifact = admissionDoc{"artifact"}
+        if not isNil(artifact):
+          notice["artifact"] = artifact
+          let oneLine = artifactSummary(artifact)
+          if oneLine.len > 0: notice["artifactSummary"] = %oneLine
+        j["notice"] = notice
+      j["delivered"] = %false
+    elif receipt != nil and receipt{"sessionId"}.getStr("") == id and receipt{"seq"}.getInt(0) == 1:
       # Activity certifies a completed turn, not factual task success. Retrieve
       # a bounded reply only from this session, then commit notice WITH job.
       var after = ""
@@ -198,10 +420,15 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         "remoteSession": id, "status": receipt{"outcome"}.getStr("unknown"),
         "summary": reply, "summaryLimit": 2048}
       j["delivered"] = %false
+    elif admissionState == "running" and epochTime() - j{"admissionReceipt", "ageSeconds"}.getFloat(0) > 3600:
+      # A turn may have started, but its receipt is far older than any task
+      # budget allows and no activity receipt exists. Still not success or
+      # interruption: name it unknown, keep the pointer for a human.
+      j["state"] = %"unknown"
     else:
       j["state"] = %"unknown"
     j["reachable"] = %true
-    j.delete("diagnostic")
+    if j.hasKey("diagnostic"): j.delete("diagnostic")
   except CatchableError as e:
     if e.msg.startsWith("fleet submitting commit not confirmed"):
       raise # no diagnostic write may overwrite an uncertain commit

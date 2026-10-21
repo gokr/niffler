@@ -1,7 +1,9 @@
 # Fleet — tasks across Niffler instances
 
 Status: **active design and delivery plan**. Provisioning and bounded read-only
-remote tasks are implemented; unattended coding delegation is not. This file
+remote tasks are implemented. Unattended coding delegation exists as an
+experimental F2 slice whose authority boundary is now closed but whose exit is
+not met (no patch/commit artifact — see §8). This file
 supersedes the delivery ladders in [the original design](research/FLEET.md) and
 [the old implementation schedule](research/FLEET-IMPLEMENTATION.md).
 
@@ -42,9 +44,9 @@ Example target interaction:
 | Task submission | `fleet_task_submit`, owner-bound durable `fleetjob`, explicit read-tool allowlist and round/call/token budgets | Named task peers, coding authority, agent/model selection, continuation |
 | Result | `fleet_task_status` and cached bounded `fleet_task_result`, remote-session pointer | Paged task-specific detail and artifact retrieval |
 | Notification | Durable `fleet-settled` notice; runner append before ack; canonical-history dedup; bounded idle wake and busy-turn drain | Blocked/approval-needed notices and a human job inbox |
-| Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption | Durable remote admission and per-activation terminal receipts |
+| Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption; durable worker admission with an activation-bound terminal receipt ([WIRE.md](WIRE.md) "Durable task admission") | Multi-activation/continuation records and a receipt retention policy |
 | Cancellation | `fleet_task_cancel` cancels only queued, undispatched tasks | Confirmed cancellation of active remote work |
-| Approval | Submission approval locally; worker explicitly receives `approvals: ask`; read-only task tools | Explicitly approved unattended coding mode; no default auto mode today |
+| Approval | Submission approval locally; worker explicitly receives `approvals: ask`; read-only tasks by default; operator task profiles ∩ an exact human grant ([WIRE.md](WIRE.md) "Task policy"), enforced at birth with the honest `unconfined` verdict | No default unattended mode (by design); no human UI for profiles/grants |
 | Scheduling | Optional heartbeat, durable admission marks, daily attempt cap | Cron, daily token/cost budgets, retention and completion integration |
 
 The implementation is in `components/fleet`, runner notice handling in
@@ -263,6 +265,40 @@ identity changes, paging and stale receipts. No unverified replay.
 **Exit:** an accepted task can always be identified and reconciled after a
 transport failure, without inferring acceptance or running it twice.
 
+**Status: implemented (core seam + requester binding).** The generic contract is
+[docs/WIRE.md](WIRE.md) "Durable task admission":
+
+- `sdk/niffler/admission.nim` (re-exported by `core/admission.nim`) — pure
+  record/idempotency module (no store or bus, no core import), shared
+  by the runner and the system core so there is exactly one spelling of the
+  policy version, key shape, birth-settings digest and receipt vocabulary.
+- `handleSessionCall` reads/accepts the admission **before** appending the user
+  message or calling a provider, compare-and-sets `accepted → running`, and
+  commits the terminal receipt (turnId, outcome, usage, reply digest,
+  `transcriptCommitted`) before the human activity receipt. A turn whose
+  transcript writes failed stays `running` (honest unknown).
+- Catalog `components`/`snapshot` advertise `admissionPolicyVersion: 1`;
+  `fleet` refuses a peer without it before dispatch, binds each job to
+  `admission.key = <jobid>`, reads the worker receipt after submitting (a read,
+  never a replay) and prefers it to the latest-per-session activity record.
+- Read-only surfaces: hidden `admission_get {session,key}` on the worker and
+  `fleet_task_receipt {jobId}` on the requester.
+- Present-but-unusable admission is refused, never downgraded to an ordinary
+  turn; session refusals now carry their own `code` (`admission-conflict`,
+  `-busy`, `-unconfirmed`, `-invalid`, `-unsupported`) instead of a generic
+  runner error.
+
+**Evidence:** `tests/t_fleet_admission.nim` (record, key shape, digest
+normalization, lifecycle) and `tests/t_fleet_admission_e2e.nim` (real store +
+runner + mock model: accept-before-start, exact replay spending no provider
+round trip, conflicting digest refused, `running` refuses, `admission_get`
+answers). `t_fleet_tasks` and `t_fleet_faults` still pass.
+
+**Still open in F1:** multi-activation records (continuation), a retention
+policy for terminal receipts, and the store-outage-before/after-commit and
+requester-restart matrices as explicit contracts rather than incidental
+coverage; paging applies once more than one activation exists per key.
+
 ### F2 — One unattended coding task
 
 Implement operator-owned worker profiles and exact human task grants. Default
@@ -278,6 +314,105 @@ widening, policy revocation, shell/indirect escape limits and child inheritance.
 **Exit:** a permitted edit/build/test task runs without unattended approval stalls,
 returns a bounded report plus patch/commit, and refuses outside its authority.
 Do not claim general sandboxing as part of this gate.
+
+**Status: the authority boundary is closed and the artifact now ships; two
+exit clauses remain open (push authority, scoped artifact retrieval).** An earlier 95-test gate passed before this review; the review
+itself found real gaps, each now fixed and covered:
+
+- **Component/core import violation — fixed.** Shared contracts live in
+  `sdk/niffler/{admission,taskpolicy,canonicaljson}.nim`; Fleet imports only the
+  SDK and core keeps thin compatibility re-exports. A component enforcing a wire
+  contract no longer has to import core to do it.
+- **Callable control-plane denial — fixed, and widened to schema.** `build`,
+  `build_package`, `task_profile_*` and orchestration-family prefixes are denied
+  beside the component labels they belong to (`build`, not just `builder`).
+  Beyond names, the worker audits its **own** catalog before persisting
+  authority (`taskToolSchemaProblem`): a tool it does not serve, one with no
+  `x-harness` contract, or any `hidden`/`runner`/`sessionContext`/`noSpawn`
+  flag refuses in every mode, so an unfamiliar plugin name cannot smuggle in
+  machinery the deny list has never heard of. A third-party plugin is still
+  trusted to describe its own schema honestly — the same trust every dispatch
+  decision already extends, not a new one.
+- **Retry idempotency — fixed.** Durable admission is consulted *before*
+  birth-policy resolution and the requested grant is in the admission digest.
+  An exact retry returns the existing receipt and executes nothing (provider
+  call counts prove it), including after the operator deletes the profile; the
+  same key with a different grant refuses.
+- **Grant binding — shipped.** The requester hashes the approved authority
+  (`profile`, sorted tools, three budgets) into the job BEFORE dispatch and the
+  worker recomputes it from what arrived, refusing a changed grant
+  (`task-policy-grant-mismatch`). Both the refusal and the unchanged-grant
+  acceptance are tested.
+- **Stale authority on continuation — fixed by refusing.** Content-only turns,
+  image turns and wakes on a task conversation refuse
+  (`task-policy-continuation-required`) while live, after profile deletion, and
+  after the runner retires and resumes — the stored policy is evidence of what
+  was approved, never standing permission for another activation. What remains
+  unproven is the stronger claim about the requester's own approval (that it
+  was a human decision rather than a tool call the model made) and
+  activation-bound *refusal* reporting: a refusal reaches the requester as a
+  dispatch error, not as a settled task record.
+
+Unattended submissions also require matching `taskPolicyVersion` before
+dispatch; read-only tasks stay compatible with admission-only peers. Missing and
+unsupported versions have regression coverage in `t_fleet_tasks`.
+
+The draft generic seam is [docs/WIRE.md](WIRE.md) "Task policy":
+
+- `sdk/niffler/taskpolicy.nim` (re-exported by `core/taskpolicy.nim`) — pure
+  module (no store/bus, no core import) holding the intersection
+  arithmetic, the control-plane deny set, profile validation, the effective
+  policy document and its digest. The runner enforces it, the system core
+  re-computes it for `admission_get`, and the requester validates the same
+  contract, so three codes cannot disagree about what was authorized.
+- Operator profiles: store kind `taskprofile`, written out-of-band by the
+  worker's operator via `task_profile_set` / `task_profile_list` /
+  `task_profile_remove` (approval-gated; not reachable from a task).
+- At birth the runner resolves profile ∩ grant, refuses explicitly on any
+  widening, and persists the effective policy in the conversation header before
+  a tool can run. Task authority is birth-only: a second grant on the same
+  conversation refuses (`task-policy-immutable`), with three witnesses (live
+  session, header, admission records) and fail-closed behavior when none can be
+  read.
+- The gate (`core/approval.nim`) grants a tool because the *policy names it*,
+  not because the conversation is in auto mode; a tool outside the policy is
+  refused outright instead of waiting for an absent human. `NIF_AUTO_APPROVE` is
+  never set on the peer and a caller's `approvals: auto` cannot widen a grant.
+- Trustee/unconfined truth: the policy carries `confinement: "unconfined"`,
+  `confined: false`, and a profile claiming `sandbox` is refused — this harness
+  enforces no sandbox for delegated work, so it will not say otherwise.
+- Control plane is never granted in any mode: delegation, self-reconfiguration
+  and the record-keeping seam are denied on both sides.
+
+**Evidence:** `tests/t_codingartifact.nim` (real git: base capture, produced
+commit, diffstat, dirty/untracked, non-base detection, verification evidence,
+unverifiable workspace), `tests/t_taskpolicy.nim` (intersection, widening,
+roots, budgets, confinement honesty, control-plane callables and the worker's
+own schema audit, grant identity), `tests/t_taskpolicy_e2e.nim` (real store +
+runner + mock model: a granted `edit` AND `bash` commit run with no human
+attached and the receipt names the repository's real HEAD; widened grants,
+unknown/revoked profiles and content-only continuations refuse; retries replay
+receipts; no refusal spends a provider round trip), and `tests/t_fleet_tasks.nim`
+(the same through `fleet_task_submit`, where the requester's notice carries the
+commit the worker made).
+
+**Still open in F2 (do not read this as a finished gate):**
+- **The artifact now ships** (`sdk/niffler/codingartifact.nim`): the receipt
+  carries the base revision captured at admission, the commit produced, whether
+  it is built on that base, the diffstat, dirty/untracked state, and the
+  verification commands with their exit status. It is stated in the notice as a
+  structured `artifact` plus a one-line summary, so the report is checkable
+  beside the change instead of taken on faith. What it does not do: fetch the
+  diff bytes or push anywhere (§F4 scoped retrieval; push authority is a
+  separate, unimplemented policy field), and it never judges correctness.
+- **No workspace isolation** — a task runs in an existing checkout it is
+  granted; there is no automatic worktree-per-task or dirty-work preservation.
+- **No runtime deadline** — round/call/token budgets exist; a wall-clock
+  deadline and ledger-backed spend limits do not (§7).
+- **Child inheritance is untested** — a local subagent cannot be spawned by a
+  task (no `agent`/`fabric`), so inheritance has nothing to inherit yet; that
+  becomes real only if delegation is ever deliberately granted.
+- **No human UI** for profiles or the grant beyond the tool arguments.
 
 ### F3 — Task control and actionable notices
 

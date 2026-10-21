@@ -16,6 +16,8 @@ import approval
 import catalog
 import compaction
 import schema_validation
+import admission
+import taskpolicy
 import supervisor
 import uireg
 import workspace
@@ -734,6 +736,30 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError:
       discard
     return %*{"ok": true, "sessionId": sessionId, "deleted": deleted}
+  of "admission_get":
+    ## Read-only receipt read for a delegated turn's worker-side admission
+    ## (docs/FLEET.md §4). The requester uses this to reconcile an activation
+    ## whose reply it lost; it never starts, resumes or repairs work itself.
+    let admSession = args{"session"}.getStr("").strip()
+    let admKey = args{"key"}.getStr("")
+    if admSession.len == 0 or admKey.len == 0:
+      return %*{"error": "admission_get needs session and key"}
+    if not validAdmissionKey(admKey):
+      return %*{"error": "admission key must be 1..128 of [A-Za-z0-9._:-]"}
+    try:
+      let found = ct.storeGetItem(admissionKind,
+        admissionDocId(admSession, admKey))
+      if found.value == nil:
+        return %*{"ok": true, "known": false, "session": admSession,
+                  "key": admKey,
+                  "note": "no admission recorded: no turn was accepted under this key"}
+      return %*{"ok": true, "known": true,
+                "state": found.value{"state"}.getStr(""),
+                "ageSeconds": max(0.0, epochTime() -
+                  found.value{"acceptedAt"}.getFloat(0)),
+                "admission": publicAdmission(found.value)}
+    except CatchableError as e:
+      return %*{"error": "admission unreadable: " & e.msg}
   of "session_prepare":
     ## Delegated child-runner preparation for components (agent): returns the
     ## runner's direct subject WITHOUT running a turn — going through the
@@ -766,6 +792,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         comps[name] = tools
       return %*{"components": comps, "root": ct.root,
                 "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
+                "admissionPolicyVersion": admissionPolicyVersion,
+                "taskPolicyVersion": taskPolicyVersion,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "schemas":
       return ct.cat.selectedSchemas(args{"tools"})
@@ -823,6 +851,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         comps.add(entry)
       return %*{"components": comps, "root": ct.root,
                 "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
+                "admissionPolicyVersion": admissionPolicyVersion,
+                "taskPolicyVersion": taskPolicyVersion,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     return %*{"error":
       "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}
@@ -2188,7 +2218,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
               "session_info", "activity_list", "prompt_preview", "context_status",
-              "doctor", "ui",
+              "doctor", "ui", "admission_get",
               "conversation_delete", "toolset", "profile"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)

@@ -11,6 +11,8 @@ import std/sha1
 {.pop.}
 import natsnim
 import ../sdk/envelope
+import ../sdk/niffler/canonicaljson
+export canonicaljson
 import schema_validation
 when defined(posix):
   import std/posix
@@ -255,6 +257,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "agent": {"type": "string", "description": "Birth-only named agent definition (store kind agent). Supplies persona, toolset, model, thinking, cwd and budgets; explicit arguments win. Definitions cannot grant auto approvals."},
         "persona": {"type": "string", "description": "Named persona (store kind 'persona'): an identity document resolved into the system prompt when the conversation is first built, and recorded in the header beside it. Birth-only like profile — ignored on resume, because a conversation's prompt prefix is frozen. Editing the persona document never rewrites a live conversation; start a new one to pick up the change."},
         "notice": {"type": "object", "description": "Runtime machinery marker, set by components rather than clients: {kind: \"heartbeat\", id} runs a scheduled turn (components/heartbeat; the id must name a heartbeat record, budgeted per day). Clients that hand-roll one are refused."},
+        "admission": {"type": "object",
+                      "description": "Durable admission (docs/WIRE.md): {key, policyVersion?} makes this turn idempotent. The runner records the key with the normalized birth settings and their digest BEFORE any turn starts, so an exact retry returns the existing acceptance or terminal receipt and runs nothing, the same key with different work is refused, and a record left running refuses rather than executing twice. Used by delegating requesters that cannot tell a lost reply from a turn that never started; ordinary turns omit it."},
         "wake": {"type": "boolean", "description": "Wake a dormant conversation: run a turn that folds pending background-settlement notices in, so a parent learns its subagents finished without the human asking. Declined (no turn) when wakes are disabled via NIF_AGENT_WAKES=0, when the consecutive-wake budget (NIF_AGENT_WAKES, default 3) is spent, or when nothing is pending. Used by the agent component, not UIs."},
         "discovery": {"type": "object", "description": "Per-call discovery projection passed to the discover tool ({include?, exclude?, components?}); presence of the key replaces the turn's default projection. The handler honours it; the argument was omitted from this schema (A124 — UIs sent it schemaless)"},
         "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 16,
@@ -278,6 +282,17 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "limit": {"type": "integer", "minimum": 1, "maximum": 1000}
       },
       "x-harness": {"hidden": true, "effect": "read"}
+    }))
+  coreReg.tools.add(ToolReg(name: "admission_get", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Read one durable task admission (the worker-side idempotency receipt a delegated turn was started under) by its session and the requester's key. Returns the normalized birth-policy digest, the lifecycle state (accepted = provably not started, running = a turn may have started, settled = this activation's terminal receipt with turnId, outcome and usage) and the receipt itself. An unknown admission is not success or failure; read-only, never starts or resumes work.",
+      "properties": {
+        "session": {"type": "string", "description": "Conversation the admitted turn runs in"},
+        "key": {"type": "string", "description": "The requester-chosen admission key, exactly as submitted"}
+      },
+      "required": ["session", "key"],
+      "x-harness": {"onDemand": true, "effect": "read"}
     }))
   coreReg.tools.add(ToolReg(name: "session_prepare", component: "core",
     schema: %*{
@@ -322,30 +337,6 @@ proc normalizeToolSchema*(schema: JsonNode): JsonNode =
     result["type"] = %"object"
   if result{"properties"} == nil or result{"properties"}.kind != JObject:
     result["properties"] = %*{}
-
-proc canonicalJson*(node: JsonNode): string =
-  ## Stable JSON independent of object insertion order.
-  if node == nil: return "null"
-  case node.kind
-  of JObject:
-    var keys: seq[string]
-    for key, value in node: keys.add(key)
-    keys.sort()
-    result.add('{')
-    for i, key in keys:
-      if i > 0: result.add(',')
-      result.add($(%key))
-      result.add(':')
-      result.add(canonicalJson(node[key]))
-    result.add('}')
-  of JArray:
-    result.add('[')
-    for i in 0 ..< node.len:
-      if i > 0: result.add(',')
-      result.add(canonicalJson(node[i]))
-    result.add(']')
-  else:
-    result = $node
 
 proc schemaFingerprint*(schema: JsonNode): string =
   ## SHA-1 is an identity checksum here, not a security boundary.

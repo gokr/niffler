@@ -58,14 +58,30 @@ read-only remote tasks with durable parent notices are implemented. Local Lima
 bootstrap and SSH-hosted Incus provisioning have live evidence; the original
 long-bootstrap lost-reply mechanism has a tested heartbeat-pump fix.
 
-Still open: worker-side idempotent task admission and activation receipts;
-human-approved unattended coding profiles; active cancellation, steering and
-continuation; sequenced blocked/completion notices; a human task inbox; scoped
-artifact retrieval and verification evidence. Existing read-only tasks explicitly
-use `ask`, not auto approval. Human seen state stays separate from agent notice
-acknowledgement. Follow F1–F5 in the Fleet plan rather than the historical research
-ladders. Published-revision update and real-provider coding acceptance remain
-separate gates; the completed Linux Lima smoke does not certify macOS/VZ.
+Durable worker admission is implemented (F1: versioned capability negotiation,
+immutable birth-policy digest, idempotent admission, activation-bound terminal
+receipts). F2 has an experimental unattended-execution implementation with
+narrow contracts and real store/runner tests, but is not ready to ship. Review
+found component/core import violations, incomplete callable control-plane denial,
+non-idempotent policy retries, and unproven grant/resume/revocation semantics;
+all four are now closed — shared contracts moved to the SDK, denial matches
+callable names plus a worker-side schema audit, exact retries replay receipts,
+and stale grants plus content-only continuations refuse under test. The exit
+stock still is not met: there is no patch/commit artifact, workspace isolation or
+runtime deadline, and no fresh-grant continuation or in-flight revocation. See
+the blocker list in [FLEET.md](FLEET.md). Complete that artifact before treating
+F2 as shipped or proceeding to F3.
+
+Still open: multi-activation records and receipt retention (F1); scoped
+artifact retrieval, verification evidence and patch/commit return (F2/F4);
+active cancellation, steering and continuation (F3); sequenced
+blocked/completion notices and a human task inbox (F3/F4); a human UI for task
+profiles and grants. Read-only tasks remain the default, and unattended coding
+is never enabled by requesting it. Human seen state stays separate from agent
+notice acknowledgement. Follow F1–F5 in the Fleet plan rather than the
+historical research ladders. Published-revision update and real-provider coding
+acceptance remain separate gates; the completed Linux Lima smoke does not
+certify macOS/VZ.
 
 Unattended work on a resident instance has both halves of the approval story
 shipped: `NIF_APPROVALS_DEFAULT=auto` (rendered by `scripts/server.sh`) gives

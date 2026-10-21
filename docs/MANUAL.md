@@ -3001,6 +3001,151 @@ A declined wake leaves the notice pending. Human activity/seen state is separate
 on a remote transport. Full transcripts remain on the worker under `remoteSession`.
 No general mailbox, artifact transfer or automatic retry of uncertain work.
 
+#### Durable admission (F1)
+
+Each job carries one idempotency key, the job id itself, and the worker records
+it before any turn runs (docs/WIRE.md "Durable task admission"):
+
+```json
+{"admission": {"key": "fleet-<jobid>", "policyVersion": 1}}
+```
+
+The worker's record keeps the normalized birth settings and their digest, so a
+retry can only ever return the existing acceptance or terminal receipt — never
+start a second turn, and never reinterpret the same key as different work.
+That makes a lost reply reconcilable: a submission whose round trip died can be
+inspected instead of guessed at.
+
+Three outcomes you will see in practice:
+
+- **The peer lacks the capability.** Catalog `components`/`snapshot` carry
+  `admissionPolicyVersion`; a peer without version 1 is refused *before*
+  dispatch rather than after a task has already started.
+- **The admission is replayed.** The job settles with the worker's receipt
+  (`admissionReplay: true`) and spends nothing.
+- **The activation is already running.** The task stays unknown on purpose:
+  `fleet_task_receipt {jobId}` (and the worker's own
+  `admission_get {session, key}`) show what was admitted and what the last
+  activation did. Neither tool starts, resumes or repairs work.
+
+A settled admission still is not a verified task: `transcriptCommitted` says the
+worker's history is durable, not that its report is right. A turn whose
+`transcriptCommitted` is false (or an activation left `running` past any plausible
+budget) stays unknown; check the worker conversation before reusing a key.
+Treating an admission as a receipt for *permission* also fails: the digest
+records the settings that were accepted, it never widens the peer's ceiling.
+
+`make test-fleet-admission` covers the record/idempotency contracts,
+`t_fleet_admission_e2e` the real store-plus-runner behavior with the mock model.
+
+#### Unattended coding tasks (F2)
+
+Read-only tasks are the default. To let a delegated task actually **edit, build
+and test**, the worker's operator has to allow it first, and a human still
+approves each task:
+
+```bash
+# 1. On the WORKER (its operator, with bus access) — once per profile:
+./var/bin/cli call task_profile_set '{
+  "name": "coding",
+  "tools": ["read", "grep", "edit", "write", "bash", "git_status", "git_diff"],
+  "roots": ["/home/ubuntu/work"],
+  "maxRounds": 8, "maxCalls": 40, "maxTokens": 200000}'
+
+./var/bin/cli call task_profile_list '{}'    # what this machine will allow
+```
+
+```jsonc
+// 2. From the REQUESTING conversation (fleet_task_submit, approval-gated):
+{"profile": "var/fleet/worker.json", "requestId": "fix-123",
+ "mode": "unattended", "taskProfile": "coding",
+ "content": "Fix the failing test in this checkout and run the suite.",
+ "cwd": "/home/ubuntu/work",                    // must be under the profile's roots
+ "tools": ["read", "edit", "bash"],             // must be within the profile's tools
+ "maxRounds": 4, "maxCalls": 20, "maxTokens": 50000}
+```
+
+Two decisions, intersected on the worker: the operator's profile is the
+ceiling, the human's grant is what this task may use. The caller can only
+narrow — asking for a tool or budget beyond the ceiling is refused with the
+reason, never quietly clamped. No profile (or one that does not permit
+unattended runs) means an explicit refusal, **not** a task that starts and waits
+forever for an approval nobody will give. `NIF_AUTO_APPROVE` is never set on the
+peer, and a refusal happens before any work runs.
+
+Once a conversation is an unattended task, its authority is fixed for the
+activation it was admitted under. A later call carrying a different `task` is
+refused instead of reinterpreting what earlier work ran under, and a
+**content-only turn, image turn or autonomous wake is refused too**
+(`task-policy-continuation-required`): the stored policy is evidence of what was
+approved, not standing permission to run more work, and it stays refused even
+after the operator deletes the profile. Start a new conversation for more work.
+An exact re-submission of the same admission key is different — it returns the
+existing receipt and runs nothing, so retrying after a lost reply is safe.
+
+Before dispatch the requester hashes the authority you approved into the job
+record, and the worker recomputes it from what arrives. A grant that was changed
+in between is refused (`task-policy-grant-mismatch`) rather than run under
+authority nobody approved.
+
+The notice you get back states **what changed**, not just what the worker says
+it did. A coding task's result is the commit it produced, so the notice carries
+an `artifact` naming the base revision it started from, the commit itself, the
+diffstat, whether the tree was left dirty, and the verification commands that
+ran with their exit status — plus a one-line summary:
+
+```
+artifact: commit 56fe18a "fix the note file" (1 file changed)
+https://github.com/gokr/niffler/commit/56fe18a…
+```
+
+The link is the point: open it to review the change. A diff pasted into a
+terminal notice would be noise, so only the file count is shown; when the
+checkout has no browseable origin there is no link at all rather than a broken
+one.
+
+If the task left its work uncommitted the notice says `no commit` (with a dirty
+or untracked warning) rather than implying success; if the commit replaced the
+base instead of building on it, it says `NOT built on the approved base`. A
+failing verification command is surfaced either way. None of this judges whether
+the change is *correct* — that is still your review — but you can now check the
+claim against something real instead of opening the remote conversation to see
+what actually happened.
+
+The notice also states the authority it ran under, and whether the work
+was confined. `unconfined` is the honest answer in this version, and it matters:
+
+> **Unattended coding is trusted, unconfined execution.** `bash` is broad
+> machine access. A tool allowlist, an approval mode and a workspace root are
+> authority scoping, not a sandbox: nothing stops a granted shell from reading
+> outside `roots`, and the workspace label is not a boundary. Grant coding tools
+> only on a machine and against a checkout where that is acceptable.
+
+Control-plane tools are never granted, in any mode and whatever a profile says:
+delegation (`fleet_*`, `agent*`, `invoke`, `fabric`), self-reconfiguration
+(`spawn`, `builder`, `plugins`, `mcp`, `toolset`), and the record-keeping seam
+(`admission_get`, `taskprofile`, `put`/`del`). That keeps a task single-hop and
+prevents it from re-granting itself.
+
+Typical refusals and what they mean:
+
+| Refusal | Meaning |
+|---|---|
+| `no task profile … unattended authority is off` | the worker operator has not configured one; ask them, do not retry |
+| `tool 'x' is not permitted by the worker's profile` | narrow `tools` to what `task_profile_list` shows |
+| `workspace … is outside the worker's approved task roots` | pick a `cwd` under the profile's `roots` |
+| `… is control-plane machinery` | that tool is never task authority; do not ask again |
+| `this conversation is already an unattended task` | start a new conversation for a new grant |
+| `task continuation requires a fresh activation grant` | a follow-up/wake on a finished task: submit a new task, do not reuse the conversation |
+| `… does not match the authority the requester recorded` | the grant changed after approval; submit again so a human approves the new one |
+| `confinement 'sandbox' is not enforced` | drop `confinement` from the profile until a sandboxed slice ships |
+
+`make test-taskpolicy` covers the intersection and its refusals in isolation;
+`t_taskpolicy_e2e` runs a real unattended task (a granted `edit` executes, a
+control-plane `put` does not, retries replay receipts, follow-ups and tampered
+grants refuse); `t_fleet_tasks` proves the same through the requester, including
+that the coding tool really ran.
+
 `make test-fleet-tasks` is an isolated two-instance real-NATS/mock-model smoke;
 its guest transport executes scripts only inside test roots, never SSH or VMs.
 `NIF_FLEET_TASK_WORKERS=0` disables transport workers (maintenance/test use),

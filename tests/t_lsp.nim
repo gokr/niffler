@@ -509,6 +509,26 @@ proc main() =
       cleanDelivered = env.payload{"clean"}.getBool(false)
       break
   check("async clean verdict carries explicit display-only classification", cleanDelivered)
+
+  # This fixture waits 9s before its first push: it must outlive the old 8s
+  # async budget, while the submission itself remains an immediate queue ack.
+  writeFile(tmp / "slow-async.nx", "all good\n")
+  let slowAck = lspCall(%*{"operation": "diagnostics", "path": "slow-async.nx",
+                            "async": true, "session": asyncSession})
+  check("slow async diagnostics acknowledge before the verdict",
+        slowAck{"pending"}.getBool(false), $slowAck)
+  var slowDelivered: JsonNode
+  for _ in 0 ..< 30:
+    var msg: ptr natsMsg
+    if natsSubscription_NextMsg(addr msg, diagSub, 1000) != NATS_OK: continue
+    let env = decode($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if env.payload{"path"}.getStr("") == "slow-async.nx":
+      slowDelivered = env.payload
+      break
+  check("async diagnostics accept a server reply beyond eight seconds",
+        slowDelivered != nil and slowDelivered{"clean"}.getBool(false),
+        $slowDelivered)
   # Linux /proc distinguishes a reaped PID from a reserved zombie PID.
   when defined(linux):
     block:

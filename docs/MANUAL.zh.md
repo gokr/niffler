@@ -1423,6 +1423,129 @@ make test-fleet 使用假传输，不操作真实主机或 VM。
 `make test-fleet-tasks` 是双实例真实 NATS/模拟模型隔离冒烟测试，不执行 SSH/VM。
 `NIF_FLEET_TASK_WORKERS=0` 可禁用传输工作进程，但仍投递待处理通知。
 
+#### Durable admission (F1)
+
+每个任务携带一个幂等键（即任务 id 本身），工作端在任何回合运行之前就记录它
+（见 docs/WIRE.md "Durable task admission"）：
+
+```json
+{"admission": {"key": "fleet-<jobid>", "policyVersion": 1}}
+```
+
+工作端的记录保存规范化后的出生设置及其摘要，因此重试只可能返回已有的接受记录或
+终态回执 —— 绝不会启动第二个回合，也绝不会把同一个键重新解释为不同的工作。
+这正是"丢失的回复"可以被对账而不是被猜测的原因：往返中断的提交可以查询，无需猜。
+
+实际会看到的三种结果：
+
+- **对端缺少该能力。** catalog 的 `components`/`snapshot` 会携带
+  `admissionPolicyVersion`；版本不是 1 的对端在**派发之前**就被拒绝，而不是
+  在任务已经开始之后。
+- **准入被重放。** 任务以工作端回执结束（`admissionReplay: true`），不产生任何开销。
+- **激活已在运行。** 任务有意保持 unknown：`fleet_task_receipt {jobId}`
+  （以及工作端自己的 `admission_get {session, key}`）显示接纳了什么、最近一次
+  激活做了什么。这两个工具都不会启动、恢复或修复工作。
+
+已结算的准入仍然不等于已验证的任务：`transcriptCommitted` 只说明工作端历史已持久化，
+不说明其报告正确。`transcriptCommitted` 为 false 的回合（或任何合理预算之后仍停留在
+`running` 的激活）保持 unknown；在复用同一个键之前，请先检查工作端会话。
+把准入当作**权限**回执同样不成立：摘要记录的是被接受的设置，它绝不会扩大对端的上限。
+
+`make test-fleet-admission` 覆盖记录/幂等契约，`t_fleet_admission_e2e` 覆盖
+真实 store 加运行器在使用模拟模型下的行为。
+
+#### Unattended coding tasks (F2)
+
+只读任务是默认行为。要让被委派的任务真正**编辑、构建和测试**，工作端操作员必须先
+允许它，同时仍由人工批准每个任务：
+
+```bash
+# 1. 在 WORKER 上（其操作员，需总线访问权）—— 每个 profile 一次：
+./var/bin/cli call task_profile_set '{
+  "name": "coding",
+  "tools": ["read", "grep", "edit", "write", "bash", "git_status", "git_diff"],
+  "roots": ["/home/ubuntu/work"],
+  "maxRounds": 8, "maxCalls": 40, "maxTokens": 200000}'
+
+./var/bin/cli call task_profile_list '{}'    # 本机允许什么
+```
+
+```jsonc
+// 2. 从请求端会话（fleet_task_submit，需审批）：
+{"profile": "var/fleet/worker.json", "requestId": "fix-123",
+ "mode": "unattended", "taskProfile": "coding",
+ "content": "Fix the failing test in this checkout and run the suite.",
+ "cwd": "/home/ubuntu/work",                    // 必须位于 profile 的 roots 之下
+ "tools": ["read", "edit", "bash"],             // 必须在 profile 的 tools 之内
+ "maxRounds": 4, "maxCalls": 20, "maxTokens": 50000}
+```
+
+两个决定在工作端求交集：操作员的 profile 是上限，人的授权是本任务可用的范围。
+调用方只能收窄 —— 索取超出上限的工具或预算会被带上理由拒绝，绝不会被悄悄裁剪到
+刚好符合。没有 profile（或 profile 不允许无人值守运行）意味着明确拒绝，**而不是**
+让任务启动后一直等待一个根本不会出现的批准。对端从不设置 `NIF_AUTO_APPROVE`，
+拒绝发生在任何工作运行之前。
+
+一个会话一旦成为无人值守任务，其权限就固定为它被接纳时的那次激活。后续携带不同
+`task` 的调用会被拒绝，而不会重新解释先前工作所依据的授权；**仅含内容、含图片的
+回合以及自主唤醒同样会被拒绝**（`task-policy-continuation-required`）：已保存的策略
+是被批准内容的证据，不是继续运行更多工作的长期许可，而且即使操作员删除了 profile，
+它依然会被拒绝。需要更多工作请开新会话。用同一个准入键做**完全相同**的重新提交
+则不同 —— 它返回已有回执且什么都不运行，因此在回复丢失后重试是安全的。
+
+派发之前，请求端会把已批准的权限哈希进任务记录，工作端会依据实际收到的内容重新计算。
+中途被改动的授权会被拒绝（`task-policy-grant-mismatch`），而不会在无人批准的权限下运行。
+
+返回的通知会说明**改了什么**，而不只是工作端声称做了什么。编码任务的结果就是它
+产生的提交，因此通知会携带一个 `artifact`，指明它开始时的基线版本、提交本身、
+diffstat、工作树是否被留下未提交状态，以及实际运行的验证命令及其退出码 —— 另加
+一行摘要：
+
+```
+artifact: commit 56fe18a "fix the note file" (1 file changed)
+https://github.com/gokr/niffler/commit/56fe18a…
+```
+
+链接才是重点：点开它来评审改动。把 diff 粘贴到终端通知里只会是噪音，所以只显示
+文件数量；若该代码库没有可浏览的 origin，则完全不给出链接，而不是给出一个坏链接。
+
+如果任务把工作留在未提交状态，通知会说 `no commit`（附带 dirty 或未跟踪文件警告），
+而不会暗示成功；如果提交替换了基线而不是在它之上构建，通知会说
+`NOT built on the approved base`。无论哪种情况，失败的验证命令都会被显示出来。
+这些都不评判改动**是否正确** —— 那仍是你的评审工作 —— 但你现在可以用真实的东西来
+核对声明，而不必打开远端会话来查看实际发生了什么。
+
+通知还会说明本次工作所依据的权限，以及工作是否被隔离。本版本中 `unconfined`
+是诚实的答案，而且这一点很重要：
+
+> **无人值守编码是可信但未隔离的执行。** `bash` 是对机器的广泛访问。工具白名单、
+> 审批模式和 workspace 根目录都是**权限范围划定**，不是沙箱：没有任何东西阻止被授予的
+> shell 读取 `roots` 之外的内容，workspace 标签也不是边界。只在你能够接受这种风险的
+> 机器和代码库上授予编码工具。
+
+控制面工具在任何模式下、无论 profile 怎么写都不会被授予：委派类（`fleet_*`、`agent*`、
+`invoke`、`fabric`）、自我重配置类（`spawn`、`builder`、`plugins`、`mcp`、`toolset`）
+以及记录维护通道（`admission_get`、`taskprofile`、`put`/`del`）。这使任务保持单跳，
+并防止它给自己重新授权。
+
+常见拒绝及含义：
+
+| 拒绝 | 含义 |
+|---|---|
+| `no task profile … unattended authority is off` | 工作端操作员尚未配置；请询问他们，不要重试 |
+| `tool 'x' is not permitted by the worker's profile` | 把 `tools` 收窄到 `task_profile_list` 显示的范围 |
+| `workspace … is outside the worker's approved task roots` | 选择位于 profile `roots` 之下的 `cwd` |
+| `… is control-plane machinery` | 该工具永远不是任务权限；不要再请求 |
+| `this conversation is already an unattended task` | 需要新的授权请开新会话 |
+| `task continuation requires a fresh activation grant` | 对已完成任务的跟进/唤醒：提交新任务，不要复用该会话 |
+| `… does not match the authority the requester recorded` | 授权在批准后被改动；重新提交，让人批准新的授权 |
+| `confinement 'sandbox' is not enforced` | 从 profile 中去掉 `confinement`，直到沙箱切片交付 |
+
+`make test-taskpolicy` 覆盖该交集及其拒绝（隔离运行）；`t_taskpolicy_e2e` 运行真实的
+无人值守任务（被授予的 `edit` 会执行，控制面 `put` 不会，重试重放回执，跟进与被篡改的
+授权会被拒绝）；`t_fleet_tasks` 经由请求端验证同样的事，包括编码工具确实运行了。
+
+
 ### Incus and remote guest management
 
 Fleet 现支持 `transport:"incus"` 和 Incus/Lima 可选 `host:"operator@hypervisor"`；省略 host 表示本地。收据绑定路由，漂移或已固定访客丢失会拒绝操作。Incus 使用固定 Ubuntu 24.04 非特权系统容器，普通 ubuntu 用户及 `/home/ubuntu/niffler`；明确启用访客 linger，临时 sudo 安装规则在退出时清理（SIGKILL/主机故障需人工检查），不使用主机 sudo 或挂载。incus-admin 等同主机 root 权限；必须先手动安装/初始化 Incus 并验证无密码 SSH 和 known_hosts。完整安装、Lima、更新与安全预检步骤见英文手册对应段落。

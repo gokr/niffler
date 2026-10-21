@@ -22,6 +22,9 @@ import ../sdk/niffler/agentdefs
 import catalog
 import compaction
 import dispatch
+import admission
+import taskpolicy
+import ../sdk/niffler/codingartifact
 import attachments
 import approval
 import supervisor
@@ -285,6 +288,15 @@ type
     limitSeconds*: int       ## going (0 = unset). The scoping budgets above
                              ## stay hard — a job cannot negotiate its budget
     exposure*: ToolExposure
+    taskPolicy*: JsonNode   ## Effective unattended task policy
+                            ## (docs/FLEET.md §5): the intersection of the
+                            ## worker operator's taskprofile with the
+                            ## requesting human's grant, resolved at birth and
+                            ## persisted in the header. nil = this conversation
+                            ## is not an unattended task. It is the only
+                            ## source of task-scoped auto approval: the gate
+                            ## grants a tool because THIS document names it,
+                            ## never because the conversation is in "auto".
 
 const defaultMaxTurnRounds = 1000
 
@@ -1970,9 +1982,20 @@ proc drainNotices*(ct: CoreTools, p: var Persister,
             %*{"session": sessionId, "ack": id}, 5_000)
         except CatchableError: discard
         continue
-      let content = "[fleet task " & id & " " & n{"status"}.getStr("unknown") &
-        "]\n" & n{"summary"}.getStr("") &
-        "\nWorker report, not verified factual success. Detail: fleet_task_result {jobId: \"" & id & "\"}"
+      var content = "[fleet task " & id & " " & n{"status"}.getStr("unknown") & "]"
+      let activation = n{"activation"}.getInt(0)
+      if activation > 1: content.add(" activation " & $activation)
+      if n{"confinement"}.getStr("") == "unconfined":
+        # The honest statement (docs/FLEET.md §5): nobody confined this work,
+        # and the parent should not read a workspace label as a boundary.
+        content.add(" (unconfined worker)")
+      if n{"transcriptCommitted"}.getBool(true) == false:
+        content.add(" [worker transcript NOT durably committed: treat as unknown]")
+      let summaryText = n{"summary"}.getStr("")
+      if summaryText.len > 0: content.add("\n" & summaryText)
+      content.add("\nWorker report, not verified factual success. Detail: fleet_task_result {jobId: \"" & id & "\"}")
+      if n{"taskPolicyDigest"}.getStr("").len > 0:
+        content.add(" under policy " & n{"taskPolicyDigest"}.getStr("")[0 ..< min(19, n{"taskPolicyDigest"}.getStr("").len)])
       let msg = %*{"role": "user", "content": content,
         "notice": {"kind": "fleet-settled", "jobId": id}}
       let failuresBefore = p.persistenceFailures
@@ -4342,6 +4365,95 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     elif agentExisting.len > 0 and agentExisting != agentAsked:
       return %*{"error": "agent is birth-only; start a new conversation"}
   let content = args{"content"}.getStr("")
+  # Durable admission (docs/FLEET.md §4, slice F1): an opted-in call carries
+  # `admission: {key, policyVersion}` — a requester-chosen idempotency key —
+  # and the runner records the immutable birth settings BEFORE any turn can
+  # start. That record is what makes a lost reply reconcilable: an exact retry
+  # returns the existing acceptance or terminal receipt and runs nothing, a
+  # crash between accept and start is provably safe to resume, and a crash
+  # after start is honestly unknown instead of a silent second execution.
+  # Ordinary turns carry no key and are untouched.
+  let admissionKey = requestedAdmissionKey(args)
+  let admissionPolicy = requestedAdmissionPolicy(args)
+  if hasAdmissionRequest(args):
+    # `admission` present at all means the caller depends on idempotency; a
+    # key we cannot honor is refused rather than silently dropped.
+    if not validAdmissionKey(admissionKey):
+      return %*{"error": "admission key must be 1..128 of [A-Za-z0-9._:-]",
+                 "code": "admission-invalid"}
+    if admissionPolicy != admissionPolicyVersion:
+      return %*{"error": "unsupported admission policyVersion " &
+                          $admissionPolicy & " (this harness accepts " &
+                          $admissionPolicyVersion & ")",
+                 "code": "admission-unsupported"}
+    if content.len == 0:
+      return %*{"error": "an admitted turn needs content",
+                 "code": "admission-invalid"}
+    if args{"wake"}.getBool(false) or args{"notice"} != nil:
+      return %*{"error": "an admitted turn cannot be a wake or heartbeat",
+                 "code": "admission-invalid"}
+  # --- task authority is birth-only (docs/FLEET.md §5, slice F2) -----------
+  # Checked BEFORE the conversation is loaded, because loading a fresh one
+  # persists the policy this very call resolves — a later check would find its
+  # own write and refuse every first admission. Three witnesses, because each
+  # one covers a window the others miss: the in-memory session (a live
+  # conversation), the header (a resumed runner), and the admission records (a
+  # runner that admitted the task without committing the header yet).
+  let taskTurnRequested = content.len > 0 or args{"wake"}.getBool(false) or
+    (args{"attachments"}.isArr and args{"attachments"}.len > 0)
+  if args{"task"} != nil or taskTurnRequested:
+    # Reconcile an existing task admission before birth-policy resolution.
+    # This is a receipt read, never permission to start or resume execution:
+    # even a revoked/deleted profile cannot erase the outcome of prior work.
+    if args{"task"} != nil and hasAdmissionRequest(args):
+      try:
+        let previous = ct.storeGetItem(admissionKind,
+          admissionDocId(sessionId, admissionKey)).value
+        if previous != nil:
+          let workspace = previous{"settings", "workspace"}.getStr("")
+          let digest = admissionDigest(birthSettings(args, workspace))
+          if workspace.len == 0 or not admissionMatches(previous, digest):
+            return %*{"error": "admission key already used for different work",
+                       "code": "admission-conflict"}
+          if previous{"state"}.getStr("") in
+              [admissionStateAccepted, admissionStateRunning, admissionStateSettled]:
+            return %*{"ok": true, "sessionId": sessionId,
+              "admissionReplay": true, "admission": publicAdmission(previous),
+              "reply": "", "outcome": "replayed"}
+          return %*{"error": "admission record has an unknown state",
+                     "code": "admission-conflict"}
+      except CatchableError as e:
+        return %*{"error": "cannot verify task admission: " & e.msg,
+                   "code": "admission-unconfirmed"}
+    var incumbent: JsonNode = nil
+    if sessions.hasKey(sessionId): incumbent = sessions[sessionId].taskPolicy
+    if incumbent == nil:
+      try:
+        let headerPolicy = ct.storeGetItem("conversation", sessionId).value{"taskPolicy"}
+        if headerPolicy != nil and headerPolicy.kind == JObject: incumbent = headerPolicy
+      except CatchableError as e:
+        return %*{"error": "cannot verify task policy: " & e.msg,
+                   "code": "task-policy-unconfirmed"}
+    if incumbent == nil:
+      try:
+        for rec in ct.storeListAll(admissionKind, sessionId & ":"):
+          if rec{"value", "taskPolicy"} != nil:
+            incumbent = rec{"value"}{"taskPolicy"}
+      except CatchableError as e:
+        # Cannot prove this is a fresh grant, so grant nothing: an
+        # unverifiable authority boundary fails closed.
+        return %*{"error": "cannot verify the task policy history: " & e.msg,
+                   "code": "task-policy-unconfirmed"}
+    if incumbent != nil:
+      if args{"task"} == nil:
+        return %*{"error": "task continuation requires a fresh activation grant; " &
+                            "content-only turns and wakes cannot reuse task authority",
+                   "code": "task-policy-continuation-required"}
+      return %*{"error": "this conversation is already an unattended task" &
+                          " (policy " & incumbent{"profile"}.getStr("") &
+                          "); a different grant needs a new conversation",
+                 "code": "task-policy-immutable"}
+
   # Autonomous wake (components/agent settle path): a session call with
   # `wake: true` runs a turn whose only purpose is folding pending
   # background-settlement notices into an IDLE conversation — the parent
@@ -4571,6 +4683,102 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       entry.limitRounds = storedLimits{"rounds"}.getInt(0)
       entry.limitTokens = storedLimits{"tokens"}.getInt(0)
       entry.limitSeconds = storedLimits{"seconds"}.getInt(0)
+    # --- unattended task policy (docs/FLEET.md §5, slice F2) ----------------
+    # An opted-in call carries `task: {profile, tools, roots?, maxRounds,
+    # maxCalls, maxTokens, workspace?}`: the requesting human's grant. The
+    # WORKER's operator profile (store kind taskprofile) is the ceiling; the
+    # effective policy is the intersection, resolved here and persisted in the
+    # header before any tool can run. A refusal is explicit — a task never
+    # starts in `ask` mode hoping a human is attached.
+    #
+    # Order matters: the policy OVERRIDES the plain `approvals`/`tools`/
+    # budget arguments rather than being merged with them, because those are
+    # the caller's unverified claims while this is the intersected, recorded
+    # answer. A stored policy is authoritative on resume (a resumed runner must
+    # re-apply exactly the authority the task was admitted under, not whatever
+    # the header's older fields say).
+    let storedPolicy = header{"taskPolicy"}
+    var taskRequested = false
+    if storedPolicy != nil and storedPolicy.kind == JObject:
+      entry.taskPolicy = storedPolicy
+      entry.approvalMode = "auto"
+      entry.allowlist = @[]
+      for t in storedPolicy{"tools"}.listOf:
+        let name = t.getStr("")
+        if name.len > 0: entry.allowlist.add(name)
+      entry.maxRounds = storedPolicy{"budget", "maxRounds"}.getInt(0)
+      entry.maxCalls = storedPolicy{"budget", "maxCalls"}.getInt(0)
+      entry.maxTokens = storedPolicy{"budget", "maxTokens"}.getInt(0)
+    elif args{"task"} != nil and not isWake and
+        args{"notice"} == nil and content.len > 0:
+      taskRequested = true
+      let grant = args{"task"}
+      let profileName = grant{"profile"}.getStr("").strip()
+      # A grant the requester recorded before dispatch must arrive unchanged.
+      # Without this, a mutation between the human's approval and execution
+      # would run work under authority nobody approved; the requester's digest
+      # is the only durable copy of what it actually asked for.
+      let expectedGrant = grant{"grantDigest"}.getStr("")
+      if expectedGrant.len > 0 and expectedGrant != grantDigest(grant):
+        return %*{"error": "the task grant does not match the authority the" &
+                            " requester recorded before dispatch",
+                   "code": "task-policy-grant-mismatch"}
+      if not validProfileName(profileName):
+        return %*{"error": "task.profile must name an operator task profile",
+                   "code": "task-policy-invalid"}
+      if grant{"workspace"}.getStr("").len > 0:
+        # An unattended task states its workspace explicitly; it never
+        # inherits a cwd from wherever the peer happens to have been started.
+        let requested = resolveWorkspace(ct.root, grant{"workspace"}.getStr(""))
+        if not requested.ok:
+          return %*{"error": requested.error, "code": "task-policy-invalid"}
+        entry.workspace = requested.path
+      var profileDoc: JsonNode
+      try:
+        profileDoc = ct.storeGetItem(taskProfileKind, profileName).value
+      except CatchableError as e:
+        return %*{"error": "task profile is unreadable: " & e.msg,
+                   "code": "task-policy-unavailable"}
+      let resolved = resolveTaskPolicy(profileDoc, grant, entry.workspace)
+      if resolved.refusal.code.len > 0:
+        return %*{"error": resolved.refusal.reason,
+                   "code": resolved.refusal.code}
+      # The worker independently audits its live catalog before persisting
+      # authority. A caller's allowlist/profile cannot grant hidden machinery
+      # or an orchestrator merely by using an unfamiliar plugin tool name.
+      for tool in resolved.policy{"tools"}.listOf:
+        let name = tool.getStr("")
+        let problem = taskToolSchemaProblem(name, ct.cat.toolSchema(name))
+        if problem.len > 0:
+          return %*{"error": problem, "code": "task-policy-denied"}
+      entry.taskPolicy = resolved.policy
+      entry.approvalMode = "auto"
+      entry.allowlist = @[]
+      for t in resolved.policy{"tools"}.listOf:
+        let name = t.getStr("")
+        if name.len > 0: entry.allowlist.add(name)
+      entry.maxRounds = resolved.policy{"budget", "maxRounds"}.getInt(0)
+      entry.maxCalls = resolved.policy{"budget", "maxCalls"}.getInt(0)
+      entry.maxTokens = resolved.policy{"budget", "maxTokens"}.getInt(0)
+      # Record the answer BEFORE the turn: this header is what a UI, the
+      # admission receipt and the requester's notice all read.
+      ct.updateConversationHeader(sessionId, %*{
+        "taskPolicy": publicPolicy(resolved.policy),
+        "approvals": "auto",
+        "cwd": entry.workspace,
+        # cwdPinned marks the workspace as a DECISION, which is exactly what an
+        # admitted task's workspace is (§5: it states the directory, it never
+        # inherits one). Without this, the pre-cwdPinned heuristic ("stored cwd
+        # differs from the harness root") is the only thing making it look
+        # chosen — so a task whose workspace HAPPENS to be the harness root
+        # would read as unpinned, and a later bare `cwd` control call could move
+        # authority a human approved for a different directory. Pin it: the
+        # policy and the directory were decided together and are immutable
+        # together.
+        "cwdPinned": true,
+        "maxRounds": entry.maxRounds, "maxCalls": entry.maxCalls,
+        "maxTokens": entry.maxTokens,
+        "toolAllowlist": resolved.policy{"tools"}.copy()})
     if args.kind == JObject and args.hasKey("tools") and
         args{"tools"}.kind == JArray and entry.allowlist.len == 0:
       for t in args{"tools"}:
@@ -4613,6 +4821,15 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
             durable{"maxCalls"}.getInt(0) != entry.maxCalls or
             durable{"maxTokens"}.getInt(0) != entry.maxTokens:
           return %*{"error": "scoped session controls are not durably committed"}
+        if entry.taskPolicy != nil:
+          # A resumed runner must re-apply the SAME authority, not a stale or
+          # widened one: the policy document and the auto gate come together
+          # from the header, or the task does not run at all.
+          if durable{"taskPolicy"} == nil or
+              policyDigest(durable{"taskPolicy"}) != policyDigest(entry.taskPolicy) or
+              durable{"approvals"}.getStr("") != "auto":
+            return %*{"error": "task policy is not durably committed",
+                       "code": "task-policy-unconfirmed"}
       except CatchableError:
         return %*{"error": "cannot verify durable scoped session controls"}
       # the runner allocated the ref at startup; mutating through it makes
@@ -5308,6 +5525,102 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     status["modelOverride"] = %entry.modelOverride
     return status
 
+  # --- durable admission (docs/FLEET.md §4, slice F1) ----------------------
+  # Read/accept BEFORE the user message is appended: a duplicate or refused
+  # admission must leave the transcript untouched, and an accepted one must be
+  # durable before the turn it authorizes can start.
+  var admissionRec: JsonNode = nil
+  var admissionRev = 0
+  # The revision an unattended coding task starts from (docs/FLEET.md §6).
+  # Observed at admission, not at settlement: "what did it change" is only
+  # answerable against a base captured BEFORE the work ran, and a task that
+  # rebases or resets would otherwise look like it built on nothing.
+  var taskBaseCommit = ""
+  if entry.taskPolicy != nil:
+    taskBaseCommit = observeCheckout(entry.workspace).head
+  if admissionKey.len > 0:
+    let settings = birthSettings(args, entry.workspace)
+    let digest = admissionDigest(settings)
+    let docId = admissionDocId(sessionId, admissionKey)
+    var created = false
+    try:
+      let existing = ct.storeGetItem(admissionKind, docId)
+      if existing.value == nil:
+        discard ct.storePutRev(admissionKind, docId,
+          newAdmission(sessionId, admissionKey, digest, settings),
+          expectRev = -1)
+        created = true
+      else:
+        admissionRec = existing.value
+        admissionRev = existing.rev
+    except CatchableError as e:
+      # Either the store refused the create (a concurrent caller won the race)
+      # or it is unreachable. Both are answered by re-reading: an admitted turn
+      # is never started on an unverified record.
+      try:
+        let reread = ct.storeGetItem(admissionKind, docId)
+        if reread.value == nil:
+          return %*{"error": "admission not durable: " & e.msg}
+        admissionRec = reread.value
+        admissionRev = reread.rev
+      except CatchableError as e2:
+        return %*{"error": "admission not durable: " & e2.msg}
+    if admissionRec != nil:
+      if not admissionMatches(admissionRec, digest):
+        return %*{"error": "admission key already used for different work",
+                   "code": "admission-conflict",
+                   "recordedDigest": admissionRec{"digest"}.getStr(""),
+                   "requestDigest": digest}
+      case admissionRec{"state"}.getStr("")
+      of admissionStateSettled:
+        # An exact retry of a finished activation: report its receipt and run
+        # NOTHING. Not a success verdict — the receipt says what the worker
+        # observed, never that the report is factually right.
+        return %*{"ok": true, "sessionId": sessionId, "admissionReplay": true,
+                  "admission": publicAdmission(admissionRec),
+                  "reply": "", "outcome": "replayed"}
+      of admissionStateRunning:
+        # A turn may already be (or have been) running. Refuse rather than
+        # guess: the requester reconciles this activation's receipt instead of
+        # running it twice.
+        return %*{"error": "admission already started; its receipt decides" &
+                            " this activation's outcome, not a second turn",
+                   "code": "admission-busy",
+                   "admission": publicAdmission(admissionRec)}
+      of admissionStateAccepted:
+        discard  # maybe ours after the CAS below
+      else:
+        return %*{"error": "admission record has an unknown state",
+                   "code": "admission-conflict"}
+    try:
+      # accepted/absent → running, compare-and-set: exactly one caller may
+      # start this activation, and only on a record it just proved durable.
+      var running = if created:
+                      newAdmission(sessionId, admissionKey, digest, settings)
+                    else: admissionRec.copy()
+      running["state"] = %admissionStateRunning
+      running["startedAt"] = %epochTime()
+      admissionRev = ct.storePutRev(admissionKind, docId, running,
+        expectRev = admissionRev)
+      admissionRec = running
+    except CatchableError as e:
+      # The accepted → running CAS did not commit: either a concurrent caller
+      # took it (busy, refuse) or the store is unreachable (no turn may run
+      # unaccounted — an untouched `accepted` record still lets a later exact
+      # retry start it).
+      try:
+        let current = ct.storeGetItem(admissionKind, docId)
+        if current.value{"state"}.getStr("") != admissionStateAccepted:
+          return %*{"error": "admission already started",
+                     "code": "admission-busy",
+                     "admission": publicAdmission(current.value)}
+        return %*{"error": "admission start not durable (still accepted): " &
+                            e.msg, "code": "admission-unconfirmed",
+                     "admission": publicAdmission(current.value)}
+      except CatchableError as e2:
+        return %*{"error": "admission start unverifiable: " & e2.msg,
+                   "code": "admission-unconfirmed"}
+
   if attachRefs.len > 0:
     # Stamp the refs with the key persistMsg will allocate for this message
     # (nextMsgKey peeks it) and store the bytes under it BEFORE the append,
@@ -5365,10 +5678,14 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # set for this turn, cleared when it ends, so a direct (non-session)
     # harness call still reads as "" (ask).
     ct.approval.approvalMode = entry.approvalMode
+    # Task-scoped authority rides the same lifecycle: set for this turn,
+    # cleared when it ends, so no later turn inherits a task's grant.
+    ct.approval.taskPolicy = entry.taskPolicy
   defer:
     if ct.approval != nil:
       ct.approval.caller = ""
       ct.approval.approvalMode = ""
+      ct.approval.taskPolicy = nil
 
   var turnError = ""
   var turnAcct: TurnAccounting
@@ -5378,6 +5695,55 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
                       entry.limitRounds, entry.limitTokens, entry.limitSeconds,
                       entry.allowlist, turnError)
+  # Terminal admission receipt (docs/FLEET.md §4): the activation's outcome,
+  # turnId and usage for exactly this turn, committed before the human
+  # activity receipt so a requester that lost the reply can reconcile this
+  # activation without a second execution. A turn whose transcript writes
+  # failed leaves the record `running` — an honest unknown, never a receipt
+  # for history that is not durably there.
+  if admissionRec != nil:
+    let transcriptCommitted =
+      entry.persister.persistenceFailures == failuresBeforeTurn
+    var settlement = settleAdmission(admissionRec, turnAcct.turnId,
+      turnAcct.outcome, turnAcct.usageJson(), reply,
+      (if reply.len > 0: contentDigest(reply) else: ""),
+      transcriptCommitted)
+    if entry.taskPolicy != nil:
+      # The receipt states the authority the work ran under and the honest
+      # confinement verdict. "Verified" evidence stays separate: this binds the
+      # grant, it never claims the report is right or the machine confined.
+      settlement["taskPolicy"] = publicPolicy(entry.taskPolicy)
+      settlement["workspace"] = %entry.workspace
+      settlement["confinement"] = entry.taskPolicy{"confinement"}
+      # The artifact (docs/FLEET.md §6): the commit this activation produced,
+      # relative to the base captured at admission. This is what makes the
+      # report checkable — "I fixed it" is only worth something beside a SHA a
+      # human can read. It records observation, never a verdict: whether the
+      # code is CORRECT stays the reviewer's call.
+      settlement["artifact"] = codingArtifact(taskBaseCommit, entry.workspace)
+    try:
+      admissionRev = ct.storePutRev(admissionKind,
+        admissionDocId(sessionId, admissionKey), settlement,
+        expectRev = admissionRev)
+      admissionRec = settlement
+    except CatchableError as e:
+      # A lost terminal write is retried once against the durable record; a
+      # second failure leaves `running`, which is exactly the honest answer
+      # (a turn ran, its receipt is not confirmed).
+      try:
+        let current = ct.storeGetItem(admissionKind,
+          admissionDocId(sessionId, admissionKey))
+        if current.value != nil and
+            current.value{"state"}.getStr("") == admissionStateRunning:
+          admissionRev = ct.storePutRev(admissionKind,
+            admissionDocId(sessionId, admissionKey), settlement,
+            expectRev = current.rev)
+          admissionRec = settlement
+        else:
+          echo "core: WARNING admission receipt not confirmed: " & e.msg
+      except CatchableError as e2:
+        echo "core: WARNING admission receipt not confirmed: " & e.msg &
+             " / " & e2.msg
   # Separate human unread state from agent notices and provider history. A
   # failed transcript write suppresses this receipt even if the store recovered.
   if entry.persister.persistenceFailures == failuresBeforeTurn:
@@ -5418,6 +5784,10 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                   "cwd": entry.workspace}
   if turnError.len > 0:
     sessionResult["turnError"] = %turnError
+  if admissionRec != nil:
+    sessionResult["admission"] = publicAdmission(admissionRec)
+  if entry.taskPolicy != nil:
+    sessionResult["taskPolicy"] = publicPolicy(entry.taskPolicy)
   return sessionResult
 
 # ---------------------------------------------------------------------------
@@ -5581,7 +5951,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
       case env.tool
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
           "session_prepare", "session_info", "activity_list", "prompt_preview",
-          "context_status", "doctor",
+          "context_status", "doctor", "admission_get",
           "conversation_delete", "toolset", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:

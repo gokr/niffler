@@ -1,8 +1,9 @@
 ## Opt-in Fleet provisioning, using the ordinary harness approval gate.
-import std/[json, os]
+import std/[json, os, strutils]
 import niffler/sdk
 import provision
 import delegation
+import niffler/taskpolicy
 
 if paramCount() == 2 and paramStr(1) == "--fleet-worker":
   workerMain()
@@ -70,6 +71,10 @@ discard comp.tool("fleet_update", schema(%*{
     "writes": {"paths": ["profile"]}, "workspace": {"pathFields": ["profile"]}})
 let taskProps = %*{
   "profile": profile, "requestId": {"type": "string"},
+  "mode": {"type": "string", "enum": ["ask", "unattended"],
+           "description": "ask (default): the original read-only slice, where the worker stops for human approvals. unattended: run coding tools under the peer operator's task profile, without approval prompts. Omit for read-only work."},
+  "taskProfile": {"type": "string",
+                  "description": "Unattended mode only: name of the WORKER operator's task profile. Its ceilings (tools, roots, budgets) bound this grant; the intersection is the effective policy and the worker refuses anything wider."},
   "content": {"type": "string"}, "cwd": {"type": "string"},
   "tools": {"type": "array", "items": {"type": "string"}},
   "maxRounds": {"type": "integer", "minimum": 1, "maximum": 32},
@@ -77,10 +82,68 @@ let taskProps = %*{
   "maxTokens": {"type": "integer", "minimum": 1, "maximum": 100000}}
 discard comp.tool("fleet_task_submit", schema(taskProps,
   @["profile", "requestId", "content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"],
-  "Delegate a bounded read-only task to another machine using a private verified receipt. Explicit tools and round/call/token budgets required. Same requestId is idempotent; unknown outcomes are never replayed. Completion automatically notifies this conversation; do not poll to wait. No shell, orchestration, store tools or auto approvals. Results are claims by the worker, not proof of factual success."),
+  "Delegate a bounded task to another machine using a private verified receipt. Explicit tools and round/call/token budgets required. Same requestId is idempotent; unknown outcomes are never replayed. Completion automatically notifies this conversation; do not poll to wait. Read-only work is the default ('ask': the worker still stops for human approvals). mode 'unattended' runs ordinary coding tools (edit, bash, git, tests) without approval prompts, bounded by the peer operator's task profile and by these budgets — the effective policy is the intersection of the two, the notice says whether the work was confined, and control-plane or indirect-delegation tools are never granted. Results are claims by the worker, not proof of factual success."),
   proc(c: Component, args: JsonNode): JsonNode = createJob(c, args),
   %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true,
     "workspace": {"pathFields": ["profile"]}})
+# --- operator-side task profiles (F2) -------------------------------------
+# The worker operator writes a `taskprofile` document; a requester may only
+# name it. Set/remove are separate so a profile can be inspected and revoked
+# without editing a store document by hand. Neither is reachable from a task
+# (taskpolicy.controlPlaneTools), and both are approval-gated.
+let profileProps = %*{
+  "name": {"type": "string", "description": "Profile name a requester will name in fleet_task_submit {taskProfile}. Letters, digits, '-' and '_', up to 64 bytes."},
+  "tools": {"type": "array", "items": {"type": "string"},
+            "description": "The tools an unattended task may ever run here. Must list at least one; control-plane and indirect-delegation tools are refused. Anything a requester asks for outside this list is refused, not clamped."},
+  "roots": {"type": "array", "items": {"type": "string"},
+            "description": "Absolute workspace roots a task may run in. A task's workspace must be one of these or live under one; the filesystem root is refused."},
+  "maxRounds": {"type": "integer", "minimum": 1, "maximum": 32},
+  "maxCalls": {"type": "integer", "minimum": 1, "maximum": 100},
+  "maxTokens": {"type": "integer", "minimum": 1, "maximum": 100000},
+  "note": {"type": "string", "description": "Operator note (never sent to a requester)."}}
+discard comp.tool("task_profile_set", schema(profileProps,
+  @["name", "tools", "roots", "maxRounds", "maxCalls", "maxTokens"],
+  "Define or replace the worker operator's unattended task profile: the ceiling for tools, workspace roots and budgets that a delegated coding task may use on THIS machine without approval prompts. This profile is one half of the decision; the requesting human's grant is the other, and the effective policy is the intersection. Unattended authority is off by default: no profile, or a profile whose tools/roots/budgets do not cover the request, means the task is refused explicitly. Written to this harness's store; an already-running task keeps the policy it was admitted under."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    let name = args{"name"}.getStr("").strip()
+    if not validProfileName(name):
+      return errResult("profile name must be 1..64 of [A-Za-z0-9_-]", "task-policy-invalid")
+    var doc = newJObject()
+    doc["name"] = %name
+    doc["unattended"] = %true
+    doc["confinement"] = %args{"confinement"}.getStr("unconfined")
+    for key in ["tools", "roots", "maxRounds", "maxCalls", "maxTokens", "note"]:
+      if args{key} != nil: doc[key] = args[key]
+    let problem = taskProfileProblem(doc)
+    if problem.len > 0:
+      return errResult(problem, "task-policy-invalid")
+    # A profile naming control-plane machinery would be a standing grant of
+    # indirect authority; refuse it here as well as at resolution time.
+    for t in profileToolList(doc):
+      if isControlPlane(t):
+        return errResult("tool '" & t & "' is control-plane machinery and cannot" &
+                         " be granted to tasks", "task-policy-denied")
+    discard c.storePut("taskprofile", name, doc)
+    %*{"ok": true, "profile": name, "stored": doc},
+  %*{"onDemand": true, "approval": "always", "effect": "write", "writes": {"none": true}})
+discard comp.tool("task_profile_list", schema(newJObject(), @[],
+  "List this worker's unattended task profiles and the effective ceiling each one sets. Read-only: shows what a requester could ask for here, never any other machine's policy."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    var items = newJArray()
+    for entry in c.storeListAll("taskprofile"):
+      items.add(%*{"name": entry.id, "profile": entry.value})
+    %*{"ok": true, "profiles": items},
+  %*{"onDemand": true, "effect": "read"})
+discard comp.tool("task_profile_remove", schema(%*{
+  "name": {"type": "string"}}, @["name"],
+  "Remove one unattended task profile: no further task may be admitted under it. Tasks already running keep the policy they were admitted under, and their receipts still name it."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    let name = args{"name"}.getStr("").strip()
+    if not validProfileName(name):
+      return errResult("invalid profile name", "task-policy-invalid")
+    c.storeDel("taskprofile", name)
+    %*{"ok": true, "removed": name},
+  %*{"onDemand": true, "approval": "always", "effect": "write", "writes": {"none": true}})
 proc taskReader(verb: string): ToolHandler =
   result = proc(c: Component, args: JsonNode): JsonNode =
     let j = authorized(c, args).value
@@ -95,6 +158,17 @@ for name in ["status", "result"]:
     "Read an owned remote task's durable status or cached bounded report. Unreachable and unknown do not mean failed or successful; no submission replay. Completion is pushed automatically."),
     taskReader(name),
     %*{"onDemand": true, "effect": "read", "sessionContext": true})
+discard comp.tool("fleet_task_receipt", schema(%*{
+  "jobId": {"type": "string"}}, @["jobId"],
+  "Read the worker's own durable admission receipt for an owned task: the activation it admitted, the birth-policy digest, the lifecycle state (accepted = provably not started, running = a turn may have started, settled = that activation's terminal turnId/outcome/usage) and whether its transcript was durably committed. A read only — it never starts, resumes or replays a turn. Unknown, unreachable and receipt-less are not interruption or success."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    let j = authorized(c, args).value
+    %*{"jobId": j["id"], "state": j{"state"}.getStr("unknown"),
+      "remoteSession": j["sessionId"],
+      "admission": (if j{"admissionReceipt"} == nil: newJNull() else: j["admissionReceipt"]),
+      "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
+      "checkedAt": j{"checkedAt"}.getFloat(0)},
+  %*{"onDemand": true, "effect": "read", "sessionContext": true})
 discard comp.tool("fleet_task_cancel", schema(%*{"jobId": {"type": "string"}}, @["jobId"],
   "Cancel a queued task before dispatch. An already attempted or unknown submission cannot be cancelled by this slice; inspect the pinned peer and cancel its remote session there. Never claims a remote cancellation succeeded."),
   proc(c: Component, args: JsonNode): JsonNode =

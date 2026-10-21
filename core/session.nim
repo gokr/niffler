@@ -227,8 +227,16 @@ proc main() =
             "runner serves only session " & sessionId)
         let r = handleSessionCall(ct, env.args, sessions, env.caller)
         if r{"error"} != nil:
-          raise newException(ValueError, r{"error"}.getStr("session error"))
-        resp = resultEnvelope(env.id, r)
+          # A structured refusal keeps its own code (admission-conflict,
+          # admission-busy, admission-unconfirmed): a driver/requester decides
+          # what to do next from the code, and "boom" would flatten every
+          # one of them into "the runner broke".
+          let code = r{"code"}.getStr("")
+          resp = errorEnvelope(env.id,
+            (if code.len > 0: code else: "session"),
+            r{"error"}.getStr("session error"))
+        else:
+          resp = resultEnvelope(env.id, r)
       else:
         resp = errorEnvelope(env.id, "no-tool",
           "session runner has no tool '" & env.tool & "'")

@@ -24,6 +24,7 @@ import std/sha1
 import natsnim
 import ../sdk/envelope
 import catalog
+import taskpolicy
 
 type
   Approval* = ref object
@@ -40,6 +41,14 @@ type
       ## Persisted per-conversation auto-approve lookup (set by the harness
       ## after CoreTools exists; queries the store). When it returns true the
       ## gate grants without asking any client — no dialog flashes anywhere.
+    taskPolicy*: JsonNode
+      ## The conversation's effective unattended task policy (docs/FLEET.md
+      ## §5), set around a turn exactly like approvalMode. Task-scoped auto
+      ## approval is a DIFFERENT grant from "this conversation is in auto
+      ## mode": it names the tools the requesters' and operator's decisions
+      ## intersected to, so the gate can grant only those and refuse the rest
+      ## (which ends the task as blocked rather than stalling on a human who
+      ## was never going to answer).
     approvalMode*: string
       ## The conversation's gate mode, set around a turn (like session/
       ## caller): "" or "ask" = gate every x-harness.approval tool, "auto" =
@@ -318,6 +327,22 @@ proc ask*(a: Approval, tool: string, args: JsonNode): bool =
   ## Returns true when the call may proceed.
   if getEnv("NIF_AUTO_APPROVE") == "1":
     return true
+  # Task-scoped unattended authority (docs/FLEET.md §5, F2). Checked BEFORE
+  # the conversation's generic auto mode and never widened by it: a task grants
+  # exactly the tools its effective policy names, and its mode is "auto" only
+  # because that policy exists. Reaching here with a tool the policy does not
+  # name means the task left its authority — refuse, so the turn ends as an
+  # explicit refusal instead of an approval wait nobody will answer. The
+  # allowlist normally stops such a call earlier; this is the second gate for
+  # paths that reach a tool without traversing the allowlist check.
+  if a.taskPolicy != nil:
+    if policyAllowsTool(a.taskPolicy, tool):
+      echo "core: approval stage for " & tool &
+           " (unattended task policy " & a.taskPolicy{"profile"}.getStr("") & ")"
+      return true
+    echo "core: refusing " & tool & " — the unattended task policy does not" &
+         " grant it (a human is not attached to answer)"
+    return false
   # The conversation's own mode (/approvals auto): the human opted this
   # conversation out of the gate. Grant loudly — a silent grant is what the
   # gate exists to prevent.
