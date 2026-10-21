@@ -106,8 +106,13 @@ pass. Repository status is not a claim that installed binaries were updated.
 - [ ] DeepSeek web enablement/request defaults; stable schemas and paid-call gate.
 - [ ] Models endpoint/offline/refresh policy and inline override patches.
 - [ ] LSP registry data, warmup policy and executable search preferences.
-- [ ] Fetch extraction/output/network preferences.
-- [ ] Repomap automatic append/admission preferences.
+- [x] Fetch extraction/network preferences (`fetch.network`): `allowPrivate`
+  and `extractor`, with the `NIF_FETCH_ALLOW_PRIVATE`/`NIF_TRAFILATURA` env
+  path retained. The test proves the stored opt-in both grants and revokes
+  access without a restart.
+- [x] Repomap automatic append/admission preferences (`repomap.gates`), with
+  `NIF_REPOMAP_*` retained as the migration path and bench seam. The test
+  changes a gate through `config_patch` and proves it applies without a restart.
 - [ ] Logfile/observe retention, quotas, subscriptions and capture policy.
 - [ ] Hooks commands, subscriptions and deadlines (security-sensitive).
 - [ ] Agent defaults/delegation; harness/session birth and context defaults.

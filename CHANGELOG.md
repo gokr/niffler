@@ -6,6 +6,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- `fetch` publishes its network settings as the `fetch.network` domain
+  (`allowPrivate`, `extractor`), so the private-destination opt-in can be
+  granted and revoked through `config` without a restart. `NIF_FETCH_ALLOW_PRIVATE`
+  and `NIF_TRAFILATURA` keep working as the migration path.
+- `repomap` publishes its publication gates as the `repomap.gates` configuration
+  domain (`autoAppend`, `minCensus`, `minBytes`, `minSymbols`, `minFiles`), so
+  they can be read and changed through the `config` surface without a restart.
+  The `NIF_REPOMAP_*` variables keep working as the migration path, with a
+  stored value winning over the environment. New wire-free owner helper
+  `sdk/niffler/configowner.nim`.
+
 - New optional `config` component: the one discoverable configuration surface.
   Components declare a domain (JSON Schema subset + per-property metadata) and
   keep owning their own store document; `config_list`/`config_get` discover

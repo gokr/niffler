@@ -79,6 +79,29 @@ open, and a store document is already instance-scoped.
 8. **Scope is organisation, not authorization** (§11.6.2): approval gates the
    mutation, the bus itself is trusted.
 
+## Owner helper (Nim)
+
+`sdk/niffler/configowner.nim` is the owner half, deliberately wire-free so it
+needs no envelope, store-contract or cross-SDK change:
+
+| helper | purpose |
+|---|---|
+| `OwnerStore(kind, id)` | where the owner keeps its values (`{"values": {...}}`) |
+| `ownerOp(store, args)` | answers `get`/`patch`/`reset`, with compare-and-set |
+| `declareConfig(declaration)` | idempotent, best-effort declaration after registration |
+| `settingStr/Bool/Int(values, name, envName, dflt)` | one setting: **stored value > env > default** |
+
+Two rules the helper encodes, learned from the first migration:
+
+- **Declare after `comp.run()`'s registration**, from the idle seam — a request
+  issued before the component is on the bus has no connection.
+- **An explicit `null` in a patch unsets a value.** That is how a secret is
+  cleared; it is not the same as omitting the property.
+
+The env fallback is the migration path: while an owner's variable exists,
+`stored > env > default` means a stored choice wins and an existing deployment
+keeps working unchanged.
+
 ## Declaration lifecycle
 
 Owners declare at startup (idempotent: same `domain` replaces the declaration,

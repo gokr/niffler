@@ -5,7 +5,9 @@
 ## - tool `repo_map {workspace?, focus?, mentionedIdents?, budget?}`:
 ##   onDemand, read-effect. The ranked, budget-capped map — the model's
 ##   explicit pull, available regardless of the append gates.
-## - auto-append (**on by default**, NIF_REPOMAP_AUTOAPPEND=0 opts out,
+## - auto-append (**on by default**, the "autoAppend" setting opts out; the
+##   NIF_REPOMAP_AUTOAPPEND environment variable still works as the
+##   migration path),
 ##   and gated): core announces every conversation workspace on
 ##   ev.workspace.opened (already carries the conversation id). We build
 ##   the map and publish it to svc.session.<id>.map, where the session
@@ -30,6 +32,7 @@ import checksums/sha1
 import natsnim
 import niffler/sdk
 import niffler/readscope
+import niffler/configowner
 import tags, score, repomap
 
 const
@@ -57,16 +60,17 @@ const
   MIN_WORKSPACE_CENSUS = 50    # covered source files; below this the map
                                # cannot pay (nothing to orient)
 
-proc intEnv(name: string, dflt: int): int =
-  ## Positive-int env override; garbage or non-positive falls back to the
-  ## default (a zeroed gate would silently admit everything).
-  let raw = getEnv(name, "")
-  if raw.len == 0: return dflt
-  try:
-    result = parseInt(raw)
-  except ValueError:
-    return dflt
-  if result <= 0: return dflt
+let ownerStore* = OwnerStore(kind: "repomap-settings", id: "main")
+
+proc currentValues(c: Component): JsonNode =
+  ## Settings are read per call, not cached at boot: a change through
+  ## config_patch must take effect without restarting the component (the
+  ## declaration states `application: immediate`).
+  c.loadOwnerValues(ownerStore).values
+
+proc intSetting(c: Component, name, envName: string, dflt: int): int =
+  ## Owner-local read of the gates: stored value > env > default.
+  settingInt(c.currentValues, name, envName, dflt)
 
 const skipDirs = ["node_modules", "vendor", "dist", "build", "target",
                   "__pycache__", ".venv", "venv", "nimcache", "obj",
@@ -180,19 +184,19 @@ proc buildFor(ws: string, opts: ScoreOptions): MapStats =
   # focus paths arrive relative to the workspace already
   result = buildMapStats(rels, opts2, tagsOf)
 
-proc appendCensusOk(ws: string): bool =
+proc appendCensusOk(c: Component, ws: string): bool =
   ## Size floor (gate 4): the census alone decides — no tag parsing for a
   ## workspace too small to orient in. Cheaper than buildFor and it is the
   ## first check the append handler runs.
-  census(absolutePath(ws)).len >= intEnv("NIF_REPOMAP_MIN_CENSUS",
-                                         MIN_WORKSPACE_CENSUS)
+  census(absolutePath(ws)).len >= intSetting(c, "minCensus",
+    "NIF_REPOMAP_MIN_CENSUS", MIN_WORKSPACE_CENSUS)
 
-proc appendGateReason(st: MapStats): string =
+proc appendGateReason(c: Component, st: MapStats): string =
   ## Content gate (gate 3): "" when the map is substantive enough to
   ## inject, else a short reason for the withheld log line.
-  let minBytes = intEnv("NIF_REPOMAP_MIN_BYTES", MAP_MIN_BYTES)
-  let minSyms = intEnv("NIF_REPOMAP_MIN_SYMBOLS", MAP_MIN_SYMBOLS)
-  let minFiles = intEnv("NIF_REPOMAP_MIN_FILES", MAP_MIN_FILES)
+  let minBytes = intSetting(c, "minBytes", "NIF_REPOMAP_MIN_BYTES", MAP_MIN_BYTES)
+  let minSyms = intSetting(c, "minSymbols", "NIF_REPOMAP_MIN_SYMBOLS", MAP_MIN_SYMBOLS)
+  let minFiles = intSetting(c, "minFiles", "NIF_REPOMAP_MIN_FILES", MAP_MIN_FILES)
   if st.text.len == 0: return "empty"
   if st.text.len < minBytes:
     return "stub: " & $st.text.len & "B < " & $minBytes & "B"
@@ -281,8 +285,8 @@ discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
   # ON BY DEFAULT, still gated: the full30 micro repos were 30/30 both
   # ways but paid ~40% more tokens without the size floor. The Multi10 A/Bs
   # disagreed by regime, and early maps were stubs (see REPOMAP-GATES.md).
-  # A qualifying large workspace now receives a substantive map once; set
-  # NIF_REPOMAP_AUTOAPPEND=0 to opt out. The onDemand repo_map tool is
+  # A qualifying large workspace now receives a substantive map once; turn
+  # "autoAppend" off (config_patch repomap.gates) to opt out. The onDemand repo_map tool is
   # available regardless of this switch or the append gates.
   #
   # Admission gates (docs/research/REPOMAP-GATES.md): even on by default, the
@@ -290,20 +294,21 @@ discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
   # decided by the census before any parsing) and the rendered map is
   # substantive (content gate). The tool path below/alone is never gated —
   # a small map is a fine answer to an explicit question, just not worth
-  # injecting unasked. Thresholds are env-overridable for the bench.
-  if getEnv("NIF_REPOMAP_AUTOAPPEND", "1") notin ["1", "true", "yes"]:
+  # injecting unasked. Thresholds are settings (config_patch repomap.gates);
+  # the NIF_REPOMAP_* variables remain as the migration path and bench seam.
+  if not settingBool(c.currentValues, "autoAppend", "NIF_REPOMAP_AUTOAPPEND", true):
     return
   let ws = payload{"workspace"}.getStr("")
   let convId = payload{"conversationId"}.getStr("")
   if ws.len == 0 or convId.len == 0 or not dirExists(ws): return
   try:
-    if not appendCensusOk(ws):
+    if not appendCensusOk(c, ws):
       c.log("info", "repo map withheld for " & convId &
             " (workspace below census floor)")
       return
     let st = buildFor(absolutePath(ws), ScoreOptions(
         budgetTokens: MAP_DEFAULT_BUDGET))
-    let reason = appendGateReason(st)
+    let reason = appendGateReason(c, st)
     if reason.len > 0:
       c.log("info", "repo map withheld for " & convId & " (" & reason & ")")
       return
@@ -315,6 +320,51 @@ discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
           $st.text.len & " bytes, " & $st.symbols & " syms)")
   except CatchableError as e:
     c.log("info", "repo map build failed: " & e.msg)
+
+# ---------------------------------------------------------------------------
+# configuration: declared in slice 4, served by this component's own record
+
+let declaration* = %*{
+  "domain": "repomap.gates", "version": 1, "owner": "repomap",
+  "ownerTool": "repomap_config", "title": "Workspace map publication",
+  "description": "When a conversation's workspace map is built and appended unasked.",
+  "kind": ownerStore.kind, "id": ownerStore.id, "application": "immediate",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "autoAppend": {"type": "boolean", "default": true, "x-config": {
+        "title": "Append the map automatically",
+        "description": "Publish a map to a new conversation's workspace when it passes the gates. Off: the map is only built when repo_map is called."}},
+      "minCensus": {"type": "integer", "minimum": 1, "maximum": 100000,
+                    "default": MIN_WORKSPACE_CENSUS, "x-config": {
+        "title": "Size floor (covered files)",
+        "description": "A workspace with fewer supported source files never gets an automatic map."}},
+      "minBytes": {"type": "integer", "minimum": 1, "maximum": 1000000,
+                   "default": MAP_MIN_BYTES, "x-config": {"title": "Minimum map bytes"}},
+      "minSymbols": {"type": "integer", "minimum": 1, "maximum": 10000,
+                     "default": MAP_MIN_SYMBOLS, "x-config": {"title": "Minimum rendered symbols"}},
+      "minFiles": {"type": "integer", "minimum": 1, "maximum": 10000,
+                   "default": MAP_MIN_FILES, "x-config": {"title": "Minimum files with symbols"}}},
+    "additionalProperties": false}}
+
+discard comp.tool("repomap_config", %*{
+  "type": "object",
+  "properties": {
+    "op": {"type": "string", "enum": ["get", "patch", "reset"]},
+    "patch": {"type": "object"},
+    "properties": {"type": "array", "items": {"type": "string"}},
+    "expectRev": {"type": "integer"}},
+  "required": ["op"],
+  "description": "Owner-side settings protocol for the repomap.gates configuration domain. Called by the config component, which validates the schema and enforces approval; never call it directly.",
+  "x-harness": {"hidden": true}},
+  proc(c: Component, args: JsonNode): JsonNode = c.ownerOp(ownerStore, args))
+
+var declared = false
+discard comp.onIdle(200) do (c: Component):
+  # Declare after registration: a request before comp.run() has no connection.
+  # Best effort — a harness without the config component is a supported shape.
+  if declared: return
+  declared = c.declareConfig(declaration) or declared
 
 discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
   ## /doctor deep: map a tiny temp workspace and require real defs, then
@@ -338,9 +388,9 @@ discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
           st.text.contains("walk"), st.text)
     check("map mentions both files", st.text.contains("a.nim") and
           st.text.contains("b.py"), st.text)
-    check("tiny workspace fails the size floor", not appendCensusOk(dir))
+    check("tiny workspace fails the size floor", not appendCensusOk(c, dir))
     check("tiny workspace fails the content gate",
-          appendGateReason(st).len > 0, appendGateReason(st))
+          appendGateReason(c, st).len > 0, appendGateReason(c, st))
     # padded past both gates: 60 files x 4 defs each
     for i in 0 ..< 60:
       var src = ""
@@ -349,11 +399,11 @@ discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
                 $j & "\n\n")
       writeFile(dir / ("pad" & $i & ".nim"), src)
     let st2 = buildFor(absolutePath(dir), ScoreOptions(budgetTokens: 4096))
-    check("padded workspace clears the size floor", appendCensusOk(dir),
+    check("padded workspace clears the size floor", appendCensusOk(c, dir),
           $census(absolutePath(dir)).len)
     check("padded workspace clears the content gate",
-          appendGateReason(st2).len == 0,
-          appendGateReason(st2) & " syms=" & $st2.symbols &
+          appendGateReason(c, st2).len == 0,
+          appendGateReason(c, st2) & " syms=" & $st2.symbols &
           " files=" & $st2.files & " bytes=" & $st2.text.len)
     removeDir(dir)
   except CatchableError as e:

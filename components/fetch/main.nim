@@ -18,6 +18,7 @@
 import std/[json, net, nativesockets, os, osproc, streams, strutils, tempfiles,
             times, uri, xmltree]
 import niffler/sdk
+import niffler/configowner
 import niffler/maskedtools
 import pkg/htmlparser
 
@@ -36,6 +37,13 @@ const
   BlockTags = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br",
                "hr", "blockquote", "pre", "article", "section", "header",
                "footer", "nav", "aside", "table", "tr", "td", "th"]
+
+let ownerStore* = OwnerStore(kind: "fetch-settings", id: "main")
+
+proc currentValues(c: Component): JsonNode =
+  ## Read per call, never cached at boot: a config_patch must take effect on
+  ## the next request (the declaration promises `application: immediate`).
+  c.loadOwnerValues(ownerStore).values
 
 proc fetchDir(): string =
   let dir = getEnv("NIF_FETCH_DIR")
@@ -75,19 +83,19 @@ proc htmlToText(html: string): string =
   except CatchableError:
     result = ""
 
-proc trafilaturaExe(): string =
-  let configured = getEnv("NIF_TRAFILATURA")
+proc trafilaturaExe(c: Component): string =
+  let configured = settingStr(c.currentValues, "extractor", "NIF_TRAFILATURA", "")
   if configured.toLowerAscii() in ["0", "false", "off", "none"]:
     return ""
   findExe(if configured.len > 0: configured else: "trafilatura")
 
-proc extractWithTrafilatura(html: string): string =
+proc extractWithTrafilatura(c: Component, html: string): string =
   ## Trafilatura can consume stdin, but directories avoid pipe deadlocks for
   ## large input/output while still processing the response already fetched.
   # Keep HTTP available under masks without starting an unconfined extractor.
   # The in-process HTML parser consumes only the already-fetched response.
   if masksConfigured(): return ""
-  let executable = trafilaturaExe()
+  let executable = trafilaturaExe(c)
   if executable.len == 0:
     return ""
 
@@ -177,8 +185,10 @@ proc blockedAddress(ip: IpAddress): bool =
     if unspecified: return true
   false
 
-proc privateFetchAllowed(): bool =
-  getEnv("NIF_FETCH_ALLOW_PRIVATE", "") in ["1", "true", "yes"]
+proc privateFetchAllowed(c: Component): bool =
+  ## Security-sensitive: instance-scoped, never shareable, and the stored
+  ## value wins over the env migration path.
+  settingBool(c.currentValues, "allowPrivate", "NIF_FETCH_ALLOW_PRIVATE", false)
 
 proc curlAvailable(): bool =
   ## fetch shells out to curl (see requestPinned): it is the only transport in
@@ -186,7 +196,7 @@ proc curlAvailable(): bool =
   ## original hostname for Host/SNI. `make setup` installs it.
   findExe("curl").len > 0
 
-proc validateFetchUrl(raw: string): tuple[ok: bool, error, address: string] =
+proc validateFetchUrl(c: Component, raw: string): tuple[ok: bool, error, address: string] =
   ## Resolve once per hop and return the checked address to the transport.
   ## The connection MUST use that address, not resolve the name a second time.
   ## Fail closed on DNS errors and on any private address in a mixed answer.
@@ -216,20 +226,20 @@ proc validateFetchUrl(raw: string): tuple[ok: bool, error, address: string] =
     except ValueError:
       return (false, "invalid URL port", "")
   let host = parsed.hostname.strip(chars = {'.'}).toLowerAscii()
-  if not privateFetchAllowed() and (host == "localhost" or
+  if not privateFetchAllowed(c) and (host == "localhost" or
       host.endsWith(".localhost") or host.endsWith(".local") or
       host.endsWith(".internal")):
     return (false, "refusing private hostname: " & parsed.hostname, "")
   try:
     if isIpAddress(host):
-      if not privateFetchAllowed() and blockedAddress(parseIpAddress(host)):
+      if not privateFetchAllowed(c) and blockedAddress(parseIpAddress(host)):
         return (false, "refusing private address: " & host, "")
       return (true, "", host)
     let resolved = getHostByName(host)
     if resolved.addrList.len == 0:
       return (false, "hostname has no addresses: " & host, "")
     for address in resolved.addrList:
-      if not privateFetchAllowed() and blockedAddress(parseIpAddress(address)):
+      if not privateFetchAllowed(c) and blockedAddress(parseIpAddress(address)):
         return (false, "hostname resolves to a private address: " & host, "")
     return (true, "", resolved.addrList[0])
   except CatchableError as e:
@@ -297,7 +307,7 @@ proc requestPinned(url, address: string, methodName: string, body: string,
   finally:
     if dirExists(dir): removeDir(dir)
 
-proc requestSafe(url: string, methodName: string, body: string,
+proc requestSafe(c: Component, url: string, methodName: string, body: string,
                  headers: seq[tuple[name, value: string]], timeout,
                  maxSize: int): tuple[response: FetchResponse, finalUrl: string] =
   ## Follow only a small, explicitly validated redirect chain. Each hop
@@ -307,7 +317,7 @@ proc requestSafe(url: string, methodName: string, body: string,
   var currentBody = body
   var activeHeaders = headers
   for hop in 0 .. 5:
-    let checked = validateFetchUrl(current)
+    let checked = validateFetchUrl(c, current)
     if not checked.ok:
       raise newException(ValueError, checked.error)
     result.response = requestPinned(current, checked.address, currentMethod,
@@ -377,7 +387,7 @@ comp.tool(%*{"onDemand": true,
     var target = url
     let hash = target.find('#')
     if hash >= 0: target = target[0 ..< hash]
-    let checkedUrl = validateFetchUrl(target)
+    let checkedUrl = validateFetchUrl(comp, target)
     if not checkedUrl.ok:
       return errResult(checkedUrl.error & ": " & url)
     let cleanMethod = `method`.toUpperAscii()
@@ -398,7 +408,7 @@ comp.tool(%*{"onDemand": true,
           if key.contains({'\c', '\L'}) or value.getStr("").contains({'\c', '\L'}):
             return errResult("invalid request header")
           requestHeaders.add((key.toLowerAscii(), value.getStr("")))
-      let fetched = requestSafe(target, cleanMethod, body, requestHeaders,
+      let fetched = requestSafe(comp, target, cleanMethod, body, requestHeaders,
                                 timeout, maxSize)
       let resp = fetched.response
       let finalUrl = fetched.finalUrl
@@ -427,7 +437,7 @@ comp.tool(%*{"onDemand": true,
       var convertedToText = false
       var extractionMethod = "none"
       if convertToText and contentType.toLowerAscii().contains("text/html"):
-        var text = extractWithTrafilatura(resp.body)
+        var text = extractWithTrafilatura(comp, resp.body)
         if text.len > 0:
           content = text
           convertedToText = true
@@ -456,5 +466,41 @@ comp.tool(%*{"onDemand": true,
                  "filePath": filePath, "finalUrl": finalUrl})
     except CatchableError as e:
       return errResult("fetch failed: " & e.msg)
+
+# ---------------------------------------------------------------------------
+# configuration (slice 4): declared here, served by this component's record
+
+let declaration* = %*{
+  "domain": "fetch.network", "version": 1, "owner": "fetch",
+  "ownerTool": "fetch_config", "title": "Fetch network and extraction",
+  "description": "Which destinations fetch may reach and how pages are extracted.",
+  "kind": ownerStore.kind, "id": ownerStore.id, "application": "immediate",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "allowPrivate": {"type": "boolean", "default": false, "x-config": {
+        "title": "Allow private/loopback destinations",
+        "description": "Security-sensitive: permits localhost, link-local and private addresses. Instance-scoped; never shared."}},
+      "extractor": {"type": "string", "x-config": {
+        "title": "HTML extractor",
+        "description": "Command name or path for trafilatura, or 'off'/'none' to disable it. Empty uses 'trafilatura' when installed; the built-in parser is always the fallback."}}},
+    "additionalProperties": false}}
+
+discard comp.tool("fetch_config", %*{
+  "type": "object",
+  "properties": {
+    "op": {"type": "string", "enum": ["get", "patch", "reset"]},
+    "patch": {"type": "object"},
+    "properties": {"type": "array", "items": {"type": "string"}},
+    "expectRev": {"type": "integer"}},
+  "required": ["op"],
+  "description": "Owner-side settings protocol for the fetch.network configuration domain. Called by the config component, which validates the schema and enforces approval; never call it directly.",
+  "x-harness": {"hidden": true}},
+  proc(c: Component, args: JsonNode): JsonNode = c.ownerOp(ownerStore, args))
+
+var declared = false
+discard comp.onIdle(200) do (c: Component):
+  if declared: return
+  declared = c.declareConfig(declaration) or declared
 
 comp.run()
