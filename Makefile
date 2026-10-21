@@ -168,11 +168,19 @@ var/bin/session: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
 
 # store-sqlite — the storage engine (docs/research/STORE_V2.md M3): the
 # DEFAULT, selected at boot via NIF_STORE_BACKEND=sqlite (unset means sqlite;
-# the Nim/bitbarrel engine was removed in 0.4.0). Pure-Go driver: no cgo, no
-# build prerequisites.
+# the Nim/bitbarrel engine was removed in 0.4.0).
+#
+# cgo is deliberate (docs/research/STORE_V2.md "Driver"): mattn/go-sqlite3
+# vendors the SQLite amalgamation and sqlite-vec-go-bindings vendors its C, so
+# the only prerequisite is a C compiler — which building Nim already needs.
+# No libsqlite3-dev, no runtime .so, no extension loading.
+#
+# -tags sqlite_fts5 is NOT optional: mattn ships FTS5 off by default, and the
+# store's search index (migration 00002, `docs_fts`) is built on it — without
+# the tag `CREATE VIRTUAL TABLE … USING fts5` fails at boot.
 var/bin/store-sqlite: $(wildcard components/store-sqlite/*.go) components/store-sqlite/go.mod components/store-sqlite/go.sum \
     $(wildcard components/store-sqlite/migrations/*.sql) $(SDK_GO) | var/bin
-	$(BUILD_WRAP) bash -c 'cd components/store-sqlite && go build -o ../../var/bin/store-sqlite .'
+	$(BUILD_WRAP) bash -c 'cd components/store-sqlite && CGO_ENABLED=1 go build -tags sqlite_fts5 -o ../../var/bin/store-sqlite .'
 
 # store-tidb — the TiDB/MySQL engine (M4): a network-shared store, many
 # harnesses can serve from one cluster. Selected at boot
@@ -690,7 +698,7 @@ gotest:
 	cd components/provider && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...
 	cd components/llm-openai && go test ./... && go vet ./...
-	cd components/store-sqlite && go test ./... && go vet ./...
+	cd components/store-sqlite && CGO_ENABLED=1 go test -tags sqlite_fts5 ./... && CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...
 	cd components/store-tidb && go test ./... && go vet ./...
 	cd components/nats && go test ./... && go vet ./...
 
@@ -805,8 +813,10 @@ von-down:
 	./var/bin/cli call remove '{"name":"von"}'
 
 install-native-deps:
-	@# Native prerequisites: TLS headers and a C compiler for vendored
-	@# tree-sitter. natsnim is pure Nim; it has no BitBarrel dependencies.
+	@# Native prerequisites: TLS headers and a C compiler. The compiler serves
+	@# two consumers: vendored tree-sitter (repomap) and cgo in store-sqlite
+	@# (mattn/go-sqlite3 + sqlite-vec, both compiling their C in — see the
+	@# var/bin/store-sqlite target). natsnim is pure Nim.
 	@if [ -n "$(IS_MAC)" ]; then \
 		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
 		brew install pkg-config; \
