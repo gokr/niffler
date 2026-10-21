@@ -113,7 +113,10 @@ pass. Repository status is not a claim that installed binaries were updated.
 - [x] Repomap automatic append/admission preferences (`repomap.gates`), with
   `NIF_REPOMAP_*` retained as the migration path and bench seam. The test
   changes a gate through `config_patch` and proves it applies without a restart.
-- [ ] Logfile/observe retention, quotas, subscriptions and capture policy.
+- [x] Logfile retention/scan limits (`logfile.retention`). Its captured
+  subject set intentionally stays a boot variable (it is a subscription, not a
+  value). `observe` capture policy is still env-only and needs the same
+  treatment.
 - [ ] Hooks commands, subscriptions and deadlines (security-sensitive).
 - [ ] Agent defaults/delegation; harness/session birth and context defaults.
 - [ ] Inventory remaining runtime env by owner; classify bootstrap, developer

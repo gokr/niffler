@@ -6,6 +6,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- `logfile` publishes its retention and scan limits as the `logfile.retention`
+  domain (`maxBytes`, `keep`, `maxFiles`, `scanBytes`, `directoryEntries`).
+  Values are read from a snapshot refreshed on the idle seam, so the rotation
+  code needs no component handle and a change lands within one tick.
+  `NIF_LOGFILE_*` keeps working as the migration path. The captured subject set
+  stays a boot-time variable: it is a subscription, not a value.
 - `fetch` publishes its network settings as the `fetch.network` domain
   (`allowPrivate`, `extractor`), so the private-destination opt-in can be
   granted and revoked through `config` without a restart. `NIF_FETCH_ALLOW_PRIVATE`

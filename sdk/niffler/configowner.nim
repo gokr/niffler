@@ -170,3 +170,37 @@ proc settingInt*(values: JsonNode, name, envName: string, dflt: int): int =
   except ValueError:
     discard
   dflt
+
+# ---------------------------------------------------------------------------
+# Snapshot cache for owners whose settings are read deep inside code paths that
+# have no component handle (log rotation, parsers). The snapshot is refreshed
+# from the owner's record on the idle seam, so a change lands within one tick
+# without threading a Component through every call site.
+
+type OwnerSnapshot* = ref object
+  store: OwnerStore
+  values: JsonNode
+  loaded: bool
+
+proc newOwnerSnapshot*(store: OwnerStore): OwnerSnapshot =
+  OwnerSnapshot(store: store, values: newJObject())
+
+proc refresh*(s: OwnerSnapshot, c: Component) =
+  ## Reload from the owner's record. A store outage keeps the last known
+  ## values: losing the store must not silently reset retention to defaults.
+  try:
+    s.values = c.loadOwnerValues(s.store).values
+    s.loaded = true
+  except CatchableError:
+    if not s.loaded: s.values = newJObject()
+
+proc values*(s: OwnerSnapshot): JsonNode = s.values
+
+proc str*(s: OwnerSnapshot, name, envName, dflt: string): string =
+  settingStr(s.values, name, envName, dflt)
+
+proc flag*(s: OwnerSnapshot, name, envName: string, dflt: bool): bool =
+  settingBool(s.values, name, envName, dflt)
+
+proc num*(s: OwnerSnapshot, name, envName: string, dflt: int): int =
+  settingInt(s.values, name, envName, dflt)
