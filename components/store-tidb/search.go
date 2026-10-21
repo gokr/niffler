@@ -165,14 +165,18 @@ func searchSchema() map[string]any {
 		"properties": map[string]any{
 			"kind":  map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message)"},
 			"query": map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)"},
+			"vector": map[string]any{"type": "array", "items": map[string]any{"type": "number"},
+				"description": "Nearest-neighbour mode (sqlite engine only; this engine answers code unsupported)"},
+			"model": map[string]any{"type": "string",
+				"description": "Vector mode: the embedding model whose space to search"},
 			"idPrefix": map[string]any{"type": "string", "description": "Restrict to ids with this prefix — e.g. one conversation's messages: <convId>:"},
-			"rank": map[string]any{"type": "boolean", "description": "Request relevance ordering; this engine has no index and answers unranked in id order (ranked: false, issue #94)"},
-			"snippet": map[string]any{"type": "boolean", "description": "Attach a best-effort span-marked one-line `snippet` per hit (the first matched word in [brackets])"},
-			"offset": map[string]any{"type": "integer", "description": "Ranked paging only; ignored here — use `after`"},
-			"limit": map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
-			"after": map[string]any{"type": "string", "description": "Exclusive id cursor from a previous page (default = first page)"},
+			"rank":     map[string]any{"type": "boolean", "description": "Request relevance ordering; this engine has no index and answers unranked in id order (ranked: false, issue #94)"},
+			"snippet":  map[string]any{"type": "boolean", "description": "Attach a best-effort span-marked one-line `snippet` per hit (the first matched word in [brackets])"},
+			"offset":   map[string]any{"type": "integer", "description": "Ranked paging only; ignored here — use `after`"},
+			"limit":    map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
+			"after":    map[string]any{"type": "string", "description": "Exclusive id cursor from a previous page (default = first page)"},
 		},
-		"required": []string{"kind", "query"},
+		"required": []string{"kind"},
 		"description": "Search stored documents of a kind by text — the server-side filter for session browsers: " +
 			"finds conversations whose id or title matches, or messages whose content matches, without downloading " +
 			"the whole kind. Indexed fields per kind: conversation = id + title; message = id + content text " +
@@ -231,6 +235,14 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 			return nil, fmt.Errorf("bad search args: %w", err)
 		}
 		kind := rawString(m, "kind")
+		// Vector mode is not implemented here. Say so explicitly: silently
+		// falling through to the text path would answer a kNN query with a
+		// token-matching scan and look like a successful search.
+		if v, hasVector := m["vector"]; hasVector && v != nil {
+			return sdk.ErrCode(
+				"vector search is not implemented by this store engine (tidb); "+
+					"use the sqlite engine for embeddings", "unsupported"), nil
+		}
 		after := rawString(m, "after")
 		idPrefix := rawString(m, "idPrefix")
 		wantSnippet := rawBool(m, "snippet")
@@ -329,4 +341,3 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		return sdk.OK(out), nil
 	}
 }
-
