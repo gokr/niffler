@@ -937,6 +937,13 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true,
     ## Interactive components are rebuilt but not started.
     ## Reports updated:false when there was nothing new (latest release
     ## already pinned, or the branch pull was a no-op).
+    ## A BRANCH pin never graduates to a release here, on purpose: a branch
+    ## install was asked to track that branch, and main is routinely ahead of
+    ## the newest release, so repointing it at a tag would silently downgrade
+    ## the install. To adopt a release from a branch install, remove and
+    ## reinstall it pinned: plugin_remove, then
+    ## plugin_install {repo, version: "vX.Y.Z"} (the install refuses while a
+    ## record exists, so the remove is required).
     ## A record whose checkout is gone cannot be updated in place: its
     ## supervised components are stopped, the dead artifacts and record
     ## dropped, and the package reinstalled from scratch.
