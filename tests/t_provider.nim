@@ -9,6 +9,7 @@
 import std/[json, net, os, osproc, strutils, times]
 import natsnim
 import helpers
+import ../sdk/niffler/jsonx
 
 const embedStub = """
 import json, sys
@@ -688,7 +689,11 @@ proc main() =
         not ($discovered).contains("provider_active"), $discovered)
   let snapshot = call(nc, "core", "catalog", %*{"op": "snapshot"})
   var providerSnapshot: JsonNode
-  for item in snapshot{"components"}:
+  # Nil-safe iteration: a catalog call that timed out (under a loaded test
+  # pool) returns {"error": …} with no `components`, and `for item in nil`
+  # SIGSEGVs — which read as a crash in the provider component rather than the
+  # catalog round trip it actually was.
+  for item in snapshot{"components"}.listOf:
     if item{"name"}.getStr("") == "provider":
       providerSnapshot = item
   check("full catalog keeps all provider tools and hides credential access",
