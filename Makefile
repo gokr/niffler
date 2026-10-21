@@ -569,6 +569,10 @@ var/bin/test_t_discover: core/catalog.nim
 # rebuild both before the test binary.
 var/bin/test_t_llm_modelpin: var/bin/llm var/bin/models
 
+# Same contract shape, other failure: a conversation's PROVIDER pin must never
+# be answered by another backend when the registry cannot resolve it.
+var/bin/test_t_provider_pin: var/bin/llm var/bin/models
+
 # The full gate, self-contained: core + components + the bus-contract suite
 # (each test owns a private NATS server and a temporary root).
 test: test-server
@@ -625,6 +629,7 @@ test-hooks:  build var/bin/test_t_hooks  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROO
 test-uireg:  build var/bin/test_t_uireg  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_uireg
 test-models:  build var/bin/test_t_models  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_models
 test-llm-modelpin: build var/bin/test_t_llm_modelpin ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_llm_modelpin
+test-provider-pin: build var/bin/test_t_provider_pin ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_provider_pin
 test-provider: build var/bin/test_t_provider ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_provider
 test-cli: build var/bin/test_t_cli var/bin/test_t_cli_catalog
 	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_cli
