@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -208,6 +209,47 @@ func TestResolveProviderFallsBackToEnvWithoutStore(t *testing.T) {
 	}
 	if name != defaultProvider || source != "environment" || p.APIKey != "sk-env" {
 		t.Fatalf("got %+v (%q, %q)", p, name, source)
+	}
+}
+
+func TestClassifyProviderReplySeparatesUnreachableFromUnknown(t *testing.T) {
+	// The split that stops a transient registry blip from being reported (and
+	// acted on) as "unknown provider": only a definitive answer may fall
+	// through to the environment tables.
+	found := classifyProviderReply(json.RawMessage(`{"ok":true,"source":"store",`+
+		`"provider":{"nickname":"synthetic","apiKey":"sk-1","baseUrl":"https://x/v1",`+
+		`"model":"m","catalog":"synthetic"}}`), nil)
+	if !found.Found || found.Nickname != "synthetic" || found.Unreachable != nil {
+		t.Fatalf("found lookup = %+v", found)
+	}
+
+	// The provider component's not-found convention is an ok:false RESULT, so
+	// it is a verdict, not an outage.
+	for _, raw := range []string{`{"ok":false,"error":"provider \"synthetic\" not found"}`, `{"ok":true}`} {
+		lookup := classifyProviderReply(json.RawMessage(raw), nil)
+		if lookup.Found || lookup.Unreachable != nil {
+			t.Fatalf("definitive miss for %s = %+v", raw, lookup)
+		}
+	}
+
+	timedOut := classifyProviderReply(nil, errors.New("context deadline exceeded"))
+	if timedOut.Found || timedOut.Unreachable == nil {
+		t.Fatalf("transport failure = %+v (must be Unreachable)", timedOut)
+	}
+}
+
+func TestResolveProviderRefusesToRerouteAPinnedName(t *testing.T) {
+	// A pinned provider that the registry could not answer for must FAIL, not
+	// resolve to the environment default: falling through is what silently
+	// moved ongoing conversations onto another backend.
+	withEnv(t,
+		map[string]string{"NIF_OPENAI_API_KEY": "sk-env"},
+		map[string]string{"NIF_LLM_PROVIDERS": ""})
+	// A nil component means the registry is unreachable (and covers a --minimal
+	// boot, where the pinned name genuinely cannot be served either).
+	p, _, _, err := resolveProvider(nil, "synthetic")
+	if err == nil {
+		t.Fatalf("resolveProvider(pinned, no registry) resolved to %+v", p)
 	}
 }
 

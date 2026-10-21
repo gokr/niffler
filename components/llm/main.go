@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -446,19 +447,105 @@ func providerNames(ps map[string]provider) string {
 // `provider` arg first resolves a stored nickname, then NIF_LLM_PROVIDERS;
 // the default resolves through the provider component's active provider when
 // one is active, else the NIF_OPENAI_* environment default.
+//
+// A PINNED name (the explicit arg, which is what core sends for a
+// conversation's provider pin) is only ever answered by that name: the store
+// record first, then the environment table's entry of the SAME name. When
+// neither can answer, the failure is reported as what it is — a registry
+// failure or an unknown nickname — never as a silent fallback to some other
+// provider, and never as the misleading `unknown provider … (have: default)`
+// that a transient lookup failure used to produce.
 func resolveProvider(c *sdk.Component, name string) (provider, string, string, error) {
 	if name != "" {
-		if p, nickname, source, ok := namedStoredProvider(c, name); ok {
-			return p, nickname, source, nil
+		lookup := namedStoredProvider(c, name)
+		if lookup.Found {
+			return lookup.Provider, lookup.Nickname, lookup.Source, nil
 		}
-		p, nickname, err := envProvider(name)
-		return p, nickname, "environment", err
+		// The environment table answers for the SAME name — the `default`
+		// nickname (NIF_OPENAI_*) and a NIF_LLM_PROVIDERS entry — so using it is
+		// not a reroute. Only a name the table does not have falls through, and
+		// then the reason matters: an unreachable registry must not be reported
+		// as a verdict on the name.
+		p, nickname, envErr := envProvider(name)
+		if envErr == nil {
+			return p, nickname, "environment", nil
+		}
+		if lookup.Unreachable != nil {
+			return provider{}, "", "", fmt.Errorf(
+				"cannot resolve provider %q: the provider registry did not answer (%v) — retry the turn (or check that the provider component is running); this is not a verdict on the provider name",
+				name, lookup.Unreachable)
+		}
+		return provider{}, "", "", fmt.Errorf("%w%s", envErr, storedProviderNote(c))
 	}
-	if p, nickname, source, ok := activeStoredProvider(c); ok {
-		return p, nickname, source, nil
+	lookup := activeStoredProvider(c)
+	if lookup.Found {
+		return lookup.Provider, lookup.Nickname, lookup.Source, nil
+	}
+	// An unreachable registry and "no active provider" both fall back to the
+	// environment here, because a harness without the provider component (a
+	// --minimal boot) is a supported shape. A harness WITH one is not silently
+	// rerouted, so say it once — a per-call WARN would fill the log of every
+	// --minimal harness, where the component is simply not running.
+	if lookup.Unreachable != nil {
+		warnRegistryUnreachableOnce(lookup.Unreachable)
 	}
 	p, nickname, err := envProvider(defaultProvider)
 	return p, nickname, "environment", err
+}
+
+// warnRegistryUnreachableOnce logs the unpinned fallback a single time: the
+// condition is usually permanent (a --minimal boot has no provider component),
+// and each chat call re-runs resolution.
+var registryWarned atomic.Bool
+
+func warnRegistryUnreachableOnce(reason error) {
+	if !registryWarned.CompareAndSwap(false, true) {
+		return
+	}
+	log.Printf("WARN provider registry unreachable (%v) — using the environment default %q for unpinned conversations",
+		reason, defaultProvider)
+}
+
+// storedProviderNote names the providers this harness actually has, for the
+// error a pinned-but-missing nickname produces. A conversation pins a STORED
+// nickname; a catalog id ("synthetic") or a nickname from another root reads
+// as unknown here, and the fix is choosing one of these — so say which.
+func storedProviderNote(c *sdk.Component) string {
+	names := storedProviderNames(c)
+	if len(names) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; this harness stores providers %s", strings.Join(names, ", "))
+}
+
+// storedProviderNames lists the configured provider nicknames (best effort:
+// an unreachable registry yields nothing). Error-message material only.
+func storedProviderNames(c *sdk.Component) []string {
+	if c == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), providerLookupRetryTimeout)
+	defer cancel()
+	raw, err := c.RequestContext(ctx, "provider", "provider_list", map[string]any{})
+	if err != nil {
+		return nil
+	}
+	var listed struct {
+		Providers []struct {
+			Nickname string `json:"nickname"`
+		} `json:"providers"`
+	}
+	if json.Unmarshal(raw, &listed) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(listed.Providers))
+	for _, p := range listed.Providers {
+		if p.Nickname != "" {
+			names = append(names, p.Nickname)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // envProvider looks up a named provider in the environment tables.
@@ -469,7 +556,12 @@ func envProvider(name string) (provider, string, error) {
 	}
 	p, ok := providers[name]
 	if !ok {
-		return provider{}, "", fmt.Errorf("unknown provider %q (have: %s)", name, providerNames(providers))
+		// Say WHICH table this is: the store is searched first, and reading
+		// "(have: default)" as "your provider is gone" cost debugging time on
+		// a stored provider whose registry lookup had failed. resolveProvider
+		// appends the stored nicknames when it reaches here for a pinned name.
+		return provider{}, "", fmt.Errorf("unknown provider %q (environment providers: %s)",
+			name, providerNames(providers))
 	}
 	if p.Protocol == "" {
 		p.Protocol = protocolOpenAI
@@ -505,19 +597,78 @@ type registryResponse struct {
 	} `json:"provider"`
 }
 
-func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (provider, string, string, bool) {
+// providerLookupTimeout bounds one provider registry request; a failure is
+// retried once with providerLookupRetryTimeout. Resolution runs on every turn,
+// so the first attempt stays short, and the second is patient enough for a
+// store busy writing a transcript.
+const (
+	providerLookupTimeout      = 2 * time.Second
+	providerLookupRetryTimeout = 5 * time.Second
+)
+
+// providerLookup is the outcome of asking the provider component for a record.
+//
+// The distinction between "the registry answered and this nickname is not
+// usable" and "the registry never answered" is load-bearing, not cosmetic: only
+// the first may fall back to the NIF_LLM_PROVIDERS nickname table. Collapsing
+// both into one false flag reported a transient bus/store blip as
+// `unknown provider … (have: default)` — a message that sends the reader
+// hunting for a missing provider record — and, worse, let a pinned
+// conversation continue against the harness-global provider (core/conversation
+// .nim runTurn).
+type providerLookup struct {
+	Provider provider
+	Nickname string
+	Source   string
+	Found    bool
+	// Unreachable is set when the provider component could not answer at all:
+	// a transport error, a timeout, or a handler failure. Nil means the answer
+	// is definitive — either Found, or "this harness has no usable record for
+	// that nickname".
+	Unreachable error
+}
+
+func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) providerLookup {
 	if c == nil {
-		return provider{}, "", "", false
+		return providerLookup{}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
-	raw, err := c.RequestContext(ctx, "provider", tool, args)
+	raw, err := providerRegistryRequest(c, tool, args, providerLookupTimeout)
 	if err != nil {
-		return provider{}, "", "", false
+		// One retry: the blip this replaces broke a whole turn of every
+		// conversation pinned to that provider. The retry costs nothing on the
+		// happy path — it runs only after a failure.
+		raw, err = providerRegistryRequest(c, tool, args, providerLookupRetryTimeout)
+	}
+	lookup := classifyProviderReply(raw, err)
+	// A record without its own nickname (a legacy doc) must still answer as the
+	// provider that was asked for: core compares the resolved name against the
+	// conversation's pin, and an empty answer would read as a reroute.
+	if lookup.Found && strings.TrimSpace(lookup.Nickname) == "" {
+		if asked, ok := args["nickname"].(string); ok {
+			lookup.Nickname = asked
+		}
+	}
+	return lookup
+}
+
+func providerRegistryRequest(c *sdk.Component, tool string, args map[string]any, timeout time.Duration) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return c.RequestContext(ctx, "provider", tool, args)
+}
+
+// classifyProviderReply turns one registry answer into a lookup outcome. The
+// provider component reports "no such nickname" (and "no active provider") as
+// a RESULT with ok:false, its not-found convention, so an ok:false payload is
+// a definitive verdict while a transport error is not. Pure, so the split is
+// testable without a bus.
+func classifyProviderReply(raw json.RawMessage, err error) providerLookup {
+	if err != nil {
+		return providerLookup{Unreachable: err}
 	}
 	var resp registryResponse
-	if err := json.Unmarshal(raw, &resp); err != nil || !resp.Ok || resp.Provider == nil {
-		return provider{}, "", "", false
+	if json.Unmarshal(raw, &resp) != nil || !resp.Ok || resp.Provider == nil {
+		return providerLookup{}
 	}
 	credential := resp.Provider.APIKey
 	accountID := ""
@@ -526,7 +677,7 @@ func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (
 		accountID = resp.Provider.OAuth.AccountID
 	}
 	if credential == "" {
-		return provider{}, "", "", false
+		return providerLookup{}
 	}
 	source := resp.Source
 	if source == "" {
@@ -543,31 +694,34 @@ func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (
 	if authType == "" {
 		authType = authAPIKey
 	}
-	return provider{
-		BaseURL:      resp.Provider.BaseURL,
-		APIKey:       credential,
-		Model:        resp.Provider.Model,
-		EmbedModel:   resp.Provider.EmbedModel,
-		EmbedBaseURL: resp.Provider.EmbedBaseURL,
-		Catalog:      resp.Provider.Catalog,
-		Context:      resp.Provider.Context,
-		Protocol:     protocol,
-		AuthType:     authType,
-		AccountID:    accountID,
-		StripPrefix:  resp.Provider.StripPrefix,
-	}, resp.Provider.Nickname, source, true
+	return providerLookup{
+		Found: true, Nickname: resp.Provider.Nickname, Source: source,
+		Provider: provider{
+			BaseURL:      resp.Provider.BaseURL,
+			APIKey:       credential,
+			Model:        resp.Provider.Model,
+			EmbedModel:   resp.Provider.EmbedModel,
+			EmbedBaseURL: resp.Provider.EmbedBaseURL,
+			Catalog:      resp.Provider.Catalog,
+			Context:      resp.Provider.Context,
+			Protocol:     protocol,
+			AuthType:     authType,
+			AccountID:    accountID,
+			StripPrefix:  resp.Provider.StripPrefix,
+		},
+	}
 }
 
 // activeStoredProvider asks the provider component for its active provider.
-// Returns ok=false when the component is absent, has no active provider, or
-// the lookup fails — the caller falls back to the environment. Because the
-// answer is re-read per chat call, provider_switch live-updates the backend
-// with no further coordination.
-func activeStoredProvider(c *sdk.Component) (provider, string, string, bool) {
+// Found=false means the registry answered and there is no usable active
+// provider; Unreachable means it did not answer at all. Because the answer is
+// re-read per chat call, provider_switch live-updates the backend with no
+// further coordination.
+func activeStoredProvider(c *sdk.Component) providerLookup {
 	return requestStoredProvider(c, "provider_active", map[string]any{})
 }
 
-func namedStoredProvider(c *sdk.Component, name string) (provider, string, string, bool) {
+func namedStoredProvider(c *sdk.Component, name string) providerLookup {
 	return requestStoredProvider(c, "provider_get", map[string]any{"nickname": name})
 }
 
