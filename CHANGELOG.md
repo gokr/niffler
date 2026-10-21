@@ -184,11 +184,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to `sdk/niffler/{admission,taskpolicy,canonicaljson}.nim` so a component can
   enforce the same wire contract without importing core.
 
-  Read-only tasks remain the default (`mode` is opt-in). This is **not** yet the
-  F2 gate: there is no patch/commit artifact (the exit asks for a bounded report
-  plus one — that is F4), no workspace isolation, no runtime deadline, no
-  fresh-grant continuation, no in-flight revocation, and no human UI for
-  profiles or grants. See the blocker list in `docs/FLEET.md`.
+  A coding task now returns the **change**, not a description of it
+  (`sdk/niffler/codingartifact.nim`, `docs/WIRE.md` "Coding task artifact"):
+  the receipt carries the base revision captured at admission, the commit the
+  task produced, whether that commit is built on the approved base, the
+  diffstat, dirty/untracked state, and the verification commands that ran with
+  their exit status — surfaced in the requester's notice as a structured
+  `artifact` plus a one-line summary. A task that commits nothing says
+  `no commit`; one that rewrote its base says `NOT built on the approved base`;
+  a failing test command is surfaced either way. It never claims the change is
+  correct — that stays a human review — but the report is now checkable against
+  something real.
+
+  Read-only tasks remain the default (`mode` is opt-in), and this is still an
+  experimental slice — see the blocker list in `docs/FLEET.md`. Not yet
+  implemented: push authority (a task can commit, but a profile cannot yet say
+  where it may push), scoped artifact retrieval (the receipt names the commit;
+  fetching its bytes is F4), workspace isolation, a runtime deadline, fresh-grant
+  continuation, in-flight revocation, and a human UI for profiles or grants.
 
 - Durable Fleet task admission (F1, `docs/WIRE.md` "Durable task admission"):
   a delegated turn now carries a requester-chosen idempotency key, and the

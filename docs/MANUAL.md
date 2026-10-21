@@ -3088,7 +3088,25 @@ record, and the worker recomputes it from what arrives. A grant that was changed
 in between is refused (`task-policy-grant-mismatch`) rather than run under
 authority nobody approved.
 
-The notice you get back states the authority it ran under, and whether the work
+The notice you get back states **what changed**, not just what the worker says
+it did. A coding task's result is the commit it produced, so the notice carries
+an `artifact` naming the base revision it started from, the commit itself, the
+diffstat, whether the tree was left dirty, and the verification commands that
+ran with their exit status — plus a one-line summary:
+
+```
+artifact: commit 56fe18a "fix the note file" (1 file changed, 1 insertion(+), 1 deletion(-))
+```
+
+If the task left its work uncommitted the notice says `no commit` (with a dirty
+or untracked warning) rather than implying success; if the commit replaced the
+base instead of building on it, it says `NOT built on the approved base`. A
+failing verification command is surfaced either way. None of this judges whether
+the change is *correct* — that is still your review — but you can now check the
+claim against something real instead of opening the remote conversation to see
+what actually happened.
+
+The notice also states the authority it ran under, and whether the work
 was confined. `unconfined` is the honest answer in this version, and it matters:
 
 > **Unattended coding is trusted, unconfined execution.** `bash` is broad

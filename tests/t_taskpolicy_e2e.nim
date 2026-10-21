@@ -15,11 +15,12 @@
 ## - a resumed runner re-applies exactly the admitted authority, and a policy
 ##   that is not durably committed refuses to run at all;
 ## - `ask` mode is untouched: the same coding tool is not granted there.
-import std/[json, os, strutils, times]
+import std/[json, os, osproc, strutils, times]
 import natsnim
 import helpers
 # The same pure contract the worker and the requester enforce.
 import ../sdk/niffler/taskpolicy
+import ../sdk/niffler/codingartifact
 
 proc waitComponent(nc: NatsConnection, name: string, secs = 30): bool =
   for i in 0 ..< secs * 5:
@@ -46,10 +47,23 @@ proc main() =
   let workspace = sandbox.root / "project"
   createDir(workspace)
   writeFile(workspace / "note.txt", "before\n")
+  # The workspace is a real checkout: the receipt has to name the commit the
+  # task produced against the base it started from (docs/FLEET.md §6), and that
+  # is only provable in a repository.
+  for cmd in ["init -q -b main", "config user.email task@example.test",
+              "config user.name task", "add -A", "commit -q -m 'base commit'"]:
+    let r = execCmdEx("git -C " & quoteShell(workspace) & " " & cmd)
+    doAssert r.exitCode == 0, "git " & cmd & ": " & r.output
+  let baseCommit = execCmdEx(
+    "git -C " & quoteShell(workspace) & " rev-parse HEAD").output.strip()
   let core = startComponent(sandbox.sandboxBin("niffler"), url, sandbox.root,
-    extra = [("NIF_MOCK_ROUNDS", "1"),
+    extra = [
+             # Round 1 edits; round 2 commits, the way a worker acting as a
+             # developer finishes real work. The artifact must then name it.
+             ("NIF_MOCK_ROUNDS", "2"),
              ("NIF_MOCK_TOOLJSON",
-              "[{\"name\":\"edit\",\"arguments\":{\"path\":\"note.txt\",\"edits\":[{\"old_string\":\"before\",\"new_string\":\"after\"}]}}]"),
+              "[{\"name\":\"edit\",\"arguments\":{\"path\":\"note.txt\",\"edits\":[{\"old_string\":\"before\",\"new_string\":\"after\"}]}}," &
+              "{\"name\":\"bash\",\"arguments\":{\"command\":\"git add -A && git commit -q -m 'fix the note file'\"}}]"),
              ("NIF_MOCK_LOG", llmLog), ("NIF_RUNNER_IDLE_S", "2"),
              ("NIF_AUTO_APPROVE", "")],
     logFile = sandbox.root / "var/core.log")
@@ -85,7 +99,7 @@ proc main() =
     var args = %*{"sessionId": session,
       "content": "Fix the note file, then report what you changed.",
       "task": {"profile": "coding", "workspace": workspace,
-               "tools": ["read", "edit"], "maxRounds": 2, "maxCalls": 4,
+               "tools": ["read", "edit", "bash"], "maxRounds": 4, "maxCalls": 8,
                "maxTokens": 20000},
       "admission": {"key": key("act-1"), "policyVersion": 1}}
     if extra != nil:
@@ -99,7 +113,7 @@ proc main() =
         ran{"error"} == nil, $ran)
   check("the effective policy is returned with the turn",
         ran{"taskPolicy", "unattended"}.getBool(false) and
-        ran{"taskPolicy", "tools"} == %*["edit", "read"] and
+        ran{"taskPolicy", "tools"} == %*["bash", "edit", "read"] and
         ran{"taskPolicy", "confinement"}.getStr("") == "unconfined", $ran)
   check("the approval-gated coding tool actually executed",
         readFile(workspace / "note.txt") == "after\n", $ran)
@@ -116,6 +130,34 @@ proc main() =
   check("the receipt records the workspace and unconfined verdict",
         admissionDoc{"workspace"}.getStr("") == workspace and
         admissionDoc{"confinement"}.getStr("") == "unconfined")
+  # --- the artifact: the receipt names what the task ACTUALLY changed ------
+  # This is the F2 exit's missing half (docs/FLEET.md §6): a report is only
+  # checkable beside the commit it describes.
+  let artifact = admissionDoc{"artifact"}
+  check("the receipt carries a coding artifact",
+        artifact != nil and artifact{"version"}.getInt(0) == 1, $admissionDoc)
+  check("the artifact names the base the task started from",
+        artifact{"base", "commit"}.getStr("") == baseCommit, $artifact)
+  check("the artifact reports that the task produced a commit",
+        artifact{"producedCommit"}.getBool(false) and
+        artifact{"headMoved"}.getBool(false), $artifact)
+  check("the commit is built on the approved base",
+        artifact{"onBase"}.getBool(false), $artifact)
+  check("the produced commit subject describes the change",
+        artifact{"head", "subject"}.getStr("").contains("fix the note file"),
+        $artifact)
+  check("the artifact carries a diffstat for the change",
+        artifact{"diffstat"}.getStr("").contains("note.txt"), $artifact)
+  check("a committed tree is reported clean",
+        not artifact{"dirty"}.getBool(true), $artifact)
+  # The artifact and the working tree must agree: the SHA is real, not a claim.
+  let realHead = execCmdEx(
+    "git -C " & quoteShell(workspace) & " rev-parse HEAD").output.strip()
+  check("the reported commit is the repository's actual HEAD",
+        artifact{"head", "commit"}.getStr("") == realHead, $artifact)
+  check("the artifact renders a one-line summary for the notice",
+        artifactSummary(artifact).contains("fix the note file"), artifactSummary(artifact))
+
   check("the receipt still refuses to call this verified success",
         admissionDoc{"state"}.getStr("") == "settled" and
         admissionDoc{"transcriptCommitted"}.getBool(false))

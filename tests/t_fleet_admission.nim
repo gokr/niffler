@@ -10,6 +10,22 @@ proc rejected(body: proc()): bool =
   except CatchableError: return true
 
 proc main() =
+  # A receipt's artifact must SURVIVE the public projection: the change a task
+  # produced is its result, and a copy that drops it leaves the summary
+  # unfalsifiable (docs/FLEET.md §6).
+  block:
+    let record = %*{"id": "s:k", "state": "settled", "outcome": "done",
+      "artifact": {"version": 1, "producedCommit": true,
+                   "head": {"short": "abc1234"}},
+      "taskPolicy": {"profile": "coding"}}
+    let pub = publicAdmission(record)
+    check("the public receipt keeps the coding artifact",
+          pub{"artifact", "head", "short"}.getStr("") == "abc1234", $pub)
+    check("the public receipt still keeps the policy",
+          pub{"taskPolicy", "profile"}.getStr("") == "coding", $pub)
+    check("the public receipt still drops the key internals it never needed",
+          pub{"settings"} == nil)
+
   # --- key shape: bounded, id-safe, never silently mangled ------------------
   for good in ["abc", "fleet-1234", "a.b_c:d", repeat('a', 128)]:
     check("key accepted: " & good[0 .. min(9, good.len - 1)], validAdmissionKey(good))

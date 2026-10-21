@@ -24,6 +24,7 @@ import compaction
 import dispatch
 import admission
 import taskpolicy
+import ../sdk/niffler/codingartifact
 import attachments
 import approval
 import supervisor
@@ -5530,6 +5531,13 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   # durable before the turn it authorizes can start.
   var admissionRec: JsonNode = nil
   var admissionRev = 0
+  # The revision an unattended coding task starts from (docs/FLEET.md §6).
+  # Observed at admission, not at settlement: "what did it change" is only
+  # answerable against a base captured BEFORE the work ran, and a task that
+  # rebases or resets would otherwise look like it built on nothing.
+  var taskBaseCommit = ""
+  if entry.taskPolicy != nil:
+    taskBaseCommit = observeCheckout(entry.workspace).head
   if admissionKey.len > 0:
     let settings = birthSettings(args, entry.workspace)
     let digest = admissionDigest(settings)
@@ -5707,6 +5715,12 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       settlement["taskPolicy"] = publicPolicy(entry.taskPolicy)
       settlement["workspace"] = %entry.workspace
       settlement["confinement"] = entry.taskPolicy{"confinement"}
+      # The artifact (docs/FLEET.md §6): the commit this activation produced,
+      # relative to the base captured at admission. This is what makes the
+      # report checkable — "I fixed it" is only worth something beside a SHA a
+      # human can read. It records observation, never a verdict: whether the
+      # code is CORRECT stays the reviewer's call.
+      settlement["artifact"] = codingArtifact(taskBaseCommit, entry.workspace)
     try:
       admissionRev = ct.storePutRev(admissionKind,
         admissionDocId(sessionId, admissionKey), settlement,

@@ -12,6 +12,7 @@ import niffler/admission
 # Same reason: the task-policy contract (control-plane set, effective-policy
 # shape, honest confinement wording) must not drift between peers.
 import niffler/taskpolicy
+import niffler/codingartifact
 
 proc connectedRunner*(c: Component): CommandRunner =
   ## Service protocol traffic only while waiting for a transport child. Do not
@@ -371,6 +372,15 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
           %admissionDoc["taskPolicy"]{"digest"}.getStr("")
         notice["confinement"] =
           %admissionDoc["taskPolicy"]{"confinement"}.getStr("")
+        # The change itself, not just a description of it (docs/FLEET.md §6):
+        # the commit this activation produced against the base it started from,
+        # plus a one-line rendering a human can read without opening anything.
+        # A prose report beside a SHA is checkable; prose alone is a claim.
+        let artifact = admissionDoc{"artifact"}
+        if not isNil(artifact):
+          notice["artifact"] = artifact
+          let oneLine = artifactSummary(artifact)
+          if oneLine.len > 0: notice["artifactSummary"] = %oneLine
         j["notice"] = notice
       j["delivered"] = %false
     elif receipt != nil and receipt{"sessionId"}.getStr("") == id and receipt{"seq"}.getInt(0) == 1:

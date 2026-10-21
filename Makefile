@@ -73,7 +73,7 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 .PHONY: help all build components components-inner run down down-here \
          test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
-        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-fleet-admission test-taskpolicy test-server-lifecycle test-fleet \
+        test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-fleet-admission test-taskpolicy test-codingartifact test-server-lifecycle test-fleet \
         test-retry-unit test-ctx-accounting test-context-status test-compaction \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
@@ -268,6 +268,7 @@ var/bin/test_t_fleet_tasks: $(call NIM_SRCS,fleet) var/bin/fleet
 var/bin/test_t_fleet_admission: $(SDK_NIM) $(CORE_NIM)
 var/bin/test_t_fleet_admission_e2e: $(CORE_NIM) $(SDK_NIM) var/bin/session var/bin/niffler
 var/bin/test_t_taskpolicy: $(SDK_NIM) $(CORE_NIM)
+var/bin/test_t_codingartifact: $(SDK_NIM) $(CORE_NIM)
 var/bin/test_t_taskpolicy_e2e: $(CORE_NIM) $(SDK_NIM) var/bin/session var/bin/niffler
 var/bin/test_t_fleet_heartbeat: $(call NIM_SRCS,fleet) var/bin/nats-server
 var/bin/test_t_fleet_faults: $(call NIM_SRCS,fleet) var/bin/fleet var/bin/fixture-fleet-fault-store
@@ -612,6 +613,9 @@ test-fleet-admission: build var/bin/test_t_fleet_admission
 
 test-taskpolicy: build var/bin/test_t_taskpolicy
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_taskpolicy
+
+test-codingartifact: build var/bin/test_t_codingartifact
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_codingartifact
 
 test-fleet-faults: build var/bin/test_t_fleet_faults
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_faults

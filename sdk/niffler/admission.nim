@@ -188,9 +188,13 @@ proc publicAdmission*(record: JsonNode): JsonNode =
   # able to see the AUTHORITY the work ran under, not just its outcome. It is
   # the intersected public policy — the operator's private note was already
   # stripped when it was written.
+  #
+  # `artifact` likewise, and for the same reason: the change a task produced IS
+  # its result. A receipt that reports a summary but withholds the commit makes
+  # the summary unfalsifiable (docs/FLEET.md §6).
   for key in ["id", "sessionId", "key", "activation", "state", "digest",
               "policyVersion", "acceptedAt", "startedAt", "turnId", "outcome",
               "turnOutcome", "usage", "replyChars", "replyDigest",
               "transcriptCommitted", "settledAt", "taskPolicy", "workspace",
-              "confinement"]:
+              "confinement", "artifact"]:
     if record{key} != nil: result[key] = record[key]

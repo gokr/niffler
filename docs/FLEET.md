@@ -315,8 +315,8 @@ widening, policy revocation, shell/indirect escape limits and child inheritance.
 returns a bounded report plus patch/commit, and refuses outside its authority.
 Do not claim general sandboxing as part of this gate.
 
-**Status: experimental implementation; the authority boundary is closed, the
-exit is not met.** An earlier 95-test gate passed before this review; the review
+**Status: the authority boundary is closed and the artifact now ships; two
+exit clauses remain open (push authority, scoped artifact retrieval).** An earlier 95-test gate passed before this review; the review
 itself found real gaps, each now fixed and covered:
 
 - **Component/core import violation — fixed.** Shared contracts live in
@@ -384,19 +384,27 @@ The draft generic seam is [docs/WIRE.md](WIRE.md) "Task policy":
 - Control plane is never granted in any mode: delegation, self-reconfiguration
   and the record-keeping seam are denied on both sides.
 
-**Evidence:** `tests/t_taskpolicy.nim` (intersection, widening, roots, budgets,
-confinement honesty, control-plane set), `tests/t_taskpolicy_e2e.nim` (real
-store + runner + mock model: a granted `edit` runs with no human attached, the
-same conversation refuses a widened grant, an unknown/revoked profile refuses,
-and no refusal spends a provider round trip), and `tests/t_fleet_tasks.nim`
-(the same through `fleet_task_submit`, proving the coding tool ran on the peer
-while a control-plane store write stayed blocked).
+**Evidence:** `tests/t_codingartifact.nim` (real git: base capture, produced
+commit, diffstat, dirty/untracked, non-base detection, verification evidence,
+unverifiable workspace), `tests/t_taskpolicy.nim` (intersection, widening,
+roots, budgets, confinement honesty, control-plane callables and the worker's
+own schema audit, grant identity), `tests/t_taskpolicy_e2e.nim` (real store +
+runner + mock model: a granted `edit` AND `bash` commit run with no human
+attached and the receipt names the repository's real HEAD; widened grants,
+unknown/revoked profiles and content-only continuations refuse; retries replay
+receipts; no refusal spends a provider round trip), and `tests/t_fleet_tasks.nim`
+(the same through `fleet_task_submit`, where the requester's notice carries the
+commit the worker made).
 
 **Still open in F2 (do not read this as a finished gate):**
-- **No patch/commit artifact** — the exit asks for a bounded report *plus* a
-  patch or commit; today the worker's report is prose and the requester is told
-  to open the remote conversation. Base revision, resulting diff, dirty-state
-  warning and verification evidence are F4.
+- **The artifact now ships** (`sdk/niffler/codingartifact.nim`): the receipt
+  carries the base revision captured at admission, the commit produced, whether
+  it is built on that base, the diffstat, dirty/untracked state, and the
+  verification commands with their exit status. It is stated in the notice as a
+  structured `artifact` plus a one-line summary, so the report is checkable
+  beside the change instead of taken on faith. What it does not do: fetch the
+  diff bytes or push anywhere (§F4 scoped retrieval; push authority is a
+  separate, unimplemented policy field), and it never judges correctness.
 - **No workspace isolation** — a task runs in an existing checkout it is
   granted; there is no automatic worktree-per-task or dirty-work preservation.
 - **No runtime deadline** — round/call/token budgets exist; a wall-clock

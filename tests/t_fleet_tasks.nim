@@ -48,7 +48,13 @@ proc main() =
   let rp = startComponent(peer.sandboxBin("niffler"), otherUrl, peer.root,
     extra = [("NIF_MOCK_ROUNDS", "2"), ("NIF_MOCK_TOOLJSON",
       "[{\"name\":\"put\",\"arguments\":{\"kind\":\"fabricprog\",\"id\":\"bad\",\"value\":{}}}," &
-      "{\"name\":\"bash\",\"arguments\":{\"command\":\"echo ran >> " & marker & "\"}}]")],
+      # Round 2 writes the marker AND commits, like a developer finishing a
+      # change: the notice's artifact must then name that commit.
+      # The change must land INSIDE the checkout, or there is nothing to
+      # commit — and the artifact would (correctly) report producedCommit
+      # false. The marker alone lives outside it, on purpose.
+      "{\"name\":\"bash\",\"arguments\":{\"command\":\"echo ran >> " & marker &
+      " && echo changed > task.txt && git add -A && git commit -q -m 'task change'\"}}]")],
     logFile = peer.root / "var/core.log")
   defer: stopProcess(rp)
   doAssert waitComponent(nc, "fleet") and waitComponent(nc, "llm")
@@ -261,6 +267,18 @@ proc main() =
   # write must still fail while its bash call actually runs.
   let peerWorkspace = peer.root / "checkout"
   createDir(peerWorkspace)
+  # A real checkout, so the notice's artifact can name a commit the task made
+  # (docs/FLEET.md §6) instead of only describing the work in prose.
+  for cmd in ["init -q -b main", "config user.email task@example.test",
+              "config user.name task"]:
+    let r = execCmdEx("git -C " & quoteShell(peerWorkspace) & " " & cmd)
+    doAssert r.exitCode == 0, "git " & cmd & ": " & r.output
+  writeFile(peerWorkspace / "seed.txt", "seed\n")
+  discard execCmdEx("git -C " & quoteShell(peerWorkspace) & " add -A")
+  discard execCmdEx("git -C " & quoteShell(peerWorkspace) &
+    " commit -q -m 'base'")
+  let peerBase = execCmdEx(
+    "git -C " & quoteShell(peerWorkspace) & " rev-parse HEAD").output.strip()
   discard call(remoteNc, "store", "put", %*{"kind": "taskprofile",
     "id": "coding", "value": {"name": "coding", "unattended": true,
       "tools": ["read", "bash", "edit"], "roots": [peerWorkspace],
@@ -315,6 +333,17 @@ proc main() =
   check("the notice reports the effective policy and confinement honestly",
     coding{"notice", "confinement"}.getStr("") == "unconfined" and
     coding{"notice", "taskPolicyDigest"}.getStr("").startsWith("sha256:"), $coding)
+  # The result is the CHANGE, not just a description of it. Without this, a
+  # requester could only take the summary's word for what happened.
+  check("the notice carries the coding artifact",
+    coding{"notice", "artifact", "version"}.getInt(0) == 1, $coding)
+  check("the artifact names the base the task started from",
+    coding{"notice", "artifact", "base", "commit"}.getStr("") == peerBase, $coding)
+  check("the artifact reports the commit the task produced",
+    coding{"notice", "artifact", "producedCommit"}.getBool(false) and
+    coding{"notice", "artifact", "head", "short"}.getStr("").len >= 7, $coding)
+  check("the artifact renders a one-line summary for a human",
+    coding{"notice", "artifactSummary"}.getStr("").contains("commit"), $coding)
   check("the unattended submission was not replayed",
     submissions == submissionsBeforeTask + 1, $submissions)
   report("FLEET TASKS TEST")

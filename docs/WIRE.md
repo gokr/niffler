@@ -240,6 +240,43 @@ receives says `unconfined worker` for exactly that reason. Granting coding tools
 is trusted/unconfined execution under the peer operator's policy
 (docs/FLEET.md §5); it is not sandboxing and must not be described as such.
 
+### Coding task artifact
+
+The **result** of an unattended coding task is the change it produced, not a
+description of it (docs/FLEET.md §6). The receipt therefore carries an
+`artifact`, observed on the worker's checkout:
+
+```json
+{"version": 1, "observed": true,
+ "base": {"commit": "<full sha>", "short": "<7>"},
+ "head": {"commit": "…", "short": "…", "subject": "fix the failing test",
+          "branch": "main"},
+ "headMoved": true, "producedCommit": true, "onBase": true,
+ "diffstat": " note.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+ "dirty": false, "untracked": 0,
+ "verification": [{"command": "make test", "exitCode": 0, "ok": true}]}
+```
+
+- **`base` is captured at admission**, before any tool runs. "What did it
+  change" is only answerable against a revision recorded before the work; a task
+  that commits and then rebases would otherwise look like it built on nothing.
+- **`onBase`** reports whether the base is an ancestor of `head`. A commit that
+  replaced the base (reset, rewritten branch) is reported as *not* built on the
+  approved base rather than as a clean continuation.
+- **`producedCommit: false`** is a real, reportable outcome — a task that left
+  its work uncommitted says so, alongside `dirty` and `untracked`.
+- **`verification`** is a record, never a verdict: the command and its exit
+  status, so "verified" and "claimed" stay distinguishable. A failing command is
+  surfaced in the notice's one-line summary even when nothing was committed.
+- **`observed: false`** means the worker could not look (not a checkout, or not
+  permitted to observe). Missing evidence is stated, never fabricated.
+
+`artifactSummary` renders one bounded line for the notice
+(`artifact: commit 56fe18a "fix the note file" (1 file changed …)`), and
+`artifactProblem` refuses a version a reader does not understand. This is
+**evidence that something changed**; whether the change is correct remains a
+human review decision, and nothing in the receipt claims otherwise.
+
 ## Human completion activity
 
 Hidden read-only core tool `activity_list {after?:string,limit?:1..1000}`
