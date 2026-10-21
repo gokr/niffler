@@ -119,6 +119,18 @@ proc main() =
   check("the receipt still refuses to call this verified success",
         admissionDoc{"state"}.getStr("") == "settled" and
         admissionDoc{"transcriptCommitted"}.getBool(false))
+  # The task's workspace is a DECISION, not the harness-root default, so it must
+  # be pinned in the header. Otherwise a bare `cwd` control call (no content, no
+  # `task`) reaches main's repin path and could move an admitted task's
+  # workspace out from under the directory a human approved.
+  let headerDoc = call(nc, "store", "get",
+    %*{"kind": "conversation", "id": session}){"value"}
+  check("the task workspace is recorded as a pinned decision",
+        headerDoc{"cwdPinned"}.getBool(false), $headerDoc)
+  let repin = call(nc, "core", "session",
+    %*{"sessionId": session, "cwd": sandbox.root}, 60_000)
+  check("a control call cannot repin an admitted task's workspace",
+        repin{"error"}.getStr("").contains("immutable"), $repin)
 
   # Exact retries return the activation receipt without another provider call.
   let roundsAfterTask = providerRounds()

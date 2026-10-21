@@ -4765,6 +4765,16 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         "taskPolicy": publicPolicy(resolved.policy),
         "approvals": "auto",
         "cwd": entry.workspace,
+        # cwdPinned marks the workspace as a DECISION, which is exactly what an
+        # admitted task's workspace is (§5: it states the directory, it never
+        # inherits one). Without this, the pre-cwdPinned heuristic ("stored cwd
+        # differs from the harness root") is the only thing making it look
+        # chosen — so a task whose workspace HAPPENS to be the harness root
+        # would read as unpinned, and a later bare `cwd` control call could move
+        # authority a human approved for a different directory. Pin it: the
+        # policy and the directory were decided together and are immutable
+        # together.
+        "cwdPinned": true,
         "maxRounds": entry.maxRounds, "maxCalls": entry.maxCalls,
         "maxTokens": entry.maxTokens,
         "toolAllowlist": resolved.policy{"tools"}.copy()})
