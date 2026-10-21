@@ -2405,7 +2405,7 @@ make test-bash      # ... or just one — `make help` lists every target
 `NIF_ENSURE_ATTACH=0` 使 `ensureHarness` 无条件启动（测试用）。
 显式的 `NIF_NATS_URL` 则以相反方式短路：客户端恰好附加到该总线，不探测也不启动任何东西。（`NIF_NATS_SPAWN=1` 是核心侧的双胞胎——一个隔离的、核心拥有的随机端口总线，绝不使用 4222；见 [Environment variables](#environment-variables)。）
 
-在内核层面，同样的规则成立，只有一个刻意的例外：核心自身没有父进程死亡信号——自动启动的核心必须比启动它的 UI 活得更久——而它启动的每个子进程都有。受监督的子进程（组件、会话运行器）在 util-linux 的 `setpriv` 位于 `PATH` 时被包裹在 `setpriv --pdeathsig TERM` 中，SDK 在它们启动的组件中设置 `PR_SET_PDEATHSIG`，捆绑的 `nats-server` 在其自己的 `main` 中设置它，因此即使 SIGKILL 也没有东西能在其 harness 之后存活。在 Linux 之外（或没有 `setpriv` 时）两种机制都缺失，这就是孤立总线产生的方式（见 Troubleshooting）。
+在内核层面，同样的规则成立，只有一个刻意的例外：核心自身没有父进程死亡信号——自动启动的核心必须比启动它的 UI 活得更久——而它启动的每个子进程都有。受监督的子进程（组件、会话运行器）在 util-linux 的 `setpriv` 位于 `PATH` 时被包裹在 `setpriv --pdeathsig TERM` 中，SDK 在它们启动的组件中设置 `PR_SET_PDEATHSIG`，捆绑的 `nats-server` 在其自己的 `main` 中设置它，因此即使 SIGKILL 也没有东西能在其 harness 之后存活。包装器按能力选择，每个进程只探测一次：不接受 `--pdeathsig` 的 `setpriv`（原生 Alpine 上的 BusyBox applet）会被跳过，子进程直接启动，依靠 SDK 自身的 `PR_SET_PDEATHSIG`（`apk add setpriv` 可恢复包装）。在 Linux 之外（或没有可用的 `setpriv` 时）两种机制都缺失，这就是孤立总线产生的方式（见 Troubleshooting）。
 
 ## Common tasks
 

@@ -4430,9 +4430,13 @@ that spawned it — while every child it starts does. Supervised children
 (components, session runners) are wrapped in `setpriv --pdeathsig TERM` when
 util-linux's `setpriv` is on `PATH`, the SDKs set `PR_SET_PDEATHSIG` in the
 components they spawn, and the bundled `nats-server` sets it in its own
-`main`, so nothing survives its harness even on SIGKILL. Off Linux (or
-without `setpriv`) both mechanisms are absent, which is how an orphaned bus
-happens (see Troubleshooting).
+`main`, so nothing survives its harness even on SIGKILL. The wrapper is
+chosen by capability, probed once per process: a `setpriv` that rejects
+`--pdeathsig` (BusyBox's applet on stock Alpine) is skipped and children start
+plainly, relying on the SDKs' own `PR_SET_PDEATHSIG` (`apk add setpriv`
+restores the wrapper). Off Linux (or without a capable `setpriv`) both
+mechanisms are absent, which is how an orphaned bus happens (see
+Troubleshooting).
 
 ## Common tasks
 

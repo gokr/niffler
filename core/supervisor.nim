@@ -159,8 +159,9 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
     # component can outlive its harness. setpriv ships in util-linux; SDK
     # components additionally self-set PR_SET_PDEATHSIG (sdk/niffler/sdk.nim,
     # sdk/go, nats-server), so test/bench-spawned copies are covered too.
+    # BusyBox setpriv (stock Alpine) lacks --pdeathsig: the probe skips it.
     block:
-      let sp = findExe("setpriv")
+      let sp = pdeathsigSetprivPath()
       if sp.len > 0:
         cmd.add(quoteShell(sp) & " --pdeathsig TERM ")
   cmd.add(quoteShell(c.binary))

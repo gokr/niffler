@@ -2649,8 +2649,11 @@ core 保持運作——並讓 core 相信有人類可達以供核准——直到
 util-linux 的 `setpriv` 位於 `PATH` 時會被包在
 `setpriv --pdeathsig TERM` 中，SDK 在其啟動的元件中設定
 `PR_SET_PDEATHSIG`，而隨附的 `nats-server` 在其自身的 `main` 中設定
-它，因此即使 SIGKILL 也沒有東西能在其 harness 之後存活。在 Linux
-之外（或沒有 `setpriv`）兩種機制都不存在，這就是孤兒匯流排的成因
+它，因此即使 SIGKILL 也沒有東西能在其 harness 之後存活。包裝器依能力
+選擇，每個行程只探測一次：不接受 `--pdeathsig` 的 `setpriv`（原生 Alpine
+上的 BusyBox applet）會被略過，子行程直接啟動，依靠 SDK 自身的
+`PR_SET_PDEATHSIG`（`apk add setpriv` 可恢復包裝）。在 Linux 之外（或沒有
+可用的 `setpriv`）兩種機制都不存在，這就是孤兒匯流排的成因
 （見 Troubleshooting）。
 
 ## Common tasks

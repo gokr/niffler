@@ -10,6 +10,7 @@ import posix
 import natsnim
 import envelope
 import helpers
+import niffler/procutil
 
 proc freePort(): int =
   let s = newSocket()
@@ -153,7 +154,7 @@ proc main() =
 
   # Hard crash: the supervisor must restart the launcher, and the child
   # must not outlive it (kernel-enforced via setpriv; skipped without it).
-  let hasSetpriv = findExe("setpriv").len > 0
+  let hasSetpriv = pdeathsigSetprivPath().len > 0
   discard kill(Pid(selfPid), SIGKILL)
   let regSub = openSub(coreNc, "reg.publish")
   let restarted = waitRegisteredOn(regSub, "von", 15)

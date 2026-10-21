@@ -543,6 +543,7 @@ var/bin/test_t_approval_manifest: core/approval.nim core/catalog.nim
 var/bin/test_t_retry_unit: core/retry.nim
 
 var/bin/test_t_supervisor_backoff: core/supervisor.nim core/catalog.nim
+var/bin/test_t_supervisor_setpriv: core/supervisor.nim core/catalog.nim sdk/niffler/procutil.nim
 
 var/bin/test_t_ctx_accounting: core/conversation.nim core/compaction.nim
 var/bin/test_t_context_status: $(wildcard core/*.nim) var/bin/niffler
