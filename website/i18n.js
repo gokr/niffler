@@ -56,7 +56,7 @@
       "f.bg.h": "Background processes",
       "f.bg.p": "Servers, watchers and builds run under the harness: start, poll, kill. No second terminal, no tmux discipline.",
       "f.gate.h": "Permission gate",
-      "f.gate.p": "A tool can ask first. You answer <code>y/N</code> per call — sub-agents included: their gated calls route to you, their budgets are hard-wired. With no human reachable, the call is denied. Fail closed, never silently allowed.",
+      "f.gate.p": "A tool can ask first. You answer <code>y/N</code> per call — sub-agents included: their gated calls route to you, their budgets are hard-wired. With no human reachable, the call is denied by default; a resident instance can opt into a loud per-conversation approval default for unattended work. Never silently allowed.",
       "f.self.h": "Self-extension",
       "f.self.p": "The agent writes a source file, compiles it, spawns it as a process and calls the new tool — <em>mid-conversation</em>, in any language. Community packages install the same way, always built from source.",
       "f.fab.h": "Programmable tool calling",
@@ -108,7 +108,7 @@
 
       "ed.lab3": "Trust &amp; safety",
       "ed.approvals.h": "Approvals everywhere",
-      "ed.approvals.p": "any gated caller, sub-agents included — routed to the human driving the turn, denied when none is reachable",
+      "ed.approvals.p": "any gated caller, sub-agents included — routed to the human driving the turn; denied when none is reachable, with an opt-in per-conversation default for unattended instances",
       "ed.limits.h": "Sub-agent limits",
       "ed.limits.p": "hard budgets that cannot be talked around; soft limits negotiate over the approval channel",
       "ed.grants.h": "Remembered grants",
@@ -161,7 +161,7 @@
       "ins.h2": "Two minutes in.",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">— optional: npx skills, npm MCP servers, TypeScript components (the core, clients and the TUI are Nim/Go — the installer asks)</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">— optional, richer HTML extraction</span>",
-      "ins.fine": "Niffler is built from source and distributed that way — there are no prebuilt binaries. The one-line installer brings in everything missing (git, make, curl, Go, then the Nim toolchain and nimble packages via <code>make setup</code>); Node.js and npm are optional and it asks first; at the end it offers the optional extras one by one — language servers (<code>make install-lsp</code>), the agent CLI toolkit for bash (<code>make install-tools</code>) and jev (<code>make install-jev</code>) — each defaulting to no. Building by hand, <code>make doctor</code> reports what is missing. The bus is bundled — core spawns its own nats-server. The desktop UI is an experimental spin-off — install it like any package: <code>cli install gokr/niffler-ui</code>. Full story in the <a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">manual ↗</a>.",
+      "ins.fine": "Niffler is built from source and distributed that way — there are no prebuilt binaries. The one-line installer brings in everything missing (git, make, curl, Go, then the Nim toolchain, nimble packages and ripgrep via <code>make setup</code>); Node.js and npm are optional and it asks first; at the end it offers the optional extras one by one — language servers (<code>make install-lsp</code>), the agent CLI toolkit for bash (<code>make install-tools</code>) and jev (<code>make install-jev</code>) — each defaulting to no. Building by hand, <code>make doctor</code> reports what is missing. The bus is bundled and built from this repo — core spawns its own nats-server, never an external install. The desktop UI is an experimental spin-off — install it like any package: <code>cli install gokr/niffler-ui</code>. Full story in the <a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">manual ↗</a>.",
 
       "foot.line": "Small by default. It builds the rest."
     },
@@ -209,7 +209,7 @@
       "f.bg.h": "后台进程",
       "f.bg.p": "服务器、监视器和构建都在框架下运行：启动、轮询、终止。不需要第二个终端，也不需要 tmux 纪律。",
       "f.gate.h": "权限审批",
-      "f.gate.p": "工具可以先请求批准。每次调用都由你回答 <code>y/N</code>——子智能体也不例外：它们的受限调用会转给你，预算被硬性约束。没有人可应答时，调用一律拒绝。始终安全失败，绝不悄悄放行。",
+      "f.gate.p": "工具可以先请求批准。每次调用都由你回答 <code>y/N</code>——子智能体也不例外：它们的受限调用会转给你，预算被硬性约束。没有人可应答时，调用默认拒绝；常驻实例可以为无人值守工作选择按对话启用的显式审批默认值。绝不悄悄放行。",
       "f.self.h": "自我扩展",
       "f.self.p": "智能体写下源文件、编译、作为进程启动，然后调用新工具——就在<em>对话进行当中</em>，用任何语言。社区包的安装方式完全相同，永远从源码构建。",
       "f.fab.h": "可编程的工具调用",
@@ -261,7 +261,7 @@
 
       "ed.lab3": "信任与安全",
       "ed.approvals.h": "处处有审批",
-      "ed.approvals.p": "任何受限调用方、包括子智能体——转给驱动本轮的人类；没有人可应答则拒绝",
+      "ed.approvals.p": "任何受限调用方、包括子智能体——转给驱动本轮的人类；没有人可应答时默认拒绝，无人值守的常驻实例可选择按对话启用默认值",
       "ed.limits.h": "子智能体限额",
       "ed.limits.p": "无法被说服绕过的硬预算；软限额通过审批通道协商",
       "ed.grants.h": "记住的授权",
@@ -314,7 +314,7 @@
       "ins.h2": "两分钟，装好了。",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">——可选：npx skills、npm MCP 服务器、TypeScript 组件（核心、客户端和 TUI 都是 Nim/Go——安装器会询问）</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">——可选，HTML 正文提取更佳</span>",
-      "ins.fine": "Niffler 从源码构建、也以源码分发——没有预编译二进制。一行安装器补齐所有缺失的依赖（git、make、curl、Go，随后通过 <code>make setup</code> 装好 Nim 工具链和 nimble 包）；Node.js 和 npm 是可选项，安装前会先询问；最后还会逐一询问可选的附加项——语言服务器（<code>make install-lsp</code>）、面向 bash 的智能体 CLI 工具集（<code>make install-tools</code>）和 jev（<code>make install-jev</code>）——默认都不安装。手动构建则用 <code>make doctor</code> 查看缺什么。总线随包自带——core 会启动自己的 nats-server。桌面 UI 是实验性衍生品——像普通包一样安装：<code>cli install gokr/niffler-ui</code>。完整故事见<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手册 ↗</a>。",
+      "ins.fine": "Niffler 从源码构建、也以源码分发——没有预编译二进制。一行安装器补齐所有缺失的依赖（git、make、curl、Go，随后通过 <code>make setup</code> 装好 Nim 工具链、nimble 包和 ripgrep）；Node.js 和 npm 是可选项，安装前会先询问；最后还会逐一询问可选的附加项——语言服务器（<code>make install-lsp</code>）、面向 bash 的智能体 CLI 工具集（<code>make install-tools</code>）和 jev（<code>make install-jev</code>）——默认都不安装。手动构建则用 <code>make doctor</code> 查看缺什么。总线随包自带并从本仓库构建——core 会启动自己的 nats-server，绝不依赖外部安装。桌面 UI 是实验性衍生品——像普通包一样安装：<code>cli install gokr/niffler-ui</code>。完整故事见<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手册 ↗</a>。",
 
       "foot.line": "默认够小。其余的，它自己造。"
     },
@@ -362,7 +362,7 @@
       "f.bg.h": "背景行程",
       "f.bg.p": "伺服器、監控器和建置都在框架下執行：啟動、輪詢、終止。不需要第二個終端，也不需要 tmux 紀律。",
       "f.gate.h": "權限審批",
-      "f.gate.p": "工具可以先請求批准。每次呼叫都由你回答 <code>y/N</code>——子代理也不例外：它們的受限呼叫會轉給你，預算被硬性約束。沒有人可應答時，呼叫一律拒絕。始終安全失敗，絕不悄悄放行。",
+      "f.gate.p": "工具可以先請求批准。每次呼叫都由你回答 <code>y/N</code>——子代理也不例外：它們的受限呼叫會轉給你，預算被硬性約束。沒有人可應答時，呼叫預設拒絕；常駐實例可以為無人值守工作選擇按對話啟用的明確審批預設值。絕不悄悄放行。",
       "f.self.h": "自我擴充",
       "f.self.p": "代理寫下原始檔、編譯、作為行程啟動，然後呼叫新工具——就在<em>對話進行當中</em>，用任何語言。社群套件的安裝方式完全相同，永遠從原始碼建置。",
       "f.fab.h": "可程式的工具呼叫",
@@ -414,7 +414,7 @@
 
       "ed.lab3": "信任與安全",
       "ed.approvals.h": "處處有審批",
-      "ed.approvals.p": "任何受限呼叫方、包括子代理——轉給驅動本輪的人類；沒有人可應答則拒絕",
+      "ed.approvals.p": "任何受限呼叫方、包括子代理——轉給驅動本輪的人類；沒有人可應答時預設拒絕，無人值守的常駐實例可選擇按對話啟用預設值",
       "ed.limits.h": "子代理限額",
       "ed.limits.p": "無法被說服繞過的硬預算；軟限額透過審批通道協商",
       "ed.grants.h": "記住的授權",
@@ -467,7 +467,7 @@
       "ins.h2": "兩分鐘，裝好了。",
       "ins.node": "<span class=\"check\">✓</span> node / npm <span class=\"dim\">——選配：npx skills、npm MCP 伺服器、TypeScript 元件（核心、用戶端和 TUI 都是 Nim/Go——安裝器會詢問）</span>",
       "ins.trf": "<span class=\"check\">✓</span> trafilatura <span class=\"dim\">——選配，HTML 內文提取更佳</span>",
-      "ins.fine": "Niffler 從原始碼建置、也以原始碼發佈——沒有預先編譯的二進位。一行安裝器補齊所有缺失的依賴（git、make、curl、Go，隨後透過 <code>make setup</code> 裝好 Nim 工具鏈和 nimble 套件）；Node.js 和 npm 是選配，安裝前會先詢問；最後還會逐一詢問可選的附加項目——語言伺服器（<code>make install-lsp</code>）、面向 bash 的代理 CLI 工具組（<code>make install-tools</code>）和 jev（<code>make install-jev</code>）——預設都不安裝。手動建置則用 <code>make doctor</code> 查看缺什麼。匯流排隨包自帶——core 會啟動自己的 nats-server。桌面 UI 是實驗性衍生品——像一般套件一樣安裝：<code>cli install gokr/niffler-ui</code>。完整故事見<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手冊 ↗</a>。",
+      "ins.fine": "Niffler 從原始碼建置、也以原始碼發佈——沒有預先編譯的二進位。一行安裝器補齊所有缺失的依賴（git、make、curl、Go，隨後透過 <code>make setup</code> 裝好 Nim 工具鏈、nimble 套件和 ripgrep）；Node.js 和 npm 是選配，安裝前會先詢問；最後還會逐一詢問可選的附加項目——語言伺服器（<code>make install-lsp</code>）、面向 bash 的代理 CLI 工具組（<code>make install-tools</code>）和 jev（<code>make install-jev</code>）——預設都不安裝。手動建置則用 <code>make doctor</code> 查看缺什麼。匯流排隨包自帶並從本儲存庫建置——core 會啟動自己的 nats-server，絕不依賴外部安裝。桌面 UI 是實驗性衍生品——像一般套件一樣安裝：<code>cli install gokr/niffler-ui</code>。完整故事見<a href=\"https://github.com/gokr/niffler/blob/main/docs/MANUAL.md\">手冊 ↗</a>。",
 
       "foot.line": "預設夠小。其餘的，它自己造。"
     }
