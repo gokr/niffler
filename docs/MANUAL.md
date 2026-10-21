@@ -4537,8 +4537,8 @@ OS/toolchain setup and installs Fleet's private process manager under
 `var/fleet-process`. No credentials are copied. The default remains `systemd`.
 
 On Alpine Linux, BusyBox `flock` and `setsid` are sufficient (the build lock
-falls back to its mkdir lock when `flock` lacks `-o`), but BusyBox `setpriv`
-has no `--pdeathsig`: install the util-linux one (`apk add setpriv`) or the
+uses `flock`'s file-descriptor form, which BusyBox supports), but BusyBox
+`setpriv` has no `--pdeathsig`: install the util-linux one (`apk add setpriv`) or the
 preflight refuses.
 
 The supervisor survives SSH logout and restarts its Niffler child. It does **not**

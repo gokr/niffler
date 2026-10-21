@@ -2473,8 +2473,8 @@ SSH 安装可显式选择 `service: "process"`。目标 Linux 主机需预先安
 的 `setpriv`。Fleet 在任何克隆或构建之前先检查这些前提，然后克隆并构建固定的公开版本，
 随后在 `var/fleet-process` 安装私有服务管理器；不复制凭证。默认模式仍为 `systemd`。
 
-在 Alpine Linux 上，BusyBox 的 `flock` 和 `setsid` 即可满足（`flock` 不支持 `-o` 时，
-构建锁会退回到 mkdir 锁），但 BusyBox 的 `setpriv` 没有 `--pdeathsig`：需安装 util-linux
+在 Alpine Linux 上，BusyBox 的 `flock` 和 `setsid` 即可满足（构建锁使用 BusyBox 也支持的
+`flock` 文件描述符形式），但 BusyBox 的 `setpriv` 没有 `--pdeathsig`：需安装 util-linux
 版本（`apk add setpriv`），否则预检会拒绝。
 
 该 supervisor 能跨 SSH 断开保持运行并重启 Niffler 子进程，但不提供宿主机重启自启。

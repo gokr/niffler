@@ -60,11 +60,14 @@ pin check and stop/start/probe results. Connection receipt:
 
 4. The live box had util-linux `flock`/`setsid`/`setpriv` installed by hand.
    Stock Alpine provides BusyBox applets instead: BusyBox `setpriv` rejects
-   `--pdeathsig` and BusyBox `flock` has no `-o`. The process manager and the
-   installer preflight now probe `setpriv --pdeathsig` capability (refusing
-   before any clone or build), the build lock falls back to its mkdir lock when
-   `flock` lacks `-o`, and core's supervisor and the `von` launcher pick their
-   kernel-cleanup wrapper by the same capability probe instead of presence.
+   `--pdeathsig` and BusyBox `flock` has no `-o`. The process manager probes
+   `setpriv --pdeathsig` capability, and the installer runs that same embedded
+   manager's preflight before any clone or build; the build lock now uses
+   `flock`'s file-descriptor form, which both implementations support; and
+   core's supervisor and the `von` launcher pick their kernel-cleanup wrapper
+   by a capability probe instead of presence. The process manager also gives
+   the harness the same clean environment as the systemd unit
+   (`NIF_APPROVALS_DEFAULT=auto`, `NIF_AUTO_APPROVE=0`, fixed `PATH`).
    Verified on the Run9 Alpine 3.20 box against the real BusyBox 1.36.1
    applets; the default systemd install/update scripts are byte-identical to
    the base revision.

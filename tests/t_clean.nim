@@ -38,17 +38,20 @@ proc main() =
       doAssert readFile(root / path) == "preserve " & path
     for path in ["var/bin", "var/nimcache", "nimcache"]:
       doAssert not dirExists(root / path), "clean left " & path
-  # BusyBox flock (Alpine) has no -o: the wrapper must fall back to the
-  # mkdir lock and still run the command instead of failing every build.
+  # BusyBox flock (Alpine) has no -o: the wrapper must lock through an fd,
+  # which both util-linux and BusyBox support, and still run the command.
   let shim = root / "shim"
   createDir(shim)
-  writeFile(shim / "flock", "#!/bin/sh\necho 'flock: unrecognized option: o' >&2\nexit 1\n")
+  writeFile(shim / "flock", "#!/bin/sh\necho \"$*\" >> " &
+    quoteShell(root / "flock.args") & "\ncase \" $* \" in *' -o '*) exit 1;; esac\n")
   setFilePermissions(shim / "flock", {fpUserRead, fpUserWrite, fpUserExec})
-  let busybox = execCmdEx("env PATH=" & quoteShell(shim & ":" & getEnv("PATH")) &
-    " bash scripts/with-build-lock.sh -- touch ran", workingDir = root)
-  doAssert busybox.exitCode == 0, busybox.output
-  doAssert fileExists(root / "ran"), "lock wrapper skipped the command"
-  doAssert not dirExists(root / ".niffler-build.lock.d"), "fallback lock leaked"
+  for shared in ["", "-s "]:
+    let busybox = execCmdEx("env PATH=" & quoteShell(shim & ":" & getEnv("PATH")) &
+      " bash scripts/with-build-lock.sh " & shared & "-- touch ran", workingDir = root)
+    doAssert busybox.exitCode == 0, busybox.output
+    doAssert fileExists(root / "ran"), "lock wrapper skipped the command"
+    removeFile(root / "ran")
+  doAssert readFile(root / "flock.args") == "-x 9\n-s 9\n", readFile(root / "flock.args")
   echo "CLEAN TEST PASSED"
 
 main()

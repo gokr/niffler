@@ -5,13 +5,13 @@
 ## --pdeathsig, so every component spawn failed at once. The wrapper must be
 ## chosen by capability (sdk/niffler/procutil.nim:pdeathsigSetprivPath).
 
-import std/[os, strutils, tempfiles, times]
+import std/[os, strutils, times]
 import ../core/supervisor
 import ../sdk/niffler/procutil
 import helpers
 
 proc main() =
-  let root = createTempDir("supervisor-setpriv-", "")
+  let root = tempRoot("supervisor-setpriv")
   defer: removeDir(root)
   let shim = root / "shim"
   createDir(shim)
