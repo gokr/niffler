@@ -132,10 +132,13 @@ working in every language.
   tool error naming the holder, `[E_WRITE_BUSY] …`, and the lease expires
   after a bounded lifetime if the runner dies. Session dispatch uses at least
   its transport timeout + 60s (minimum 10 minutes); acknowledged terminal
-  replies release, unknown transport outcomes retain the claim. Read-effect
-  tools and session-context orchestrators take no outer claim (nested tool
-  calls acquire independently). Cooperative coordination only, not OS fencing.
-  docs/research/WRITE-ARBITRATION.md),
+  replies and a turn cancel release (the cancel side-channel is synchronous —
+  the writer has stopped), unknown transport outcomes retain the claim, and
+  `lock_acquire` supersedes a stale claim of the calling conversation that
+  overlaps the requested paths, so a stopped write never wedges its own retry.
+  Read-effect tools and session-context orchestrators take no outer claim
+  (nested tool calls acquire independently). Cooperative coordination only,
+  not OS fencing. docs/research/WRITE-ARBITRATION.md),
   `x-harness.sessionId` (runner injects `__session.session` as private
   context so the component can match `cancel.<component>` messages against
   its in-flight call — bash kills the command's process group; docs/WIRE.md

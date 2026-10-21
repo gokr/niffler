@@ -18,8 +18,42 @@ The first implementation overstated its guarantees. The review corrected:
 - Release deletes the durable record before removing the runtime claim. A store
   failure retains the claim and reports failure instead of resurrecting it later.
 - Claims are acquired after human approval, with a lifetime at least the tool's
-  transport timeout plus 60 seconds (minimum 10 minutes). Unacknowledged
-  timeout/cancellation retains the claim until expiry, not immediate release.
+  transport timeout plus 60 seconds (minimum 10 minutes).
+
+### Superseded: a stopped write releases, a timed-out one does not
+
+The first cut treated timeout and cancellation alike ("unacknowledged
+timeout/cancellation retains the claim until expiry"), which turned one
+abandoned write into a ten-minute outage for the conversation that owned it
+and for everyone else sharing the tree. The two are different evidence:
+
+- **Transport timeout** — the callee may still be running with nobody waiting,
+  so the claim is retained until expiry. Unchanged.
+- **Turn cancel** — core publishes `cancel.<component>` and waits out a grace
+  period for the callee's terminal reply; bash kills the command's process
+  group before answering. The writer has demonstrably stopped, so the claim is
+  released with the turn.
+
+Independently, `lock_acquire` supersedes a stale claim **of the calling
+conversation** that overlaps the paths being requested, before the conflict
+check. A conversation is one serial writer (one turn at a time; writers never
+share a parallel wave), so such a claim can only be a leftover — an abandoned
+wait, a runner that died between dispatch and release, or a release that
+failed on a store hiccup. The rule is deliberately narrow:
+
+- only the caller's own session (a foreign holder still denies, and is still
+  named — superseding must never become a way to steal another conversation's
+  file);
+- only overlapping stripes (a disjoint claim is a different write, and stays
+  guarded);
+- the durable delete happens before the runtime index loses it (the same rule
+  as release), and a store failure leaves the claim in place so the conflict
+  check denies rather than dropping what could not be durably removed.
+
+Verified end to end: `tests/t_arbitration.nim` stops a real turn mid-`bash` and
+requires the claim to be gone and the tree writable by another conversation;
+`tests/t_locks.nim` pins the narrow reach (own-session superseded, foreign
+denied, disjoint preserved).
 - Session-context orchestrators (Fabric/agent) do not take an outer root claim:
   their nested calls re-enter dispatch and acquire their own claims. Read-effect
   tools and hidden runner machinery also take no claim.
