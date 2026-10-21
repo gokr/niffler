@@ -2973,10 +2973,13 @@ you need.
 
 #### Where to put it
 
-Put it where `gh` looks **and nowhere a repo can reach it**:
+Put it where `gh` looks **and nowhere a repo can reach it** — on the instance
+itself, as the user that runs the harness (**not** root, and not on the
+management host: `gh` reads its config from the local `$HOME`, so a token
+stored on the host is invisible to a guest harness):
 
 ```bash
-# as the user that runs the harness (not root), on the instance:
+# on the instance, as the harness user (`ubuntu` on a provisioned box):
 read -rs GH_TOKEN_PASTE        # paste; nothing echoes, no shell history
 printf '%s' "$GH_TOKEN_PASTE" | gh auth login --with-token
 unset GH_TOKEN_PASTE
@@ -2986,6 +2989,16 @@ gh auth status                 # verify which account + scopes answered
 `gh` writes the token to `$XDG_CONFIG_HOME/gh/hosts.yml` (default
 `~/.config/gh/hosts.yml`, mode 0600) and reads it from there afterwards. That
 location is outside any checkout, which is the point.
+
+**Use the file, not an exported variable.** `gh auth login` writes `hosts.yml`,
+which is per-user state on disk, so every process running as that user finds
+it — the harness's own `bash` component included. An `export GH_TOKEN=…` in
+your interactive shell is **not** seen by a harness started as a systemd user
+unit: the unit's environment is the fixed `Environment=` list in its service
+file, never your login shell. There you would be logged in and the agent would
+still be told "run gh auth login". (A systemd-managed harness can be given
+`GH_TOKEN` via `Environment=` — but that trades a 0600 file for a value visible
+in `/proc/<pid>/environ` and in `systemctl show`, so prefer `hosts.yml`.)
 
 **Do not** put a GitHub token in `.env` in the harness root. That file sits
 *inside* the repo directory, is read by every component's dotenv loader, and is
