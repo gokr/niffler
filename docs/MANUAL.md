@@ -4525,3 +4525,30 @@ regardless of mutable CLI defaults. NICs must be bridged/p2p or use a verified
 managed bridge network; physical/SR-IOV passthrough refuses. Stopped pinned Incus
 updates refuse until an administrator starts the container for identity checks;
 stopped pinned Lima guests also require administrator startup before identity verification.
+
+### SSH nodes without systemd
+
+Fleet accepts explicit `service: "process"` on SSH installs. This mode requires
+Bash, git, a supported Nim/Nimble and Go toolchain with the project's Nimble
+dependencies already installed, plus Linux `flock`, `setsid`, and a `setpriv`
+that supports `--pdeathsig`. Provisioning checks these before any clone or
+build, then still clones and builds the pinned published revision; it skips
+OS/toolchain setup and installs Fleet's private process manager under
+`var/fleet-process`. No credentials are copied. The default remains `systemd`.
+
+On Alpine Linux, BusyBox `flock` and `setsid` are sufficient (the build lock
+falls back to its mkdir lock when `flock` lacks `-o`), but BusyBox `setpriv`
+has no `--pdeathsig`: install the util-linux one (`apk add setpriv`) or the
+preflight refuses.
+
+The supervisor survives SSH logout and restarts its Niffler child. It does **not**
+start after a host reboot. `fleet_start`, `fleet_stop`, `fleet_status`, and
+`fleet_logs` use the receipt's pinned service mode; changing a receipt route or
+mode is refused. Process-service updates currently require explicit operator
+maintenance (`fleet_update` refuses rather than silently using systemd).
+This mode does not add SSH port forwarding to a provider's gateway. Fleet task
+calls use SSH command execution and can work independently of TUI forwarding.
+
+A process receipt is verified only after the node's actual catalog responds.
+This adds no provider-visible prompt prefix: routing stays in private receipts,
+and task outcomes continue to enter append-only history.

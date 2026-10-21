@@ -249,7 +249,7 @@ var/bin/heartbeat: components/heartbeat/main.nim $(SDK_NIM) $(NIM_CONF) | var/bi
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/heartbeat/main.nim
 
 # Provisioning is opt-in; a stock harness starts neither fleet nor heartbeat.
-var/bin/fleet: $(call NIM_SRCS,fleet) $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/fleet: components/fleet/process_service.sh $(call NIM_SRCS,fleet) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fleet/main.nim
 
 var/bin/test_t_fleet: $(call NIM_SRCS,fleet) var/bin/fleet

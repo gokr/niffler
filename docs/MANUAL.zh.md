@@ -2465,3 +2465,21 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
 #### Lima VM policy
 
 Lima 需要 2.2.1 或更新版本，transport 為 `lima`，root 固定 `/home/ubuntu/niffler`。原生 `limactl create/start/stop/shell` 支援可選 SSH host。預設 2 CPU、4GiB RAM、20GiB disk；無主機掛載、憑證複製、agent 轉送或自動 port forwarding。Ubuntu 24.04 amd64/arm64 映像固定 release-20260926 並驗證 SHA256，無浮動 fallback；URL/digest 更新須人工審查。guest ubuntu 保留 Lima 標準 passwordless sudo，安裝啟用 guest linger 和持久 user service，不更改主機 sudo。舊 Multipass 回執與 registry 欄位明確拒絕：建立新 Lima guest 並匯入新驗證回執，勿更名舊 transport 或複製 instance-id。停止的已固定 guest 須由管理員啟動後驗證身分。真實 VM smoke 尚未授權執行；詳見 English manual 的 Lima VM policy。
+
+### SSH nodes without systemd
+
+SSH 安装可显式选择 `service: "process"`。目标 Linux 主机需预先安装 Bash、git、
+兼容的 Nim/Nimble、Go、项目 Nimble 依赖，以及 `flock`、`setsid` 和支持 `--pdeathsig`
+的 `setpriv`。Fleet 在任何克隆或构建之前先检查这些前提，然后克隆并构建固定的公开版本，
+随后在 `var/fleet-process` 安装私有服务管理器；不复制凭证。默认模式仍为 `systemd`。
+
+在 Alpine Linux 上，BusyBox 的 `flock` 和 `setsid` 即可满足（`flock` 不支持 `-o` 时，
+构建锁会退回到 mkdir 锁），但 BusyBox 的 `setpriv` 没有 `--pdeathsig`：需安装 util-linux
+版本（`apk add setpriv`），否则预检会拒绝。
+
+该 supervisor 能跨 SSH 断开保持运行并重启 Niffler 子进程，但不提供宿主机重启自启。
+启动、停止、状态和日志操作使用 receipt 固定的服务模式，拒绝模式漂移。
+此模式的升级目前需人工维护，`fleet_update` 会明确拒绝，而不退回 systemd。
+它也不会使提供商的 SSH 网关新增端口转发能力；Fleet 任务通过 SSH 命令执行。
+只有实际节点 catalog 响应后才保存已验证 receipt。路由保留在私有 receipt 中，
+不改变模型的固定提示前缀，任务结果继续追加到历史。

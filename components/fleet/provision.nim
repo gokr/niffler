@@ -114,7 +114,16 @@ proc validateTarget(transport, target: string) =
   if transport in ["lima", "incus"] and (target[0] notin {'a'..'z','A'..'Z'} or
       not target.allCharsInSet({'a'..'z','A'..'Z','0'..'9','-'})): refuse("invalid VM name")
 
+proc serviceMode(p: JsonNode): string =
+  if p.hasKey("service") and p["service"].kind != JString:
+    refuse("service mode must be a string")
+  result = p{"service"}.getStr("systemd")
+  if result notin ["systemd", "process"]: refuse("unsupported service mode")
+  if result == "process" and p{"transport"}.getStr() != "ssh":
+    refuse("process service mode requires SSH")
+
 proc validateRoute(p: JsonNode) =
+  discard serviceMode(p)
   let transport = p{"transport"}.getStr()
   validateTarget(transport, p{"target"}.getStr())
   if p.hasKey("host"):
@@ -298,11 +307,53 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 """
 
-proc installScript*(root, revision: string): string =
+const processService = staticRead("process_service.sh")
+
+proc processServiceSetup(root: string): string =
+  "root=" & quoteShell(root) & "\n" & """
+[[ ! -L "$root/var" && ! -L "$root/var/fleet-process" ]] || exit 1
+mkdir -p "$root/var/fleet-process"
+chmod 700 "$root/var/fleet-process"
+staged=$(mktemp "$root/var/fleet-process/manager.XXXXXX")
+trap 'rm -f "$staged"' EXIT
+cat > "$staged" <<'NIFFLER_PROCESS_SERVICE'
+""" & processService & "\nNIFFLER_PROCESS_SERVICE\n" & """
+chmod 700 "$staged"
+manager="$root/var/fleet-process/manager.sh"
+[[ ! -L "$manager" ]] || exit 1
+if [[ -e "$manager" ]]; then
+  cmp -s "$manager" "$staged" || { echo 'conflicting process service manager' >&2; exit 1; }
+else
+  mv "$staged" "$manager"
+fi
+rm -f "$staged"
+trap - EXIT
+bash "$manager" install "$root"
+bash "$manager" start "$root"
+"""
+
+const processPreflight = """
+# Process mode skips bootstrap: prove the manager's capabilities (and, for a
+# fresh clone, the prepared build toolchain) before any write. BusyBox
+# (Alpine) flock/setsid suffice; its setpriv lacks --pdeathsig and must not pass.
+for tool in flock setsid; do
+  command -v "$tool" >/dev/null || { echo "process service requires $tool on PATH" >&2; exit 1; }
+done
+setpriv --pdeathsig TERM true >/dev/null 2>&1 || { echo 'process service requires setpriv with --pdeathsig (util-linux; Alpine: apk add setpriv)' >&2; exit 1; }
+if [[ ! -e "$root" ]]; then
+  # A clone that then fails to build is refused on retry as incomplete.
+  for tool in git make nim go; do
+    command -v "$tool" >/dev/null || { echo "process service build requires $tool on PATH" >&2; exit 1; }
+  done
+fi
+"""
+
+proc installScript*(root, revision: string, service = "systemd"): string =
   validateRoot(root)
   if not hex(revision, 40): refuse("full 40-character pinned revision required")
   result = "root=" & quoteShell(root) & "\nrevision=" & revision & "\n" & """
 export PATH="$HOME/.nimble/bin:/usr/local/bin:$PATH"
+""" & (if service == "process": processPreflight else: "") & """
 [[ ! -L "$root" ]] || { echo 'symlinked root: refusing' >&2; exit 1; }
 if [[ -e "$root" ]]; then
   [[ -f "$root/niffler.nimble" && -x "$root/var/bin/niffler" && -f "$root/scripts/server.sh" ]] || { echo 'existing incomplete/unrelated root: refusing overwrite' >&2; exit 1; }
@@ -314,12 +365,15 @@ else
   git -C "$root" checkout --detach "$revision"
   [[ "$(git -C "$root" rev-parse HEAD)" == "$revision" ]] || exit 1
   cd "$(dirname "$root")"
-  bash "$root/scripts/bootstrap.sh" --server "$root"
+""" & (if service == "process": "  (cd \"$root\" && make build)\n"
+    else: "  bash \"$root/scripts/bootstrap.sh\" --server \"$root\"\n") & """
 fi
-""" & serviceEnv & """
+"""
+  result.add(if service == "process": processServiceSetup(root)
+    else: serviceEnv & """
 bash "$root/scripts/server.sh" install "$root"
 bash "$root/scripts/server.sh" start "$root"
-"""
+""")
 
 proc updateScript*(root, revision: string): string =
   ## Refresh an EXISTING pinned installation to a new revision. Never clones and
@@ -501,9 +555,11 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
   for size in [memory, disk]:
     if size.len < 2 or size[^1] notin {'M','G'} or size[0] notin {'1'..'9'} or not size[0..^2].allCharsInSet({'0'..'9'}): refuse("invalid VM resource size")
   var p = %*{"version": 1, "transport": transport, "target": target, "root": root}
+  if args.hasKey("service"): p["service"] = args["service"]
   if args.hasKey("host"): p["host"] = args["host"]
   validateRoute(p)
   if previous != nil:
+    if serviceMode(previous) != serviceMode(p): refuse("profile already belongs to a different service mode")
     if previous{"host"} != p{"host"}: refuse("profile already belongs to a different host route")
     for key in ["transport", "target", "root"]:
       if previous[key] != p[key]: refuse("profile already belongs to a different target")
@@ -541,7 +597,7 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
   elif transport == "lima" and previous == nil:
     discard checked(run, management(p, @["limactl", "shell", "--workdir=/home/ubuntu", target, "sudo", "-n", "bash", "-s"]), "set -euo pipefail\n" & incusInstallScript(root, revision), 3600000)
   else:
-    discard remote(run, p, (if previous != nil: guard(p) else: "") & installScript(root, revision), 3600000)
+    discard remote(run, p, (if previous != nil: guard(p) else: "") & installScript(root, revision, serviceMode(p)), 3600000)
   var verified = false
   for attempt in 0..<30:
     try:
@@ -553,6 +609,8 @@ proc install*(run: CommandRunner, args: JsonNode): JsonNode =
       if attempt < 29: sleep(1000)
   if not verified: refuse("service did not verify; profile not saved")
   saveReceipt(path, p)
+  if serviceMode(p) == "process":
+    return %*{"profile": path, "receipt": p, "text": "Verified SSH process service. Survives SSH logout; host reboot persistence is not provided. Provider configuration remains explicit."}
   %*{"profile": path, "receipt": p, "text": (if transport in ["incus", "lima"]: "Verified receipt saved; enabled guest linger for ubuntu; temporary installer sudo grant removed. Provider configuration remains explicit." & (if transport == "incus": " Container boot.autostart=true (survives a host reboot)." else: " Lima has no per-VM boot.autostart: run limactl autostart on macOS or give the VM a host unit on Linux, or a host reboot leaves it stopped.") else: "Verified receipt saved; provider configuration and linger remain explicit.")}
 
 proc revisionMatches(run: CommandRunner, p, identity: JsonNode, revision: string): bool =
@@ -588,6 +646,7 @@ proc update*(run: CommandRunner, args: JsonNode): JsonNode =
   if revisionMatches(run, p, before, revision):
     return %*{"profile": path, "receipt": p, "changed": false,
               "text": "Already at the requested revision; nothing to do."}
+  if serviceMode(p) == "process": refuse("process-service updates require explicit operator maintenance; no systemd fallback")
   discard remote(run, p, guard(p) & updateScript(p["root"].getStr(), revision),
                  3600000)
   var verified = false
@@ -621,5 +680,8 @@ proc action*(run: CommandRunner, name, profile: string): JsonNode =
     return %*{"ok": true, "text": "VM stopped; not deleted."}
   if name notin ["start", "stop", "status", "logs"]: refuse("unsupported Fleet action")
   let root = quoteShell(p["root"].getStr())
-  let output = remote(run, p, guard(p) & serviceEnv & "bash " & root & "/scripts/server.sh " & name & " " & root & "\n")
+  let process = serviceMode(p) == "process"
+  # The systemd user-bus environment means nothing to the process manager.
+  let output = remote(run, p, guard(p) & (if process: "" else: serviceEnv) & "bash " & root &
+    (if process: "/var/fleet-process/manager.sh " else: "/scripts/server.sh ") & name & " " & root & "\n")
   %*{"ok": true, "text": capBytes(output, 65536)}
