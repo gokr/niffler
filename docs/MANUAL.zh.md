@@ -101,7 +101,7 @@
 | `logfile` | Nim | 可选 | 轮转 JSONL 接收器和有界持久日志搜索（见[观察与日志](#observation-and-logs)）—— 两个工具都是按需的，且都没有声明 `x-harness.effect`，因此 fabric 批处理主机即使对 `logfile_search` 也按写入调度 |
 | `hooks` | Nim | 默认关闭 | 当选定的总线事件触发时运行操作员 shell 命令（仅观察；stdin 上的 JSON，环境配置；见[钩子](#hooks)） |
 | `mcp` | Go | 可选 | 外部 MCP 服务器（Model Context Protocol）：存储支持的注册表（`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`），每个服务器一个受监督的桥（子进程是单独的 `mcp-bridge` 二进制 —— `var/bin/mcp-bridge`，由 `make build` 构建，路径可用 `NIF_MCP_BRIDGE_BIN` 覆盖；它没有清单条目，从不手动启动）；工具成为普通的目录工具，可通过 `discover` + `invoke` 到达（见[外部 MCP 服务器](#external-mcp-servers-mcp)） |
-| `nats-server` | Go | **不在清单中** | 总线本身作为一等组件：官方 `nats-server` main 的忠实重建（固定在 `components/nats/go.mod`），由 `make build` 构建到 `var/bin/nats-server`，core 优先于 PATH 安装使用它，因此不需要 NATS 先决条件。故意*不是*总线组件 —— core 在总线存在之前启动它，它不注册任何工具，`core.spawn` 无法启动它。Niffler 添加一个标志 `--max_payload <bytes>`（core 传递 8388608），在 Linux 上它设置 `PR_SET_PDEATHSIG`，使没有孤儿总线比其 harness 活得更久。无需为它安装任何东西 —— `make doctor` 报告 `nats-server: OK` 或解释它由 `make build` 从源码构建 |
+| `nats-server` | Go | **不在清单中** | 总线本身作为一等组件：官方 `nats-server` main 的忠实重建（固定在 `components/nats/go.mod`），由 `make build` 构建到 `var/bin/nats-server`，它是 Niffler **唯一**使用的总线 —— core 与测试套件都从 `var/bin` 解析它，刻意没有 PATH 中的 `nats-server` 后备（开发克隆若依赖外部二进制，测试的就不是任何用户会运行的总线），因此不需要 NATS 先决条件。故意*不是*总线组件 —— core 在总线存在之前启动它，它不注册任何工具，`core.spawn` 无法启动它。Niffler 添加一个标志 `--max_payload <bytes>`（core 传递 8388608），在 Linux 上它设置 `PR_SET_PDEATHSIG`，使没有孤儿总线比其 harness 活得更久。无需为它安装任何东西 —— `make doctor` 报告 `nats-server: OK` 或解释它由 `make build` 从源码构建 |
 
 `components/` 不再包含 bash 演示：无 SDK 的 `dialog` 组件已移至 `examples/dialog/dialog.sh`，并带有自己的 README，脱离随附构建和 `make setup` —— nats CLI 和 `zenity` 安装器随之退役（`jq` 作为通用 CLI 工具保留）。对照运行中的 harness 手动运行它（`bash examples/dialog/dialog.sh`）；它不在 `manifest.yaml` 中，没有任何东西将其构建到 `var/bin`，`make doctor` 仅指向它。
 
@@ -296,6 +296,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | `NIF_TRAFILATURA` | Trafilatura 可执行文件路径/名称；`off` 禁用外部提取 | 在 `PATH` 上自动检测 `trafilatura` |
 | `NIF_LOG_LEVEL` | SDK 结构化日志发布阈值（`debug`、`info`、`warn`、`error`） | `info` |
 | `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 组件在总线不可达时容忍的秒数，超过后**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 众所周知的端口，因此在新端口上重启的 core 也能被找到）、重拨（Nim 采用指数退避）、重建每个订阅并重新发布 `reg.publish`。刻意高于 NATS 客户端自身的重连预算（约 2 分钟），因此更短的中断绝不触发它；不是正数的值会保留默认值。TypeScript SDK 目前尚不重新接入 | `180` |
+| `NIF_NATS_DIAL_TIMEOUT` | Go SDK 组件首次 NATS 握手（以及重新接入）允许的秒数。通过 `ssh … incus exec … cli relay` 到达的中继总线在 INFO 到达前要付出进程启动加全新 TCP 连接的开销，nats.go 默认的 2 秒无法满足；1–600 的值会被采用，其他值保留默认值 | `15` |
 | `NIF_LLM_MAX_RETRIES` | 对瞬时 LLM 失败（429/5xx/过载/连接断开）的额外尝试次数，带指数退避；每次重试宣告 `ev.session.<id>.retry`。认证/配额/错误请求错误始终快速失败 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 流式响应中途断开时的额外尝试次数——与一般情况分开预算，因为断开的流可能已经计费了输出 | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | 连接/拨号失败的额外尝试次数 | `2` |
@@ -323,6 +324,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | 每次查询枚举的最大候选 JSONL 路径数；接受范围 100–100000，也适用于 `logfile_paths`，截断报告为 `directoryTruncated` | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → 审批门（见下文）被绕过，每个 `/limit` 继续问题都以是回答（它隐含 `NIF_AUTO_CONTINUE`）。仅用于无头自动化；绝不要在你关心的会话中设置它 | 未设置 |
 | `NIF_AUTO_CONTINUE` | `1` → 达到对话软限制之一（`/limit`）的轮次继续而不询问（`NIF_AUTO_APPROVE=1` 隐含它）。仅用于无头自动化 | 未设置 |
+| `NIF_APPROVALS_DEFAULT` | `auto` → 尚无人类决定的对话**以自动审批启动**（相当于设置了 `/approvals auto`）：被门控的工具按对话大声批准。这是常驻/远程实例的 `NIF_AUTO_APPROVE` 替代方案 —— 它是 FALLBACK，因此显式的 `/approvals ask` 仍会门控那一个对话，清除（`/approvals` 空参数）则回到默认。任何其他值（或未设置）表示普通的逐调用门控。它同样覆盖**直接、无上下文**的 core 调用 —— 完全没有对话的调用，例如组件发出的 `core.spawn`（`plugin_install` 安装软件包）：core 自己的门控没有会话或调用者可查询，因此实例默认值是唯一权威；没有它，分离的实例永远无法安装插件。值得注意的细节：对话头是人类决定的记录，因此不可读的头（存储故障）算作未决定并应用默认值 —— 在 `auto` 实例上，存储故障因此会打开门控而不是使其停滞 | 未设置（`server.sh` 的用户服务中为 `auto`） |
 | `NIF_MAX_TURN_ROUNDS` | 每轮次的硬 LLM 轮次上限；显式的每会话 `maxRounds` 可以收窄它 | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | 对话直接工具集的估计 token 上限，用于 `invoke {sticky: true}` 提升；会超过它的提升被推迟并在工具结果中报告 | `4000` |
 | `NIF_REVIEW_HINT_MIN_CHARS` | 全新对话第一条用户消息的字符长度，达到或超过该值时 `systemprompt` 组件会在提示中段插入其独立审查指示；`0` 或负值禁用该指引 | `1200` |
@@ -2062,7 +2064,7 @@ core 的 `--log=<level>` 标志（`debug`、`info`、`warn`、`error`）为 core
 
 ### Monitoring
 
-当 core 生成 nats-server 时，它使用不同的回环客户端和 HTTP 端口，然后写入（二进制文件是存在时来自 `components/nats` 的已构建组件 `var/bin/nats-server`，否则是 PATH 中的 `nats-server`）：
+当 core 生成 nats-server 时，它使用不同的回环客户端和 HTTP 端口，然后写入（二进制文件始终是来自 `components/nats` 的已构建组件 `var/bin/nats-server` —— 没有 PATH 后备；缺失时会明确要求运行 `make build`）：
 
 ```text
 var/nats-url
@@ -2071,7 +2073,7 @@ var/nats-monitor-url
 
 监控发现文件仅在客户端连接成功后写入。NATS 自行分配端口：core 传递 `--ports_file_dir <tmp>` 并从它写入的 `*.ports` 文件读回客户端和监控端口（有界 4 s 等待），因此并发 harness 无法赢得绑定-关闭-启动竞态。Core 在空闲时传递主端口，在启动隔离总线时传递 `-1`（随机端口）。复用或远程总线没有可发现的 HTTP 端点；请显式配置 `NIF_OBSERVE_MONITOR_URL`。`NIF_NATS_SPAWN=1` 强制在随机端口上使用隔离的 core 拥有的总线（主要用于测试和诊断）——绝不是 4222；环境中显式的 `NIF_NATS_URL` 优先。
 
-一个请求承载整个对话，因此捆绑的总线以 `max_payload: 8388608`（8 MiB——约 2M tokens 的 JSON；超过此值 nats-server 仅警告）启动：捆绑的 `var/bin/nats-server` 将其作为额外标志，而 PATH 中的 `nats-server` 则在生成的配置文件中获得它。当 core 附加到它未生成的总线时，它读取服务器的真实上限，并在启动时当低于 8 MiB 时警告——这样的总线在发布时拒绝大型回复，调用者会等待其完整超时，这看起来像组件挂起而不是总线限制。
+一个请求承载整个对话，因此捆绑的总线以 `max_payload: 8388608`（8 MiB——约 2M tokens 的 JSON；超过此值 nats-server 仅警告）启动：捆绑的 `var/bin/nats-server` 将其作为额外标志。当 core 附加到它未生成的总线时，它读取服务器的真实上限，并在启动时当低于 8 MiB 时警告——这样的总线在发布时拒绝大型回复，调用者会等待其完整超时，这看起来像组件挂起而不是总线限制。
 
 `observe_monitor` 为每个请求使用新的 HTTP 客户端读取 `/subsz` 和 `/connz`。它报告订阅详情是否被截断；`mostSubscribed` 表示订阅者密度，而非消息吞吐量。
 
@@ -2438,7 +2440,7 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
 - **无头服务模式**（无 tty，用于 UI/自动化）：
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null` ——
   服务 `svc.core.call`；除非有 UI 附加或设置 `NIF_AUTO_APPROVE=1`，否则需要审批的工具会被拒绝。
-- **附加到任意总线**：`NIF_NATS_URL=nats://host:4222`（甚至远程），或在核心之前自己在默认端口启动 nats-server——只有当应答的核心服务**此 root** 时，核心才会复用 `127.0.0.1:4222` 上的总线；外来 harness，或没有核心在其上的裸 nats-server，会使核心发出警告并改为启动隔离总线（命名为此 root 自己总线之一的遗留 `var/nats-pid` 会先被回收）。要刻意强制使用某条总线，请设置 `NIF_NATS_URL`。
+- **附加到任意总线**：`NIF_NATS_URL=nats://host:4222`（甚至远程）。未设置它时，只有当应答的核心服务**此 root** 时，核心才会复用 `127.0.0.1:4222` 上的总线；外来 harness，或没有核心在其上的裸 nats-server，会使核心发出警告并改为启动隔离总线（命名为此 root 自己总线之一的遗留 `var/nats-pid` 会先被回收）。要刻意强制使用某条总线，请设置 `NIF_NATS_URL`。
 - **不使用 LLM 探测总线**：`tests/` 中的一次性 `nim c -r` 脚本（见 AGENTS.md 的 "Debugging the bus"）。
 - **Wails 包用 `wails build` 构建，绝不要用 `go build`**：普通的 `go build` 会写出一份桩二进制。Wails 客户端的包配方必须在 Linux 上运行 `wails build -tags webkit2_41`。（本项目唯一已知的 Wails 包是实验性的桌面 UI——gokr/niffler-ui，它不属于发布内容。）
 - **监控运行系统的 RAM**，用 `make ram`（或 `watch -n5 scripts/niffler-ram.sh`）：按栈统计总量——你的克隆、`nifflerprod` 以及每个 bench 私有 harness 分别统计——涵盖 harness + NATS + 所有启动的组件 + 会话运行器 + 客户端。成员资格按可执行文件路径（`*/var/bin/*`、`niffler-ui`）判定，而非进程树：tui 是自动启动 harness 的*父进程*，而 bench 运行的私有总线属于 bench 驱动程序，因此 PPID 遍历会漏掉两者。读 PSS，而非 RSS：共享同一 `var/bin` 构建的栈会在 RSS 中重复计算文件支持的页。`bash` 工具的工作负载子进程（编译器、测试二进制）按设计被排除。

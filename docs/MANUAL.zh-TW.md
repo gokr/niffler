@@ -101,7 +101,7 @@
 | `logfile` | Nim | optional | 輪替的 JSONL 接收器和有界的持久日誌搜尋（見[觀察與日誌](#observation-and-logs)）— 兩個工具都是隨需的，且兩者都不宣告 `x-harness.effect`，因此 fabric 批次主機將甚至 `logfile_search` 排程為寫入 |
 | `hooks` | Nim | off by default | 當選定的匯流排事件觸發時執行操作者 shell 命令（僅觀察；stdin 上的 JSON，環境配置；見[掛鉤](#hooks)） |
 | `mcp` | Go | optional | 外部 MCP 伺服器（Model Context Protocol）：儲存後端的註冊表（`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`），每個伺服器一個受監督的橋接（子項是單獨的 `mcp-bridge` 二進位檔 — `var/bin/mcp-bridge`，由 `make build` 建置，路徑可用 `NIF_MCP_BRIDGE_BIN` 覆寫；它沒有 manifest 條目，且絕不手動啟動）；工具成為可透過 `discover` ＋ `invoke` 到達的普通目錄工具（見[外部 MCP 伺服器](#external-mcp-servers-mcp)） |
-| `nats-server` | Go | **not in the manifest** | 匯流排本身作為一等元件：官方 `nats-server` main 的忠實重建（固定在 `components/nats/go.mod`），由 `make build` 建置到 `var/bin/nats-server`，core 優先於 PATH 安裝，因此不需要 NATS 先決條件。刻意*不是*匯流排元件 — core 在匯流排存在之前啟動它，它不註冊任何工具，且 `core.spawn` 無法啟動它。Niffler 新增一個旗標 `--max_payload <bytes>`（core 傳遞 8388608），並在 Linux 上設定 `PR_SET_PDEATHSIG` 使沒有孤兒匯流排比其載具活得更久。沒有什麼需要為它安裝 —— `make doctor` 報告 `nats-server: OK` 或解釋它由 `make build` 從原始碼建置 |
+| `nats-server` | Go | **not in the manifest** | 匯流排本身作為一等元件：官方 `nats-server` main 的忠實重建（固定在 `components/nats/go.mod`），由 `make build` 建置到 `var/bin/nats-server`，它是 Niffler **唯一**使用的匯流排 —— core 與測試套件都從 `var/bin` 解析它，刻意沒有 PATH 中的 `nats-server` 後備（開發複本若依賴外部二進位檔，測試的就不是任何使用者會執行的匯流排），因此不需要 NATS 先決條件。刻意*不是*匯流排元件 — core 在匯流排存在之前啟動它，它不註冊任何工具，且 `core.spawn` 無法啟動它。Niffler 新增一個旗標 `--max_payload <bytes>`（core 傳遞 8388608），並在 Linux 上設定 `PR_SET_PDEATHSIG` 使沒有孤兒匯流排比其載具活得更久。沒有什麼需要為它安裝 —— `make doctor` 報告 `nats-server: OK` 或解釋它由 `make build` 從原始碼建置 |
 
 `components/` 不再包含 bash 示範：無 SDK 的 `dialog` 元件已移至 `examples/dialog/dialog.sh`，附有自己的 README，脫離隨附建置與 `make setup` — nats CLI 與 `zenity` 安裝器隨之退役（`jq` 作為一般 CLI 工具保留）。對照執行中的 harness 手動執行它（`bash examples/dialog/dialog.sh`）；它不在 `manifest.yaml` 中，沒有任何東西將它建置到 `var/bin`，`make doctor` 只是指向它。
 
@@ -302,6 +302,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | `NIF_TRAFILATURA` | Trafilatura 執行檔路徑/名稱；`off` 停用外部擷取 | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK 結構化日誌發布閾值（`debug`、`info`、`warn`、`error`） | `info` |
 | `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 眾所周知的連接埠，因此在新連接埠上重啟的 core 也能被找到）、重新撥號（Nim 採指數退避）、重建每個訂閱並重新發佈 `reg.publish`。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。TypeScript SDK 目前尚不重新接入 | `180` |
+| `NIF_NATS_DIAL_TIMEOUT` | Go SDK 元件首次 NATS 握手（以及重新接入）允許的秒數。透過 `ssh … incus exec … cli relay` 到達的中繼匯流排，在 INFO 到達前需付出行程啟動加上全新 TCP 連線的成本，nats.go 預設的 2 秒無法滿足；1–600 的值會被採用，其他值保留預設值 | `15` |
 | `NIF_LLM_MAX_RETRIES` | 對暫時性 LLM 失敗（429/5xx/超載/連線中斷）的額外嘗試次數，採指數退避；每次重試會宣告 `ev.session.<id>.retry`。驗證/配額/錯誤請求錯誤一律快速失敗 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 串流回應中途中斷時的額外嘗試次數——與一般情況分開編列預算，因為中斷的串流可能已經計費輸出 | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | 連線/撥號失敗的額外嘗試次數 | `2` |
@@ -329,6 +330,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | 每次查詢列舉的最大候選 JSONL 路徑數；接受範圍 100–100000，也適用於 `logfile_paths`，截斷會回報為 `directoryTruncated` | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → 略過核准閘門（見下文），且每個 `/limit` 是否繼續的問題都以是回答（它隱含 `NIF_AUTO_CONTINUE`）。僅供無介面自動化；絕不要在你重視的會話中設定它 | unset |
 | `NIF_AUTO_CONTINUE` | `1` → 到達對話軟性限制（`/limit`）之一的回合會不詢問地繼續（`NIF_AUTO_APPROVE=1` 隱含它）。僅供無介面自動化 | unset |
+| `NIF_APPROVALS_DEFAULT` | `auto` → 尚無人類決定的對話**以自動核准啟動**（相當於設定了 `/approvals auto`）：受閘門管制的工具會按對話大聲核准。這是常駐/遠端執行個體的 `NIF_AUTO_APPROVE` 替代方案 —— 它是 FALLBACK，因此明確的 `/approvals ask` 仍會管制那一個對話，清除（`/approvals` 空引數）則回到預設。任何其他值（或未設定）表示一般的逐呼叫閘門。它同樣涵蓋**直接、無上下文**的 core 呼叫 —— 完全沒有對話的呼叫，例如元件發出的 `core.spawn`（`plugin_install` 安裝套件）：core 自己的閘門沒有工作階段或呼叫者可查詢，因此執行個體預設值是唯一權威；沒有它，分離的執行個體永遠無法安裝外掛。值得注意的細節：對話標頭是人類決定的記錄，因此無法讀取的標頭（儲存故障）算作未決定並套用預設值 —— 在 `auto` 執行個體上，儲存故障因此會開啟閘門而不是使其停滯 | unset（`server.sh` 的使用者服務中為 `auto`） |
 | `NIF_MAX_TURN_ROUNDS` | 每回合的 LLM 回合硬上限；明確的每會話 `maxRounds` 可縮小它 | `1000` |
 | `NIF_MAX_DIRECT_TOKENS` | 對話直接工具集用於 `invoke {sticky: true}` 提升的估計 token 上限；會超過它的提升會被延後並在工具結果中回報 | `4000` |
 | `NIF_REVIEW_HINT_MIN_CHARS` | 全新對話第一則使用者訊息的字元長度，達到或超過該值時 `systemprompt` 元件會在提示中段插入其獨立審查指示；`0` 或負值停用該指引 | `1200` |
@@ -2215,7 +2217,7 @@ Nim 的任意信封請求輔助程式在等待時只會繼續泵送原始 tap �
 
 ### Monitoring
 
-當核心生成 nats-server 時，它使用不同的回送用戶端與 HTTP 埠，然後寫入（二進位檔為存在時來自 `components/nats` 的已建置元件 `var/bin/nats-server`，否則為 PATH 中的 `nats-server`）：
+當核心生成 nats-server 時，它使用不同的回送用戶端與 HTTP 埠，然後寫入（二進位檔始終是來自 `components/nats` 的已建置元件 `var/bin/nats-server` —— 沒有 PATH 後備；缺失時會明確要求執行 `make build`）：
 
 ```text
 var/nats-url
@@ -2224,7 +2226,7 @@ var/nats-monitor-url
 
 監控探索檔案只在用戶端連線成功後寫入。NATS 自行配置埠：核心傳遞 `--ports_file_dir <tmp>`，並從它寫入的 `*.ports` 檔案讀回用戶端與監控埠（有界的 4 秒等待），因此並行的 harness 無法贏得綁定-關閉-啟動的競爭。核心在 home 埠空閒時傳遞它，並在啟動隔離匯流排時傳遞 `-1`（隨機埠）。重複使用或遠端的匯流排沒有可探索的 HTTP 端點；請明確設定 `NIF_OBSERVE_MONITOR_URL`。`NIF_NATS_SPAWN=1` 會強制在隨機埠上使用隔離的核心擁有匯流排（主要用於測試與診斷）——絕不是 4222；環境中明確的 `NIF_NATS_URL` 優先。
 
-一個請求承載整個對話，因此隨附的匯流排以 `max_payload: 8388608` 啟動（8 MiB——約 2M 權杖的 JSON；超過此值 nats-server 只會警告）：隨附的 `var/bin/nats-server` 將它作為額外旗標，而 PATH 中的 `nats-server` 則改在產生的設定檔中取得它。當核心附加至非它生成的匯流排時，它會讀取伺服器的真實上限，並在開機時於低於 8 MiB 時警告——這樣的匯流排會在發佈時拒絕大型回覆，而呼叫者會等待完其完整逾時，這看起來像元件懸置而非匯流排限制。
+一個請求承載整個對話，因此隨附的匯流排以 `max_payload: 8388608` 啟動（8 MiB——約 2M 權杖的 JSON；超過此值 nats-server 只會警告）：隨附的 `var/bin/nats-server` 將它作為額外旗標。當核心附加至非它生成的匯流排時，它會讀取伺服器的真實上限，並在開機時於低於 8 MiB 時警告——這樣的匯流排會在發佈時拒絕大型回覆，而呼叫者會等待完其完整逾時，這看起來像元件懸置而非匯流排限制。
 
 `observe_monitor` 為每個請求使用全新的 HTTP 用戶端讀取 `/subsz` 與 `/connz`。它會回報訂閱詳細資料是否被截斷；`mostSubscribed` 意指訂閱者密度，而非訊息輸送量。
 
@@ -2685,9 +2687,9 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`
   ——服務 `svc.core.call`；需要核准的工具會被拒絕，除非有 UI 附加或
   設定了 `NIF_AUTO_APPROVE=1`。
-- **附加到任何匯流排**：`NIF_NATS_URL=nats://host:4222`（甚至遠端），
-  或在 core 之前於預設埠啟動你自己的 nats-server——只有當回應的
-  core 服務**此 root** 時，core 才會重用 `127.0.0.1:4222` 上的匯流排；
+- **附加到任何匯流排**：`NIF_NATS_URL=nats://host:4222`（甚至遠端）。
+  未設定它時，只有當回應的 core 服務**此 root** 時，core 才會重用
+  `127.0.0.1:4222` 上的匯流排；
   外來 harness，或上面沒有 core 的裸 nats-server，會讓 core 發出警告
   並改為啟動隔離的匯流排（指名此 root 自身某個匯流排的殘留
   `var/nats-pid` 會先被回收）。若要刻意強制使用某個匯流排，請設定

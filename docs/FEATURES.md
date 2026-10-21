@@ -69,8 +69,9 @@ See [MANUAL.md](MANUAL.md) "Layout of a running system", "Starting and
 stopping"; [WIRE.md](WIRE.md) "Lifecycle".
 
 - Bus bootstrap: core spawns the bundled `nats-server` build when no bus is
-  configured, at an 8 MiB `max_payload` (or a PATH `nats-server` via a
-  generated config), and writes `var/nats-url` / `var/nats-monitor-url`.
+  configured, at an 8 MiB `max_payload`, and writes `var/nats-url` /
+  `var/nats-monitor-url`. The bundled `var/bin/nats-server` is the only bus
+  used; a missing binary is an error naming `make build`.
 - Home-bus claiming vs. explicit attach: environment URL → `.env` home bus →
   the well-known port; identity-checked adoption of only a core serving *this*
   root; loud yield to a foreign core or bare NATS server; isolated random bus

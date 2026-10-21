@@ -600,6 +600,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`). Core's `--log=<level>` flag sets it for core and every component it spawns | `info` |
 | `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
+| `NIF_NATS_DIAL_TIMEOUT` | seconds allowed for a Go SDK component's initial NATS handshake (and reattach). A relayed bus reached through `ssh … incus exec … cli relay` pays process spawn plus a fresh TCP connect before INFO arrives, which nats.go's 2 s default cannot meet; values 1–600 are honoured, anything else leaves the default | `15` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.<id>.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | additional attempts when a streamed response drops mid-flight — budgeted separately from the general case because a dropped stream may already have billed output | `2` |
 | `NIF_LLM_MAX_CONNECT_RETRIES` | additional attempts for connect/dial failures | `2` |
@@ -3850,8 +3851,7 @@ never 4222; an explicit `NIF_NATS_URL` in the environment wins.
 A request carries a whole conversation, so the bundled bus is started with
 `max_payload: 8388608` (8 MiB — about 2M tokens of JSON; above that
 nats-server only warns): the bundled `var/bin/nats-server` takes it as an
-extra flag, while a PATH `nats-server` gets it in a generated config file
-instead. When core attaches to a bus it did not spawn, it reads the server's
+extra flag. When core attaches to a bus it did not spawn, it reads the server's
 real cap and warns at boot when it is below 8 MiB — such a bus rejects a large
 reply at publish time and the caller waits out its full timeout, which looks
 like a component hang rather than a bus limit.
@@ -4471,13 +4471,12 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
   serves `svc.core.call`; approval-requiring tools are denied unless a UI
   is attached or `NIF_AUTO_APPROVE=1` (or the conversation's gate mode is
   auto, e.g. through `NIF_APPROVALS_DEFAULT=auto`).
-- **Attach to any bus**: `NIF_NATS_URL=nats://host:4222` (even remote), or
-  start your own nats-server on the default port before core — core reuses
-  a bus on `127.0.0.1:4222` only when the core answering it serves **this
-  root**; a foreign harness, or a bare nats-server with no core on it, makes
-  core warn and spawn an isolated bus instead (a leftover `var/nats-pid`
-  naming one of this root's own buses is reclaimed first). To force a bus
-  deliberately, set `NIF_NATS_URL`.
+- **Attach to any bus**: `NIF_NATS_URL=nats://host:4222` (even remote).
+  Without it, core reuses a bus on `127.0.0.1:4222` only when the core
+  answering it serves **this root**; a foreign harness, or a bare
+  nats-server with no core on it, makes core warn and spawn an isolated bus
+  instead (a leftover `var/nats-pid` naming one of this root's own buses is
+  reclaimed first). To force a bus deliberately, set `NIF_NATS_URL`.
 - **Probe the bus** without the LLM: one-shot `nim c -r` scripts in
   `tests/` (see AGENTS.md "Debugging the bus").
 - **Wails packages build with `wails build`, never `go build`**: a plain
