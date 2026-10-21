@@ -6,6 +6,38 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- A conversation's workspace is no longer frozen at the harness root by a
+  control call. `session` used to persist `cwd: <entry.workspace>` on the fresh
+  path, so a status readback or a model pin created the header with the
+  harness-root **default** recorded as if it were a decision — after which the
+  workspace was immutable, and reopening that conversation from another
+  checkout ran it in the wrong tree with `/workspace` refused. Now only a
+  CHOSEN workspace is persisted (an explicit `cwd` from a client or a
+  `/workspace` repin, recorded as `cwdPinned`), and a conversation whose
+  workspace was never chosen stays repinnable even after turns have run — the
+  way out that did not exist. The repin rule lives in one place
+  (`core/conversation.nim:repinWorkspace`) and now also applies when the
+  conversation is being loaded in the runner for the first time, which is the
+  ordinary shape for "I just opened an old conversation": before this, an
+  explicit `cwd` on that path was silently ignored. "Pristine" is asked of the
+  store rather than of the runner's message list, so a resume cannot look
+  pristine, and the `session` status readback reports `cwdPinned` for clients.
+  `niffler-tui` shows a never-chosen workspace as such in `/workspace` instead
+  of letting the user discover the refusal.
+
+- The store engine's tools declared no `x-harness.writes`, so the dispatch gate
+  treated them as **opaque writers** and took a lease on the whole conversation
+  workspace for every call. Two consequences, both reported from live use: a
+  `store.list` READ was refused by the very conversation that issued it
+  (`[E_WRITE_BUSY] <workspace> is being modified by conversation <itself>`, its
+  own `bash` holding a root claim), and every document write serialized all
+  conversations sharing a checkout. `get`/`list`/`search` now declare
+  `effect: "read"` and `put`/`del`/`selftest` declare `writes: {none: true}` —
+  the store serializes its own writers, so a filesystem lease was redundant as
+  well as misdirected. Both engines (sqlite, tidb) are fixed, and
+  `tests/t_locks.nim` now asserts that no `store` tool computes a workspace
+  claim.
+
 - A conversation's provider pin can no longer be silently rerouted. Two
   cooperating fixes for the same failure: a registry lookup that failed
   transiently (the `provider` component restarting, the store busy, a

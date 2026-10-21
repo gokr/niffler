@@ -1224,19 +1224,30 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Budget exhaustion ends the turn as a budget-exhausted error — subagent
   drivers (`agent_run`/`agent_spawn`) surface it as a failure, never a
   text reply.
-- `cwd` pins the conversation's **workspace**: an existing directory inside
-  `NIF_ROOT` (relative paths resolve against the root), persisted in the
-  header so resumed runners resolve context and paths identically. Once a
-  user turn has run the workspace is immutable. While the conversation is
-  still pristine, a later explicit `cwd` may repin it and re-resolve the
-  constitution — nothing has reached a provider, so there is no cached
-  prompt prefix to invalidate; a client that pins model or provider before
-  the first message therefore still lands the workspace its launch
-  directory chose. Session runners rewrite path-shaped tool arguments
-  at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read
-  resolve relative paths there, and git tools scope at the workspace repo.
-  The system prompt component appends a workspace notice when it differs
-  from the root. The default workspace is `NIF_ROOT` itself.
+- `cwd` pins the conversation's **workspace**: an existing directory
+  (relative paths resolve against `NIF_ROOT`), persisted in the header so
+  resumed runners resolve context and paths identically. A workspace is
+  **chosen** only by an explicit request — a client's launch directory, a
+  `/workspace` repin — and the header records that decision (`cwdPinned`); a
+  control call (a status readback, a model pin) that merely creates the header
+  does not write one. A workspace that was never chosen — the header still
+  names the harness-root default — stays repinnable even after turns have run,
+  which is the way out of a conversation anchored at the wrong tree by that
+  fallback. Once a workspace IS chosen it is immutable after the first turn,
+  because a resume must resolve context and paths exactly as the original turn
+  did. While the conversation is still pristine (no turn anywhere — asked of
+  the store, not of the runner's memory) an explicit `cwd` also re-resolves the
+  constitution: nothing has reached a provider, so there is no cached prompt
+  prefix to invalidate. An empty `cwd` is not a choice — it is refused rather
+  than read as the harness root, so omit the key to leave the workspace alone.
+  The `session` status readback reports `cwd` and `cwdPinned`, so a client can
+  say which case applies before hitting the refusal. Session runners rewrite
+  path-shaped tool arguments at dispatch: bash runs with `cwd` set to the
+  workspace, edit/grep/read resolve relative paths there, and git tools scope
+  at the workspace repo. The system prompt component appends a workspace notice
+  when it differs from the root, and always names the harness root (never the
+  workspace path) — so moving a never-chosen workspace costs no prompt-cache
+  rebuild. The default workspace is `NIF_ROOT` itself.
 - After every chat call core records prompt tokens and uses
   `usage.total_tokens` (or prompt + completion fallback) as the best current
   occupancy. Provider, model, context, occupancy and the override are also
