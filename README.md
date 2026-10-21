@@ -180,6 +180,8 @@ current feature status or historical design notes without mixing their roles.
   index, not a reference).
 - [Open work](docs/PLAN.md) — write arbitration, sandbox and fleet status,
   recommended next slices and acceptance gates.
+- [Run9 Fleet acceptance](docs/FLEET_RUN9_ACCEPTANCE.md) — live model-driven
+  installation, bounded remote tasks, restart verification and operating limits.
 - [Research index](docs/research/README.md) — design history and prior-art
   studies; research notes are not operating instructions.
 - [Fabric guide](docs/FABRIC_GUIDE.md) — programmable orchestration and
