@@ -181,7 +181,8 @@ func searchSchema() map[string]any {
 			"character is just a separator, so user input needs no escaping. Ordering is ascending id " +
 			"({items, hasMore, nextAfter?}, pass nextAfter back as `after` to page); the reply carries " +
 			"`ranked: false` — this engine scans (docs/WIRE.md \"Store contract\", issue #51/#94).",
-		"x-harness": map[string]any{"onDemand": true},
+		// Read: a search takes no write claim (see getSchema in main.go).
+		"x-harness": map[string]any{"onDemand": true, "effect": "read"},
 	}
 }
 

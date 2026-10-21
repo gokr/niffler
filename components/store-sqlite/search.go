@@ -299,7 +299,8 @@ func searchSchema() map[string]any {
 			"concurrent write can shift items between pages). The reply always carries `ranked: true|false`. " +
 			"Engines without an index (tidb) answer unranked (`ranked: false`) with a best-effort snippet " +
 			"(docs/WIRE.md \"Store contract\", issue #51).",
-		"x-harness": map[string]any{"onDemand": true},
+		// Read: a search takes no write claim (see getSchema in main.go).
+		"x-harness": map[string]any{"onDemand": true, "effect": "read"},
 	}
 }
 

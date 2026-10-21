@@ -374,6 +374,45 @@ proc main() =
   check("no read/none tool computes a write claim", claimants.len == 0,
         claimants.join("; "))
 
+  # ── the substrate is never a claimant ──
+  # The reported symptom this pins: a conversation's own `bash` (an opaque root
+  # claim, held for the length of a long command) refused that same
+  # conversation's `store.list` — "[E_WRITE_BUSY] <ws> is being modified by
+  # conversation <itself>". The store writes documents, never a filesystem
+  # path, and it serializes its own writers, so a workspace lease it takes is
+  # both redundant and misdirected: it serializes unrelated conversations and
+  # blocks its own conversation's reads behind any in-flight writer.
+  var storeTools = 0
+  var storeClaims: seq[string]
+  for comp in snap{"components"}:
+    if comp{"name"}.getStr("") != "store": continue
+    for t in comp{"tools"}:
+      inc storeTools
+      let claim = writePathsFor(t{"schema"}, %*{}, ws)
+      if claim.len > 0:
+        storeClaims.add("store." & t{"name"}.getStr("") & " -> " & $claim)
+  check("the store registers its tools", storeTools >= 5, $storeTools)
+  check("no store tool claims a workspace path", storeClaims.len == 0,
+        storeClaims.join("; "))
+  # And the consequence: a root claim held by one call must not make a store
+  # read compute a conflicting one.
+  # an earlier case (an anchored glob) legitimately holds part of the tree;
+  # release every lease this test still owns before claiming the root.
+  for l in call(nc, "locks", "lock_status", %*{}){"leases"}:
+    discard call(nc, "locks", "lock_release",
+                 %*{"leaseId": l{"leaseId"}.getStr("")})
+  let rootHold = acquire("conv-self", "bash-call", @[ws], tool = "bash")
+  check("an opaque writer holds the tree", rootHold{"ok"}.getBool(false), $rootHold)
+  var conflicts: seq[string]
+  for comp in snap{"components"}:
+    if comp{"name"}.getStr("") != "store": continue
+    for t in comp{"tools"}:
+      if writePathsFor(t{"schema"}, %*{}, ws).len > 0:
+        conflicts.add(t{"name"}.getStr(""))
+  check("no store tool conflicts with its own conversation's root claim",
+        conflicts.len == 0, conflicts.join(", "))
+  discard call(nc, "locks", "lock_release", %*{"leaseId": "conv-self:bash-call"})
+
   report("LOCKS TEST")
 
 main()

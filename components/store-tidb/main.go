@@ -109,7 +109,8 @@ func selfTestSchema() map[string]any {
 				"description": "Thorough mode: live end-to-end probes (may spawn processes)"},
 		},
 		"description": "Component self test (hidden — used by /doctor): check the component's own wiring and report per-check results",
-		"x-harness":   map[string]any{"hidden": true},
+		// Store documents only: no filesystem path is touched, so it claims nothing.
+		"x-harness": map[string]any{"hidden": true, "writes": map[string]any{"none": true}},
 	}
 }
 
@@ -331,7 +332,11 @@ func putSchema() map[string]any {
 		"description": "Save a document into the store. From a session this writes the model-curated program library " +
 			"(kind fabricprog — code of fabric programs, run them with the fabric tool's name parameter; list what " +
 			"exists with store list). Other kinds are harness-managed and rejected from sessions.",
-		"x-harness": map[string]any{"onDemand": true, "sessionId": true},
+		// `writes: {none}` — the store mutates documents, never a filesystem path
+		// (it serializes its own writers), so an opaque workspace claim would
+		// only serialize unrelated conversations (see the sqlite engine).
+		"x-harness": map[string]any{"onDemand": true, "sessionId": true,
+			"writes": map[string]any{"none": true}},
 	}
 }
 
@@ -453,7 +458,10 @@ func getSchema() map[string]any {
 		"description": "Fetch a stored document by kind and id. Read-only. Kinds in use: conversation " +
 			"(id conv-*), message (id <convId>:<n>), component (id <name>). " +
 			"Returns {ok, rev, value} or ok:false not-found.",
-		"x-harness": map[string]any{"onDemand": true},
+		// Read: no write claim — see getSchema's note (a store read must never be
+		// refused by another call's filesystem lease, its own conversation's
+		// included).
+		"x-harness": map[string]any{"onDemand": true, "effect": "read"},
 	}
 }
 
@@ -499,7 +507,8 @@ func listSchema() map[string]any {
 			"Read-only. Enumerate conversations (kind conversation) or one conversation's messages " +
 			"(kind message, idPrefix <convId>:). Returns {ok, items: [{id, rev, value}], hasMore, nextAfter?}" +
 			" — pass nextAfter back as `after` to page past the 1000-item cap.",
-		"x-harness": map[string]any{"onDemand": true},
+		// Read: no write claim (see getSchema above).
+		"x-harness": map[string]any{"onDemand": true, "effect": "read"},
 	}
 }
 
@@ -593,7 +602,7 @@ func delSchema() map[string]any {
 		"required": []string{"kind", "id"},
 		"description": "Delete a document. Hidden from the LLM: deletes are made by core " +
 			"(e.g. core.remove dropping a component record).",
-		"x-harness": map[string]any{"hidden": true},
+		"x-harness": map[string]any{"hidden": true, "writes": map[string]any{"none": true}},
 	}
 }
 
