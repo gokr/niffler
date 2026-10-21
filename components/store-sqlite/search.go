@@ -278,16 +278,20 @@ func searchSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"kind":  map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message)"},
-			"query": map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND)"},
+			"kind":  map[string]any{"type": "string", "description": "Document kind to search (e.g. conversation, message, embedding)"},
+			"query": map[string]any{"type": "string", "description": "Search text; words must match tokens of the indexed fields (prefix, case-insensitive, AND). Mutually exclusive with `vector`"},
+			"vector": map[string]any{"type": "array", "items": map[string]any{"type": "number"},
+				"description": "Nearest-neighbour mode: the query embedding. Requires `model`; kind must be embedding. Results carry `distance` (cosine, 0 = identical) and are ordered nearest first"},
+			"model": map[string]any{"type": "string",
+				"description": "Vector mode: the embedding model whose space to search. Vectors of different models are different spaces and are never compared"},
 			"idPrefix": map[string]any{"type": "string", "description": "Restrict to ids with this prefix — e.g. one conversation's messages: <convId>:"},
-			"rank": map[string]any{"type": "boolean", "description": "Order by relevance (bm25) instead of id; pages by `offset`, not `after`"},
-			"snippet": map[string]any{"type": "boolean", "description": "Attach a span-marked one-line `snippet` per hit (the matched text in [brackets])"},
-			"offset": map[string]any{"type": "integer", "description": "Ranked paging only: skip this many hits (default 0)"},
-			"limit": map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
-			"after": map[string]any{"type": "string", "description": "Id-order paging only: exclusive id cursor from a previous page (default = first page)"},
+			"rank":     map[string]any{"type": "boolean", "description": "Order by relevance (bm25) instead of id; pages by `offset`, not `after`"},
+			"snippet":  map[string]any{"type": "boolean", "description": "Attach a span-marked one-line `snippet` per hit (the matched text in [brackets])"},
+			"offset":   map[string]any{"type": "integer", "description": "Ranked paging only: skip this many hits (default 0)"},
+			"limit":    map[string]any{"type": "integer", "description": "Max items (default 100, cap 1000)"},
+			"after":    map[string]any{"type": "string", "description": "Id-order paging only: exclusive id cursor from a previous page (default = first page)"},
 		},
-		"required": []string{"kind", "query"},
+		"required": []string{"kind"},
 		"description": "Search stored documents of a kind by text — the server-side filter for session browsers: " +
 			"finds conversations whose id or title matches, or messages whose content matches, without downloading " +
 			"the whole kind. Indexed fields per kind: conversation = id + title; message = id + content text " +
@@ -298,7 +302,14 @@ func searchSchema() map[string]any {
 			"ordered by relevance and paged by `offset` (a ranked page recomputes as documents change — a " +
 			"concurrent write can shift items between pages). The reply always carries `ranked: true|false`. " +
 			"Engines without an index (tidb) answer unranked (`ranked: false`) with a best-effort snippet " +
-			"(docs/WIRE.md \"Store contract\", issue #51).",
+			"(docs/WIRE.md \"Store contract\", issue #51). " +
+			"VECTOR MODE: pass `vector` (the query embedding) and `model` instead of `query`, with " +
+			"kind \"embedding\". Documents of that kind are {model, dimensions, vector, source?, sourceId?}; the " +
+			"store indexes them as they are written, so nearest-neighbour search needs no maintenance by the " +
+			"caller. `distance` is cosine distance (0 = identical, 2 = opposite); `limit` defaults to 20. The " +
+			"reply is {items: [{id, rev, value, distance}], hasMore, ranked: true, vector: true}. An embedding " +
+			"document whose vector is not held by its own model/dimension partition is refused at put time " +
+			"(code bad-embedding) rather than stored unfindable.",
 		// Read: a search takes no write claim (see getSchema in main.go).
 		"x-harness": map[string]any{"onDemand": true, "effect": "read"},
 	}
@@ -335,6 +346,14 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		if limit < 1 {
 			limit = 1
 		}
+		// Vector mode: a query embedding instead of text. Kept in the same
+		// tool because it answers the same question ("which documents of this
+		// kind are close to this?"), so a caller learns one shape and one set
+		// of paging rules.
+		if vectorArg, hasVector := m["vector"]; hasVector && vectorArg != nil {
+			return vectorSearchResult(db, kind, m)
+		}
+
 		terms := searchTokens(rawString(m, "query"))
 		if len(terms) == 0 {
 			return sdk.ErrCode("search needs at least one letter or digit in the query", "bad-request"), nil

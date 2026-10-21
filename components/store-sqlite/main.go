@@ -285,6 +285,14 @@ func openStore() (*storeDB, error) {
 	if rebuilt {
 		fmt.Println("store-sqlite: rebuilt search index from docs")
 	}
+	// Derived vector index, same self-healing rule (docs are the authority).
+	if rebuiltVec, err := syncVectorIndex(db); err != nil {
+		_ = db.Close()
+		_ = syscall.Close(fd)
+		return nil, fmt.Errorf("vector index: %w", err)
+	} else if rebuiltVec {
+		fmt.Println("store-sqlite: rebuilt vector index from docs")
+	}
 	return &storeDB{DB: db, lockFd: fd}, nil
 }
 
@@ -439,6 +447,15 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 		if !json.Valid(value) {
 			return nil, fmt.Errorf("put value must be valid JSON")
 		}
+		// An `embedding` document is validated HERE, before anything is
+		// written: a vector the index cannot hold (wrong width, missing
+		// model, non-numeric entries) would otherwise be stored but
+		// unfindable, with no error anywhere to explain the silence.
+		if kind == embeddingKind {
+			if _, _, err := parseEmbedding(value); err != nil {
+				return sdk.ErrCode(err.Error(), "bad-embedding"), nil
+			}
+		}
 
 		// Doc, revision AND search index move in ONE transaction — the index
 		// (docs_fts) is derived from the same write, so a search can never
@@ -476,6 +493,10 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 				_ = tx.Rollback()
 				return nil, err
 			}
+			if err := indexVectorRow(tx, kind, id, value); err != nil {
+				_ = tx.Rollback()
+				return nil, err
+			}
 			if err := tx.Commit(); err != nil {
 				return nil, fmt.Errorf("put: %w", err)
 			}
@@ -492,6 +513,9 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 				return sdk.ErrCode("already exists", "rev-conflict"), nil
 			}
 			if err := indexDoc(tx, kind, id, value); err != nil {
+				return nil, err
+			}
+			if err := indexVectorRow(tx, kind, id, value); err != nil {
 				return nil, err
 			}
 			if err := tx.Commit(); err != nil {
@@ -514,6 +538,10 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 			return nil, fmt.Errorf("put: %w", err)
 		}
 		if err := indexDoc(tx, kind, id, value); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if err := indexVectorRow(tx, kind, id, value); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
@@ -720,6 +748,10 @@ func delHandler(db *sql.DB) sdk.ToolHandler {
 			return nil, fmt.Errorf("del: %w", err)
 		}
 		if err := unindexDocIn(tx, rowid); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if err := unindexVector(tx, rowid); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
