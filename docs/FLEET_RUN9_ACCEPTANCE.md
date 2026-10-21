@@ -5,6 +5,10 @@ fresh remote Niffler, then invoked `fleet_task_submit`. Two real remote tasks
 returned independently checked results and automatically notified the local
 conversation. The second task ran after a Fleet service stop/start.
 
+A follow-up run on the final PR revision (`8270df6`) expanded the controller to
+two Run9 nodes and delegated to both concurrently; see
+[Two-node run](#two-node-run).
+
 ## Tested configuration
 
 - Controller: this checkout, branch `codex/run9-fleet`, with the process-service
@@ -43,6 +47,46 @@ Private local evidence is under `var/acceptance/`: `verification.json`, job
 records, remote transcripts, controller transcript, expected data, full source
 pin check and stop/start/probe results. Connection receipt:
 `var/fleet/run9-niffler-2.json`. These runtime files are not committed.
+
+## Two-node run
+
+Run on the same day, after the review fixes, from this checkout at `8270df6`
+(installed locally with `make install`, harness in service mode).
+
+- **Manager upgrade on `niffler-2`.** The node still ran the pre-review manager,
+  which lacked the systemd unit's approval environment. It was moved onto the
+  current manager with the documented procedure: `fleet_stop`, remove
+  `var/fleet-process/manager.sh`, re-run `fleet_install` with the same
+  profile. The install adopted the root, the receipt is unchanged, and identity
+  `7316b8f1…` survived a further stop/start. The running core's environment
+  shows `NIF_APPROVALS_DEFAULT=auto`, `NIF_AUTO_APPROVE=0` and the fixed `PATH`,
+  with no inherited login variables.
+- **New node `niffler-1`.** Operator preparation only linked the existing
+  Nim/Go toolchain onto `PATH`. The model, in controller conversation
+  `run9-two-box-controller` with auto approval for that conversation only,
+  called `fleet_install` itself: process mode, root `/opt/niffler-fleet`, pin
+  `8270df6200b1cf9cf5e5050eaed1d49d2502d4b2` (the PR head, fetched from
+  `refs/pull/166/head`). It verified instance `62b6f642fa1ae94835ad97f4244e1b12`.
+  The operator then installed the same provider configuration (mode 0600), and
+  the model restarted the node with `fleet_stop`/`fleet_start`; identity was
+  unchanged.
+- **`niffler-2` restart.** The runtime had restarted, so the service was
+  stopped. The model observed this with `fleet_status` and ran `fleet_start`;
+  identity was unchanged.
+- **Concurrent delegation.** The model submitted one bounded task per node in a
+  single turn: tools `read` and `git_status`, 6 rounds, 4 calls, 50,000 tokens,
+  a fresh request id per node, and only the path of newly generated random
+  input.
+
+| Node (revision) | Job | Expected = claimed sum | Result |
+|---|---|---:|---|
+| `niffler-1` (`8270df6`) | `fleet-d1583bd76cf9db2e5b97a3a8761d7b67620ab147` | 294905 | Node, nonce, values and sum exact. Remote transcript shows `read` and `git_status`. Settled, reachable, delivered, no diagnostic; exactly one controller notice. |
+| `niffler-2` (`5b2cb29`) | `fleet-8ec0c66beaa61aac386d359df10595fe8cda5ff1` | 172221 | Same checks, all passing. |
+
+Both tasks settled about two minutes after submission and woke the controller
+conversation with no polling. The two reports carry distinct nonces and value
+sets, so neither node echoed the other. Private evidence is under
+`var/acceptance/two-box/` (not committed).
 
 ## Fixes and encountered failures
 
