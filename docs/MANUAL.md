@@ -427,8 +427,13 @@ O(documents of the kind) per call; `rank: true` is accepted and answered
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
   contract on SQLite. Documents live verbatim as JSON TEXT; `put` is one
   atomic statement (doc + rev move together — the KV engine's two-key
-  crash window is gone); schema via embedded goose migrations; pure-Go
-  driver (`modernc.org/sqlite`, no cgo). Data file `var/store.db` (WAL),
+  crash window is gone); schema via embedded goose migrations; cgo driver
+  (`mattn/go-sqlite3` with `sqlite-vec` compiled in — the only prerequisite
+  is a C compiler, which Nim already needs; the target builds with
+  `CGO_ENABLED=1 -tags sqlite_fts5`, the tag being load-bearing because
+  mattn ships FTS5 off and `docs_fts` needs it). `vec_version()` is logged at
+  boot, so a build that lost the extension fails loudly instead of silently
+  losing vector search. Data file `var/store.db` (WAL),
   introspectable with any SQLite tool (`sqlite3 var/store.db 'select kind,
   count(*) from docs group by kind'`), attachable read-only from DuckDB
   for offline analytics. Default since context compaction landed: the

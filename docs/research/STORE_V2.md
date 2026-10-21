@@ -117,9 +117,19 @@ questions, real transactions or operational visibility.
   `database/sql` + two drivers = one codebase, two SQL engines. Matches
   the chetter stack (`../chetter`: Go + goose + go-sql-driver/mysql on
   TiDB).
-- **Driver: `modernc.org/sqlite`** — pure Go, no cgo. Existing Go
-  components carry no cgo deps; keep the zero-prereq build story intact.
-  (`mattn/go-sqlite3` is faster but cgo — rejected for the builder path.)
+- **Driver: `mattn/go-sqlite3` (cgo), with `sqlite-vec`** — superseded the
+  original `modernc.org/sqlite` choice, which was made for a "pure Go, no
+  cgo" property that costs more than it is worth here. `modernc` has no
+  extension-loading support at all, so `sqlite-vec` — and with it any vector
+  search — was unreachable. mattn vendors the SQLite amalgamation and
+  `sqlite-vec-go-bindings` vendors its C, so the only prerequisite is a C
+  compiler, which building Nim already requires: no `libsqlite3-dev`, no
+  runtime `.so`, no extension loading. Measured on this repo's machine: 66 s
+  cold build, 0.1 s warm, and the existing DSN
+  (`_txlock=immediate`/WAL/`busy_timeout`/`_pragma`) works unchanged. The
+  build MUST pass `-tags sqlite_fts5` (mattn ships FTS5 off; the `docs_fts`
+  index needs it) — both flags live on the `var/bin/store-sqlite` target and
+  in `make gotest`.
 - **Migrations: goose as a library**, embedded via `embed.FS`, applied at
   startup. Niffler components must be zero-manual-steps; chetter runs
   goose as a CLI, here the component owns its schema.

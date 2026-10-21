@@ -6,6 +6,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- `store-sqlite` switched drivers: `modernc.org/sqlite` → `mattn/go-sqlite3`
+  with `sqlite-vec` compiled in (`v0.1.7-alpha.2`). The pure-Go driver had no
+  extension-loading support at all, so vector search was unreachable by any
+  route. The prerequisite is one C compiler — which building Nim already
+  requires, and which `make install-native-deps` already installs: mattn
+  vendors the SQLite amalgamation and the bindings vendor `sqlite-vec.c`, so
+  there is no `libsqlite3-dev`, no runtime `.so`, and no extension loading.
+  Measured: 66 s cold build, 0.1–3 s warm, and the existing DSN, migrations
+  and `var/store.db` open unchanged (verified against this checkout's 123 MB
+  / 17k-document store).
+
+  Two build flags are now load-bearing and live on the target (and in
+  `make gotest`): `CGO_ENABLED=1` and `-tags sqlite_fts5` — mattn ships FTS5
+  off by default, and the `docs_fts` search index (migration 00002) is built
+  on it. `store-sqlite` logs `sqlite-vec <version>` at boot, so a build that
+  lost the extension fails loudly instead of silently losing the capability.
+
+  No wire contract changed: `put/get/list/search/del` are untouched, and a
+  vector is already storable today (documents are opaque JSON). What this
+  unlocks is the query surface — a `vec0` index behind a vector search tool —
+  which is the next slice, not this one.
+
 - A conversation's workspace is no longer frozen at the harness root by a
   control call. `session` used to persist `cwd: <entry.workspace>` on the fresh
   path, so a status readback or a model pin created the header with the
