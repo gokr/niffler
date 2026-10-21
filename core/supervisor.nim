@@ -124,6 +124,9 @@ proc childLogTail*(sup: Supervisor, name: string, replicas = 1,
   result = parts.join(" || ")
   if result.len > 2000: result = result[0 ..< 2000] & "…"
 
+var setprivWarned = false
+  ## One boot-time warning when children lose the kernel-cleanup wrapper.
+
 proc childLabel(c: Child): string =
   if c.instance <= 1: c.name else: c.name & "#" & $c.instance
 
@@ -164,6 +167,10 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
       let sp = pdeathsigSetprivPath()
       if sp.len > 0:
         cmd.add(quoteShell(sp) & " --pdeathsig TERM ")
+      elif not setprivWarned:
+        setprivWarned = true
+        echo "supervisor: warn: no setpriv with --pdeathsig (util-linux; Alpine: " &
+          "apk add setpriv) — non-SDK children are not killed if core is SIGKILLed"
   cmd.add(quoteShell(c.binary))
   let argv = if args.len > 0: args else: c.args
   for a in argv:

@@ -35,6 +35,7 @@ fi
 rm "$root/shim/setpriv"
 bash "$root/var/fleet-process/manager.sh" preflight /nonexistent
 
+run logs | grep -q 'no service log yet'
 export NIF_LEAK=1
 lifecycle() {
   rm -f "$root/child"
@@ -49,9 +50,14 @@ lifecycle() {
   identity=$(cat "$root/var/fleet-process/pid")
   run start
   [[ $(cat "$root/var/fleet-process/pid") == "$identity" ]]
+  # An oversized log is rotated when the supervisor relaunches the child.
+  log="$root/var/fleet-process/service.log"
+  rm -f "$log.1"
+  head -c 10485761 /dev/zero > "$log"
   kill -TERM "$first"
   for i in {1..100}; do [[ $(cat "$root/child") != "$first" ]] && break; sleep 0.1; done
   [[ $(cat "$root/child") != "$first" ]]
+  [[ -f "$log.1" ]] && (( $(wc -c < "$log") < 1048576 ))
   run status
   # A recycled PID must never be treated as our supervisor.
   printf '%s 0\n' "${identity%% *}" > "$root/var/fleet-process/pid"

@@ -14,6 +14,7 @@ setpriv --pdeathsig TERM true >/dev/null 2>&1 || fail 'setpriv with --pdeathsig 
 root=$(cd -- "$2" && pwd -P)
 [[ -f "$root/niffler.nimble" && -x "$root/var/bin/niffler" ]] || fail 'not a built Niffler root'
 state="$root/var/fleet-process"
+log="$state/service.log"
 [[ ! -L "$root/var" && ! -L "$state" ]] || fail 'symlinked service state'
 mkdir -p "$state"
 chmod 700 "$state"
@@ -45,12 +46,24 @@ if [[ $action == supervise ]]; then
     NIF_NATS_URL= NIF_NATS_SPAWN=1 NIF_AUTOSTART=0 NIF_AUTO_APPROVE=0
     NIF_APPROVALS_DEFAULT=auto PATH="$HOME/.nimble/bin:/usr/local/bin:/usr/bin:/bin")
   cd "$root"
+  delay=3
   while true; do
-    env -i "${serviceEnv[@]}" setpriv --pdeathsig TERM "$root/var/bin/niffler" 8>&- &
+    # No journald here: rotate at each launch (one previous log kept) so a
+    # crash loop cannot fill the disk; core's own stdout is low-volume.
+    if [[ -f "$log" ]] && (( $(wc -c < "$log") > 10485760 )); then mv -f "$log" "$log.1"; fi
+    started=$SECONDS
+    env -i "${serviceEnv[@]}" setpriv --pdeathsig TERM "$root/var/bin/niffler" 8>&- >>"$log" 2>&1 &
     child=$!
     wait "$child" || true
     child=''
-    sleep 3
+    # A child that ran a while restarts promptly; a crash loop backs off to 60s.
+    if (( SECONDS - started >= 60 )); then delay=3; fi
+    # Waiting on a background sleep keeps `stop` (SIGTERM) prompt during backoff.
+    sleep "$delay" 8>&- &
+    child=$!
+    wait "$child" || true
+    child=''
+    delay=$(( delay * 2 > 60 ? 60 : delay * 2 ))
   done
 fi
 exec 9>"$state/control.lock"
@@ -59,7 +72,7 @@ case "$action" in
   install) echo 'fleet-process: installed; reboot persistence is NOT provided' ;;
   start)
     if alive; then echo "fleet-process: already running pid=$pid"; exit 0; fi
-    nohup setsid bash "$state/manager.sh" supervise "$root" 9>&- </dev/null >>"$state/service.log" 2>&1 &
+    nohup setsid bash "$state/manager.sh" supervise "$root" 9>&- </dev/null >>"$log" 2>&1 &
     for attempt in {1..50}; do
       if alive; then echo "fleet-process: running pid=$pid; reboot persistence=none"; exit 0; fi
       sleep 0.1
@@ -76,6 +89,6 @@ case "$action" in
     fail 'supervisor has not stopped; no unverified kill attempted'
     ;;
   status) alive || fail 'stopped'; echo "fleet-process: running pid=$pid; reboot persistence=none" ;;
-  logs) tail -100 "$state/service.log" ;;
+  logs) if [[ -f "$log" ]]; then tail -n 100 "$log"; else echo 'fleet-process: no service log yet (never started)'; fi ;;
   *) fail "unsupported action: $action" ;;
 esac

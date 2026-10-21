@@ -28,7 +28,7 @@ proc handler(name: string): ToolHandler =
       return errResult(e.msg, "fleet-refused")
 let profile = %*{"type": "string", "description": "Local private version-1 receipt path; mutations require human approval."}
 let installProps = %*{
-  "service": {"type": "string", "enum": ["systemd", "process"], "description": "Default systemd. Explicit process mode for SSH Linux hosts without systemd: requires prepared build dependencies, survives logout but NOT host reboot; updates require operator maintenance."},
+  "service": {"type": "string", "enum": ["systemd", "process"], "description": "Default systemd. Explicit process mode for SSH Linux hosts without systemd: requires prepared build dependencies plus flock, setsid and a util-linux setpriv with --pdeathsig (BusyBox setpriv is refused; Alpine: apk add setpriv); survives logout but NOT host reboot; updates require operator maintenance."},
   "profile": profile, "transport": {"type": "string", "enum": ["ssh", "lima", "incus"]},
   "target": {"type": "string", "description": "SSH alias/user@host, Lima VM name or Incus container name"},
   "host": {"type": "string", "description": "Optional SSH management host alias/user@host for Incus or Lima only; omit for local. Bound in private receipt; no passwords or agent forwarding."},

@@ -2477,9 +2477,12 @@ SSH 安装可显式选择 `service: "process"`。目标 Linux 主机需预先安
 `flock` 文件描述符形式），但 BusyBox 的 `setpriv` 没有 `--pdeathsig`：需安装 util-linux
 版本（`apk add setpriv`），否则预检会拒绝。
 
-该 supervisor 能跨 SSH 断开保持运行并重启 Niffler 子进程，但不提供宿主机重启自启。
+该 supervisor 能跨 SSH 断开保持运行并重启 Niffler 子进程（崩溃循环时退避至 60 秒；`var/fleet-process/service.log` 每次启动时轮转，保留一个旧文件），但不提供宿主机重启自启。
 启动、停止、状态和日志操作使用 receipt 固定的服务模式，拒绝模式漂移。
 此模式的升级目前需人工维护，`fleet_update` 会明确拒绝，而不退回 systemd。
+已安装的管理器若与控制端副本不同会被拒绝，绝不覆盖。要换用当前管理器：先 `fleet_stop`，
+在主机上删除 `<root>/var/fleet-process/manager.sh`，再用同一 profile 重新运行
+`fleet_install`；它会接管该根目录、安装当前管理器、启动并重新验证身份。
 它也不会使提供商的 SSH 网关新增端口转发能力；Fleet 任务通过 SSH 命令执行。
 只有实际节点 catalog 响应后才保存已验证 receipt。路由保留在私有 receipt 中，
 不改变模型的固定提示前缀，任务结果继续追加到历史。

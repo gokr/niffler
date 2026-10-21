@@ -4541,11 +4541,17 @@ uses `flock`'s file-descriptor form, which BusyBox supports), but BusyBox
 `setpriv` has no `--pdeathsig`: install the util-linux one (`apk add setpriv`) or the
 preflight refuses.
 
-The supervisor survives SSH logout and restarts its Niffler child. It does **not**
-start after a host reboot. `fleet_start`, `fleet_stop`, `fleet_status`, and
+The supervisor survives SSH logout and restarts its Niffler child (a crash
+loop backs off to 60 s; `var/fleet-process/service.log` is rotated at each
+launch, keeping one previous file). It does **not** start after a host reboot. `fleet_start`, `fleet_stop`, `fleet_status`, and
 `fleet_logs` use the receipt's pinned service mode; changing a receipt route or
 mode is refused. Process-service updates currently require explicit operator
 maintenance (`fleet_update` refuses rather than silently using systemd).
+An installed manager that differs from the controller's copy is refused, never
+overwritten. To move an install onto the current manager: `fleet_stop`, remove
+`<root>/var/fleet-process/manager.sh` on the host, then re-run `fleet_install`
+with the same profile; it adopts the root, installs the current manager, starts
+it and re-verifies identity.
 This mode does not add SSH port forwarding to a provider's gateway. Fleet task
 calls use SSH command execution and can work independently of TUI forwarding.
 

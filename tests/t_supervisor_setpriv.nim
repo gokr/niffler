@@ -11,6 +11,10 @@ import ../sdk/niffler/procutil
 import helpers
 
 proc main() =
+  when not defined(linux):
+    # Off Linux the probe returns "" unconditionally; nothing to prove.
+    echo "SUPERVISOR SETPRIV PASSED (Linux only)"
+    return
   let root = tempRoot("supervisor-setpriv")
   defer: removeDir(root)
   let shim = root / "shim"
