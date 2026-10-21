@@ -160,6 +160,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fleet verifies that the Incus storage pool actually enforces the requested
+  root-disk limit before creating a container. Incus records `root,size=` on
+  every backend, but only `btrfs`, `zfs` and `lvm` enforce it — and `dir` only
+  where the filesystem is mounted with project quotas (`prjquota`/`pquota`). A
+  `dir` pool on plain ext4 handed the guest the whole host filesystem while the
+  receipt claimed a bounded disk; install now refuses before launch and names
+  the fix. The manual and harness skill also record the bridge-scoped
+  `iptables` FORWARD exception a Docker host needs for bridged Incus egress
+  (Docker's legacy `FORWARD DROP` shadows Incus's nftables rules).
+
+- The Go component SDK honours `NIF_NATS_DIAL_TIMEOUT` (seconds, default 15)
+  for the initial NATS handshake and reattach. `nats.go`'s 2-second default
+  failed a relayed bus (`ssh … incus exec … cli relay`, SSH port-forward),
+  which needs roughly 3 seconds or more before the INFO line arrives, so those
+  clients reported an unreachable harness while direct local connections were
+  fine.
+
 - Empty tool results no longer wedge strict OpenAI-compatible providers with
   a malformed text part. The LLM adapter sends an explicit empty-message marker
   on both streaming and non-streaming requests, including replayed history,
