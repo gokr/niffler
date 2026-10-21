@@ -33,6 +33,12 @@
 #             harnesses (NIF_NATS_URL env) do not own their bus by contract.
 #   ui        niffler-ui whose cwd is ROOT (UIs own their core's lifecycle)
 #
+# macOS has no /proc and does not show another process's environment, so
+# there the env signal is replaced by argv[0]: a core or component is ours
+# when its executable (lsof txt) AND its argv[0] (resolved against its cwd
+# when relative, e.g. `./var/bin/niffler`) are under ROOT/var/bin. A bench
+# symlink farm resolves to our exe but names its own path in argv[0].
+#
 # --dry-run lists what would stop. In-flight tests under this root die with
 # everything else — TEST_LOCK does not guard against this script.
 set -u
@@ -49,12 +55,21 @@ if [ -z "$root" ] || [ ! -d "$root" ]; then
   exit 1
 fi
 
-declare -a cand_pids=() cand_base=() cand_env=() cand_ppid=()
+declare -a cand_pids=() cand_base=() cand_env=() cand_ppid=() cand_argv0=()
 declare -A cand_seen=() is_ours=()
 declare -A label_of
 
+# lsof reports physical paths (/private/var/... for /var/... on macOS).
+root_phys="$(cd "$root" && pwd -P)"
+under_bin() {
+  case "$1" in "$root/var/bin/"*|"$root_phys/var/bin/"*) return 0 ;; esac
+  return 1
+}
+is_root() { [ "$1" = "$root" ] || [ "$1" = "$root_phys" ]; }
+
 # pass 1: candidates — exe under this root's var/bin, or shared-name
 # binaries (nats-server/niffler-ui) living in this root (cwd pin)
+if [ -d /proc/self ]; then
 for d in /proc/[0-9]*; do
   pid="${d#/proc/}"
   [ "$pid" = "$$" ] && continue
@@ -76,15 +91,56 @@ for d in /proc/[0-9]*; do
   cand_base+=("$base")
   cand_env+=("${env_root:-}")
   cand_ppid+=("${ppid:-0}")
+  cand_argv0+=("")
   cmd="$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)"
   cmd="${cmd% }"
   label_of[$pid]="${base}: ${cmd:-?}"
 done
+else
+# No /proc (macOS): ps for pid/ppid/argv, lsof for the exe and cwd of the few
+# processes whose argv names a var/bin binary, nats-server or niffler-ui.
+while read -r pid ppid cmd; do
+  [ "$pid" = "$$" ] && continue
+  case "$cmd" in */var/bin/*|var/bin/*|*nats-server*|*niffler-ui*) ;; *) continue ;; esac
+  info="$(lsof -a -p "$pid" -d cwd,txt -Fn 2>/dev/null | awk '
+    /^f/ { fd = substr($0, 2) }
+    /^n/ { if (fd == "cwd" && cwd == "") cwd = substr($0, 2)
+           if (fd == "txt" && exe == "") exe = substr($0, 2) }
+    END { print cwd; print exe }')"
+  cwd="${info%%$'\n'*}"; exe="${info#*$'\n'}"
+  [ -n "$exe" ] || continue
+  base="$(basename "$exe")"
+  take=0
+  if under_bin "$exe"; then take=1
+  else
+    case "$exe" in */nats-server|*/niffler-ui) is_root "$cwd" && take=1 ;; esac
+  fi
+  [ "$take" -eq 1 ] || continue
+  argv0="$cmd"
+  case "$argv0" in /*) ;; *) argv0="$cwd/${argv0#./}" ;; esac
+  cand_seen[$pid]=1
+  cand_pids+=("$pid")
+  cand_base+=("$base")
+  cand_env+=("?")  # environment not observable here
+  cand_ppid+=("${ppid:-0}")
+  cand_argv0+=("$argv0")
+  label_of[$pid]="${base}: ${cmd:-?}"
+done < <(ps -axo pid=,ppid=,command=)
+fi
 
 # pass 2: classify — cores and components first, then buses by parentage
 n=${#cand_pids[@]}
-for i in $(seq 0 $((n - 1))); do
+for ((i = 0; i < n; i++)); do
   pid="${cand_pids[$i]}"; base="${cand_base[$i]}"; env="${cand_env[$i]}"
+  if [ "$env" = "?" ]; then
+    # macOS: argv[0] stands in for NIF_ROOT; buses still go to pass 3.
+    case "$base" in
+      nats-server) ;;
+      niffler-ui) is_ours[$pid]=1 ;;  # taken only with cwd == ROOT
+      *) under_bin "${cand_argv0[$i]}" && is_ours[$pid]=1 ;;
+    esac
+    continue
+  fi
   case "$base" in
     niffler|niffler-ui)
       [ "$env" = "$root" ] || [ -z "$env" ] && is_ours[$pid]=1 ;;
@@ -98,7 +154,7 @@ for i in $(seq 0 $((n - 1))); do
       fi ;;
   esac
 done
-for i in $(seq 0 $((n - 1))); do
+for ((i = 0; i < n; i++)); do
   pid="${cand_pids[$i]}"
   [ "${cand_base[$i]}" = "nats-server" ] || continue
   ppid="${cand_ppid[$i]}"
@@ -134,7 +190,7 @@ kill "${pids[@]}" 2>/dev/null
 for _ in $(seq 1 30); do
   alive=0
   for pid in "${pids[@]}"; do
-    [ -d "/proc/$pid" ] && alive=$((alive + 1))
+    kill -0 "$pid" 2>/dev/null && alive=$((alive + 1))
   done
   [ "$alive" -eq 0 ] && break
   sleep 0.1
@@ -142,7 +198,7 @@ done
 # escalate on whatever is left
 for i in "${!pids[@]}"; do
   pid="${pids[$i]}"
-  if [ -d "/proc/$pid" ]; then
+  if kill -0 "$pid" 2>/dev/null; then
     kill -9 "$pid" 2>/dev/null
     labels[$i]="${labels[$i]} [SIGKILL]"
   fi
