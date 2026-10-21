@@ -4180,18 +4180,50 @@ proc deriveTitle(content: string): string =
       return shortTitle(s)
   ""
 
+proc conversationHasTurns(ct: CoreTools, sessionId: string): bool =
+  ## Does this conversation have a persisted transcript?
+  ##
+  ## Asked of the STORE, not of the runner's in-memory `entry.messages`: a
+  ## runner that has only answered a control call holds an empty list for a
+  ## conversation with hundreds of stored turns, so the memory view answers
+  ## "pristine" for every resumed conversation — which is what let a repin move
+  ## a workspace that had already been chosen. One bounded list call; a store
+  ## failure counts as "has turns" (fail closed: never move on a guess).
+  result = true
+  try:
+    result = ct.storeListItems("message", sessionId & ":", 1, 5_000).len > 0
+  except CatchableError:
+    discard
+
+proc workspaceChosen(ct: CoreTools, sessionId: string): bool =
+  ## Did anyone ever CHOOSE this conversation's workspace?
+  ##
+  ## The header field `cwdPinned` records the decision. Its ABSENCE is answered
+  ## by where the stored `cwd` came from: core falls back to the harness root,
+  ## so a header still naming the root carries the default rather than a choice,
+  ## while a header naming any other directory can only have come from an
+  ## explicit request. That heuristic covers every pre-`cwdPinned` conversation
+  ## without a migration: none of them needs to be moved.
+  ##
+  ## Fail closed on a store FAILURE (a hiccup must never move a workspace that
+  ## was deliberately picked), but a missing header is not a failure: nothing
+  ## has been chosen yet. Hence the raw store read rather than
+  ## loadConversationHeader, which degrades both cases to an empty object.
+  result = true
+  try:
+    let (value, _) = ct.storeGetItem("conversation", sessionId)
+    if value == nil or value.kind != JObject: return false
+    if value{"cwdPinned"}.getBool(false): return true
+    let stored = value{"cwd"}.getStr("").strip()
+    if stored.len == 0: return false
+    result = normalizeRoot(stored) != normalizeRoot(ct.root)
+  except CatchableError:
+    discard
+
 proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: string] =
-  ## A conversation workspace is immutable once a user turn has run, and is
-  ## persisted in the header so resumed runners resolve context and paths
-  ## exactly as the original turn did. While the conversation is still
-  ## pristine (no user turn yet), a later call carrying an explicit cwd may
-  ## repin it and re-resolve the constitution — nothing has reached a
-  ## provider, so there is no cached prompt prefix to invalidate. This lets
-  ## a client that pins model or provider before the first message still
-  ## land the workspace its launch directory chose. Any existing directory
-  ## on the machine is allowed: NIF_ROOT is only the default (and the base
-  ## for relative requests). The harness root is the installation/runtime
-  ## home, not a sandbox for conversation workspaces.
+  ## Normalize one requested workspace: relative to the harness root, existing
+  ## directory required. Any existing directory is allowed — NIF_ROOT is only
+  ## the default (and the base for relative requests), never a sandbox.
   if requested.strip().len == 0:
     return (true, root, "")
   let candidate = normalizedPath(
@@ -4199,6 +4231,79 @@ proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: str
   if not dirExists(candidate):
     return (false, "", "cwd is not a directory: " & requested)
   (true, candidate, "")
+
+proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
+                    requested: string, args: JsonNode): string =
+  ## Apply an explicit `cwd` request to a conversation's workspace. Returns ""
+  ## when the request was accepted (or is a no-op), or the refusal message.
+  ##
+  ## The rule, in one place because BOTH branches of handleSessionCall reach it
+  ## — a session already in the runner's table, and one being loaded for the
+  ## first time in this process (which is the ordinary shape for a client that
+  ## just opened an old conversation: no turn has run here yet, so a `/workspace`
+  ## repin must not be silently ignored):
+  ##
+  ## - PRISTINE (no turns anywhere) may always move. Nothing has reached a
+  ##   provider, so there is no cached prompt prefix to invalidate, and a
+  ##   constitution frozen too early against the harness root is re-resolved.
+  ## - UNPINNED (turns exist, but nobody ever CHOSE a workspace) may move once.
+  ##   The header then holds the harness-root DEFAULT that a control call baked
+  ##   in, and a default is not a decision — this is the only escape from a
+  ##   conversation anchored at the wrong tree by that fallback. The frozen
+  ##   prompt embeds the harness root, never the workspace path, so moving costs
+  ##   no prompt-cache rebuild.
+  ## - CHOSEN (turns exist and a workspace was picked) is immutable: a resume
+  ##   must resolve context and paths exactly as the original turn did.
+  ##
+  ## "Pristine" is asked of the STORE, not of entry.messages: a runner that only
+  ## answered a control call holds an empty list for a conversation with
+  ## hundreds of stored turns, so the memory view would call every resumed
+  ## conversation pristine and let a chosen workspace be moved.
+  result = ""
+  let explicit = requested.strip().len > 0
+  let resolved = resolveWorkspace(ct.root, requested)
+  let refusal = "conversation cwd is immutable once turns exist (currently " &
+                entry.workspace & "); start a new conversation to work elsewhere"
+  if not resolved.ok: return resolved.error
+  # An EMPTY cwd is not a workspace choice: it would resolve to the harness root
+  # and weld that back in through the side door. It stays refused rather than
+  # read as "no request", which is the rule a client must not have to know —
+  # omit the key to leave the workspace alone.
+  if not explicit: return refusal
+  if resolved.path == entry.workspace: return ""  # nothing to do
+  let hasTurns = conversationHasTurns(ct, sessionId)
+  let pristine = not hasTurns and
+    (entry.messages.len == 0 or
+     (entry.messages.len == 1 and entry.messages[0]{"role"}.getStr("") == "system"))
+  if not pristine and workspaceChosen(ct, sessionId):
+    return refusal
+  entry.workspace = resolved.path
+  if pristine and entry.messages.len == 1:
+    # The constitution was already frozen (legacy control-call freeze):
+    # re-resolve it against the corrected workspace and refresh both the
+    # header and the in-memory system message.
+    let birthHeader = loadConversationHeader(ct, sessionId)
+    let sp = resolveSystemPrompt(ct, sessionId, entry.workspace, "",
+                                 birthHeader{"persona"}.getStr(""))
+    try:
+      ct.updateConversationHeader(sessionId,
+        %*{"systemPrompt": sp, "cwd": entry.workspace, "cwdPinned": true})
+    except CatchableError as e:
+      echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
+    entry.messages[0]{"content"} = %sp
+  else:
+    try:
+      ct.updateConversationHeader(sessionId,
+        %*{"cwd": entry.workspace, "cwdPinned": true})
+    except CatchableError as e:
+      echo "core: WARNING cannot persist cwd (store down?): " & e.msg
+  try:
+    ct.nc.publish("ev.workspace.opened",
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+               payload: %*{"workspace": entry.workspace,
+                           "conversationId": sessionId}).encode())
+  except CatchableError as e:
+    echo "core: WARNING workspace.opened publish failed: " & e.msg
 
 proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                          sessions: var Table[string, Session],
@@ -4317,51 +4422,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
     if hasCwd:
-      let requested = resolveWorkspace(ct.root, args{"cwd"}.getStr(""))
-      if not requested.ok: return %*{"error": requested.error}
-      if requested.path != entry.workspace:
-        # Pristine repin: a conversation that has not run a user turn has sent
-        # nothing to a provider, so there is no cached prompt prefix to
-        # invalidate — the workspace (and a constitution frozen too early by a
-        # control call against the harness root) can be re-anchored safely.
-        # Once turns exist, the workspace is immutable: resumes must resolve
-        # context and paths exactly as the original turn did. An empty cwd is
-        # not a workspace choice — only an explicit, non-empty request may
-        # repin a pristine conversation (an empty one would just weld the
-        # harness root back in through the side door).
-        let pristine = args{"cwd"}.getStr("").strip().len > 0 and
-          (entry.messages.len == 0 or
-           (entry.messages.len == 1 and
-            entry.messages[0]{"role"}.getStr("") == "system"))
-        if not pristine:
-          return %*{"error": "conversation cwd is immutable once turns exist (currently " &
-                                entry.workspace & "); start a new conversation to work elsewhere"}
-        entry.workspace = requested.path
-        if entry.messages.len == 1:
-          # The constitution was already frozen (legacy control-call freeze):
-          # re-resolve it against the corrected workspace and refresh both the
-          # header and the in-memory system message.
-          let birthHeader = loadConversationHeader(ct, sessionId)
-          let sp = resolveSystemPrompt(ct, sessionId, entry.workspace, "",
-                                       birthHeader{"persona"}.getStr(""))
-          try:
-            ct.updateConversationHeader(sessionId,
-              %*{"systemPrompt": sp, "cwd": entry.workspace})
-          except CatchableError as e:
-            echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
-          entry.messages[0]{"content"} = %sp
-        else:
-          try:
-            ct.updateConversationHeader(sessionId, %*{"cwd": entry.workspace})
-          except CatchableError as e:
-            echo "core: WARNING cannot persist cwd (store down?): " & e.msg
-        try:
-          ct.nc.publish("ev.workspace.opened",
-            Envelope(v: 1, id: newId(), kind: ekEvent,
-                     payload: %*{"workspace": entry.workspace,
-                                 "conversationId": sessionId}).encode())
-        except CatchableError as e:
-          echo "core: WARNING workspace.opened publish failed: " & e.msg
+      let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""), args)
+      if refusal.len > 0: return %*{"error": refusal}
   else:
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.
@@ -4380,6 +4442,15 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     let workspace = resolveWorkspace(ct.root, requestedCwd)
     if not workspace.ok: return %*{"error": workspace.error}
     entry.workspace = workspace.path
+    # An explicit cwd on this call is a repin request even when the conversation
+    # is being loaded here for the first time: the ordinary shape for a client
+    # that just opened an old conversation is exactly this branch (no turn has
+    # run in THIS process), and ignoring the request made `/workspace` a silent
+    # no-op on every freshly-opened conversation. The same rule decides it as in
+    # the loaded branch (see repinWorkspace), including the refusal.
+    if args{"cwd"}.getStr("").strip().len > 0:
+      let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""), args)
+      if refusal.len > 0: return %*{"error": refusal}
     # Announce the workspace (any directory — a conversation workspace need
     # not be a git repo) so components can pre-warm against it; e.g. the lsp
     # component starts servers for the languages present at bootstrap, not
@@ -4411,7 +4482,20 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       sp = resolveSystemPrompt(ct, sessionId, entry.workspace,
                                args{"content"}.getStr(""), personaName)
     try:
-      var headerUpdate = %*{"systemPrompt": sp, "cwd": entry.workspace}
+      var headerUpdate = %*{"systemPrompt": sp}
+      # `cwd` is written only when the workspace was CHOSEN — an explicit request
+      # (a client's launch directory, our own `/workspace` repin) or an already
+      # pinned header. Writing the fallback (`ct.root`) here is what froze
+      # conversations at the harness root: a status readback or a model pin
+      # creates the header, this line recorded the default as if it were a
+      # decision, and from then on the workspace was immutable — so a client
+      # that later opened that conversation ran in the wrong tree with no way
+      # back. `cwdPinned` is the record of the choice; without it a conversation
+      # stays repinnable (see workspaceChosen).
+      if args{"cwd"}.getStr("").strip().len > 0 or
+          header{"cwdPinned"}.getBool(false):
+        headerUpdate["cwd"] = %entry.workspace
+        headerUpdate["cwdPinned"] = %true
       if personaName.len > 0:
         headerUpdate["persona"] = %personaName
       # The birth identity goes to BOTH records: the lineage doc (compare-and-
@@ -5197,6 +5281,10 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       "limits": %*{"rounds": entry.limitRounds, "tokens": entry.limitTokens,
                      "seconds": entry.limitSeconds},
       "cwd": entry.workspace,
+      # Whether that cwd is a decision or the harness-root default: a client
+      # can say so beside the workspace row (and know that `session {cwd}` will
+      # be refused once it IS a decision).
+      "cwdPinned": workspaceChosen(ct, sessionId),
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
       "usedTokens": entry.persister.contextUsed

@@ -1194,7 +1194,14 @@ keys:
   what the gate does, not where the writes land. The last two exist so a tool does not fall
   back to the opaque root claim over a tree it never touches: for a client
   launched in a project directory (`NIF_ROOT` != workspace) that claim guarded
-  nothing real while serializing unrelated conversations. A declared value carrying a wildcard
+  nothing real while serializing unrelated conversations. The `store` engine's
+  own tools are the worked example, and getting them wrong is invisible until
+  it is not: undeclared, a `store.list` READ took a workspace-root lease and was
+  then refused by its own conversation's `bash` — `[E_WRITE_BUSY] <workspace> is
+  being modified by conversation <the same conversation>` — while every document
+  write serialized all conversations sharing a checkout. A store engine
+  therefore declares `effect: "read"` on `get`/`list`/`search` and
+  `writes: {"none": true}` on `put`/`del`/`selftest`. A declared value carrying a wildcard
   (`*` or `?` — a `replace_across` glob) is claimed as the **base directory
   before the first wildcard**, not as the pattern text: the pattern
   `/ws/**/*.go` claims `/ws`, and `/ws/src/*.go` claims `/ws/src`. The gate does

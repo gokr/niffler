@@ -374,6 +374,54 @@ proc main() =
   check("session workspace is immutable",
         wsImmut{"error"}.getStr("").contains("immutable"), $wsImmut)
 
+  # A workspace nobody CHOSE stays pinnable. The reported shape: a control call
+  # (a status readback, a model pin) creates the header before any client has
+  # pinned a directory, so `cwd` reported the harness-root fallback. Recording
+  # that default as if it were a decision froze such conversations at the
+  # harness root forever — reopening one from another checkout ran in the wrong
+  # tree, and /workspace was refused because turns had run.
+  let unpinnedStatus = call(nc, "core", "session",
+                            %*{"sessionId": "ws-unpinned"}, 10_000)
+  check("a control call leaves the workspace unpinned",
+        unpinnedStatus{"error"} == nil and
+        unpinnedStatus{"cwd"}.getStr("") == root and
+        not unpinnedStatus{"cwdPinned"}.getBool(true), $unpinnedStatus)
+  # Turns exist (seeded the same way the recount below seeds a transcript), so
+  # the "pristine" escape hatch does NOT apply — only "never chosen" does.
+  for seqNo in 1 .. 3:
+    discard call(nc, "store", "put", %*{
+      "kind": "message", "id": "ws-unpinned:" & align($seqNo, 6, '0'),
+      "value": %*{"role": (if seqNo == 1: "user" else: "assistant"),
+                   "content": "x"}}, 10_000)
+  let unpinnedPin = call(nc, "core", "session",
+                         %*{"sessionId": "ws-unpinned", "cwd": "ws"}, 10_000)
+  check("an unchosen workspace is still pinnable after turns",
+        unpinnedPin{"error"} == nil and
+        unpinnedPin{"cwd"}.getStr("") == root / "ws" and
+        unpinnedPin{"cwdPinned"}.getBool(false), $unpinnedPin)
+  let unpinnedInfo = call(nc, "core", "session_info",
+                          %*{"sessionId": "ws-unpinned"}, 10_000)
+  check("the repin is persisted for resumed runners",
+        unpinnedInfo{"cwd"}.getStr("") == root / "ws", $unpinnedInfo)
+  let unpinnedAgain = call(nc, "core", "session",
+                           %*{"sessionId": "ws-unpinned", "cwd": extWs}, 10_000)
+  check("once chosen, the workspace is immutable again",
+        unpinnedAgain{"error"}.getStr("").contains("immutable"), $unpinnedAgain)
+  # A conversation created BEFORE the marker existed, whose stored cwd is a real
+  # choice (not the harness root), is read as chosen once it has turns — no
+  # migration needed. (A pristine one is repinnable by the older rule, which is
+  # why this seeds a turn.)
+  discard call(nc, "store", "put", %*{
+    "kind": "conversation", "id": "ws-legacy",
+    "value": %*{"createdAt": 1, "cwd": root / "ws", "systemPrompt": "p"}}, 10_000)
+  discard call(nc, "store", "put", %*{
+    "kind": "message", "id": "ws-legacy:000001",
+    "value": %*{"role": "user", "content": "x"}}, 10_000)
+  let legacyPin = call(nc, "core", "session",
+                       %*{"sessionId": "ws-legacy", "cwd": extWs}, 10_000)
+  check("a pre-marker header with a real cwd stays immutable",
+        legacyPin{"error"}.getStr("").contains("immutable"), $legacyPin)
+
   # seed messages directly (persistMsg shape) and recount by role
   var seedOk = true
   var seqNo = 0
