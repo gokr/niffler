@@ -146,6 +146,50 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Async post-edit diagnostics got a real budget.** The LSP component's
+  edit-triggered check waited 8s for a server's `publishDiagnostics` push —
+  routinely too short for a cold or loaded language server, so the check was
+  spent and discarded. It now waits 20s. Editing is unaffected (submission is
+  still an immediate queue ack; `t_edit_lsp_slow` pins that), and a direct
+  `lsp diagnostics` query still has its own 60s budget.
+
+- Unattended Fleet coding tasks (F2, experimental, `docs/WIRE.md` "Task
+  policy"): a task can run ordinary coding tools without approval prompts,
+  inside authority that the worker operator's `taskprofile` and an exact
+  per-task human grant define together. The intersection is resolved on the
+  worker **before any tool runs**, persisted in the conversation header and
+  stated in the admission receipt; a caller can only narrow the operator's
+  ceiling, and asking for more is refused with the reason instead of silently
+  clamped. Unattended authority stays off until a profile exists, and a refusal
+  is explicit — no task starts in `ask` mode waiting for a human who is not
+  attached, and `NIF_AUTO_APPROVE` is never set on the peer. Control-plane tools
+  are never granted in any mode, on either side of the wire, matched on
+  callable names (`build`, not just `builder`) and family prefixes; the worker
+  also audits its **own** catalog, so a tool it does not serve — or one carrying
+  `hidden`/`runner`/`sessionContext`/`noSpawn` — refuses by schema rather than
+  by name. The honest limit is reported, not hidden: the notice says `unconfined
+  worker`, and a profile claiming sandboxed confinement is refused because this
+  harness enforces none for delegated work yet. New operator tools:
+  `task_profile_set`/`task_profile_list`/`task_profile_remove`.
+
+  Task authority is scoped to the activation it was admitted under, and that is
+  enforced three ways: a different `task` grant on an existing task conversation
+  refuses (`task-policy-immutable`); a content-only turn, image turn or wake
+  refuses (`task-policy-continuation-required`) even after the operator deletes
+  the profile, so a stored policy is never standing permission to run more work;
+  and an exact admission retry returns the existing receipt without executing or
+  reauthorizing anything. The requester hashes the approved authority into the
+  job before dispatch and the worker recomputes it, refusing a grant that
+  changed in between (`task-policy-grant-mismatch`). The shared contracts moved
+  to `sdk/niffler/{admission,taskpolicy,canonicaljson}.nim` so a component can
+  enforce the same wire contract without importing core.
+
+  Read-only tasks remain the default (`mode` is opt-in). This is **not** yet the
+  F2 gate: there is no patch/commit artifact (the exit asks for a bounded report
+  plus one — that is F4), no workspace isolation, no runtime deadline, no
+  fresh-grant continuation, no in-flight revocation, and no human UI for
+  profiles or grants. See the blocker list in `docs/FLEET.md`.
+
 - Durable Fleet task admission (F1, `docs/WIRE.md` "Durable task admission"):
   a delegated turn now carries a requester-chosen idempotency key, and the
   worker records it with the normalized birth settings and their SHA-256

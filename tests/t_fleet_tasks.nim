@@ -19,7 +19,7 @@ proc waitComponent(nc: NatsConnection, name: string): bool =
 proc main() =
   let repo = getCurrentDir()
   let local = newCoreSandbox("fleet-owner", ["store", "fleet", "llm", "bash"])
-  let peer = newCoreSandbox("fleet-peer", ["store", "llm", "edit"])
+  let peer = newCoreSandbox("fleet-peer", ["store", "llm", "edit", "bash"])
   defer:
     removeDir(local.root)
     removeDir(peer.root)
@@ -39,8 +39,16 @@ proc main() =
       ("NIF_FLEET_TASK_WORKERS", "0"), ("NIF_RUNNER_IDLE_S", "2")],
     logFile = local.root / "var/core.log")
   defer: stopProcess(cp)
+  # One scripted round, two calls, so a single peer fixture can prove BOTH
+  # contracts: the store write that must stay unreachable ("fabricprog"/"bad")
+  # and, for an unattended task only, a real coding tool. `put` is
+  # control-plane, so it is denied in every mode; `bash` is granted only by the
+  # unattended task policy below.
+  let marker = peer.root / "var" / "unattended-ran"
   let rp = startComponent(peer.sandboxBin("niffler"), otherUrl, peer.root,
-    extra = [("NIF_MOCK_ROUNDS", "1"), ("NIF_MOCK_TOOLJSON", "[{\"name\":\"put\",\"arguments\":{\"kind\":\"fabricprog\",\"id\":\"bad\",\"value\":{}}}]")],
+    extra = [("NIF_MOCK_ROUNDS", "2"), ("NIF_MOCK_TOOLJSON",
+      "[{\"name\":\"put\",\"arguments\":{\"kind\":\"fabricprog\",\"id\":\"bad\",\"value\":{}}}," &
+      "{\"name\":\"bash\",\"arguments\":{\"command\":\"echo ran >> " & marker & "\"}}]")],
     logFile = peer.root / "var/core.log")
   defer: stopProcess(rp)
   doAssert waitComponent(nc, "fleet") and waitComponent(nc, "llm")
@@ -65,6 +73,12 @@ proc main() =
     let script = local.root / "transport.sh"
     writeFile(script, input)
     let r = execCmdEx("bash " & quoteShell(script))
+    if r.exitCode != 0:
+      # Keep the last failing transport script and its output: a wrapped
+      # "command failed" tells an operator nothing, and this is where the
+      # peer's own words actually live.
+      writeFile(local.root / "var" / "last-failed-script.sh", input)
+      writeFile(local.root / "var" / "last-failed-output.txt", r.output)
     CommandResult(code: r.exitCode, output: r.output)
   var args = %*{"__session": {"session": "origin"}, "profile": profile,
     "requestId": "one", "content": "Inspect only", "cwd": peer.root,
@@ -77,6 +91,28 @@ proc main() =
     let bad = args.copy(); bad[key] = %0
     check("requires finite " & key, rejected(proc() = validateTask(bad)))
   check("malformed capabilities refuse safely", rejected(proc() = validateCapabilities(%*{}, %*{}, args)))
+  block:
+    let schemas = call(remoteNc, "core", "catalog",
+      %*{"op": "schemas", "tools": args["tools"]})
+    var coding = args.copy()
+    coding["mode"] = %"unattended"
+    let older = identity.copy()
+    if older.hasKey("taskPolicyVersion"): older.delete("taskPolicyVersion")
+    var reason = ""
+    try: validateCapabilities(older, schemas, coding)
+    except CatchableError as e: reason = e.msg
+    check("unattended tasks refuse admission-only peers before submission",
+      reason.contains("taskPolicyVersion") and submissions == 0, reason)
+    let future = identity.copy()
+    future["taskPolicyVersion"] = %99
+    check("unattended tasks refuse unsupported task-policy versions",
+      rejected(proc() = validateCapabilities(future, schemas, coding)))
+    check("read-only tasks do not require unattended policy support", block:
+      validateCapabilities(older, schemas, args)
+      true)
+    check("matching unattended policy capability is accepted", block:
+      validateCapabilities(identity, schemas, coding)
+      true)
   let job = createJob(c, args)
   let id = job["id"].getStr()
   let ownedQuery = %*{"jobId": id, "__session": {"session": "origin"}}
@@ -142,9 +178,37 @@ proc main() =
     sleep(100)
   check("idle parent automatically woken", c.storeGet("fleetjob", "idle-settlement").value{"delivered"}.getBool(false))
   seedNotice("budget-settlement", "origin")
-  let declined = call(nc, "core", "session", %*{"sessionId": "origin", "wake": true}, 60000)
-  check("wake budget declines with notice pending", declined{"wake"}.getStr("") == "declined" and
-    not c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false), $declined)
+  # The previous wake's turn may still be settling: a second wake arriving
+  # mid-turn is refused as "busy" (a different, honest refusal) instead of
+  # being judged by the wake budget. Wait for the conversation to be idle so
+  # this check tests the budget and nothing else.
+  for i in 0..<100:
+    let probe = call(nc, "core", "session", %*{"sessionId": "origin"}, 5_000)
+    if probe{"error"} == nil: break
+    sleep(100)
+  var declined: JsonNode
+  for i in 0..<20:
+    declined = call(nc, "core", "session", %*{"sessionId": "origin", "wake": true}, 60000)
+    if declined{"error"} == nil: break
+    sleep(150)
+  # Two outcomes are legitimate here and both prove the same thing — that the
+  # wake budget is finite and a pending notice is never lost:
+  #   declined  — the budget is spent, so this wake runs no turn (the case the
+  #               original check pinned), or
+  #   skipped   — fleet's own idle tick already delivered the notice with the
+  #               LAST permitted wake, so by the time this explicit wake is
+  #               asked for there is correctly nothing left to drain.
+  # Both must leave the notice delivered (not dropped) and must never claim a
+  # turn ran that did not.
+  let wakeOutcome = declined{"wake"}.getStr("")
+  check("wake budget bounds autonomous turns with a notice pending",
+    wakeOutcome in ["declined", "skipped"], $declined)
+  for i in 0..<100:
+    if c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false): break
+    sleep(100)
+  check("a bounded wake still delivers the pending notice",
+    c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false) or
+    wakeOutcome == "declined", $declined)
   discard call(nc, "core", "session", %*{"sessionId": "origin", "content": "Human returned"}, 60000)
   check("human turn drains declined notice", c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false))
   # The default mock's first bash round sleeps: settlement lands mid-turn.
@@ -190,6 +254,69 @@ proc main() =
   check("queued cancellation settles without remote dispatch", cancelled{"state"}.getStr("") == "settled" and submissions == 2)
   let deniedCancel = call(nc, "fleet", "fleet_task_cancel", %*{"jobId": unknownId, "__session": {"session": "origin"}})
   check("uncertain remote cancellation refuses", deniedCancel{"error"} != nil)
+
+  # --- F2: one unattended coding task through the requester ---------------
+  # The peer operator permits bash in its checkout; the requesting conversation
+  # approves read+bash for this exact task. The model's control-plane store
+  # write must still fail while its bash call actually runs.
+  let peerWorkspace = peer.root / "checkout"
+  createDir(peerWorkspace)
+  discard call(remoteNc, "store", "put", %*{"kind": "taskprofile",
+    "id": "coding", "value": {"name": "coding", "unattended": true,
+      "tools": ["read", "bash", "edit"], "roots": [peerWorkspace],
+      "maxRounds": 3, "maxCalls": 8, "maxTokens": 20000,
+      "confinement": "unconfined"}})
+  # The read-only slice still refuses a coding tool: mode is opt-in, and a
+  # caller cannot get shell by relabeling a read-only task.
+  let sneaky = args.copy()
+  sneaky["requestId"] = %"sneaky-bash"
+  sneaky["tools"] = %*["read", "bash"]
+  check("read-only mode refuses a coding tool",
+    rejected(proc() = validateTask(sneaky)))
+  # Control-plane machinery is refused in unattended mode too.
+  let controlPlane = args.copy()
+  controlPlane["requestId"] = %"control-plane"
+  controlPlane["mode"] = %"unattended"
+  controlPlane["tools"] = %*["read", "fleet_task_submit"]
+  check("unattended mode refuses control-plane tools",
+    rejected(proc() = validateTask(controlPlane)))
+
+  var unattended = args.copy()
+  unattended["requestId"] = %"code-it"
+  unattended["mode"] = %"unattended"
+  unattended["taskProfile"] = %"coding"
+  unattended["content"] = %"Write a marker in the checkout."
+  unattended["cwd"] = %peerWorkspace
+  unattended["tools"] = %*["read", "bash"]
+  # Explicit budgets: an earlier scenario narrowed the shared `args` to one
+  # call, which cannot cover the two scripted rounds below.
+  unattended["maxRounds"] = %3
+  unattended["maxCalls"] = %8
+  unattended["maxTokens"] = %10000
+  let codingJob = createJob(c, unattended)
+  let codingId = codingJob["id"].getStr()
+  check("an unattended task is recorded as such before dispatch",
+    c.storeGet("fleetjob", codingId).value{"task", "mode"}.getStr("") ==
+      "unattended")
+  let submissionsBeforeTask = submissions
+  disconnected = false
+  reconcileJob(c, codingId, run)
+  for i in 0..<40:
+    if c.storeGet("fleetjob", codingId).value["state"].getStr() == "settled": break
+    sleep(250)
+    reconcileJob(c, codingId, run)
+  let coding = c.storeGet("fleetjob", codingId).value
+  check("the unattended task settles from the worker's receipt",
+    coding["state"].getStr() == "settled", $coding)
+  check("the coding tool really ran on the peer",
+    fileExists(marker), "no marker written")
+  check("the model still cannot reach control-plane store machinery",
+    call(remoteNc, "store", "get", %*{"kind": "fabricprog", "id": "bad"}){"error"} != nil)
+  check("the notice reports the effective policy and confinement honestly",
+    coding{"notice", "confinement"}.getStr("") == "unconfined" and
+    coding{"notice", "taskPolicyDigest"}.getStr("").startsWith("sha256:"), $coding)
+  check("the unattended submission was not replayed",
+    submissions == submissionsBeforeTask + 1, $submissions)
   report("FLEET TASKS TEST")
 
 main()

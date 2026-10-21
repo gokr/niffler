@@ -17,6 +17,7 @@ import catalog
 import compaction
 import schema_validation
 import admission
+import taskpolicy
 import supervisor
 import uireg
 import workspace
@@ -792,6 +793,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       return %*{"components": comps, "root": ct.root,
                 "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
                 "admissionPolicyVersion": admissionPolicyVersion,
+                "taskPolicyVersion": taskPolicyVersion,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "schemas":
       return ct.cat.selectedSchemas(args{"tools"})
@@ -850,6 +852,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       return %*{"components": comps, "root": ct.root,
                 "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
                 "admissionPolicyVersion": admissionPolicyVersion,
+                "taskPolicyVersion": taskPolicyVersion,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     return %*{"error":
       "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}

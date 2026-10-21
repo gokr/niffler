@@ -117,6 +117,129 @@ The admission record does not extend authority: a caller cannot widen a peer's
 ceiling by naming a profile in it, and the record is read from the same store
 its writer owns.
 
+## Task policy (unattended authority)
+
+An unattended task runs ordinary coding tools **without approval prompts**,
+inside authority that two independent decisions define:
+
+1. the **worker operator's** profile — store kind `taskprofile`,
+   id = the profile name, written out-of-band by the operator (never by a
+   model, never by a task);
+2. the **requesting human's** grant — `task` on the session call, approved at
+   submission by the requester's own gate.
+
+The effective policy is the intersection, resolved on the worker **before any
+tool runs** and persisted in the conversation header. A caller can only narrow
+the operator's ceiling: anything wider is refused with a reason, never silently
+clamped. `taskPolicyVersion: 1` is advertised in catalog `components`/`snapshot`
+alongside `taskScopeVersion` and `admissionPolicyVersion`.
+
+Operator profile (`task_profile_set` / `task_profile_list` /
+`task_profile_remove` on the fleet component):
+
+```json
+{"name": "coding", "unattended": true, "confinement": "unconfined",
+ "tools": ["read", "grep", "edit", "bash", "write"],
+ "roots": ["/home/ubuntu/work"],
+ "maxRounds": 8, "maxCalls": 40, "maxTokens": 200000,
+ "note": "operator-only, never sent to a requester"}
+```
+
+Unknown fields are refused. `tools` must list at least one; `roots` entries must
+be absolute and may not be `/`; every budget must be present (an unbounded
+unattended task is exactly what this seam exists to prevent).
+`confinement` is `unconfined` in this version: a profile claiming `sandbox` is
+refused, because no sandbox is enforced for delegated work yet and saying
+"confined" would be a claim a human could rely on.
+
+Session call:
+
+```json
+{"sessionId": "fleet-…", "content": "…",
+ "task": {"profile": "coding", "workspace": "/home/ubuntu/work",
+          "tools": ["read", "edit", "bash"],
+          "maxRounds": 4, "maxCalls": 20, "maxTokens": 50000,
+          "grantDigest": "sha256:…"},
+ "admission": {"key": "fleet-…", "policyVersion": 1}}
+```
+
+`grantDigest` is optional on the wire but always set by `fleet_task_submit`: the
+requester hashes the approved authority before dispatch and the worker
+recomputes it (see "Grant binding" below).
+
+The grant is **activation-scoped**, with birth settings frozen for its
+conversation. An exact task admission retry returns its durable receipt without
+executing work or consulting current profile settings. Its digest includes the
+requested `task` grant; changing that grant under the same key refuses
+(`admission-conflict`). A different grant needs a new conversation
+(`task-policy-immutable`).
+
+Until a fresh-grant continuation protocol is implemented, content-only turns,
+image turns and autonomous wakes on a task conversation refuse with
+`task-policy-continuation-required`. A persisted policy is historical evidence,
+not authorization for another activation. This applies both to a live runner
+and after retirement/restart, including after the operator deletes the profile.
+Receipt retries remain readable after revocation. In-flight revocation is a
+separate, unimplemented lifecycle boundary; no termination guarantee is claimed.
+Three witnesses identify a task (in-memory session, header, admission records);
+unreadable policy history fails closed (`task-policy-unconfirmed`). These
+controls add no provider prefix data or transcript messages on refusal/replay.
+
+Effective policy (stored as `taskPolicy` in the header, returned in the turn
+result and in the admission receipt):
+
+```json
+{"version": 1, "profile": "coding", "unattended": true,
+ "tools": ["bash","edit","read"], "roots": ["/home/ubuntu/work"],
+ "workspace": "/home/ubuntu/work",
+ "budget": {"maxRounds": 4, "maxCalls": 20, "maxTokens": 50000},
+ "confinement": "unconfined", "confined": false,
+ "controlPlaneDenied": true, "digest": "sha256:…"}
+```
+
+`digest` is SHA-256 over canonical JSON of the policy with its own `digest`
+field excluded, so a policy and its published form hash the same.
+
+**Refusal codes:** `admission-conflict`, `admission-invalid`,
+`admission-unsupported`, `admission-unconfirmed`, `task-policy-invalid`,
+`task-policy-denied`, `task-policy-widened`, `task-policy-refused-root`,
+`task-policy-unsupported`, `task-policy-unavailable`,
+`task-policy-unconfirmed`, `task-policy-immutable`,
+`task-policy-continuation-required`, `task-policy-grant-mismatch`.
+
+**Grant binding.** Before dispatch the requester hashes the authority the human
+approved — `profile`, the sorted/deduped `tools`, and `maxRounds`/`maxCalls`/
+`maxTokens` — into `task.grantDigest` and records it in its durable job. The
+worker recomputes it from what actually arrived and refuses a mismatch with
+`task-policy-grant-mismatch`; this closes the window opened by recording the
+grant before dispatch but executing it later. `workspace` is deliberately not
+in the digest (the two peers spell one directory through different
+filesystems) — `roots` bounds it on the worker instead.
+
+The **worker audits its own catalog** before persisting an effective policy
+(`taskToolSchemaProblem`): a tool it does not serve, a tool with no `x-harness`
+contract, and any `hidden`/`runner`/`sessionContext`/`noSpawn` flag refuse with
+`task-policy-denied` in every mode. That check is by schema, not by name, so a
+plugin the deny list has never heard of cannot opt into orchestration access by
+being novel.
+
+**Control plane is never task authority**, in any mode and whatever a profile
+says: `fleet_*`, `agent*`, `invoke`, `fabric`, `session*`, `spawn`/`kill`/
+`remove`, `build`/`build_package`, `plugins*`, `mcp`, `toolset`/`profile`,
+`conversation_delete`, `admission_get`, `taskprofile`, `task_profile_*`,
+`heartbeat_*`, `ui`, `put`, `del`. Both sides check it; the requester refuses
+to request it and the worker refuses to resolve a policy containing it. The
+match is on **callable** names, not component labels (`build`, not `builder`),
+and family prefixes keep a future `fleet_*`/`agent_*`/`plugin_*` tool denied
+without editing the list.
+
+**The honest limitation:** `bash` is broad machine access. This slice does not
+confine it — not to the workspace, not to the machine. A workspace label, a tool
+allowlist and `x-harness.effect` are not a sandbox, and the notice a requester
+receives says `unconfined worker` for exactly that reason. Granting coding tools
+is trusted/unconfined execution under the peer operator's policy
+(docs/FLEET.md §5); it is not sandboxing and must not be described as such.
+
 ## Human completion activity
 
 Hidden read-only core tool `activity_list {after?:string,limit?:1..1000}`

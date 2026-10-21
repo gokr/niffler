@@ -11,6 +11,8 @@ import std/sha1
 {.pop.}
 import natsnim
 import ../sdk/envelope
+import ../sdk/niffler/canonicaljson
+export canonicaljson
 import schema_validation
 when defined(posix):
   import std/posix
@@ -335,30 +337,6 @@ proc normalizeToolSchema*(schema: JsonNode): JsonNode =
     result["type"] = %"object"
   if result{"properties"} == nil or result{"properties"}.kind != JObject:
     result["properties"] = %*{}
-
-proc canonicalJson*(node: JsonNode): string =
-  ## Stable JSON independent of object insertion order.
-  if node == nil: return "null"
-  case node.kind
-  of JObject:
-    var keys: seq[string]
-    for key, value in node: keys.add(key)
-    keys.sort()
-    result.add('{')
-    for i, key in keys:
-      if i > 0: result.add(',')
-      result.add($(%key))
-      result.add(':')
-      result.add(canonicalJson(node[key]))
-    result.add('}')
-  of JArray:
-    result.add('[')
-    for i in 0 ..< node.len:
-      if i > 0: result.add(',')
-      result.add(canonicalJson(node[i]))
-    result.add(']')
-  else:
-    result = $node
 
 proc schemaFingerprint*(schema: JsonNode): string =
   ## SHA-1 is an identity checksum here, not a security boundary.
