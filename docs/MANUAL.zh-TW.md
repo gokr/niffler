@@ -1635,6 +1635,110 @@ make test-fleet 使用假傳輸，不操作真實主機或 VM。
 `make test-fleet-tasks` 是雙實例真實 NATS/模擬模型隔離冒煙測試，不執行 SSH/VM。
 `NIF_FLEET_TASK_WORKERS=0` 可停用傳輸工作行程，但仍投遞待處理通知。
 
+#### Durable admission (F1)
+
+每個任務攜帶一個冪等鍵（即任務 id 本身），工作端在任何回合執行之前就記錄它
+（見 docs/WIRE.md "Durable task admission"）：
+
+```json
+{"admission": {"key": "fleet-<jobid>", "policyVersion": 1}}
+```
+
+工作端的記錄保存正規化後的出生設定及其摘要，因此重試只可能回傳既有的接受記錄或
+終態回執 —— 絕不會啟動第二個回合，也絕不會把同一個鍵重新解釋為不同的工作。
+這正是「遺失的回覆」可以被對帳而不是被猜測的原因：往返中斷的提交可以查詢，無需猜。
+
+實際上會看到的三種結果：
+
+- **對端缺少該能力。** catalog 的 `components`/`snapshot` 會攜帶
+  `admissionPolicyVersion`；版本不是 1 的對端在**派發之前**就被拒絕，而不是
+  在任務已經開始之後。
+- **准入被重播。** 任務以工作端回執結束（`admissionReplay: true`），不產生任何開銷。
+- **啟用已在執行。** 任務刻意保持 unknown：`fleet_task_receipt {jobId}`
+  （以及工作端自己的 `admission_get {session, key}`）顯示接納了什麼、最近一次
+  啟用做了什麼。這兩個工具都不會啟動、恢復或修復工作。
+
+已結算的准入仍然不等於已驗證的任務：`transcriptCommitted` 只說明工作端歷史已持久化，
+不說明其報告正確。`transcriptCommitted` 為 false 的回合（或任何合理預算之後仍停留在
+`running` 的啟用）保持 unknown；在重複使用同一個鍵之前，請先檢查工作端會話。
+把准入當作**權限**回執同樣不成立：摘要記錄的是被接受的設定，它絕不會擴大對端的上限。
+
+`make test-fleet-admission` 涵蓋記錄/冪等契約，`t_fleet_admission_e2e` 涵蓋
+真實 store 加執行器在使用模擬模型下的行為。
+
+#### Unattended coding tasks (F2)
+
+唯讀任務是預設行為。要讓被委派的任務真正**編輯、建置和測試**，工作端操作員必須先
+允許它，同時仍由人工核准每個任務：
+
+```bash
+# 1. 在 WORKER 上（其操作員，需匯流排存取權）—— 每個 profile 一次：
+./var/bin/cli call task_profile_set '{
+  "name": "coding",
+  "tools": ["read", "grep", "edit", "write", "bash", "git_status", "git_diff"],
+  "roots": ["/home/ubuntu/work"],
+  "maxRounds": 8, "maxCalls": 40, "maxTokens": 200000}'
+
+./var/bin/cli call task_profile_list '{}'    # 本機允許什麼
+```
+
+```jsonc
+// 2. 從請求端會話（fleet_task_submit，需核准）：
+{"profile": "var/fleet/worker.json", "requestId": "fix-123",
+ "mode": "unattended", "taskProfile": "coding",
+ "content": "Fix the failing test in this checkout and run the suite.",
+ "cwd": "/home/ubuntu/work",                    // 必須位於 profile 的 roots 之下
+ "tools": ["read", "edit", "bash"],             // 必須在 profile 的 tools 之內
+ "maxRounds": 4, "maxCalls": 20, "maxTokens": 50000}
+```
+
+兩個決定在工作端求交集：操作員的 profile 是上限，人的授權是本任務可用的範圍。
+呼叫方只能收窄 —— 索取超出上限的工具或預算會被帶上理由拒絕，絕不會被悄悄裁剪到
+剛好符合。沒有 profile（或 profile 不允許無人值守執行）意味著明確拒絕，**而不是**
+讓任務啟動後一直等待一個根本不會出現的核准。對端從不設定 `NIF_AUTO_APPROVE`，
+拒絕發生在任何工作執行之前。
+
+一個會話一旦成為無人值守任務，其權限就固定為它被接納時的那次啟用。後續攜帶不同
+`task` 的呼叫會被拒絕，而不會重新解釋先前工作所依據的授權；**僅含內容、含圖片的
+回合以及自主喚醒同樣會被拒絕**（`task-policy-continuation-required`）：已儲存的策略
+是被核准內容的證據，不是繼續執行更多工作的長期許可，而且即使操作員刪除了 profile，
+它依然會被拒絕。需要更多工作請開新會話。用同一個准入鍵做**完全相同**的重新提交
+則不同 —— 它回傳既有回執且什麼都不執行，因此在回覆遺失後重試是安全的。
+
+派發之前，請求端會把已核准的權限雜湊進任務記錄，工作端會依據實際收到的內容重新計算。
+中途被改動的授權會被拒絕（`task-policy-grant-mismatch`），而不會在無人核准的權限下執行。
+
+回傳的通知會說明本次工作所依據的權限，以及工作是否被隔離。本版本中 `unconfined`
+是誠實的答案，而且這一點很重要：
+
+> **無人值守編碼是可信但未隔離的執行。** `bash` 是對機器的廣泛存取。工具白名單、
+> 核准模式和 workspace 根目錄都是**權限範圍劃定**，不是沙箱：沒有任何東西阻止被授予的
+> shell 讀取 `roots` 之外的內容，workspace 標籤也不是邊界。只在你願意接受這種風險的
+> 機器和程式碼庫上授予編碼工具。
+
+控制面工具在任何模式下、無論 profile 怎麼寫都不會被授予：委派類（`fleet_*`、`agent*`、
+`invoke`、`fabric`）、自我重配置類（`spawn`、`builder`、`plugins`、`mcp`、`toolset`）
+以及記錄維護通道（`admission_get`、`taskprofile`、`put`/`del`）。這使任務保持單跳，
+並防止它給自己重新授權。
+
+常見拒絕及含義：
+
+| 拒絕 | 含義 |
+|---|---|
+| `no task profile … unattended authority is off` | 工作端操作員尚未配置；請詢問他們，不要重試 |
+| `tool 'x' is not permitted by the worker's profile` | 把 `tools` 收窄到 `task_profile_list` 顯示的範圍 |
+| `workspace … is outside the worker's approved task roots` | 選擇位於 profile `roots` 之下的 `cwd` |
+| `… is control-plane machinery` | 該工具永遠不是任務權限；不要再請求 |
+| `this conversation is already an unattended task` | 需要新的授權請開新會話 |
+| `task continuation requires a fresh activation grant` | 對已完成任務的跟進/喚醒：提交新任務，不要重用該會話 |
+| `… does not match the authority the requester recorded` | 授權在核准後被改動；重新提交，讓人核准新的授權 |
+| `confinement 'sandbox' is not enforced` | 從 profile 中去掉 `confinement`，直到沙箱切片交付 |
+
+`make test-taskpolicy` 涵蓋該交集及其拒絕（隔離執行）；`t_taskpolicy_e2e` 執行真實的
+無人值守任務（被授予的 `edit` 會執行，控制面 `put` 不會，重試重播回執，跟進與被篡改的
+授權會被拒絕）；`t_fleet_tasks` 經由請求端驗證同樣的事，包括編碼工具確實執行了。
+
+
 ### Incus and remote guest management
 
 Fleet 現支援 `transport:"incus"` 和 Incus/Lima 可選 `host:"operator@hypervisor"`；省略 host 表示本機。收據綁定路由，漂移或已固定訪客遺失會拒絕操作。Incus 使用固定 Ubuntu 24.04 非特權系統容器，普通 ubuntu 使用者及 `/home/ubuntu/niffler`；明確啟用訪客 linger，臨時 sudo 安裝規則於退出時清理（SIGKILL/主機故障需人工檢查），不使用主機 sudo 或掛載。incus-admin 等同主機 root 權限；必須先手動安裝/初始化 Incus 並驗證無密碼 SSH 和 known_hosts。完整安裝、Lima、更新與安全預檢步驟見英文手冊對應段落。
