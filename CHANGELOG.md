@@ -192,9 +192,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   their exit status — surfaced in the requester's notice as a structured
   `artifact` plus a one-line summary. A task that commits nothing says
   `no commit`; one that rewrote its base says `NOT built on the approved base`;
-  a failing test command is surfaced either way. It never claims the change is
-  correct — that stays a human review — but the report is now checkable against
-  something real.
+  a failing test command is surfaced either way. The notice carries a **link to
+  the commit** (derived from the checkout's `origin`; no link at all when there
+  is nothing browseable) and only a file count — a diff pasted into a terminal
+  is noise, a URL is something a reviewer can open. It never claims the change
+  is correct — that stays a human review — but the report is now checkable
+  against something real.
 
   Read-only tasks remain the default (`mode` is opt-in), and this is still an
   experimental slice — see the blocker list in `docs/FLEET.md`. Not yet

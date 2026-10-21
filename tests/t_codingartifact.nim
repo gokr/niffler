@@ -163,6 +163,55 @@ proc main() =
           not art{"observed"}.getBool(true) and
           art{"reason"}.getStr("").contains("not observable"), $art)
 
+  # --- the link: what a human can act on -----------------------------------
+  # A diffstat pasted into a notice is noise; a URL is the thing a reviewer
+  # clicks. It is emitted only when genuinely derivable from `origin`.
+  block:
+    let linked = tmp / "linked"
+    initRepo(linked)
+    proc setOrigin(url: string) =
+      # `git remote remove` fails the first time (no origin yet), which is the
+      # normal way to reach that state — not an error worth raising over.
+      discard execCmdEx("git -C " & quoteShell(linked) & " remote remove origin")
+      discard git(linked, "remote add origin " & quoteShell(url))
+    setOrigin("git@github.com:gokr/niffler.git")
+    check("an scp-style origin becomes a browseable web base",
+          remoteWebBase(linked) == "https://github.com/gokr/niffler",
+          remoteWebBase(linked))
+    check("a commit link points at that commit",
+          commitUrl(linked, "0123456789abcdef").endsWith("/commit/0123456789abcdef"),
+          commitUrl(linked, "0123456789abcdef"))
+    setOrigin("https://gitlab.example/team/proj.git")
+    check("an https origin keeps its host",
+          remoteWebBase(linked) == "https://gitlab.example/team/proj",
+          remoteWebBase(linked))
+    setOrigin("ssh://git@git.internal:2222/a/b.git")
+    check("an ssh:// origin is reduced to host and path",
+          remoteWebBase(linked).startsWith("https://git.internal"), remoteWebBase(linked))
+    # Never invent a link: a local-only checkout has nothing to browse.
+    discard git(linked, "remote remove origin")
+    check("a checkout with no origin yields no web base",
+          remoteWebBase(linked) == "", remoteWebBase(linked))
+    check("...and therefore no commit link", commitUrl(linked, "0123456789") == "")
+    setOrigin("git@github.com:gokr/niffler.git")
+    let headCommit = observeCheckout(linked).head
+    let withLink = codingArtifact(headCommit, linked)
+    check("a commit that exists carries its link",
+          withLink{"head", "url"}.getStr("").endsWith("/commit/" & headCommit),
+          $withLink)
+    # Links must point at a COMMIT, not at every artifact: an untouched
+    # checkout has no produced commit to link to.
+    let untouchedLink = codingArtifact("", linked)
+    check("the artifact still renders without any link when nothing changed",
+          artifactSummary(untouchedLink).contains("no commit"),
+          artifactSummary(untouchedLink))
+    # The prose summary carries the link, not a diff.
+    let movedNow = codingArtifact(headCommit, linked,
+      @[("make test", 0)])
+    let rendered = artifactSummary(movedNow)
+    check("the summary shows the count, never a pasted diff",
+          not rendered.contains("|") and rendered.contains("commit"), rendered)
+
   report("CODING ARTIFACT TEST")
 
 main()

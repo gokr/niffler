@@ -3095,8 +3095,14 @@ diffstat, whether the tree was left dirty, and the verification commands that
 ran with their exit status — plus a one-line summary:
 
 ```
-artifact: commit 56fe18a "fix the note file" (1 file changed, 1 insertion(+), 1 deletion(-))
+artifact: commit 56fe18a "fix the note file" (1 file changed)
+https://github.com/gokr/niffler/commit/56fe18a…
 ```
+
+The link is the point: open it to review the change. A diff pasted into a
+terminal notice would be noise, so only the file count is shown; when the
+checkout has no browseable origin there is no link at all rather than a broken
+one.
 
 If the task left its work uncommitted the notice says `no commit` (with a dirty
 or untracked warning) rather than implying success; if the commit replaced the

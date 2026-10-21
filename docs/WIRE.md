@@ -271,9 +271,17 @@ description of it (docs/FLEET.md §6). The receipt therefore carries an
 - **`observed: false`** means the worker could not look (not a checkout, or not
   permitted to observe). Missing evidence is stated, never fabricated.
 
-`artifactSummary` renders one bounded line for the notice
-(`artifact: commit 56fe18a "fix the note file" (1 file changed …)`), and
-`artifactProblem` refuses a version a reader does not understand. This is
+**A link, not a diff.** `head.url` carries a browseable link to the commit,
+derived from the checkout's own `origin` (`git@host:owner/repo.git`,
+`ssh://…` and `https://…` all reduce to `https://host/owner/repo`). Pasting a
+diff into a terminal notice is noise; the link is what a reviewer can act on, so
+the prose summary carries the URL and only a file *count*, never diff content.
+A checkout with no browseable origin yields no link at all — a URL that goes
+nowhere is worse than none.
+
+`artifactSummary` renders that one-line form
+(`artifact: commit 56fe18a "fix the note file" (1 file changed)` plus the URL),
+and `artifactProblem` refuses a version a reader does not understand. This is
 **evidence that something changed**; whether the change is correct remains a
 human review decision, and nothing in the receipt claims otherwise.
 

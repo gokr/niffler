@@ -1502,8 +1502,12 @@ diffstat、工作树是否被留下未提交状态，以及实际运行的验证
 一行摘要：
 
 ```
-artifact: commit 56fe18a "fix the note file" (1 file changed, 1 insertion(+), 1 deletion(-))
+artifact: commit 56fe18a "fix the note file" (1 file changed)
+https://github.com/gokr/niffler/commit/56fe18a…
 ```
+
+链接才是重点：点开它来评审改动。把 diff 粘贴到终端通知里只会是噪音，所以只显示
+文件数量；若该代码库没有可浏览的 origin，则完全不给出链接，而不是给出一个坏链接。
 
 如果任务把工作留在未提交状态，通知会说 `no commit`（附带 dirty 或未跟踪文件警告），
 而不会暗示成功；如果提交替换了基线而不是在它之上构建，通知会说

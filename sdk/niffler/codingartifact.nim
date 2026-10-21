@@ -115,6 +115,45 @@ proc verificationEvidence*(commands: seq[tuple[command: string, code: int]]): Js
                   "ok": entry.code == 0})
     inc count
 
+proc remoteWebBase*(dir: string): string =
+  ## The repository's browseable web base, derived from `origin`, so a receipt
+  ## can hand a human a LINK to the commit rather than pasting a diff into a
+  ## terminal. "Not a link" is answered with "" — never with a wrong URL, since
+  ## a broken link is worse than none.
+  let (url, code) = gitOutput(dir, @["config", "--get", "remote.origin.url"])
+  if code != 0: return ""
+  var raw = url.strip()
+  if raw.len == 0: return ""
+  # git@host:owner/repo.git  ->  https://host/owner/repo
+  if raw.startsWith("git@") and ':' in raw:
+    let at = raw.find("git@") + 4
+    let colon = raw.find(':', at)
+    if colon <= at: return ""
+    let host = raw[at ..< colon]
+    var path = raw[colon + 1 .. ^1]
+    if path.endsWith(".git"): path.setLen(path.len - 4)
+    if host.len == 0 or path.len == 0: return ""
+    return "https://" & host & "/" & path
+  # ssh://git@host/owner/repo.git and https://host/owner/repo.git
+  let schemeAt = raw.find("://")
+  if schemeAt > 0:
+    var rest = raw[schemeAt + 3 .. ^1]
+    if rest.startsWith("git@"): rest = rest[4 .. ^1]
+    let slash = rest.find('/')
+    if slash <= 0: return ""
+    var path = rest[slash + 1 .. ^1]
+    if path.endsWith(".git"): path.setLen(path.len - 4)
+    if path.len == 0: return ""
+    return "https://" & rest[0 ..< slash] & "/" & path
+  ""
+
+proc commitUrl*(dir, commit: string): string =
+  ## A link to one commit, or "" when the checkout has no browseable origin.
+  if commit.len < 7: return ""
+  let base = remoteWebBase(dir)
+  if base.len == 0: return ""
+  base & "/commit/" & commit
+
 proc codingArtifact*(base, dir: string,
                      verification: seq[tuple[command: string, code: int]] = @[],
                      verifiable = true): JsonNode =
@@ -138,6 +177,10 @@ proc codingArtifact*(base, dir: string,
     result["observed"] = %false
     result["reason"] = %"settlement directory is not a git checkout"
     return
+  # A commit SHA is not readable by a human; a link is. Carried only when it is
+  # actually derivable from the checkout's own origin.
+  let link = commitUrl(dir, now.head)
+  if link.len > 0: result["head"]["url"] = %link
   let moved = base.len > 0 and now.head != base
   result["headMoved"] = %moved
   if moved:
@@ -187,13 +230,23 @@ proc artifactSummary*(artifact: JsonNode): string =
   result = "artifact: commit " & artifact{"head", "short"}.getStr("")
   let subject = artifact{"head", "subject"}.getStr("")
   if subject.len > 0: result.add " \"" & subject & "\""
+  # A link is what a human can actually act on; a diff in a notice is noise.
+  # Emitted only when derivable from the checkout's origin, so a reader never
+  # gets a URL that goes nowhere.
+  let url = artifact{"head", "url"}.getStr("")
+  if url.len > 0: result.add "\n" & url
   if not artifact{"onBase"}.getBool(false):
     result.add " [NOT built on the approved base]"
   else:
+    # The diffstat stays in the structured artifact for tooling, but the prose
+    # summary keeps only the count — full diffs belong behind the link.
     let stat = artifact{"diffstat"}.getStr("")
     if stat.len > 0:
       let last = stat.splitLines()[^1]
-      if last.len > 0: result.add " (" & last.strip() & ")"
+      if last.len > 0:
+        let comma = last.find(',')
+        let brief = if comma > 0: last[0 ..< comma] else: last
+        result.add " (" & brief.strip() & ")"
   if artifact{"dirty"}.getBool(false): result.add " (tree dirty)"
   let failed = failedVerifications(artifact)
   if failed > 0: result.add " [" & $failed & " verification failure(s)]"
