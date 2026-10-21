@@ -83,6 +83,7 @@ A one-file index of every shipped capability (not a reference) is
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
+| `config` | Nim | optional | the discoverable configuration surface: components declare a domain (JSON Schema subset + per-property metadata) and keep owning their own store record; `config_list`/`config_get` report values, defaults, revisions and schemas (secrets redacted), `config_patch`/`config_reset` validate and forward to the owner under approval. Nothing enters a prompt prefix — see [State and configuration](#state-and-configuration) |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fleet` | Nim | **not in the manifest** | Opt-in SSH/Lima provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Lima provisioning](#ssh-and-lima-provisioning) |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
@@ -2592,6 +2593,35 @@ hidden tools directly over NATS.
   a *new* conversation. It is not the toolset of an existing session.
 - Dispatch, approvals, `x-harness.timeoutMs`, and component-to-component calls
   always consult the full catalog.
+
+### Declared configuration (the `config` component)
+
+A component that owns settings keeps owning them: the values stay in its own
+store record, written by its own tool. The optional `config` component adds
+discovery, validation and one editing API on top, so neither a human nor a model
+has to know which component owns which knob.
+
+An owner publishes a *declaration* at startup (`config_declare`, hidden —
+infrastructure, not a model tool): a stable domain id, its store kind, the tool
+that answers `get`/`patch`/`reset`, a JSON Schema subset for the values, and
+per-property `x-config` metadata (`title`, `description`, `secret`, `readOnly`,
+`application`). Declarations are durable, so a stopped owner still lists.
+
+| Tool | What it does |
+|---|---|
+| `config_list` | every declared domain: title, owner, property count, whether the owner currently answers |
+| `config_get {domain}` | current values, defaults, revision and schema together; **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
+| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only fields), then forward it to the owner, which performs the compare-and-set write |
+| `config_reset {domain, properties?, expectRev?}` | drop explicit values so declared defaults apply again |
+
+Patches and resets carry `x-harness.approval: "always"`. `config` never writes
+another component's record — an owner's invariants (credential handling, derived
+caches, migrations) stay enforced. A declaration using a schema keyword this
+surface cannot enforce is **refused at declare time**: silently ignoring a
+constraint would report a validation that never happened. `scope` is
+`instance` only; a declaration asking for `shared` is refused until that design
+lands. No value enters a frozen prompt prefix — a change is visible at the
+owner's next call. Contract: [research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md).
 
 ### Instance identity
 

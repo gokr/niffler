@@ -40,6 +40,19 @@ components:
     required: false
     restart: on-failure
 
+  # The one discoverable configuration surface: components declare their
+  # settings (schema + defaults + application timing) and this component
+  # validates and routes changes to the OWNER, which keeps writing its own
+  # store document. No settings values enter a prompt prefix. Optional: absent,
+  # components still work from their own store records (docs/research/
+  # CONFIG-CONTRACT.md).
+  - name: config
+    build: {lang: nim, src: components/config/main.nim}
+    binary: var/bin/config
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: skills
     build: {lang: nim, src: components/skills/main.nim}
     binary: var/bin/skills

@@ -89,11 +89,16 @@ pass. Repository status is not a claim that installed binaries were updated.
 
 ### 4. Generic configuration surface
 
-- [ ] Implement schema declaration seam and shared validation helpers.
-- [ ] Add configuration peer: config_list/get/patch/reset, owner-routed,
-  approval-gated, revision-safe, redacted and instance-aware.
-- [ ] Test invalid patches, resets, secret preservation, subagent restrictions,
-  stale revisions, unavailable owner/store, and immediate/restart timing.
+- [x] Implement schema declaration seam and shared validation helpers
+  (`config_declare`; the supported subset is refused-by-name, never ignored).
+- [x] Add configuration peer: config_list/get/patch/reset, owner-routed,
+  approval-gated, revision-safe and redacted. Shared scope is refused until
+  that decision is made (it is not silently treated as per-instance).
+- [x] Test invalid patches, resets, secret redaction, stale revisions,
+  unavailable owner and durable declarations. Contract:
+  [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md).
+- [ ] Subagent restrictions and per-property application timing enforcement
+  (timing is reported to callers today; the owner decides what it means).
 - [ ] Add schema-driven TUI editor in the TUI repository; no per-owner forms.
 
 ### 5. Owner migrations (each with its own tests and docs)

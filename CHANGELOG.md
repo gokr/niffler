@@ -6,6 +6,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- New optional `config` component: the one discoverable configuration surface.
+  Components declare a domain (JSON Schema subset + per-property metadata) and
+  keep owning their own store document; `config_list`/`config_get` discover
+  values, defaults, revisions and schemas (secrets redacted), while
+  `config_patch`/`config_reset` validate and forward to the OWNER's tool under
+  approval. Nothing is written on an owner's behalf, no value enters a prompt
+  prefix, and an unenforceable declaration is refused rather than ignored.
+
 - Fleet verified routes live in the store (kind `fleetinstance`, keyed by stable
   instance identity) with `fleet_instances` and `fleet_instance_import`; install
   and update record them after live identity verification. The registry grants
