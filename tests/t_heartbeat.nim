@@ -144,13 +144,29 @@ proc main() =
   check("a second heartbeat within budget runs", second,
         "second turn never appeared (budget too small or component not ticking)")
 
-  let overBudget = call(nc, "core", "session", %*{"sessionId": session,
-    "content": "scheduled check-in", "notice": {"kind": "heartbeat", "id": "tick"}})
+  # The heartbeat component ticks on its own schedule, so the turn that just
+  # landed may still be winding down when this direct call arrives — and a
+  # runner mid-turn answers `busy`, not `budget`. That is correct behaviour and
+  # a different refusal, so wait it out rather than sampling once: retry until
+  # the answer is no longer the mid-turn one, then assert the budget verdict.
+  # (This was the intermittent red in the full gate: ~1 run in 3, because it is
+  # a race between the component's tick and this test's own call.)
+  var overBudget: JsonNode = nil
+  for i in 0 ..< 30:
+    overBudget = call(nc, "core", "session", %*{"sessionId": session,
+      "content": "scheduled check-in", "notice": {"kind": "heartbeat", "id": "tick"}})
+    if not overBudget{"error"}.getStr("").contains("mid-turn"): break
+    sleep(500)
   check("runner independently refuses an over-budget tick",
     overBudget{"heartbeat"}.getStr("") == "declined" and
     overBudget{"reason"}.getStr("") == "budget", $overBudget)
-  let missingRecord = call(nc, "core", "session", %*{"sessionId": "hb-no-record",
-    "content": "x", "notice": {"kind": "heartbeat", "id": "absent"}})
+  # Same hazard for the two calls that follow.
+  var missingRecord: JsonNode = nil
+  for i in 0 ..< 30:
+    missingRecord = call(nc, "core", "session", %*{"sessionId": "hb-no-record",
+      "content": "x", "notice": {"kind": "heartbeat", "id": "absent"}})
+    if not missingRecord{"error"}.getStr("").contains("mid-turn"): break
+    sleep(500)
   check("a marker naming no record is refused",
     missingRecord{"heartbeat"}.getStr("") == "declined", $missingRecord)
   check("an interval below the floor is refused",
