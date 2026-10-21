@@ -232,6 +232,14 @@ proc startComponent*(bin: string, url: string, root = "",
   for k in ["NIF_OPENAI_API_KEY", "NIF_OPENAI_BASE_URL", "NIF_OPENAI_MODEL",
             "NIF_OPENAI_PROVIDER", "NIF_OPENAI_CONTEXT", "NIF_LLM_PROVIDERS"]:
     env[k] = ""
+  # Same hazard, approval side: a resident instance (scripts/server.sh) exports
+  # NIF_APPROVALS_DEFAULT=auto, and a harness-spawned shell inherits it. A test
+  # that asserts the GATE refuses (t_core's "spawn denied without human",
+  # t_discover's "invoke preserves target policy") would then see a grant it
+  # never asked for and fail against correct behaviour. The gate must start
+  # from its defaults unless the test sets the knob itself, so scrub before
+  # `extra` — that ordering lets a test opt in deliberately.
+  env["NIF_APPROVALS_DEFAULT"] = ""
   for (k, v) in extra:
     env[k] = v
   if logFile.len > 0:
