@@ -69,6 +69,9 @@ proc main() =
   check("no durable terminal means no deliverable notice", taskNotices(c, %*{"session": "origin"})["count"].getInt() == 0 and submissions == 1)
   fault(%*{})
   reconcileJob(c, id, run)
+  check("first successful reconciliation has no false transport error",
+    c.storeGet("fleetjob", id).value{"reachable"}.getBool(false) and
+    not c.storeGet("fleetjob", id).value.hasKey("diagnostic"))
   check("unmarked steering yields honest unavailable summary", c.storeGet("fleetjob", id).value["notice"]["summary"].getStr().contains("unavailable"))
   var item = c.storeGet("fleetjob", id)
   item.value["state"] = %"unknown"

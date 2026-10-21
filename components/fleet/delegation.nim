@@ -201,7 +201,7 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     else:
       j["state"] = %"unknown"
     j["reachable"] = %true
-    j.delete("diagnostic")
+    if j.hasKey("diagnostic"): j.delete("diagnostic")
   except CatchableError as e:
     if e.msg.startsWith("fleet submitting commit not confirmed"):
       raise # no diagnostic write may overwrite an uncertain commit
