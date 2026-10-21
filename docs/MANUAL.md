@@ -424,6 +424,24 @@ and scans the kind in id order with the same matcher (equivalent results,
 O(documents of the kind) per call; `rank: true` is accepted and answered
 `ranked: false`, `offset` still pages the match set).
 
+**Vector search** is the same tool's second mode: `{kind: "embedding",
+model, vector, limit?}` returns the nearest embeddings by **cosine
+distance** (`{items: [{id, rev, value, distance}], hasMore, ranked: true,
+vector: true}`), with `model` and `kind` applied *inside* the search so `k`
+neighbours come back rather than a post-filtered shortfall. Embeddings are
+ordinary documents (`{model, dimensions, vector, source?, sourceId?}`), so
+the document contract is unchanged and a producer writes them like any
+other doc: chunk → `llm.embed` → `store.put`. `dimensions` must equal
+`len(vector)` or the write is refused with `bad-embedding` — a document
+stored but not indexed is unfindable, with no error anywhere to explain it.
+`model` is required on a query because two models are different embedding
+spaces. Different widths live in separate indexes and are never compared.
+The index is derived state (`vec0` tables, partitioned by kind and model,
+one per width): maintained in the write transaction, rebuilt from `docs` at
+startup on disagreement, safe to drop. Only the sqlite engine implements it
+so far; tidb answers `code: "unsupported"` rather than running a text
+search and calling it a success (docs/WIRE.md "Store contract").
+
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
   contract on SQLite. Documents live verbatim as JSON TEXT; `put` is one
   atomic statement (doc + rev move together — the KV engine's two-key

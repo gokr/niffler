@@ -1579,6 +1579,46 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
 - **`snippet: true`** attaches a one-line `snippet` per hit with the
   matched text in `[brackets]` (engines without an index mark the first
   matched token's window — best effort, same shape).
+- **Vector search** (a second mode of the same `search` tool): pass
+  `vector` (the query embedding) and `model` instead of `query`, with
+  `kind: "embedding"`. The reply is
+  `{ok, items: [{id, rev, value, distance}], hasMore, ranked: true,
+  vector: true}`, ordered by **cosine distance** (0 = identical, 2 =
+  opposite) and paged by the same `limit` rules (`hasMore` when more
+  neighbours exist). `limit` defaults to 20.
+
+  Embeddings are ordinary documents of kind `embedding`, so the document
+  contract is unchanged:
+
+  ```json
+  {"kind": "embedding", "id": "<ref>@<model>",
+   "value": {"model": "hf:nomic-ai/nomic-embed-text-v1.5",
+             "dimensions": 768, "vector": [0.013, …],
+             "source": "message", "sourceId": "conv-1:000042"}}
+  ```
+
+  `model` and `vector` are required; `dimensions` defaults to
+  `len(vector)` and **must** equal it, or the write is refused with
+  `bad-embedding` (a document stored but not indexed is unfindable, with no
+  error anywhere to explain the silence). `source`/`sourceId` are
+  informational — they name the document the vector describes, so a hit
+  resolves to real content without parsing the embedding id.
+
+  `model` is required on the query because two models are different
+  embedding spaces: mixing them is meaningless, so an unnamed space could
+  only return nonsense. `kind` and `model` are filters *inside* the search,
+  not applied afterwards, so `k` neighbours come back rather than a
+  post-filtered shortfall. Vectors of different widths live in separate
+  indexes and are never compared; a width no document uses answers with an
+  empty page rather than an error.
+
+  The index is **derived state**, exactly like `docs_fts`: put/del maintain
+  it in the same transaction, a startup disagreement re-derives it from the
+  documents, and dropping it loses nothing. Consumers never see which index
+  answered. The sqlite engine implements it with sqlite-vec (`vec0` tables
+  partitioned by kind and model, one table per vector width); the tidb
+  engine does not yet, and answers `code: "unsupported"` rather than
+  pretending to have searched.
 - **Engines**: the sqlite engine (default) answers from an FTS5 index
   (`docs_fts`) whose rowids are `docs`' rowids — put/del maintain it in
   the same transaction, and startup rebuilds it from `docs` whenever the

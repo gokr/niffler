@@ -6,6 +6,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The store can answer "which documents are close to this vector?": `search`
+  gained a vector mode (`{kind: "embedding", model, vector, limit?}` →
+  `{items: [{id, rev, value, distance}], hasMore, ranked: true, vector: true}`),
+  ordered by cosine distance. Embeddings are ordinary documents of kind
+  `embedding` (`{model, dimensions, vector, source?, sourceId?}`), so the
+  document contract is unchanged — a producer (chunker → `llm.embed` →
+  `store.put`) needs no new kind of write. Three correctness rules are pinned
+  by tests rather than assumed: `model` and `kind` filter *inside* the search
+  (vec0 partition keys), so `k` neighbours come back instead of a
+  post-filtered shortfall; `dimensions` must equal `len(vector)` or the write
+  is refused `bad-embedding`, because a stored-but-unindexed vector is
+  unfindable with no error to explain it; and vectors of different widths live
+  in separate indexes (a wrong-width query returned an empty page silently in
+  the prototype, which is why the width is structural). The index is derived
+  state — `vec0` tables maintained in the write transaction and re-derived
+  from `docs` at startup on disagreement, exactly like `docs_fts`. Only the
+  sqlite engine implements it; tidb answers `code: "unsupported"` rather than
+  running a text search and calling it success.
+
 - `store-sqlite` switched drivers: `modernc.org/sqlite` → `mattn/go-sqlite3`
   with `sqlite-vec` compiled in (`v0.1.7-alpha.2`). The pure-Go driver had no
   extension-loading support at all, so vector search was unreachable by any

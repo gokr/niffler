@@ -288,6 +288,84 @@ proc main() =
         sAfter{"ok"}.getBool(false) and sAfter{"items"}.len == 1 and
         sAfter{"items"}[0]{"id"}.getStr("") == "conv-s2", $sAfter)
 
+  # ---------------------------------------------------------------------
+  # vector search (docs/WIRE.md "Store contract", "Vector search"): the same
+  # `search` tool, nearest-neighbour mode. Documents of kind `embedding` are
+  # indexed as they are written; the reply is ordered by cosine distance and
+  # the model partition is applied INSIDE the search, so k neighbours come
+  # back rather than a post-filtered shortfall.
+  const embeddingModel = "fixture-embed-3d"
+  proc putEmbedding(id: string, vector: seq[float64], model = embeddingModel) =
+    let value = %*{"model": model, "dimensions": vector.len,
+                   "vector": vector, "source": "message", "sourceId": id}
+    let r = call(nc, "store", "put",
+                 %*{"kind": "embedding", "id": id, "value": value})
+    check("embedding " & id & " stored", r{"ok"}.getBool(false), $r)
+
+  putEmbedding("vec-cat", @[1.0, 0.0, 0.0])
+  putEmbedding("vec-dog", @[0.9, 0.1, 0.0])
+  putEmbedding("vec-volcano", @[0.0, 1.0, 0.0])
+  putEmbedding("vec-other-model", @[1.0, 0.0, 0.0], model = "fixture-other-3d")
+
+  let nn = call(nc, "store", "search", %*{
+    "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0]})
+  check("vector search answers a kNN envelope",
+        nn{"ok"}.getBool(false) and nn{"vector"}.getBool(false) and
+        nn{"ranked"}.getBool(false), $nn)
+  check("vector search is nearest-first",
+        nn{"items"}.len == 3 and
+        nn{"items"}[0]{"id"}.getStr("") == "vec-cat" and
+        nn{"items"}[1]{"id"}.getStr("") == "vec-dog" and
+        nn{"items"}[2]{"id"}.getStr("") == "vec-volcano", $nn)
+  check("an identical vector has distance 0",
+        nn{"items"}[0]{"distance"}.getFloat(-1) < 0.0001, $nn)
+  check("the model partition excludes other models' vectors",
+        not ($nn).contains("vec-other-model"), $nn)
+
+  let nnPaged = call(nc, "store", "search", %*{
+    "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0],
+    "limit": 1})
+  check("vector search pages with hasMore",
+        nnPaged{"items"}.len == 1 and nnPaged{"hasMore"}.getBool(false), $nnPaged)
+
+  # An unindexable embedding is refused at WRITE time: a stored-but-unfindable
+  # vector is the failure mode with no error anywhere to explain it.
+  let badWidth = call(nc, "store", "put", %*{
+    "kind": "embedding", "id": "vec-bad",
+    "value": %*{"model": embeddingModel, "dimensions": 2,
+                "vector": [1.0, 0.0]}})
+  check("an embedding of a new width creates its own index",
+        badWidth{"ok"}.getBool(false), $badWidth)
+  let mismatch = call(nc, "store", "put", %*{
+    "kind": "embedding", "id": "vec-bad2",
+    "value": %*{"model": embeddingModel, "dimensions": 5,
+                "vector": [1.0, 0.0, 0.0]}})
+  check("a dimensions/vector mismatch is refused as bad-embedding",
+        not mismatch{"ok"}.getBool(true) and
+        mismatch{"code"}.getStr("") == "bad-embedding", $mismatch)
+
+  # A vector query without a model is refused: two models are different
+  # embedding spaces, so an unnamed one could only return nonsense.
+  let noModel = call(nc, "store", "search", %*{
+    "kind": "embedding", "vector": [1.0, 0.0, 0.0]})
+  check("vector search refuses a missing model",
+        not noModel{"ok"}.getBool(true) and
+        noModel{"code"}.getStr("") == "bad-request", $noModel)
+
+  # The vector index follows deletes in the same transaction.
+  discard call(nc, "store", "del", %*{"kind": "embedding", "id": "vec-dog"})
+  let afterVecDel = call(nc, "store", "search", %*{
+    "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0]})
+  check("a deleted embedding stops answering kNN",
+        afterVecDel{"items"}.len == 2 and
+        not ($afterVecDel).contains("vec-dog"), $afterVecDel)
+
+  # And the text mode is untouched by the vector mode.
+  let textStill = call(nc, "store", "search",
+                       %*{"kind": "conversation", "query": "spike"})
+  check("text search still answers beside the vector index",
+        textStill{"items"}.len == 1, $textStill)
+
   drain(nc)
   sleep(500)
   report("STORE TEST")
