@@ -771,7 +771,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 
 - **输出**窗口与上下文窗口一起解析，并以 `output`/`outputSource` 返回：目录中的 `model.limit.output`，否则是一个刻意设定的 32768 默认值——如果没有显式上限，提供方会应用其自己的服务端上限，并在流中途截断长回答。每次调用的 `maxTokens` 只会降低已解析的值（专家裁判的微小裁决），而 Codex 通道完全忽略它。
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受会话作用域的 provider 和模型覆盖。`provider` 指定一个已存储的 provider 昵称（为空则清除，回到 harness 全局默认）；仅指定模型的调用会在同一次头写入中解析并固定其所属的 provider，因此 provider 和模型总是一起出现——模型不会在事后因为另一个 UI 切换了全局默认而被发送到不支持它的 provider。无法解析的显式 `provider` 是一个指名它的错误，而不是静默回退（docs/WIRE.md "Provider/model pins are one selection"）。仅指定模型的调用会持久化并解析该选择而不进行推理；存在但值为空会清除它。`profile` 指定一个已存储的工具配置，仅在对话的第一次调用时解析为直接工具集（`NIF_PROFILE` 提供默认值）；未知配置会使调用失败，而恢复会忽略该参数。`thinking` 是推理强度，取值为 `""`、`low`、`medium`、`high`、`max` 之一；`""` 是提供方默认值（UI 将其显示为 "auto"），并且是唯一能清除先前选择的值。它作为 `reasoning_effort` 转发给提供方——且仅在非空时转发，因此不支持该字段的提供方永远不会看到它；`llm` 适配器将该值映射到每种协议自己的形式（Codex `reasoning {effort, summary}`，Anthropic `thinking` 加上 `output_config.effort`）——并携带在对话头上。
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受会话作用域的 provider 和模型覆盖。`provider` 指定一个已存储的 provider 昵称（为空则清除，回到 harness 全局默认）；仅指定模型的调用会在同一次头写入中解析并固定其所属的 provider，因此 provider 和模型总是一起出现——模型不会在事后因为另一个 UI 切换了全局默认而被发送到不支持它的 provider。无法解析的显式 `provider` 是一个指名它的错误，而不是静默回退（docs/WIRE.md "Provider/model pins are one selection"）。仅指定模型的调用会持久化并解析该选择而不进行推理；存在但值为空会清除它。`profile` 指定一个已存储的工具配置，仅在对话的第一次调用时解析为直接工具集（`NIF_PROFILE` 提供默认值）；未知配置会使调用失败，而恢复会忽略该参数。`thinking` 是推理强度，取值为 `""`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 之一；`""` 是提供方默认值（UI 将其显示为 "auto"），并且是唯一能清除先前选择的值；`none` 明确要求不进行推理，与提供方默认值不同。它作为 `reasoning_effort` 转发给提供方——且仅在非空时转发，因此不支持该字段的提供方永远不会看到它；`llm` 适配器将该值映射到每种协议自己的形式（Codex `reasoning {effort, summary}`，Anthropic `thinking` 加上 `output_config.effort`）——并携带在对话头上。当提供方拒绝该**值**时，`llm` 会记录 `status=effort-rejected`，并在不带该字段的情况下重试一次，而不是让该轮失败。
   `discovery {…}` 是显式的客户端发现：它运行 `discover`，将模式记录到持久发现摘要中，并将它们作为用户消息追加——没有 LLM 轮次，也不会提升到直接工具集。
   Core 将该选择存储在对话头中，并在一个轮次内的所有工具轮次中固定已解析的模型。
 - 每会话控制项在第一次调用时冻结并持久化在头中：`tools`（子级可以分派的工具允许列表；最多接受 32 个名称，且接受的参数不会在 `session` 工具模式中声明）、`maxRounds`（每轮 LLM 轮次数，1–`NIF_MAX_TURN_ROUNDS`，收窄硬上限）、`maxCalls`（每轮工具分派总数，1-500——每次分派尝试都计数，无论成功还是错误），以及 `maxTokens`（每轮提供方报告的累计 token 数，在每一新轮次之前检查）。预算耗尽会以预算耗尽错误结束该轮次——子代理驱动（`agent_run`/`agent_spawn`）将其作为失败呈现，而绝不是文本回复。
@@ -2541,9 +2541,10 @@ make build
 基准适配器在私有总线上等待全部八个直接工具、`systemprompt.systemprompt` 和 manifest 中每个 required autostart 组件，并在创建会话前检查目录 root 与对象 schema。上下文排除项不变，包括 `AGENTS.md` 与 `AGENTS.local.md`；就绪检查不允许将 harness 贡献者上下文注入基准任务。
 
 ```bash
-make test           # the full gate: the bus-contract suite
-make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test           # the full gate: the bus-contract suite + bench adapters
+make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
 make test-bench     # ... Node adapter readiness and telemetry tests only
+                    #     (skips cleanly when Node is absent)
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

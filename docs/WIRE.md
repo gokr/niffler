@@ -450,10 +450,12 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   resolves under in the same header write — provider and
                        #   model are one selection, never separate halves (see
                        #   "Provider/model pins are one selection"). thinking
-                       #   (low|medium|high|max,
-                       #   empty clears) persists a per-conversation thinking-effort
-                       #   selection forwarded to the LLM as reasoning_effort
-                       #   (provider-dependent; providers without support never see it).
+                       #   (none|minimal|low|medium|high|xhigh|max,
+                       #   empty clears = provider default) persists a
+                       #   per-conversation thinking-effort selection forwarded to
+                       #   the LLM as reasoning_effort (provider-dependent;
+                       #   providers without support never see it; a rejected value
+                       #   is retried once without the field).
                        #   approvals?/limits? are the human's mutable conversation
                        #   controls; compact? runs the compactor now (no turn);
                        #   export? returns the exact provider request (no turn);
