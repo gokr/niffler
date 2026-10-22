@@ -2584,7 +2584,7 @@ make test-bash      # ... or just one — `make help` lists every target
 `NIF_ENSURE_ATTACH=0` 使 `ensureHarness` 无条件启动（测试用）。
 显式的 `NIF_NATS_URL` 则以相反方式短路：客户端恰好附加到该总线，不探测也不启动任何东西。（`NIF_NATS_SPAWN=1` 是核心侧的双胞胎——一个隔离的、核心拥有的随机端口总线，绝不使用 4222；见 [Environment variables](#environment-variables)。）
 
-在内核层面，同样的规则成立，只有一个刻意的例外：核心自身没有父进程死亡信号——自动启动的核心必须比启动它的 UI 活得更久——而它启动的每个子进程都有。受监督的子进程（组件、会话运行器）在 util-linux 的 `setpriv` 位于 `PATH` 时被包裹在 `setpriv --pdeathsig TERM` 中，SDK 在它们启动的组件中设置 `PR_SET_PDEATHSIG`，捆绑的 `nats-server` 在其自己的 `main` 中设置它，因此即使 SIGKILL 也没有东西能在其 harness 之后存活。在 Linux 之外（或没有 `setpriv` 时）两种机制都缺失，这就是孤立总线产生的方式（见 Troubleshooting）。
+在内核层面，同样的规则成立，只有一个刻意的例外：核心自身没有父进程死亡信号——自动启动的核心必须比启动它的 UI 活得更久——而它启动的每个子进程都有。受监督的子进程（组件、会话运行器）在 util-linux 的 `setpriv` 位于 `PATH` 时被包裹在 `setpriv --pdeathsig TERM` 中，SDK 在它们启动的组件中设置 `PR_SET_PDEATHSIG`，捆绑的 `nats-server` 在其自己的 `main` 中设置它，因此即使 SIGKILL 也没有东西能在其 harness 之后存活。包装器按能力选择，每个进程只探测一次：不接受 `--pdeathsig` 的 `setpriv`（原生 Alpine 上的 BusyBox applet）会被跳过，子进程直接启动，依靠 SDK 自身的 `PR_SET_PDEATHSIG`（`apk add setpriv` 可恢复包装）。在 Linux 之外（或没有可用的 `setpriv` 时）两种机制都缺失，这就是孤立总线产生的方式（见 Troubleshooting）。
 
 ## Common tasks
 
@@ -2644,3 +2644,24 @@ make clean          # remove only var/bin/, var/nimcache/, nimcache/; preserve d
 #### Lima VM policy
 
 Lima 需要 2.2.1 或更新版本，transport 為 `lima`，root 固定 `/home/ubuntu/niffler`。原生 `limactl create/start/stop/shell` 支援可選 SSH host。預設 2 CPU、4GiB RAM、20GiB disk；無主機掛載、憑證複製、agent 轉送或自動 port forwarding。Ubuntu 24.04 amd64/arm64 映像固定 release-20260926 並驗證 SHA256，無浮動 fallback；URL/digest 更新須人工審查。guest ubuntu 保留 Lima 標準 passwordless sudo，安裝啟用 guest linger 和持久 user service，不更改主機 sudo。舊 Multipass 回執與 registry 欄位明確拒絕：建立新 Lima guest 並匯入新驗證回執，勿更名舊 transport 或複製 instance-id。停止的已固定 guest 須由管理員啟動後驗證身分。真實 VM smoke 尚未授權執行；詳見 English manual 的 Lima VM policy。
+
+### SSH nodes without systemd
+
+SSH 安装可显式选择 `service: "process"`。目标 Linux 主机需预先安装 Bash、git、
+兼容的 Nim/Nimble、Go、项目 Nimble 依赖，以及 `flock`、`setsid` 和支持 `--pdeathsig`
+的 `setpriv`。Fleet 在任何克隆或构建之前先检查这些前提，然后克隆并构建固定的公开版本，
+随后在 `var/fleet-process` 安装私有服务管理器；不复制凭证。默认模式仍为 `systemd`。
+
+在 Alpine Linux 上，BusyBox 的 `flock` 和 `setsid` 即可满足（构建锁使用 BusyBox 也支持的
+`flock` 文件描述符形式），但 BusyBox 的 `setpriv` 没有 `--pdeathsig`：需安装 util-linux
+版本（`apk add setpriv`），否则预检会拒绝。
+
+该 supervisor 能跨 SSH 断开保持运行并重启 Niffler 子进程（崩溃循环时退避至 60 秒；`var/fleet-process/service.log` 每次启动时轮转，保留一个旧文件），但不提供宿主机重启自启。
+启动、停止、状态和日志操作使用 receipt 固定的服务模式，拒绝模式漂移。
+此模式的升级目前需人工维护，`fleet_update` 会明确拒绝，而不退回 systemd。
+已安装的管理器若与控制端副本不同会被拒绝，绝不覆盖。要换用当前管理器：先 `fleet_stop`，
+在主机上删除 `<root>/var/fleet-process/manager.sh`，再用同一 profile 重新运行
+`fleet_install`；它会接管该根目录、安装当前管理器、启动并重新验证身份。
+它也不会使提供商的 SSH 网关新增端口转发能力；Fleet 任务通过 SSH 命令执行。
+只有实际节点 catalog 响应后才保存已验证 receipt。路由保留在私有 receipt 中，
+不改变模型的固定提示前缀，任务结果继续追加到历史。

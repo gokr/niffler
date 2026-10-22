@@ -4903,9 +4903,13 @@ that spawned it — while every child it starts does. Supervised children
 (components, session runners) are wrapped in `setpriv --pdeathsig TERM` when
 util-linux's `setpriv` is on `PATH`, the SDKs set `PR_SET_PDEATHSIG` in the
 components they spawn, and the bundled `nats-server` sets it in its own
-`main`, so nothing survives its harness even on SIGKILL. Off Linux (or
-without `setpriv`) both mechanisms are absent, which is how an orphaned bus
-happens (see Troubleshooting).
+`main`, so nothing survives its harness even on SIGKILL. The wrapper is
+chosen by capability, probed once per process: a `setpriv` that rejects
+`--pdeathsig` (BusyBox's applet on stock Alpine) is skipped and children start
+plainly, relying on the SDKs' own `PR_SET_PDEATHSIG` (`apk add setpriv`
+restores the wrapper). Off Linux (or without a capable `setpriv`) both
+mechanisms are absent, which is how an orphaned bus happens (see
+Troubleshooting).
 
 ## Common tasks
 
@@ -4994,3 +4998,36 @@ regardless of mutable CLI defaults. NICs must be bridged/p2p or use a verified
 managed bridge network; physical/SR-IOV passthrough refuses. Stopped pinned Incus
 updates refuse until an administrator starts the container for identity checks;
 stopped pinned Lima guests also require administrator startup before identity verification.
+
+### SSH nodes without systemd
+
+Fleet accepts explicit `service: "process"` on SSH installs. This mode requires
+Bash, git, a supported Nim/Nimble and Go toolchain with the project's Nimble
+dependencies already installed, plus Linux `flock`, `setsid`, and a `setpriv`
+that supports `--pdeathsig`. Provisioning checks these before any clone or
+build, then still clones and builds the pinned published revision; it skips
+OS/toolchain setup and installs Fleet's private process manager under
+`var/fleet-process`. No credentials are copied. The default remains `systemd`.
+
+On Alpine Linux, BusyBox `flock` and `setsid` are sufficient (the build lock
+uses `flock`'s file-descriptor form, which BusyBox supports), but BusyBox
+`setpriv` has no `--pdeathsig`: install the util-linux one (`apk add setpriv`) or the
+preflight refuses.
+
+The supervisor survives SSH logout and restarts its Niffler child (a crash
+loop backs off to 60 s; `var/fleet-process/service.log` is rotated at each
+launch, keeping one previous file). It does **not** start after a host reboot. `fleet_start`, `fleet_stop`, `fleet_status`, and
+`fleet_logs` use the receipt's pinned service mode; changing a receipt route or
+mode is refused. Process-service updates currently require explicit operator
+maintenance (`fleet_update` refuses rather than silently using systemd).
+An installed manager that differs from the controller's copy is refused, never
+overwritten. To move an install onto the current manager: `fleet_stop`, remove
+`<root>/var/fleet-process/manager.sh` on the host, then re-run `fleet_install`
+with the same profile; it adopts the root, installs the current manager, starts
+it and re-verifies identity.
+This mode does not add SSH port forwarding to a provider's gateway. Fleet task
+calls use SSH command execution and can work independently of TUI forwarding.
+
+A process receipt is verified only after the node's actual catalog responds.
+This adds no provider-visible prompt prefix: routing stays in private receipts,
+and task outcomes continue to enter append-only history.

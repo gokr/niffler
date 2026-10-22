@@ -60,6 +60,31 @@ proc cloexecInheritedFds*() =
   except CatchableError:
     discard
 
+var pdeathsigProbed = false
+var pdeathsigSetpriv = ""
+
+proc pdeathsigSetprivPath*(): string =
+  ## The setpriv to wrap a child in for kernel-enforced cleanup
+  ## (`setpriv --pdeathsig TERM <child>`), or "" when none is usable — then
+  ## spawn the child plainly. Probes the capability once per process, never
+  ## mere presence: BusyBox (stock Alpine) ships a setpriv applet that
+  ## rejects --pdeathsig, and wrapping with it fails every spawn. Linux only.
+  when defined(linux):
+    if not pdeathsigProbed:
+      pdeathsigProbed = true
+      let sp = findExe("setpriv")
+      if sp.len > 0:
+        try:
+          let p = startProcess(sp, args = ["--pdeathsig", "TERM", "true"],
+                               options = {poStdErrToStdOut})
+          if p.waitForExit(5000) == 0: pdeathsigSetpriv = sp
+          p.close()
+        except CatchableError:
+          discard
+    pdeathsigSetpriv
+  else:
+    ""
+
 proc killGroup*(pid: Pid, sig: cint) =
   ## Signal the command's whole process group. The forked child made itself
   ## the group leader via setpgid(0, 0), so a negative-pid kill reaches the
