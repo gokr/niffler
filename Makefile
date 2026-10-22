@@ -83,9 +83,17 @@ BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 # read-only, so `cp` lands a 444 file that a second run cannot overwrite —
 # remove it first and make the shim writable, or every build after the first
 # fails with "Permission denied".
+#
+# `go mod download` comes first and is load-bearing: `go list -m` reports the
+# Dir of a module that go.mod names but nobody has fetched as EMPTY with exit
+# status 0 — it does not download to answer the query. On a cold module cache
+# (every fresh CI runner: nothing to restore, since there is no go.sum at the
+# repo root) that made every build die with "cannot locate mattn/go-sqlite3"
+# a second before the build that would have fetched it.
 SQLITE_VEC_INC = shim="$${TMPDIR:-/tmp}/niffler-sqlite-inc"; mkdir -p "$$shim"; \
+	go mod download github.com/mattn/go-sqlite3; \
 	mattn=$$(go list -m -f={{.Dir}} github.com/mattn/go-sqlite3); \
-	[ -n "$$mattn" ] || { echo "store-sqlite: cannot locate mattn/go-sqlite3" >&2; exit 1; }; \
+	[ -n "$$mattn" ] || { echo "store-sqlite: cannot locate mattn/go-sqlite3 (run go mod download in components/store-sqlite)" >&2; exit 1; }; \
 	rm -f "$$shim/sqlite3.h"; cp "$$mattn/sqlite3-binding.h" "$$shim/sqlite3.h"; \
 	chmod u+w "$$shim/sqlite3.h"
 
