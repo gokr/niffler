@@ -44,8 +44,8 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   No wire contract changed: `put/get/list/search/del` are untouched, and a
   vector is already storable today (documents are opaque JSON). What this
-  unlocks is the query surface — a `vec0` index behind a vector search tool —
-  which is the next slice, not this one.
+  unlocked was the query surface — a `vec0` index behind a vector search tool —
+  which landed in a follow-up change.
 
 - A conversation's workspace is no longer frozen at the harness root by a
   control call. `session` used to persist `cwd: <entry.workspace>` on the fresh
@@ -224,6 +224,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ### Added
+
+- **Reasoning effort accepts `none`, `minimal` and `xhigh`, and degrades
+  instead of failing.** The ladder was guessed separately in core's session
+  enum, the TUI's shift-tab cycle and the web UI, and `none` was missing — so
+  "don't think" was unreachable, while an absent field silently meant "provider
+  default". The two are now distinct: an empty value still asks for the
+  provider's default, `none` asks for no reasoning at all. Provider-declared
+  ladders proved untrustworthy in both directions (one alias rejects `max` with
+  400, others accept values they never declare), so a rejected effort *value*
+  is logged as `status=effort-rejected` and retried once without the field;
+  anything that is not a value rejection propagates unchanged.
+
+- **`make install-tools` installs the GitHub CLI, and the manual documents the
+  token it needs.** `gh` gets its own toolkit entry (the binary alone does
+  nothing) and `make doctor` checks it. The new manual section explains that
+  SSH authenticating git does not authenticate `gh`'s REST calls, where a token
+  belongs (`~/.config/gh/hosts.yml`, 0600, outside any checkout — not the
+  harness root's `.env`), and that a fine-grained PAT cannot write to another
+  user's personal repository, where a classic `repo` token or a GitHub App is
+  required. It also records that a branch-pinned plugin install stays on the
+  branch: `plugin_update` deliberately does not move it to a release, so
+  adopting one means `plugin_remove` + `plugin_install {version}`.
 
 - **Async post-edit diagnostics got a real budget.** The LSP component's
   edit-triggered check waited 8s for a server's `publishDiagnostics` push —
@@ -413,6 +435,45 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A stopped write releases its workspace claim.** Stopping a long-running
+  write ended the turn but left its lease live for the transport timeout plus
+  60s (ten minutes at minimum), so the conversation could not retry its own
+  file and every other conversation was locked out of a write that had already
+  stopped. Cancellation now releases the claim once the callee's terminal reply
+  proves the writer stopped; a transport timeout still retains it, because the
+  callee may still be running with nobody waiting. `lock_acquire` also
+  supersedes a stale claim that belongs to the calling conversation — never a
+  foreign one — before the conflict check, covering abandoned waits and
+  runners that died between dispatch and release. Only the caller's own
+  overlapping claims are superseded; a disjoint claim stays guarded.
+
+- **`scripts/server.sh persist` reports UNKNOWN instead of inventing a
+  verdict.** A user-manager query needs the session bus; from `incus shell` or
+  `su` without a logind session, every `systemctl --user` call fails and the
+  empty answers were read as disabled/inactive — so a healthy persistent
+  instance was reported as "NOT persistent yet" with instructions to reinstall
+  it. `persist` now probes the manager first and returns UNKNOWN (exit 2)
+  naming `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`, reserving the
+  failure verdict for what it actually observed.
+
+- **The default store builds without a system SQLite header.** The cgo +
+  sqlite-vec switch made `sqlite-vec.h` include `sqlite3.h`, while
+  mattn/go-sqlite3 ships the amalgamation as `sqlite3-binding.h` — so a fresh
+  clone without libsqlite3-dev could not build `store-sqlite` at all, despite
+  the target claiming a C compiler was the only prerequisite. The build now
+  points cgo at mattn's own vendored header (resolved through `go list -m`, so
+  it follows go.mod), keeping the extension and the linked SQLite at the same
+  version instead of compiling against the system's; `make gotest` uses the
+  same shim.
+
+- **An admitted Fleet task's workspace cannot be repinned.** A task now records
+  its directory as a pinned decision (`cwdPinned`) together with its policy.
+  Previously a bare `cwd` control call with no content or grant reached the
+  repin path and could move an admitted task's workspace away from the
+  directory a human approved — worst when that workspace was the harness root,
+  which the older heuristic read as never chosen. A control call is now
+  refused with `immutable`; a task that needs another directory is a new task.
+
 - Fleet verifies that the Incus storage pool actually enforces the requested
   root-disk limit before creating a container. Incus records `root,size=` on
   every backend, but only `btrfs`, `zfs` and `lvm` enforce it — and `dir` only
@@ -497,6 +558,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shutdown of all remaining servers on an isolated test bus.
 
 ### Changed
+
+- **`make test-server` no longer requires Node.** It pulled in `test-bench` for
+  the benchmark-adapter tests, so a stock harness install without Node aborted
+  the whole bus-contract gate with `node: command not found` before running a
+  single contract test. The Nim/Go suite is the contract gate and no longer
+  depends on it; `make test` still covers both, CI runs `test-bench` as its own
+  step, and `make test-bench` now skips with a clear message instead of exiting
+  127. `make doctor` calls Node optional and says what it is for.
 
 - **The website lays out cleanly on phones.** The nav splits into links and
   actions that wrap or scroll instead of overflowing; the hero install command
