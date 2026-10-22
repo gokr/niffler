@@ -6,6 +6,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- `lsp` publishes its warm-start budgets as the `lsp.warm` domain (`warmMax`,
+  `warmCheap`, `warmTotal`), so the number of pre-started language servers can
+  be tuned at runtime — including to 0 on a small machine. Its server registry
+  stays `lsp_registry` (already data, already approval-gated) rather than being
+  duplicated.
 - `models` publishes its catalog refresh policy as the `models.refresh` domain
   (`offline`, `cacheTtlSeconds`, `refreshIntervalSeconds`), so an operator can
   take the catalog offline or change its freshness without editing files. New

@@ -204,3 +204,18 @@ proc flag*(s: OwnerSnapshot, name, envName: string, dflt: bool): bool =
 
 proc num*(s: OwnerSnapshot, name, envName: string, dflt: int): int =
   settingInt(s.values, name, envName, dflt)
+
+proc ownerToolSchema*(domain, description: string): JsonNode =
+  ## The hidden schema every owner tool shares. Mirrors
+  ## OwnerToolSchema in sdk/go/configowner.go so an owner in either SDK
+  ## presents the same contract to config.
+  %*{"type": "object",
+     "properties": {
+       "op": {"type": "string", "enum": ["get", "patch", "reset"]},
+       "patch": {"type": "object"},
+       "properties": {"type": "array", "items": {"type": "string"}},
+       "expectRev": {"type": "integer"}},
+     "required": ["op"],
+     "description": "Owner-side settings protocol for the " & domain &
+       " configuration domain. Called by the config component, which validates the schema and enforces approval; never call it directly.",
+     "x-harness": {"hidden": true}}
