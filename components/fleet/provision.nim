@@ -677,12 +677,32 @@ proc action*(run: CommandRunner, name, profile: string): JsonNode =
   let p = loadReceipt(receiptPath(profile))
   if p == nil: refuse("verified profile required")
   if name == "probe": return probe(run, p)
-  if name == "vm_stop":
+  if name in ["vm_stop", "vm_start"]:
     if p["transport"].getStr() notin ["lima", "incus"]: refuse("not a guest profile")
+    # Identity is proven BEFORE the guest is touched in either direction: a
+    # stopped guest cannot answer its catalog, so the durable guard on the host
+    # is what proves this is still the recorded instance and not a stranger
+    # that took the name. Starting is gated exactly like stopping — an
+    # unverified route must never power on a machine.
     discard remote(run, p, guard(p))
-    discard probe(run, p)
-    discard checked(run, guestCommand(p, "stop"), timeoutMs = 180000)
-    return %*{"ok": true, "text": "VM stopped; not deleted."}
+    if name == "vm_stop":
+      discard probe(run, p)
+      discard checked(run, guestCommand(p, "stop"), timeoutMs = 180000)
+      return %*{"ok": true, "text": "VM stopped; not deleted."}
+    discard checked(run, guestCommand(p, "start"), timeoutMs = 600000)
+    # A started guest is not a working instance until the Niffler service is
+    # up and its catalog verifies; report that rather than "started".
+    var verified = false
+    for attempt in 0..<60:
+      try:
+        discard probe(run, p)
+        verified = true
+        break
+      except Refusal as e:
+        if "mismatch" in e.msg or "invalid catalog" in e.msg: raise
+        if attempt < 59: sleep(2000)
+    if not verified: refuse("VM started but its Niffler service did not verify; run fleet_status")
+    return %*{"ok": true, "text": "VM started and its Niffler service verified."}
   if name notin ["start", "stop", "status", "logs"]: refuse("unsupported Fleet action")
   let root = quoteShell(p["root"].getStr())
   # The systemd user-bus environment means nothing to the process manager.
