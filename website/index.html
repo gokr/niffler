@@ -265,7 +265,9 @@
           <p data-i18n-html="ed.prov.p">Add a backend with one call and hop with <code>/model</code> and
             <code>/effort</code> — no config files to hand-edit. OpenAI-compatible,
             Anthropic and Codex lanes, or log in with your ChatGPT/Claude
-            <em>subscription</em> over OAuth. Pins are per-conversation.</p>
+            <em>subscription</em> over OAuth. Pins are per-conversation. A
+            provider can name a separate <code>embedModel</code>, so chat and
+            embeddings can live on different backends.</p>
         </article>
         <article>
           <h3 data-i18n="ed.mcp.h">MCP in, tools out</h3>
@@ -322,7 +324,7 @@
           <li><strong data-i18n="ed.plugins.h">Plugins</strong><span data-i18n="ed.plugins.p">GitHub packages cloned and built from source, approval-gated, manifest v1 or v2 recipes</span></li>
           <li><strong data-i18n="ed.sdks.h">Three SDKs</strong><span data-i18n="ed.sdks.p">Nim, Go and TypeScript around one tiny portable codec — or no SDK at all, a shell script speaks the wire</span></li>
           <li><strong data-i18n="ed.profiles.h">Tool profiles</strong><span data-i18n="ed.profiles.p">named toolset selectors resolved once per conversation, or sticky tools promoted on demand</span></li>
-          <li><strong data-i18n="ed.store.h">A store that answers</strong><span data-i18n="ed.store.p">server-side full-text search; SQLite or TiDB behind one contract</span></li>
+          <li><strong data-i18n="ed.store.h">A store that answers</strong><span data-i18n="ed.store.p">server-side full-text search, plus nearest-neighbour search over embeddings on SQLite — one contract; TiDB reports vectors unsupported</span></li>
         </ul>
       </div>
     </section>
