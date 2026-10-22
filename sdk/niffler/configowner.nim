@@ -122,11 +122,16 @@ proc ownerOp*(c: Component, store: OwnerStore, args: JsonNode,
     errResult("unsupported config op '" & args{"op"}.getStr("") & "'",
               "bad-request")
 
-proc declareConfig*(c: Component, declaration: JsonNode, timeoutMs = 10_000): bool =
-  ## Publish this owner's declaration. Best effort by design: a harness
-  ## without the config component is a supported deployment, so a failed
+proc declareConfig*(c: Component, declaration: JsonNode, timeoutMs = 1_000): bool =
+  ## Publish this owner's declaration. Best effort by design: a failed
   ## declaration must not take the owner down — it only means the domain is not
-  ## discoverable. Returns whether it landed.
+  ## discoverable (the config component is optional, and a component can be run
+  ## standalone with no harness at all). Returns whether it landed.
+  ##
+  ## The timeout is SHORT on purpose: this is called from the idle seam, which
+  ## runs on the main pump thread. A long timeout there is a stall — with no
+  ## config component the request cannot be answered at all, and a 10s wait
+  ## per tick starved every other message the component owed.
   try:
     let reply = c.requestOk("config", "config_declare",
                             %*{"declaration": declaration}, timeoutMs)
@@ -173,9 +178,16 @@ proc settingInt*(values: JsonNode, name, envName: string, dflt: int): int =
 
 # ---------------------------------------------------------------------------
 # Snapshot cache for owners whose settings are read deep inside code paths that
-# have no component handle (log rotation, parsers). The snapshot is refreshed
-# from the owner's record on the idle seam, so a change lands within one tick
-# without threading a Component through every call site.
+# have no component handle (log rotation, ring buffers, parsers).
+#
+# Refreshed from an EVENT, never by polling the store: the idle seam runs on
+# the main pump thread, and a store read there is a blocking request/reply that
+# starves every other message the component owes (it also stalls for the full
+# store timeout in a component run WITHOUT a harness — which is how every
+# component contract test starts a component, and how a standalone build runs.
+# config publishes `ev.config.updated` after every applied change; a
+# subscription to it is a normal handler, so the refresh costs nothing until a
+# setting actually changes.
 
 type OwnerSnapshot* = ref object
   store: OwnerStore
@@ -185,14 +197,27 @@ type OwnerSnapshot* = ref object
 proc newOwnerSnapshot*(store: OwnerStore): OwnerSnapshot =
   OwnerSnapshot(store: store, values: newJObject())
 
-proc refresh*(s: OwnerSnapshot, c: Component) =
-  ## Reload from the owner's record. A store outage keeps the last known
-  ## values: losing the store must not silently reset retention to defaults.
+proc refresh*(s: OwnerSnapshot, c: Component, timeoutMs = 5_000) =
+  ## Reload from the owner's record. Call this from a HANDLER (the
+  ## ev.config.updated subscription or a startup hook), never from onIdle.
+  ## A store that cannot answer keeps the last known values: losing the store
+  ## must not silently reset retention to defaults.
   try:
-    s.values = c.loadOwnerValues(s.store).values
+    s.values = c.loadOwnerValues(s.store, timeoutMs).values
     s.loaded = true
   except CatchableError:
     if not s.loaded: s.values = newJObject()
+
+proc watchConfig*(c: Component, s: OwnerSnapshot, domain: string,
+                  onChanged: proc(c: Component) = nil) =
+  ## Subscribe the snapshot to config's change event for one domain, so the
+  ## values follow a config_patch with no polling and no restart.
+  discard c.on("ev.config.updated") do (comp: Component, subject: string,
+                                        payload: JsonNode):
+    let changed = payload{"domain"}.getStr("")
+    if changed.len > 0 and changed != domain: return
+    s.refresh(comp)
+    if onChanged != nil: onChanged(comp)
 
 proc values*(s: OwnerSnapshot): JsonNode = s.values
 

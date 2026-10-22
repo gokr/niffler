@@ -370,8 +370,11 @@ comp.run()
         invalidCode != -1 and invalidCode != 0, $invalidCode)
 
   # --- retention as a SETTING (config surface, slice 4) --------------------
-  # The directory cap proves the snapshot read path: a stored value must be
-  # visible after one idle tick, with no restart and no environment change.
+  # Proves the EVENT path: config publishes ev.config.updated after applying a
+  # change, the owner's snapshot reloads from that handler, and the new cap is
+  # live with no restart and no environment change. (Polling the store from the
+  # idle seam was the earlier design and it starved the pump — see
+  # sdk/niffler/configowner.nim.)
   let store = startComponent(root / "var" / "bin" / "store-sqlite", url, root = tmp)
   defer:
     if store.peekExitCode() == -1: store.terminate()
@@ -406,7 +409,7 @@ comp.run()
     after = call(nc, "logfile", "logfile_paths", %*{})
     if after{"maxDirectoryEntries"}.getInt(0) == 123: break
     sleep(100)
-  check("the stored cap applies after one refresh tick, without a restart",
+  check("the stored cap applies from the change event, without a restart",
         after{"maxDirectoryEntries"}.getInt(0) == 123, $after)
   stopProcess(logfile)
   logfile = nil

@@ -29,6 +29,7 @@
 ## Contract: docs/research/CONFIG-CONTRACT.md.
 
 import std/[json, strutils, times]
+import natsnim
 import niffler/sdk
 
 let comp = newComponent("config", "0.1.0")
@@ -143,6 +144,18 @@ proc validateValue(schema, value: JsonNode, where: string) =
       for name, _ in value.pairs:
         if schema{"properties"}{name} == nil:
           fail(where & ": unknown property '" & name & "'")
+
+proc announceChange(c: Component, domain, owner: string, rev: int) =
+  ## Tell snapshot owners a domain changed. Fire-and-forget by design: a
+  ## component that misses it keeps its last values until its next real read,
+  ## and no subscriber can fail the mutation that already succeeded.
+  try:
+    c.nc.publish("ev.config.updated",
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+               payload: %*{"domain": domain, "owner": owner,
+                           "rev": rev}).encode())
+  except CatchableError:
+    discard
 
 proc propMeta(declaration: JsonNode, name: string): JsonNode =
   ## x-config of one declared property (nil when absent).
@@ -300,6 +313,7 @@ comp.tool(%*{"onDemand": true, "approval": "always", "effect": "write"}):
       result = applied
       result["ok"] = %true
       result["domain"] = %domain
+      comp.announceChange(domain, owner, applied{"rev"}.getInt(0))
     except CatchableError as e:
       return errResult(owner & " refused the change: " & e.msg, "owner-refused")
 
@@ -328,6 +342,8 @@ comp.tool(%*{"onDemand": true, "approval": "always", "effect": "write"}):
       result = applied
       result["ok"] = %true
       result["domain"] = %domain
+      comp.announceChange(domain, declaration{"owner"}.getStr(""),
+                          applied{"rev"}.getInt(0))
     except CatchableError as e:
       return errResult(declaration{"owner"}.getStr("") &
                        " refused the reset: " & e.msg, "owner-refused")

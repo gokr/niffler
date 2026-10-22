@@ -104,6 +104,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   round trip, and an explicit `--timeout` still wins. A client timeout says so
   plainly and notes that NATS request/reply cannot cancel work already
   dispatched, so "timed out" is not "failed".
+- `observe` publishes its capture budgets as the `observe.capture` domain
+  (`ring`, `ringBytes`, `entryBytes`, `probeBytes`, `maxProbes`,
+  `captureBytes`), so retention can be tuned at runtime.
+- Settings changes now propagate by EVENT: `config` publishes
+  `ev.config.updated` after every applied change and snapshot owners reload
+  from that handler. Polling the store from the idle seam was the earlier
+  design and it starved the pump — that seam runs on the main thread, and a
+  blocking store read or declaration stalled every other message the component
+  owed whenever the store or config component was absent (a supported
+  deployment). Declaration is now one short best-effort attempt per tick.
 
 - The store can answer "which documents are close to this vector?": `search`
   gained a vector mode (`{kind: "embedding", model, vector, limit?}` →

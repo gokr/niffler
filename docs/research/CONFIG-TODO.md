@@ -115,8 +115,11 @@ pass. Repository status is not a claim that installed binaries were updated.
   changes a gate through `config_patch` and proves it applies without a restart.
 - [x] Logfile retention/scan limits (`logfile.retention`). Its captured
   subject set intentionally stays a boot variable (it is a subscription, not a
-  value). `observe` capture policy is still env-only and needs the same
-  treatment.
+  value).
+- [x] Observe capture budgets (`observe.capture`): ring/probe/capture byte
+  budgets. The capture directory and monitor URL stay variables (deployment
+  paths). This migration forced the change-propagation seam from polling to
+  `ev.config.updated`, because a store read in the idle seam starved the pump.
 - [ ] Hooks commands, subscriptions and deadlines (security-sensitive).
 - [ ] Agent defaults/delegation; harness/session birth and context defaults.
 - [ ] Inventory remaining runtime env by owner; classify bootstrap, developer

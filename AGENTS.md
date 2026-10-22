@@ -69,6 +69,22 @@ working in every language.
   goroutine under the serial handler lock. Reach for it instead of a thread
   whenever "every N seconds" is all you need — `components/processes` reaps its
   background children that way.
+  **Two rules for the seam, both learned by breaking them:**
+  - *Never block in it.* It runs on the pump thread, so a request/reply there
+    (a store read, a `config_declare`) stalls every message the component owes
+    for the whole timeout — and a component run standalone (which is how every
+    contract test starts one) has nobody to answer. Keep it to short,
+    best-effort work; if you need a timeout, make it ~1s, not the 5–10s
+    default. Periodic state that must follow another component belongs on an
+    **event subscription** (`ev.config.updated` in the settings surface), not
+    on a poll.
+  - *One handler per component (Nim).* A second `onIdle` **replaces** the
+    first, silently. `lsp` already owned the seam for async diagnostics, so a
+    settings refresh registered separately killed the pump — with the failure
+    surfacing only as a downstream test timing out. Register once and fold the
+    jobs together (or ask whether the work belongs on an event instead).
+    In Go, register `OnIdle` **before** `Connect`: the SDK starts the idle loop
+    inside `Connect`, so a handler added afterwards never runs at all.
   The Nim and Go SDKs also watch connection health: a bus unhealthy past
   `NIF_RECONNECT_GRACE_S` (default 180 s) triggers a **re-attach** (re-resolve
   the URL, redial, rebuild every subscription, re-publish `reg.publish`) instead
@@ -151,6 +167,18 @@ working in every language.
   `x-harness.runner` (`true` on a hidden tool = exempt from a subagent's
   frozen tool allowlist, for replaceable runner machinery — compaction,
   recall; docs/WIRE.md "x-harness schema extensions").
+- **Rename a SYMBOL, never a string that looks like one.** `%*{"maxBytes": v}`
+  makes a JSON key and an identifier textually identical, so a regex rename
+  silently rewrites reply/document keys and the build cannot see it — it has
+  happened twice (logfile's retained caps, observe's `byteCap`/`max`/
+  `captureByteCap`), each time finding the JSON key, never the call site.
+  Rename the definition and let the compiler list the call sites, or use an
+  LSP rename (verified: `nimtortoise` reports `renameProvider: true` and
+  rewrites the definition *and* its call, leaving the string key alone). Both
+  are symbol-aware; a textual substitution is not. `lsp` exposes the seven
+  READ operations today — `findReferences` + a manual edit is the
+  no-new-code workaround, and an approval-gated `rename` op
+  (`workspace/applyEdit`) is the missing write half.
 - Tool doc comments are the LLM's only window into a tool: all prose lines of
   the first comment block join into the schema description, `- param: text`
   lines become parameter docs. Write *when-to-use* guidance there — the LLM

@@ -9,6 +9,7 @@ import std/[algorithm, base64, httpclient, json, monotimes, os, sequtils,
             strutils, tables, times, unicode]
 import regex
 import niffler/sdk
+import niffler/configowner
 import niffler/maskedtools
 import ../../sdk/dotenv
 
@@ -70,16 +71,37 @@ type
     bytes: int
 
 let root = rootDir()
-let ringCap = configInt("NIF_OBSERVE_RING", DefaultRingMessages, 1, 10_000)
-let ringByteCap = configInt("NIF_OBSERVE_RING_BYTES", DefaultRingBytes, 65_536,
-                            104_857_600)
-let entryByteCap = configInt("NIF_OBSERVE_ENTRY_BYTES", DefaultEntryBytes, 1024,
-                             1_048_576)
-let probeByteCap = configInt("NIF_OBSERVE_PROBE_BYTES", DefaultProbeBytes,
-                             65_536, 16_777_216)
-let maxProbes = configInt("NIF_OBSERVE_MAX_PROBES", DefaultMaxProbes, 1, 256)
-let captureByteCap = configInt("NIF_OBSERVE_CAPTURE_BYTES",
+
+# Capture caps are read from a snapshot refreshed on the idle seam: the ring
+# and probe code below has no component handle, and a change must land within
+# one tick (the declaration promises "immediate"). The boot values stay
+# authoritative until the first successful refresh, and a bad env value still
+# fails loudly here at boot.
+let ownerStore* = OwnerStore(kind: "observe-settings", id: "main")
+let settings* = newOwnerSnapshot(ownerStore)
+
+let bootRing = configInt("NIF_OBSERVE_RING", DefaultRingMessages, 1, 10_000)
+let bootRingBytes = configInt("NIF_OBSERVE_RING_BYTES", DefaultRingBytes,
+                              65_536, 104_857_600)
+let bootEntryBytes = configInt("NIF_OBSERVE_ENTRY_BYTES", DefaultEntryBytes,
+                               1024, 1_048_576)
+let bootProbeBytes = configInt("NIF_OBSERVE_PROBE_BYTES", DefaultProbeBytes,
+                               65_536, 16_777_216)
+let bootMaxProbes = configInt("NIF_OBSERVE_MAX_PROBES", DefaultMaxProbes, 1, 256)
+let bootCaptureBytes = configInt("NIF_OBSERVE_CAPTURE_BYTES",
   DefaultCaptureBytes, 65_536, 1_073_741_824)
+
+proc ringCap(): int = settings.num("ring", "NIF_OBSERVE_RING", bootRing)
+proc ringByteCap(): int =
+  settings.num("ringBytes", "NIF_OBSERVE_RING_BYTES", bootRingBytes)
+proc entryByteCap(): int =
+  settings.num("entryBytes", "NIF_OBSERVE_ENTRY_BYTES", bootEntryBytes)
+proc probeByteCap(): int =
+  settings.num("probeBytes", "NIF_OBSERVE_PROBE_BYTES", bootProbeBytes)
+proc maxProbes(): int =
+  settings.num("maxProbes", "NIF_OBSERVE_MAX_PROBES", bootMaxProbes)
+proc captureByteCap(): int =
+  settings.num("captureBytes", "NIF_OBSERVE_CAPTURE_BYTES", bootCaptureBytes)
 let configuredCaptureDir = getEnv("NIF_OBSERVE_CAPTURE_DIR")
 let captureDir =
   if configuredCaptureDir.len == 0: root / "var" / "captures"
@@ -142,8 +164,8 @@ proc matchesPattern(pattern, subject: string): bool =
   i == subjectTokens.len
 
 proc wireMessage(data: string): JsonNode =
-  if data.len > entryByteCap:
-    let previewLen = min(data.len, max(1, entryByteCap * 3 div 4))
+  if data.len > entryByteCap():
+    let previewLen = min(data.len, max(1, entryByteCap() * 3 div 4))
     return %*{"truncated": true, "bytes": data.len,
               "previewBase64": base64.encode(data[0 ..< previewLen]),
               "previewBytes": previewLen, "encoding": "base64"}
@@ -163,7 +185,7 @@ proc addRing(at: float, subject, data: string, message: JsonNode) =
   ring.add(Captured(at: at, subject: subject, message: message,
                     bytes: messageBytes))
   ringBytes += messageBytes
-  while ring.len > ringCap or ringBytes > ringByteCap:
+  while ring.len > ringCap() or ringBytes > ringByteCap():
     ringBytes -= ring[0].bytes
     ring.delete(0)
   if not subject.startsWith("_INBOX.") and subject.len <= MaxSubjectBytes:
@@ -185,12 +207,12 @@ proc removePending(pr: Probe, entry: JsonNode) =
 
 proc appendProbe(pr: Probe, entry: JsonNode): bool =
   let entryBytes = ($entry).len
-  if entryBytes > probeByteCap:
+  if entryBytes > probeByteCap():
     inc pr.dropped
     return false
   pr.entries.add(entry)
   pr.bytes += entryBytes
-  while pr.entries.len > pr.cap or pr.bytes > probeByteCap:
+  while pr.entries.len > pr.cap or pr.bytes > probeByteCap():
     pr.removePending(pr.entries[0])
     pr.bytes -= ($pr.entries[0]).len
     pr.entries.delete(0)
@@ -410,8 +432,8 @@ comp.tool(%*{"approval": "always", "timeoutMs": 35_000, "onDemand": true}):
     okResult(%*{"value": reply.args, "elapsedMs": elapsedMs})
 
 proc newProbe(kind: ProbeKind, subject, label: string, cap: int): Probe =
-  if probes.len >= maxProbes:
-    raise newException(ValueError, "probe limit reached (" & $maxProbes &
+  if probes.len >= maxProbes():
+    raise newException(ValueError, "probe limit reached (" & $maxProbes() &
       "); stop and remove an old probe")
   result = Probe(id: "pr-" & newId(), kind: kind, subject: subject,
                  label: label, cap: min(max(cap, 1), MaxProbeEntries),
@@ -485,13 +507,13 @@ comp.tool(%*{"onDemand": true}):
                     "subject": pr.subject, "startedAt": pr.startedAt,
                     "stopped": pr.stopped, "captured": pr.entries.len,
                     "pending": pr.pending.len, "cap": pr.cap,
-                    "bytes": pr.bytes, "byteCap": probeByteCap,
+                    "bytes": pr.bytes, "byteCap": probeByteCap(),
                     "dropped": pr.dropped}
       if not addResponseItem(items, item, responseBytes):
         truncated = true
         break
     %*{"items": items, "count": items.len, "total": probes.len,
-       "max": maxProbes, "truncated": truncated,
+       "max": maxProbes(), "truncated": truncated,
        "responseBytes": responseBytes}
 comp.tool(%*{"onDemand": true}):
   proc observe_stop(probeId: string): JsonNode =
@@ -652,7 +674,7 @@ comp.tool(%*{"onDemand": true}):
     %*{"items": items, "count": items.len, "truncated": truncated,
        "responseBytes": responseBytes}
 proc prepareCapture(path: string, requiredBytes: int) =
-  if requiredBytes > captureByteCap:
+  if requiredBytes > captureByteCap():
     raise newException(IOError, "probe exceeds capture byte quota")
   var files: seq[(string, int64, float)] = @[]
   var totalBytes = 0'i64
@@ -668,12 +690,12 @@ proc prepareCapture(path: string, requiredBytes: int) =
   var index = 0
   while index < files.len and
         (files.len - index >= MaxCaptureFiles or
-         totalBytes + requiredBytes.int64 > captureByteCap.int64):
+         totalBytes + requiredBytes.int64 > captureByteCap().int64):
     removeFile(files[index][0])
     totalBytes -= files[index][1]
     inc index
   if files.len - index >= MaxCaptureFiles or
-     totalBytes + requiredBytes.int64 > captureByteCap.int64:
+     totalBytes + requiredBytes.int64 > captureByteCap().int64:
     raise newException(IOError, "capture directory quota is exhausted")
 
 comp.tool(%*{"approval": "always", "onDemand": true}):
@@ -711,7 +733,7 @@ comp.tool(%*{"approval": "always", "onDemand": true}):
     except CatchableError:
       discard
     %*{"path": path, "lines": pr.entries.len, "bytes": requiredBytes,
-       "captureByteCap": captureByteCap}
+       "captureByteCap": captureByteCap()}
 
 comp.tool(%*{"approval": "always", "onDemand": true}):
   proc observe_monitor(): JsonNode =
@@ -808,6 +830,50 @@ discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
   return %*{"ok": allOk,
             "summary": (if allOk: "observe wiring ok" else: "observe wiring FAILED"),
             "checks": checks})
+
+# ---------------------------------------------------------------------------
+# configuration (slice 4): capture caps, served by our own record. The capture
+# DIRECTORY and the monitor URL stay variables: they are deployment paths, and
+# a directory change cannot be applied to an already-open capture set.
+
+discard comp.tool("observe_config", ownerToolSchema("observe.capture",
+  "probe ring and capture byte budgets"), proc(c: Component, args: JsonNode): JsonNode =
+    c.ownerOp(ownerStore, args))
+
+let declaration* = %*{
+  "domain": "observe.capture", "version": 1, "owner": "observe",
+  "ownerTool": "observe_config", "title": "Observation capture budgets",
+  "description": "How much traffic the ring retains, how much a probe may hold, and how large a capture export may grow.",
+  "kind": ownerStore.kind, "id": ownerStore.id,
+  # NOT "immediate": a ring/probe captures its byte caps when it is created, so
+  # a change applies to probes started afterwards — buffers already holding
+  # traffic are not resized. The declared vocabulary has no "next probe", so
+  # "component restart" is the honest floor rather than over-promising.
+  "application": "component restart",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "ring": {"type": "integer", "minimum": 1, "maximum": 10000,
+               "default": DefaultRingMessages, "x-config": {
+        "title": "Ring messages kept", "application": "component restart"}},
+      "ringBytes": {"type": "integer", "minimum": 65536, "maximum": 104857600,
+                    "default": DefaultRingBytes, "x-config": {"title": "Ring byte budget"}},
+      "entryBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576,
+                     "default": DefaultEntryBytes, "x-config": {"title": "Bytes kept per entry"}},
+      "probeBytes": {"type": "integer", "minimum": 65536, "maximum": 16777216,
+                     "default": DefaultProbeBytes, "x-config": {"title": "Probe byte budget"}},
+      "maxProbes": {"type": "integer", "minimum": 1, "maximum": 256,
+                    "default": DefaultMaxProbes, "x-config": {"title": "Concurrent probes"}},
+      "captureBytes": {"type": "integer", "minimum": 65536, "maximum": 1073741824,
+                       "default": DefaultCaptureBytes, "x-config": {"title": "Capture export budget"}}},
+    "additionalProperties": false}}
+
+comp.watchConfig(settings, "observe.capture")
+
+var configDeclared = false
+discard comp.onIdle(500) do (c: Component):
+  if not configDeclared:
+    configDeclared = c.declareConfig(declaration) or configDeclared
 
 comp.refuseUnconfinedReaders()
 comp.run()

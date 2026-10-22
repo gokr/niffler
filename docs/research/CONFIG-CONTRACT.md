@@ -91,12 +91,36 @@ needs no envelope, store-contract or cross-SDK change:
 | `declareConfig(declaration)` | idempotent, best-effort declaration after registration |
 | `settingStr/Bool/Int(values, name, envName, dflt)` | one setting: **stored value > env > default** |
 
-Two rules the helper encodes, learned from the first migration:
+| `newOwnerSnapshot` / `watchConfig` | for owners whose values are read deep in code with no component handle |
+| `ownerToolSchema` | the hidden schema every owner tool shares |
+
+Rules the helper encodes, each learned the hard way:
 
 - **Declare after `comp.run()`'s registration**, from the idle seam — a request
   issued before the component is on the bus has no connection.
 - **An explicit `null` in a patch unsets a value.** That is how a secret is
   cleared; it is not the same as omitting the property.
+- **Never block in the idle seam.** It runs on the main pump thread, so a
+  blocking request there starves every message the component owes. This bit
+  twice: a store read per tick stalled for the full store timeout in a
+  component run WITHOUT a harness (every component contract test starts
+  components standalone, which is why the suite caught it), and a 10s
+  declaration timeout per tick starved `observe`'s tap delivery outright. The
+  seam now does one short best-effort declaration and nothing else.
+  Note what this is NOT: a running harness always has a store — `store` is
+  `required: true` and autostarted, and the config component depends on it.
+  The storeless case is a component standing alone, which components must
+  tolerate (their tools report "store unreachable" instead of hanging), not a
+  harness configuration anyone runs on purpose.
+- **Owners learn about changes by EVENT, not by polling.** `config` publishes
+  `ev.config.updated {domain, owner, rev}` after every applied change, and
+  `watchConfig` reloads the snapshot from that handler. Polling was the earlier
+  design; the event is free when nothing changes.
+
+Two consequences worth stating: a component that misses the event keeps its
+last values until its next real read (no correctness hole — the values are a
+cache of the owner's record), and a publish failure can never fail a mutation
+that already succeeded.
 
 The env fallback is the migration path: while an owner's variable exists,
 `stored > env > default` means a stored choice wins and an existing deployment
