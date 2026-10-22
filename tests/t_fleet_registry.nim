@@ -11,11 +11,12 @@ import std/[json, os, strutils]
 import natsnim
 import helpers
 
-proc writeReceipt(path: string, identity: string, target = "user@fake") =
+proc writeReceipt(path: string, identity: string, target = "user@fake",
+                  name = "fake", revision = repeat('b', 40)) =
   let p = %*{"version": 1, "transport": "ssh", "target": target,
              "root": "/srv/niffler", "expect": {
-               "instanceId": identity, "name": "fake", "root": "/srv/niffler",
-               "gitHash": repeat('b', 40)}}
+               "instanceId": identity, "name": name, "root": "/srv/niffler",
+               "gitHash": revision}}
   writeFile(path, p.pretty() & "\n")
   setFilePermissions(path, {fpUserRead, fpUserWrite})
 
@@ -101,6 +102,57 @@ proc main() =
   let used = call(nc, "fleet", "fleet_probe", %*{"profile": receipt})
   check("registry documents are not used as routes implicitly",
         used{"ok"}.getBool(false) == false or used{"error"} != nil, $used)
+
+  # --- removal: forget the ROUTE, never touch the peer -------------------
+  # The separation matters: fleet_vm_stop stops a guest and already refuses to
+  # delete it, so "stop managing this" must not become a disguised destroy
+  # path. Removal is also the repair action for a decommissioned or
+  # re-provisioned instance, which otherwise lingers in the picker forever.
+  let removed = call(nc, "fleet", "fleet_remove", %*{"instanceId": identity})
+  check("fleet_remove forgets a registry entry",
+        removed{"ok"}.getBool(false) and removed{"removed"}.getBool(false), $removed)
+  check("removal names what it removed",
+        removed{"instanceId"}.getStr() == identity and
+        removed{"name"}.getStr().len > 0, $removed)
+  check("the peer's receipt file is untouched by removal", fileExists(receipt))
+  let oneLeft = call(nc, "fleet", "fleet_instances", %*{})
+  check("only the removed entry is gone",
+        oneLeft{"count"}.getInt(-1) == 1 and
+        oneLeft{"instances"}[0]{"instanceId"}.getStr() == other, $oneLeft)
+
+  # Removing by name resolves to the identity; a name that matches two
+  # instances refuses rather than guessing.
+  writeReceipt(receipt, identity, name = "twin")
+  let twin = tmp / "twin.json"
+  writeReceipt(twin, repeat('d', 32), name = "twin")
+  discard call(nc, "fleet", "fleet_instance_import", %*{"profile": receipt})
+  discard call(nc, "fleet", "fleet_instance_import", %*{"profile": twin})
+  let ambiguous = call(nc, "fleet", "fleet_remove", %*{"name": "twin"})
+  check("an ambiguous name refuses instead of removing the wrong instance",
+        ambiguous{"error"}.getStr("").len > 0, $ambiguous)
+  let byName = call(nc, "fleet", "fleet_remove",
+                    %*{"instanceId": identity, "name": "twin"})
+  check("removal by explicit identity still works", byName{"ok"}.getBool(false), $byName)
+
+  # An unknown id refuses: a silent success on a typo is how a route is
+  # believed gone while it still resolves.
+  let ghost = call(nc, "fleet", "fleet_remove", %*{"instanceId": repeat('f', 32)})
+  check("removing an unknown instance refuses", ghost{"error"}.getStr().len > 0, $ghost)
+  check("no argument at all refuses", 
+        call(nc, "fleet", "fleet_remove", %*{}){"error"}.getStr().len > 0)
+
+  # The revision guard: removal can be pinned to the revision the operator saw,
+  # so a re-provisioned instance under the same identity is not swept away by a
+  # stale command.
+  writeReceipt(receipt, repeat('b', 32), revision = repeat('1', 40))
+  let revId = repeat('b', 32)
+  discard call(nc, "fleet", "fleet_instance_import", %*{"profile": receipt})
+  let wrongRev = call(nc, "fleet", "fleet_remove",
+                      %*{"instanceId": revId, "expectRevision": repeat('2', 40)})
+  check("removal refuses a revision mismatch", wrongRev{"error"}.getStr().len > 0, $wrongRev)
+  let rightRev = call(nc, "fleet", "fleet_remove",
+                      %*{"instanceId": revId, "expectRevision": repeat('1', 40)})
+  check("removal proceeds when the pin matches", rightRev{"ok"}.getBool(false), $rightRev)
 
   report("FLEET REGISTRY TEST")
 

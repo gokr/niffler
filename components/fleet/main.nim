@@ -53,7 +53,7 @@ discard comp.tool("fleet_install", schema(installProps,
   "Install a pinned new Niffler server or adopt an existing installation without updating it; optionally create Ubuntu 24.04 in Lima or an unprivileged Incus system container. Lima and Incus run as ubuntu at /home/ubuntu/niffler, explicitly enables guest linger, and removes its temporary installer sudo rule on normal success/failure; forced interruption may require manual cleanup. No host sudo, agent forwarding, credential copying, host mounts, privileged/nesting configuration or guest deletion. Save a verified private receipt; provider setup remains explicit."),
   handler("install"), %*{"onDemand": true, "approval": "always", "effect": "write",
     "timeoutMs": 4400000, "writes": {"paths": ["profile"]}, "workspace": {"pathFields": ["profile"]}})
-for name in ["probe", "status", "logs", "start", "stop", "vm_stop"]:
+for name in ["probe", "status", "logs", "start", "stop", "vm_stop", "vm_start"]:
   let readOnly = name in ["probe", "status", "logs"]
   let description = case name
     of "probe": "Read and verify the live remote catalog against its receipt identity and root."
@@ -61,7 +61,8 @@ for name in ["probe", "status", "logs", "start", "stop", "vm_stop"]:
     of "logs": "Read the last 100 remote service journal lines. Application logs can contain sensitive output; do not share publicly."
     of "start": "Start the pinned service, checking durable identity before writes even when the bus is down."
     of "stop": "Stop the pinned Niffler service only, leaving the host and VM running."
-    else: "Stop a verified Lima VM or Incus container separately from Niffler service stop. Requires reachable identity; never deletes VMs."
+    of "vm_stop": "Stop a verified Lima VM or Incus container separately from Niffler service stop. Requires reachable identity; never deletes VMs."
+    else: "Start a verified Lima VM or Incus container and wait until its Niffler service verifies. Requires the same identity guard as stopping; never creates or adopts a guest."
   var extensions = %*{"onDemand": true, "effect": (if readOnly: "read" else: "write"),
     "timeoutMs": 250000, "workspace": {"pathFields": ["profile"]}}
   if not readOnly:
@@ -207,6 +208,15 @@ discard comp.tool("fleet_instances", schema(%*{}, @[],
   "List registered fleet instances (stable identity, name, root, transport and pinned revision). Read-only: entries are routes for selection, never proof that the peer is reachable or authorized now."),
   proc(c: Component, args: JsonNode): JsonNode = listInstances(c),
   %*{"onDemand": true, "effect": "read"})
+discard comp.tool("fleet_remove", schema(%*{
+  "instanceId": {"type": "string", "description": "32-hex instance identity (preferred)"},
+  "name": {"type": "string", "description": "Registered instance name; refused if ambiguous"},
+  "expectRevision": {"type": "string", "description": "Optional guard: only remove when the entry is pinned to this revision"}},
+  @[],
+  "Forget a registered fleet instance. Deletes the REGISTRY ENTRY ONLY: the peer keeps running, keeps its receipt file and is never contacted. Use fleet_vm_stop to stop a guest; nothing in this harness deletes a guest."),
+  proc(c: Component, args: JsonNode): JsonNode = removeInstance(c, args),
+  %*{"onDemand": true, "approval": "always", "effect": "write",
+    "writes": {"none": true}})
 discard comp.tool("fleet_instance_import", schema(
   %*{"profile": profile}, @["profile"],
   "Import one existing private version-1 receipt file into the fleet registry (explicit migration; the file is left untouched and remains valid as an export). Validates the receipt and requires approval."),

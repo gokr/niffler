@@ -80,3 +80,43 @@ proc listInstances*(c: Component): JsonNode =
                  "source": v{"source"}.getStr(""),
                  "updatedAt": v{"updatedAt"}.getFloat(0.0)})
   %*{"ok": true, "count": items.len, "instances": items}
+
+proc removeInstance*(c: Component, args: JsonNode): JsonNode =
+  ## Forget a registered route. This deletes the REGISTRY DOCUMENT ONLY: the
+  ## peer keeps running, keeps its receipt file, and is never contacted. That
+  ## separation is deliberate — `fleet_vm_stop` stops a guest and already
+  ## refuses to delete it, so "stop managing this" must not become a disguised
+  ## destroy path.
+  ##
+  ## The name is reported back so an operator can see which entry went: a
+  ## silent success on a typo is how a route lingers forever.
+  let id = args{"instanceId"}.getStr("")
+  let name = args{"name"}.getStr("")
+  if id.len == 0 and name.len == 0:
+    refuse("fleet_remove needs instanceId or name")
+  # Resolve a name to an identity first: ids are the key, names are human.
+  var targetId = id
+  var found: JsonNode = nil
+  if targetId.len == 0:
+    for entry in c.storeListAll(instancesKind):
+      if entry.value{"expect", "name"}.getStr("") == name:
+        if found != nil: refuse("instance name " & name & " is ambiguous; use instanceId")
+        found = entry.value
+        targetId = entry.id
+    if found == nil: refuse("unknown fleet instance " & name)
+  elif not validId(targetId):
+    refuse("instance id must be 32 lowercase hex")
+  else:
+    found = c.storeGet(instancesKind, targetId).value
+    if found == nil: refuse("unknown fleet instance " & targetId)
+  if args{"expectRevision"}.getStr("").len > 0:
+    let pinned = found{"expect", "gitHash"}.getStr("")
+    if args{"expectRevision"}.getStr("") != pinned:
+      refuse("instance " & targetId & " is pinned to " & pinned &
+        ", not the revision given — refusing to remove the wrong entry")
+  c.storeDel(instancesKind, targetId)
+  %*{"ok": true, "removed": true, "instanceId": targetId,
+     "name": found{"expect", "name"}.getStr(""),
+     "text": "Removed the fleet registry entry " &
+       found{"expect", "name"}.getStr("") &
+       "; the instance itself is untouched and keeps running."}
