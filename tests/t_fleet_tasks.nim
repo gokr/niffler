@@ -183,38 +183,26 @@ proc main() =
     if c.storeGet("fleetjob", "idle-settlement").value{"delivered"}.getBool(false): break
     sleep(100)
   check("idle parent automatically woken", c.storeGet("fleetjob", "idle-settlement").value{"delivered"}.getBool(false))
-  seedNotice("budget-settlement", "origin")
-  # The previous wake's turn may still be settling: a second wake arriving
-  # mid-turn is refused as "busy" (a different, honest refusal) instead of
-  # being judged by the wake budget. Wait for the conversation to be idle so
-  # this check tests the budget and nothing else.
-  for i in 0..<100:
-    let probe = call(nc, "core", "session", %*{"sessionId": "origin"}, 5_000)
-    if probe{"error"} == nil: break
-    sleep(100)
-  var declined: JsonNode
-  for i in 0..<20:
+  # The budget decline must be observed while a notice is actually pending.
+  # Two timing facts make a single shot racy: `delivered` is stamped when the
+  # runner appends/acks a notice BEFORE that turn finishes (so a wake turn
+  # started by the previous check can still drain a freshly seeded notice),
+  # and a busy runner refuses with "busy". Re-seed and retry until the runner
+  # is idle with a pending notice; only then does the answer mean anything.
+  var declined = newJNull()
+  for attempt in 0..<100:
+    var delivered = false
+    try:
+      delivered = c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(true)
+    except CatchableError:
+      delivered = true  # not created yet (or already swept): (re)seed
+    if delivered:
+      seedNotice("budget-settlement", "origin")
     declined = call(nc, "core", "session", %*{"sessionId": "origin", "wake": true}, 60000)
-    if declined{"error"} == nil: break
-    sleep(150)
-  # Two outcomes are legitimate here and both prove the same thing — that the
-  # wake budget is finite and a pending notice is never lost:
-  #   declined  — the budget is spent, so this wake runs no turn (the case the
-  #               original check pinned), or
-  #   skipped   — fleet's own idle tick already delivered the notice with the
-  #               LAST permitted wake, so by the time this explicit wake is
-  #               asked for there is correctly nothing left to drain.
-  # Both must leave the notice delivered (not dropped) and must never claim a
-  # turn ran that did not.
-  let wakeOutcome = declined{"wake"}.getStr("")
-  check("wake budget bounds autonomous turns with a notice pending",
-    wakeOutcome in ["declined", "skipped"], $declined)
-  for i in 0..<100:
-    if c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false): break
+    if declined{"wake"}.getStr("") == "declined": break
     sleep(100)
-  check("a bounded wake still delivers the pending notice",
-    c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false) or
-    wakeOutcome == "declined", $declined)
+  check("wake budget declines with notice pending", declined{"wake"}.getStr("") == "declined" and
+    not c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false), $declined)
   discard call(nc, "core", "session", %*{"sessionId": "origin", "content": "Human returned"}, 60000)
   check("human turn drains declined notice", c.storeGet("fleetjob", "budget-settlement").value{"delivered"}.getBool(false))
   # The default mock's first bash round sleeps: settlement lands mid-turn.

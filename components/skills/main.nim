@@ -7,23 +7,13 @@
 ## This component discovers them from the standard agent skill
 ## directories and exposes load/install/remove over the bus:
 ##
-##   project (NIF_ROOT):  .agents/skills, .claude/skills, .opencode/skills
-##   bundled (repo):      <repo>/skills — shadowable, never removable;
-##                        NIF_SKILLS_BUNDLED_DIR overrides this location
-##                        (and, pointed at a missing path, forces the
-##                        baked fallback)
-##   home:                .agents/skills, .claude/skills, .opencode/skills,
-##                        .niffler/skills
-##   config (XDG):        opencode/skills
-##   baked:               the bundled SKILL.md files compiled into this
-##                        binary — last-resort source for names no disk
-##                        tree provided (deployments that ship var/bin
-##                        without the repo checkout)
+##   project: <conversation workspace>/.agents/skills
+##   home:    ~/.agents/skills
+##   bundled: shipped skills/ tree, with compiled-in fallback
 ##
-## First match wins per skill name (project beats home beats config), so a
-## repo's own skills shadow global ones. Discovery is a fresh scan per
-## call — skills change under us (installs, `npx skills add` from other
-## agents), so there is no cached registry and no refresh op.
+## First match wins per name; discovery is a fresh scan per call. Foreign
+## agent directories are not scanned implicitly. Direct bus calls without
+## workspace context use NIF_ROOT as their project root.
 ##
 ## "Loading" a skill is progressive disclosure via the tool result: the
 ## component does not mutate any prompt; skill_load returns the full
@@ -33,10 +23,10 @@
 ##
 ## Install clones a git repo (owner/name, URL, or file:// for local
 ## mirrors), finds its SKILL.md files and copies the chosen skill into a
-## Niffler-managed directory: ~/.niffler/skills (global, default) or
-## $NIF_ROOT/.opencode/skills (project, shared with opencode). Only those
-## two roots are removable through skill_remove. Skills that other agents
-## installed into shared dirs are discovered but never deleted.
+## Niffler-managed directory: ~/.agents/skills (global, default) or
+## <workspace>/.agents/skills (project). Only those
+## two roots are removable through skill_remove. This includes skills placed
+## in ~/.agents/skills by other harnesses: removal is explicit and approved.
 ## Install/remove run no code — only SKILL.md trees are copied — but they
 ## do write outside var/, so both carry x-harness.approval.
 
@@ -67,7 +57,7 @@ type
     tags: seq[string]
     allowedTools: seq[string]
     rootDir: string
-    source: string    # project | bundled | home | config
+    source: string    # project | home | bundled
     content: string
     resources: seq[SkillResource]
 
@@ -183,46 +173,39 @@ proc bakedSkills(): seq[Skill] =
       s.rootDir = bakedDir
       result.add(s)
 
+const skillsBundledDir {.strdefine.} = ""
+  ## Compile-time fixture seam only; no runtime environment override.
+
+var activeWorkspace = ""
+  ## Handler-local context: the SDK serializes tools. Restored by the wrapper
+  ## after every call, so conversations never inherit another's workspace.
+
+proc projectRoot(): string =
+  if activeWorkspace.len > 0: activeWorkspace else: rootDir()
+
 proc bundledSkillsDir(root: string): string =
-  ## Where the bundled (shipped-with-Niffler) skills live. Normally
-  ## <repo>/skills next to this component's checkout; NIF_ROOT/skills
-  ## is the fallback for relocated deployments. NIF_SKILLS_BUNDLED_DIR
-  ## overrides both. When the resolved path does not exist on disk,
-  ## discovery falls back to the compiled-in copies (bakedSkills).
-  let override = getEnv("NIF_SKILLS_BUNDLED_DIR", "")
-  if override.len > 0: return override
+  ## Shipped tree, then relocated root tree, then baked fallback.
+  when skillsBundledDir.len > 0:
+    return skillsBundledDir
   let repoRoot = currentSourcePath().parentDir.parentDir.parentDir
   let repoSkills = repoRoot / "skills"
   if dirExists(repoSkills): return repoSkills
   root / "skills"
 
-proc skillSearchPaths(root, home, config: string): seq[(string, string)] =
-  ## Ordered (source, dir) pairs; the first dir holding a skill name wins.
-  ## "bundled" is the NIF_ROOT/skills tree shipped with the repo — always
-  ## discovered (even when NIF_ROOT differs from the repo, e.g. a harness
-  ## started elsewhere), shadowable by project/home dirs, and never
-  ## removable via skill_remove (outside the managed roots).
-  result = @[
-    ("project", root / ".agents" / "skills"),
-    ("project", root / ".claude" / "skills"),
-    ("project", root / ".opencode" / "skills"),
-    ("bundled", bundledSkillsDir(root)),
+proc skillSearchPaths(root, home: string): seq[(string, string)] =
+  ## Ordered sources; names resolve workspace > user > bundled.
+  @[("project", root / ".agents" / "skills"),
     ("home", home / ".agents" / "skills"),
-    ("home", home / ".claude" / "skills"),
-    ("home", home / ".opencode" / "skills"),
-    ("home", home / ".niffler" / "skills"),
-    ("config", config / "opencode" / "skills"),
-  ]
+    ("bundled", bundledSkillsDir(rootDir()))]
 
 proc discoverSkills(): seq[Skill] =
   ## Fresh full scan: recursive walk for SKILL.md, dedup by name, first
   ## match wins; the compiled-in bundled skills fill any name no disk
   ## source provided. Sorted by name.
-  let root = rootDir()
+  let root = projectRoot()
   let home = getHomeDir()
-  let config = getConfigDir()
   var seen = initTable[string, bool]()
-  for (source, dir) in skillSearchPaths(root, home, config):
+  for (source, dir) in skillSearchPaths(root, home):
     if not dirExists(dir):
       continue
     for path in walkDirRec(dir):
@@ -256,20 +239,12 @@ proc skillJson(s: Skill): JsonNode =
 
 comp.tool(%*{"onDemand": true}):
   proc skill_list(query: string = "", source: string = ""): JsonNode =
-    ## List the skills available on this harness — reusable workflow/
-    ## strategy guides (SKILL.md files) from the bundled repo skills/ tree
-    ## (or, when no disk tree exists, the SKILL.md files compiled into
-    ## this binary), the standard agent skill directories (.agents/skills,
-    ## .claude/skills, .opencode/skills — project and home) plus
-    ## ~/.niffler/skills and the XDG opencode/skills dir. Use before a
-    ## class of work (review, refactoring, a language, a workflow); then
-    ## skill_load the match. Questions about Niffler itself — operating,
-    ## configuring, extending or debugging the harness — route here first:
-    ## query "niffler" and load the matching niffler-* skill.
+    ## List workflow/strategy guides from the conversation workspace's
+    ## .agents/skills, ~/.agents/skills, then bundled skills (compiled fallback
+    ## when no disk tree exists). First matching name wins. Use before a class
+    ## of work, then skill_load the match; for Niffler questions query "niffler".
     ## - query: substring filter over name, description and tags
-    ## - source: "project", "bundled", "home" or "config"; empty = all
-    ## Skills served from the compiled-in fallback report source
-    ## "bundled" and dir "(baked)".
+    ## - source: "project", "home" or "bundled"; empty = all
     var skills = discoverSkills()
     if query.len > 0:
       let q = query.toLowerAscii()
@@ -293,9 +268,8 @@ comp.tool(%*{"onDemand": true}):
     ## fallback (no disk copy anywhere) are listed with dir "(baked)". Use
     ## it when a skill seems ignored or two copies disagree — the winner is
     ## always the first entry in skillSearchPaths.
-    let root = rootDir()
+    let root = projectRoot()
     let home = getHomeDir()
-    let config = getConfigDir()
     var winners = initTable[string, bool]()
     for s in discoverSkills():
       winners[s.name] = true
@@ -303,7 +277,7 @@ comp.tool(%*{"onDemand": true}):
     var shadowed = 0
     var invalid = 0
     var diskNames = initTable[string, bool]()
-    for (source, dir) in skillSearchPaths(root, home, config):
+    for (source, dir) in skillSearchPaths(root, home):
       if not dirExists(dir):
         continue
       for path in walkDirRec(dir):
@@ -478,8 +452,8 @@ proc repoSlug(repo: string): string =
 
 proc managedInstallRoots(): seq[string] =
   ## The only directories skill_remove may delete from.
-  result = @[getHomeDir() / ".niffler" / "skills",
-             rootDir() / ".opencode" / "skills"]
+  result = @[getHomeDir() / ".agents" / "skills",
+             projectRoot() / ".agents" / "skills"]
 
 proc isManagedDir(dir: string): bool =
   for root in managedInstallRoots():
@@ -502,17 +476,15 @@ comp.tool(%*{"approval": "always",
   proc skill_install(repo: string, skill: string = "",
                      global: bool = true): JsonNode =
     ## Install a skill from a git repo: clones the repo, finds its
-    ## SKILL.md files and copies the chosen skill into ~/.niffler/skills
-    ## (global, default) or $NIF_ROOT/.opencode/skills (project, shared
-    ## with opencode). Repos with a single skill install directly; with
+    ## SKILL.md files and copies the chosen skill into ~/.agents/skills
+    ## (global, default) or <workspace>/.agents/skills (project). Repos with a single skill install directly; with
     ## several, pass skill. The repo/skill pair comes straight from a
     ## skill_search result. Only SKILL.md trees are copied — no code runs
     ## — but the write is still approved. Discover what is available with
-    ## skill_list; skills installed via `npx skills add` into the standard
-    ## agent dirs are discovered automatically and need no reinstall.
+    ## skill_list. Other agent directories require explicit import/install.
     ## - repo: "owner/name", a github.com URL, or a file:// URL
     ## - skill: skill name or directory inside the repo (empty = the only skill)
-    ## - global: install under ~/.niffler/skills (default); false = project .opencode/skills
+    ## - global: install under ~/.agents/skills (default); false = workspace .agents/skills
     if findExe("git").len == 0:
       return errResult("git not found on PATH")
     var cleanRepo: string
@@ -521,8 +493,8 @@ comp.tool(%*{"approval": "always",
     except ValueError as e:
       return errResult(e.msg)
     let target =
-      if global: getHomeDir() / ".niffler" / "skills"
-      else: rootDir() / ".opencode" / "skills"
+      if global: getHomeDir() / ".agents" / "skills"
+      else: projectRoot() / ".agents" / "skills"
     let tmp = rootVarDir("skills-tmp") / repoSlug(cleanRepo)
     if dirExists(tmp):
       removeDir(tmp)
@@ -579,9 +551,8 @@ comp.tool(%*{"approval": "always",
 comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
   proc skill_remove(name: string): JsonNode =
     ## Remove a skill installed by skill_install: deletes its directory
-    ## under ~/.niffler/skills or $NIF_ROOT/.opencode/skills. Skills that
-    ## live in shared agent directories (.claude/skills etc.) are never
-    ## deleted from here — remove those with their own agent tooling.
+    ## under ~/.agents/skills or the workspace .agents/skills. Bundled
+    ## skills are never deleted.
     ## - name: skill name (see skill_list)
     let s = findSkill(name)
     if s.isNone:
@@ -613,7 +584,7 @@ discard comp.slashCommand("skills",
     [{"name": "query", "kind": "string", "default": "",
       "description": "substring filter over name, description and tags"},
      {"name": "source", "kind": "enum",
-      "values": ["", "project", "bundled", "home", "config"],
+      "values": ["", "project", "home", "bundled"],
       "description": "restrict to one discovery root (empty: all)"}]
   """), tool = "skill_list")
 
@@ -625,7 +596,7 @@ discard comp.slashCommand("skills-install",
      {"name": "skill", "kind": "string", "default": "",
       "description": "skill name or directory inside the repo (empty = the repo's only skill)"},
      {"name": "global", "kind": "bool", "default": true,
-      "description": "true = ~/.niffler/skills (default); false = this project's .opencode/skills"}]
+      "description": "true = ~/.agents/skills (default); false = this project's .agents/skills"}]
   """), tool = "skill_install")
 
 discard comp.slashCommand("skills-remove",
@@ -634,5 +605,19 @@ discard comp.slashCommand("skills-remove",
     [{"name": "name", "kind": "string",
       "description": "skill name (see /skills)"}]
   """), tool = "skill_remove")
+
+proc workspaceHandler(handler: ToolHandler): ToolHandler =
+  result = proc(c: Component, args: JsonNode): JsonNode =
+    let previous = activeWorkspace
+    activeWorkspace = args{"__workspace"}{"root"}.getStr("")
+    try:
+      result = handler(c, args)
+    finally:
+      activeWorkspace = previous
+
+for tool in comp.tools.mitems:
+  if tool.name != "skill_search":
+    tool.schema["x-harness"]["workspace"] = %*{"pathFields": []}
+    tool.handler = workspaceHandler(tool.handler)
 
 comp.run()

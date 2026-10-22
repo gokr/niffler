@@ -9,6 +9,13 @@
 > MANUAL.md "State and configuration").
 >
 > Baseline: `main` after the conversation-controls merge (`6d95c74`).
+>
+> **Superseded in part** by `research/CONFIG.md`: the configuration surface is
+> now specified as component-owned, schema-described store documents behind
+> `config_list`/`config_get`/`config_patch`/`config_reset`, not a single
+> `settings:global` behind `/settings`. Where the two differ, CONFIG.md wins;
+> the per-key mechanics here (merge-patch validation, `expectRev`,
+> application-timing classes, no settings in the prompt prefix) still apply.
 
 ## 0. The problem, measured
 

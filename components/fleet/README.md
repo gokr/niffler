@@ -33,6 +33,25 @@ the last verified revision. Incomplete and symlinked roots refuse. Linger remain
 explicit for SSH; Lima and Incus install enable guest linger for ubuntu.
 No credentials are sent.
 
+## Instance registry
+
+Verified routes live in the **store** as kind `fleetinstance`, one document per
+instance keyed by its stable 32-hex identity: the verified version-1 receipt
+(transport, route, root, pinned `gitHash` expectation) plus `source` and
+`updatedAt`. A transport is a payload field, so adding one is not a schema
+migration. `fleet_install`/`fleet_update` record the receipt after the live
+identity verifies (best effort — a store outage never turns a successful remote
+install into a failure), and `fleet_instance_import` migrates an existing
+receipt file explicitly; the file is left untouched and stays valid as an
+export/import format.
+
+The registry is **not authority**: every action still proves the live catalog
+identity before it writes, so a tampered document fails instead of granting
+access, and no document is used as a route implicitly — lifecycle tools still
+take an explicit `profile`. `fleet_instances` lists summaries for a client
+picker; a corrupt document is reported as `invalid` rather than silently
+dropped, because it still names somebody's instance.
+
 Receipts are atomic mode-0600 JSON compatible with the TUI version-1 schema:
 `version,transport,target,root,expect:{instanceId,name,root,gitHash}` and optional
 `createdVm:true` provenance and `host` for SSH-hosted guest management. Malformed/symlink receipts and identity/root drift

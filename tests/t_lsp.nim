@@ -615,6 +615,63 @@ proc main() =
       check("drain reaps all servers and stops their watchdog children",
             observed == (9, 9, 0), $observed)
 
+  # --- warm budgets as SETTINGS (config surface, slice 4) ------------------
+  # lsp already had ONE idle handler (async diagnostics), and the SDK replaces
+  # a second registration — so this also guards the regression where a new
+  # idle registration would silently kill the diagnostic pump.
+  let cfgStore = startComponent(root / "var" / "bin" / "store-sqlite", url, root = tmp)
+  defer:
+    if cfgStore.peekExitCode() == -1: cfgStore.terminate()
+    cfgStore.close()
+  var cfgStoreUp = false
+  for i in 0 ..< 50:
+    if call(nc, "store", "list", %*{"kind": "probe"}, 2_000).hasKey("items"):
+      cfgStoreUp = true
+      break
+    sleep(200)
+  check("store up for the settings check", cfgStoreUp)
+  let cfg = startComponent(root / "var" / "bin" / "config", url, root = tmp)
+  defer:
+    if cfg.peekExitCode() == -1: cfg.terminate()
+    cfg.close()
+  var cfgUp = false
+  for i in 0 ..< 50:
+    if call(nc, "config", "config_list", %*{}, 2_000).hasKey("ok"):
+      cfgUp = true
+      break
+    sleep(200)
+  check("config up for the settings check", cfgUp)
+  var domains = newJNull()
+  for i in 0 ..< 60:
+    domains = call(nc, "config", "config_list", %*{})
+    if domains{"count"}.getInt(0) > 0: break
+    sleep(100)
+  var found = false
+  if domains{"domains"} != nil and domains{"domains"}.kind == JArray:
+    for entry in domains{"domains"}:
+      if entry{"domain"}.getStr("") == "lsp.warm": found = true
+  check("lsp declares its warm budgets", found, $domains)
+  let warmGot = call(nc, "config", "config_get", %*{"domain": "lsp.warm"})
+  check("warm defaults are reported, not stored",
+        warmGot{"ok"}.getBool(false) and
+        warmGot{"defaults"}{"warmMax"}.getInt(-1) == 2 and
+        warmGot{"values"}{"warmMax"} == nil, $warmGot)
+  let setZero = call(nc, "config", "config_patch", %*{
+    "domain": "lsp.warm", "patch": {"warmMax": 99}})
+  check("an out-of-range budget is refused before it reaches lsp",
+        setZero{"code"}.getStr() == "bad-request", $setZero)
+  let okSet = call(nc, "config", "config_patch", %*{
+    "domain": "lsp.warm", "patch": {"warmTotal": 6}})
+  check("a warm budget is changed through config", okSet{"ok"}.getBool(false), $okSet)
+  let round = call(nc, "config", "config_get", %*{"domain": "lsp.warm"})
+  check("the changed budget round-trips through the owner",
+        round{"values"}{"warmTotal"}.getInt(0) == 6, $round)
+  # The diagnostic pump still works with the settings refresh sharing the same
+  # idle handler: the earlier async-diagnostics checks in this file run AFTER
+  # this point in a fresh process, and "the check ran in the idle seam and was
+  # delivered" would fail if a second registration had replaced it. That is the
+  # regression guard — no extra assertion needed here.
+
   report("LSP TEST")
 
 main()

@@ -83,6 +83,7 @@ A one-file index of every shipped capability (not a reference) is
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
+| `config` | Nim | optional | the discoverable configuration surface: components declare a domain (JSON Schema subset + per-property metadata) and keep owning their own store record; `config_list`/`config_get` report values, defaults, revisions and schemas (secrets redacted), `config_patch`/`config_reset` validate and forward to the owner under approval. Nothing enters a prompt prefix — see [State and configuration](#state-and-configuration) |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fleet` | Nim | **not in the manifest** | Opt-in SSH/Lima provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Lima provisioning](#ssh-and-lima-provisioning) |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
@@ -549,7 +550,7 @@ missing binaries are skipped at boot with a warning. Rebuild them with
 | **Environment / `.env`** | all `NIF_*` variables (table below): boot & bus, LLM connection, per-component tuning. `.env` (root, gitignored) holds secrets and local overrides; shell env wins; reference copy with defaults in `.env.example` | process lifetime — components read env once at boot, so a change needs `core.kill` + `core.spawn`. A variable *exported in the shell that started core* is inherited by every child and needs a harness restart instead |
 | **The store** (kind table in [The store](#the-store)) | conversation headers, messages, the `provider` registry (credentials included), frozen per-conversation toolsets, the slash table, plugin/component install records, subagent job/lineage records, fabric programs, MCP server configs | durable — the harness's database |
 | **Conversation header** (`conversation` kind) | per-conversation choice: provider, providerOverride, model, modelOverride, thinking, profile, title, budgets/token meters — set through the `session` call (`/model`, `/effort` in UIs) and echoed in turn results | per conversation |
-| **Home / project files** | skills trees (project `.agents|.claude|.opencode/skills` > bundled `skills/` > home `~/.niffler/skills` + agent-standard dirs > `~/.config/opencode/skills`, then the tree compiled into the binary as the last resort); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
+| **Home / project files** | skills: workspace `.agents/skills` > `~/.agents/skills` > bundled `skills/` (compiled fallback); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
 | **Edit undo + seen state** | Not a home file any more: one **store document per (conversation, file)** — kinds `edit-undo` (last pre-edit bytes, for `undo_last_edit`) and `edit-seen` (observed digest/size/lines, for unchanged-read stubs and the `E_STALE` gate), ids `<session>:<absolute path>`. Scoped to the conversation that owns them and deleted with it (`conversation_delete` sweeps both kinds). They used to share `$XDG_CONFIG_HOME/niffler-edit/undo.json`, rewritten in full on every mutation — machine-global, unbounded, and the reason a 27-file bulk replacement once held the edit component's pump for 53 s. Deleting the documents loses only undo history and read stubs, never file content | durable, store-backed |
 | **`var/`** (gitignored) | `bin/` built binaries, `logs/` bus JSONL and per-component JSONL (`.1`…`.N` rotations) plus child logs, `models/` catalog cache, `nats-url`/`nats-pid` bus claiming, `processes/` spools (`pN.out`/`pN.err` per start, wiped at boot; ids continue from the persisted counter instead of restarting at `p1`), `repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached), `fetch/`, `captures/`, `store.db` (the SQLite engine's file — the only file-backed engine) plus its `.lock`, which exactly one `store` process may hold at a time | mixed durable state and regenerable output; never delete wholesale |
 | **Browser localStorage** | display only: reasoning/tool-card detail levels, locale (`niffler-think`, `niffler-tools`) | per browser |
@@ -586,6 +587,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |
 | `NIF_AUTOSTART_BOOT_S` | seconds an autostarted core waits for its first interactive client before giving up | `60` |
 | `NIF_ENSURE_ATTACH` | `0` makes `ensureHarness` skip attaching and always spawn a core (tests) | `1` |
+| `NIF_INSTANCE_ID` | stable document-owner identity for this instance (32 lowercase hex). Unset → `$NIF_ROOT/var/instance-id`; with neither the store serves the legacy owner `''` (single-instance/test only, never for several harnesses on one dataset). Required for every instance on a shared TiDB cluster and recommended where the root is not persistent; never copy it between instances. The store resolves it once at startup — it is never a tool argument | unset (identity file) |
 | `NIF_STORE_BACKEND` | store engine selected at boot: `sqlite` (default → `var/bin/store-sqlite`) or `tidb` (→ `var/bin/store-tidb`); anything else refuses to boot. All engines register as component `store` with identical tools — see [Store engines](#store-engines). An un-migrated barrel (history in `var/barrel-db`, no `var/store.db` yet) makes core refuse to boot rather than open an empty database over it. A missing engine binary (`var/bin/store-sqlite` absent) warns and skips the store like any other missing component binary — there is no barrel fallback | `sqlite` |
 | `NIF_STORE_TIDB_DSN` | TiDB/MySQL DSN for the `tidb` store engine, e.g. `root@tcp(127.0.0.1:4000)/niffler` (docker single-node: `docker run -p 4000:4000 pingcap/tidb`). Required for that engine — no local default; the component refuses to boot without it. Sessions are forced to UTC unless the DSN sets `time_zone`. The account needs rights for goose's DDL migrations, applied at every boot (a fresh database, then each new migration as it ships); the connect/read/write timeouts (5 s/60 s/30 s) and the single pooled connection are code-resident, not env-tunable | unset |
 | `NIF_GIT_MIRROR` | host prefix replacing `https://github.com` when the `plugins` component clones packages (e.g. `https://cnb.cool` or a Gitee mirror) — API/search endpoints stay on GitHub | unset |
@@ -609,7 +611,6 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
 | `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
 | `NIF_FETCH_ALLOW_PRIVATE` | `1` (also `true`/`yes`) allows the `fetch` tool to contact loopback/private/link-local destinations; use only for trusted local development services | unset (blocked) |
-| `NIF_SKILLS_BUNDLED_DIR` | explicit location of the `skills` component's bundled tree, replacing `<repo>/skills` and its `$NIF_ROOT/skills` fallback. A path that does not exist makes discovery serve the compiled-in copies (dir `(baked)`) | `<repo>/skills` |
 | `NIF_MCP_DIRECT_THRESHOLD` | number of cached tools a configured `expose: direct` MCP server may publish directly; larger servers are deferred to progressive discovery | `10` |
 | `NIF_MCP_BRIDGE_BIN` | explicit path of the mcp-bridge binary | `<root>/var/bin/mcp-bridge` |
 | `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll — the kept tail is `min(2 MiB, cap div 2)` and the value is not validated, so a cap at or below zero empties a spool | `33554432` |
@@ -1682,29 +1683,23 @@ discovery](#progressive-tool-discovery)). Loading a skill appends its text
 to history — nothing here rewrites the frozen prompt prefix, so a
 `skill_load` costs a cache read, not a cache miss.
 
-Discovery covers the bundled skills shipped in the repo plus the standard
-agent directories (first match per skill name wins — project beats bundled
-beats home beats config):
+Skills resolve by name in this order:
 
 | Source | Directories |
 |---|---|
-| project | `$NIF_ROOT/.agents/skills`, `$NIF_ROOT/.claude/skills`, `$NIF_ROOT/.opencode/skills` |
-| bundled | `<repo>/skills` — the checkout this binary was compiled in (a build-time path); `$NIF_ROOT/skills` is the fallback for relocated deployments, and `NIF_SKILLS_BUNDLED_DIR` overrides both — never removable |
-| home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
-| config | `~/.config/opencode/skills` (where `npx skills add -g -a opencode` installs) |
+| project | `<conversation workspace>/.agents/skills` (direct bus calls without workspace context use `$NIF_ROOT`) |
+| home | `~/.agents/skills` |
+| bundled | `<repo>/skills`, then `$NIF_ROOT/skills` for relocated deployments; never removable |
 
-Within a source the directories are tried in the order listed, so
-`~/.agents/skills/nats` is served over `~/.claude/skills/nats`. Discovery is
-a **fresh walk on every call** — no cached registry, no store records, no
-refresh op — so a
-`skill_install` or another agent's `npx skills add` is visible immediately.
-The walk does not descend into **symlinked directories**: a skill that only
-reaches a scanned directory through a symlink is not discovered, and
-`skill_audit` does not list it either; nor is a **symlinked SKILL.md** file
-yielded, so a skill whose SKILL.md is a link to a real file elsewhere is
-invisible as well (a symlink farm such as
-`~/.claude/skills → ~/.agents/skills` is therefore invisible — harmless when
-the link target is scanned anyway, silent when it is not).
+First match wins; every call scans afresh. The workspace arrives as private
+per-call context and never changes a frozen prompt. `skill_audit` shows
+shadowed and invalid copies. Foreign-agent home/project directories and XDG
+opencode trees are no longer scanned; explicitly copy/import their skill trees
+into a supported directory. The old Niffler `~/.niffler/skills` directory is
+also an explicit migration source, not a discovery root; existing files are
+not moved or overwritten automatically. `NIF_SKILLS_BUNDLED_DIR` is removed.
+The walk does not follow symlinked directories or SKILL.md files; copy real
+skill trees rather than linking them.
 
 Bundled skills (`todo-markdown` — keep todo state in a repo TODO.md,
 not in tool state; `niffler-tools` — which tool fits which job;
@@ -1728,7 +1723,7 @@ wins by name, so a checkout is unaffected by the fallback.
 | `skill_resources {name}` | the skill's `references/`, `scripts/`, `assets/` files, one level deep — a file in `references/sub/x.md`, or a symlinked file, is neither listed nor readable |
 | `skill_resource {name, path}` | read one resource on demand |
 | `skill_audit` | read-only, unmerged inventory of every SKILL.md on disk — plus names served only by the compiled-in fallback (dir `(baked)`): marks the active winner per name and every shadowed/invalid copy (invalid = unreadable SKILL.md, unparseable frontmatter, or no name even after falling back to the directory name — a SKILL.md that omits `name:` is accepted under its directory's name; discoveries merge in `skill_list`, so shadowing is only visible here) |
-| `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.niffler/skills` (default) or `$NIF_ROOT/.opencode/skills` |
+| `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.agents/skills` (default) or `<conversation workspace>/.agents/skills` |
 | `skill_remove {name}` | delete a skill from a Niffler-managed directory only |
 
 - `skill_search` is a read-only HTTP call to `https://skills.sh/api/search`
@@ -1737,11 +1732,11 @@ wins by name, so a checkout is unaffected by the fallback.
   namespace. Install is: search →
   `skill_install {repo, skill}` → approval dialog → done.
 
-- Skills installed with `npx skills add <owner>/<repo>` (the skills.sh
-  ecosystem CLI) land in the standard dirs above and are discovered without
-  reinstall; `skill_install` exists so Niffler works without Node, via plain
-  git. It copies only SKILL.md trees — no code runs — and accepts
-  `owner/name`, github.com URLs and `file://` local repos (hermetic tests).
+- Existing skills in foreign-agent directories require explicit copying into
+  workspace `.agents/skills` or user `~/.agents/skills`. `skill_install`
+  imports from a repository without Node, via plain git. It copies SKILL.md
+  trees without running code and accepts `owner/name`, GitHub URLs and local
+  `file://` repositories.
 - Repos holding several skills (e.g. `vercel-labs/agent-skills`) require the
   `skill` parameter; `skill_install` lists the candidates when it is missing.
   The parameter matches a skill's name or its directory basename.
@@ -1751,8 +1746,8 @@ wins by name, so a checkout is unaffected by the fallback.
   mirror by pointing `repo` at one — and copies the whole skill directory,
   resources included. It refuses a name whose destination already exists
   (`skill_remove` first); the result reports `source: home|project`.
-- `skill_remove` refuses anything outside `~/.niffler/skills` and
-  `$NIF_ROOT/.opencode/skills` — skills other agents installed into shared
+- `skill_remove` refuses anything outside `~/.agents/skills` and
+  `<conversation workspace>/.agents/skills` — skills other agents installed into shared
   dirs are removed with their own tooling.
 - Install and remove carry `x-harness.approval: "always"` (they write outside
   `var/`).
@@ -2718,6 +2713,35 @@ hidden tools directly over NATS.
 - Dispatch, approvals, `x-harness.timeoutMs`, and component-to-component calls
   always consult the full catalog.
 
+### Declared configuration (the `config` component)
+
+A component that owns settings keeps owning them: the values stay in its own
+store record, written by its own tool. The optional `config` component adds
+discovery, validation and one editing API on top, so neither a human nor a model
+has to know which component owns which knob.
+
+An owner publishes a *declaration* at startup (`config_declare`, hidden —
+infrastructure, not a model tool): a stable domain id, its store kind, the tool
+that answers `get`/`patch`/`reset`, a JSON Schema subset for the values, and
+per-property `x-config` metadata (`title`, `description`, `secret`, `readOnly`,
+`application`). Declarations are durable, so a stopped owner still lists.
+
+| Tool | What it does |
+|---|---|
+| `config_list` | every declared domain: title, owner, property count, whether the owner currently answers |
+| `config_get {domain}` | current values, defaults, revision and schema together; **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
+| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only fields), then forward it to the owner, which performs the compare-and-set write |
+| `config_reset {domain, properties?, expectRev?}` | drop explicit values so declared defaults apply again |
+
+Patches and resets carry `x-harness.approval: "always"`. `config` never writes
+another component's record — an owner's invariants (credential handling, derived
+caches, migrations) stay enforced. A declaration using a schema keyword this
+surface cannot enforce is **refused at declare time**: silently ignoring a
+constraint would report a validation that never happened. `scope` is
+`instance` only; a declaration asking for `shared` is refused until that design
+lands. No value enters a frozen prompt prefix — a change is visible at the
+owner's next call. Contract: [research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md).
+
 ### Instance identity
 
 `NIF_NAME` labels this instance (hostname by default). Catalog replies also
@@ -2726,6 +2750,24 @@ changes retain it. Preserve that file when moving an instance, but do not copy
 it when provisioning a new one. A malformed file refuses startup rather than
 silently changing identity. The ID is routing metadata, not authentication;
 matching TUI clients pin it when importing a connection receipt.
+
+**Document ownership.** Each store process resolves its document owner once at
+startup and never takes it from a tool argument: `NIF_INSTANCE_ID` if set, else
+the identity in `$NIF_ROOT/var/instance-id`, else the legacy owner `""` (a
+single-instance or test process — the boot log says so). With the SQLite engine
+the database file is one instance's data, so the first real identity that opens
+it adopts the pre-scoping documents exactly once (`store_binding` records that;
+rowids, revisions and the search index are untouched) and a *different*
+identity on an already-bound file refuses to boot rather than serve another
+instance's history. With TiDB the dataset is shared: an identity is registered
+and `""` rows are never adopted implicitly, because they may belong to another
+instance — set `NIF_INSTANCE_ID` for every instance on a shared cluster, and
+remember that it is required when the root is not persistent (a recreated
+container or ephemeral CI checkout would otherwise orphan its rows). Provide
+`NIF_INSTANCE_ID` when provisioning a *new* instance; never copy `var/instance-id`
+between instances. Scoping is organisation, not authorization: any process on a
+bus can reach the store, so per-instance isolation there still needs database
+credentials/ACLs. See [research/INSTANCE-STORE.md](research/INSTANCE-STORE.md).
 
 ### Persistent server lifecycle
 
@@ -3937,8 +3979,8 @@ itself.
    `<project_context>`/`<project_instructions path="...">` tags after the
    product prompt:
    - per directory, first hit wins: `AGENTS.override.md`, `AGENTS.md`,
-     `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (one file per directory —
-     `AGENTS.md` shadows a `CLAUDE.md` next to it; symlinks are followed;
+     `AGENTS.MD` (one primary file per directory; symlinks are followed;
+     `CLAUDE.md` and `CLAUDE.MD` are not automatically loaded;
      `AGENTS.local.md` is added in addition, never as a candidate: it never
      shadows the primary file, and it is collected for every directory of the
      walk, not only lazily);
@@ -3954,7 +3996,7 @@ itself.
      ancestor walk would otherwise apply the same logical repo scope twice;
    - lazy loading: a `read` that enters a directory *below* the harness
      root appends any newly discovered `AGENTS.override.md`/`AGENTS.md`/
-     `AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD` (+ `AGENTS.local.md`) for the
+     `AGENTS.MD` (+ `AGENTS.local.md`) for the
      directories on the path, each wrapped in `<lazy_project_instructions
      path="…">`, once per session — a monorepo subtree stays out of the
      frozen head until the model actually enters it.

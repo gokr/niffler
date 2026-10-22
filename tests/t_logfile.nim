@@ -369,6 +369,48 @@ comp.run()
   check("invalid logfile configuration exits non-zero",
         invalidCode != -1 and invalidCode != 0, $invalidCode)
 
+  # --- retention as a SETTING (config surface, slice 4) --------------------
+  # The directory cap proves the snapshot read path: a stored value must be
+  # visible after one idle tick, with no restart and no environment change.
+  let store = startComponent(root / "var" / "bin" / "store-sqlite", url, root = tmp)
+  defer:
+    if store.peekExitCode() == -1: store.terminate()
+    store.close()
+  check("store up for the settings check", waitUntil(proc(): bool =
+    call(nc, "store", "list", %*{"kind": "probe"}, 1000).hasKey("items")))
+  let config = startComponent(root / "var" / "bin" / "config", url, root = tmp)
+  defer:
+    if config.peekExitCode() == -1: config.terminate()
+    config.close()
+  check("config up for the settings check", waitUntil(proc(): bool =
+    call(nc, "config", "config_list", %*{}, 2000){"count"}.getInt(0) >= 0))
+  logfile = startComponent(logfileBin, url, root = tmp,
+    extra = [("NIF_LOGFILE_DIR", tmp / "settings-logs")])
+  var listed = newJNull()
+  for i in 0 ..< 60:
+    listed = call(nc, "config", "config_list", %*{})
+    if listed{"count"}.getInt(0) > 0: break
+    sleep(100)
+  var found = false
+  if listed{"domains"} != nil and listed{"domains"}.kind == JArray:
+    for entry in listed{"domains"}:
+      if entry{"domain"}.getStr("") == "logfile.retention": found = true
+  check("logfile declares its retention settings", found, $listed)
+  let before = call(nc, "logfile", "logfile_paths", %*{})
+  check("default retention is reported", before{"maxBytes"}.getInt(0) > 0, $before)
+  let patch = call(nc, "config", "config_patch", %*{
+    "domain": "logfile.retention", "patch": {"directoryEntries": 123}})
+  check("retention is changed through config", patch{"ok"}.getBool(false), $patch)
+  var after = newJNull()
+  for i in 0 ..< 40:
+    after = call(nc, "logfile", "logfile_paths", %*{})
+    if after{"maxDirectoryEntries"}.getInt(0) == 123: break
+    sleep(100)
+  check("the stored cap applies after one refresh tick, without a restart",
+        after{"maxDirectoryEntries"}.getInt(0) == 123, $after)
+  stopProcess(logfile)
+  logfile = nil
+
   report("LOGFILE TEST")
 
 main()

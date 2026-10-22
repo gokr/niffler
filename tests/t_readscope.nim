@@ -10,7 +10,7 @@
 ##   1. DIRECT  — the model names the masked file. Argument-level refusal.
 ##   2. TRAVERSAL — a search rooted at the workspace reaches the file without
 ##      naming it. Argument checks cannot see this; the result must be filtered.
-import std/[json, os, osproc, strutils, times]
+import std/[json, os, osproc, strutils, tables, times]
 import natsnim
 import helpers
 
@@ -93,8 +93,29 @@ proc main() =
     discard grep.waitForExit(2000)
     grep.close()
 
-  check("edit registers", waitRegisteredOn(regSub, "edit"))
-  check("grep registers", waitRegisteredOn(regSub, "grep"))
+  # A SHARED reg.publish subscription is order-dependent if each wait consumes
+  # messages looking for one name: waiting for "edit" would swallow a "grep"
+  # announcement that arrived first, and the next wait would never see it.
+  # Collect every announced name instead, so the order components happen to
+  # start in cannot decide whether this test passes.
+  var announced = initTable[string, bool]()
+  proc awaitComponents(names: seq[string], secs = 15): bool =
+    let deadline = epochTime() + secs.float
+    while epochTime() < deadline:
+      var missing = false
+      for name in names:
+        if not announced.hasKey(name): missing = true
+      if not missing: return true
+      var msg: ptr natsMsg
+      if natsSubscription_NextMsg(addr msg, regSub, 200) == NATS_OK:
+        let data = $natsMsg_GetData(msg)
+        natsMsg_Destroy(msg)
+        for name in names:
+          if data.contains("\"" & name & "\""): announced[name] = true
+    false
+
+  check("edit registers", awaitComponents(@["edit"], 20))
+  check("grep registers", awaitComponents(@["grep"], 20))
   natsSubscription_Destroy(regSub)
   # Request/reply readiness avoids announcement ordering between independent peers.
   let mapper = startComponent(repo / "var/bin/repomap", url, root = root,

@@ -226,6 +226,69 @@ proc main() =
     sleep(200)
   check("departed source no longer affects the catalog", reverted)
 
+  # --- refresh policy as a SETTING (config surface, slice 4) ----------------
+  # The Go owner helper is exercised end to end: models declares, config
+  # validates and forwards, models writes its own record, and the STORED
+  # offline flag changes how a forced refresh behaves.
+  # The sandbox core already runs its own store (single-writer: a second one
+  # would refuse the flock), so the config surface reuses it.
+  # Already running since core's boot: waitRegistered only sees FUTURE
+  # announcements, so readiness is proved by an answering call.
+  var storeUp = false
+  for i in 0 ..< 50:
+    if call(nc, "store", "list", %*{"kind": "probe"}, 2_000).hasKey("items"):
+      storeUp = true
+      break
+    sleep(200)
+  check("store up for the settings check", storeUp)
+  let config = startComponent(repoRoot / "var" / "bin" / "config", url, root = sandbox.root)
+  defer:
+    if config.peekExitCode() == -1: config.terminate()
+    config.close()
+  var configUp = false
+  for i in 0 ..< 50:
+    if call(nc, "config", "config_list", %*{}, 2_000).hasKey("ok"):
+      configUp = true
+      break
+    sleep(200)
+  check("config up for the settings check", configUp)
+  var listed = newJNull()
+  for i in 0 ..< 60:
+    listed = call(nc, "config", "config_list", %*{})
+    if listed{"count"}.getInt(0) > 0: break
+    sleep(100)
+  var found = false
+  if listed{"domains"} != nil and listed{"domains"}.kind == JArray:
+    for entry in listed{"domains"}:
+      if entry{"domain"}.getStr("") == "models.refresh": found = true
+  check("models declares its refresh policy", found, $listed)
+  let got = call(nc, "config", "config_get", %*{"domain": "models.refresh"})
+  check("refresh defaults are reported, not stored",
+        got{"ok"}.getBool(false) and
+        got{"defaults"}{"cacheTtlSeconds"}.getFloat(0.0) == 300 and
+        got{"values"}{"offline"} == nil, $got)
+  let policySet = call(nc, "config", "config_patch", %*{
+    "domain": "models.refresh", "patch": {"offline": true}})
+  check("offline is set through config", policySet{"ok"}.getBool(false), $policySet)
+  # Precedence (stored > env > default) is proved deterministically in
+  # components/models/settings_test.go: a bus test can only observe that a
+  # refresh was QUEUED, not which policy it used. Here the point is the owner
+  # protocol: the stored value round-trips through this component's record.
+  let afterSet = call(nc, "config", "config_get", %*{"domain": "models.refresh"})
+  check("the stored policy round-trips through the owner",
+        afterSet{"values"}{"offline"}.getBool(false) and
+        afterSet{"rev"}.getInt(0) == 1, $afterSet)
+  let reset = call(nc, "config", "config_reset", %*{"domain": "models.refresh"})
+  check("reset returns the policy to its declared defaults", reset{"ok"}.getBool(false), $reset)
+  let afterReset = call(nc, "config", "config_get", %*{"domain": "models.refresh"})
+  check("the explicit value is gone after reset",
+        afterReset{"values"}{"offline"} == nil and
+        afterReset{"defaults"}{"offline"}.getBool(true) == false, $afterReset)
+  let bad = call(nc, "config", "config_patch", %*{
+    "domain": "models.refresh", "patch": {"cacheTtlSeconds": -1}})
+  check("a negative TTL is refused before it reaches models",
+        bad{"code"}.getStr() == "bad-request", $bad)
+
   report("MODELS TEST")
 
 main()

@@ -185,6 +185,56 @@ proc main() =
         mTiny{"ok"}.getBool(false) and
         mTiny{"text"}.getStr("").contains("resolveBinIn"), $mTiny)
 
+  # --- the same gates as SETTINGS (config surface, slice 4) ----------------
+  # The env var above is the migration path; the durable setting must reach
+  # the same decision without a restart, because the declaration promises
+  # application: immediate. This also proves the owner protocol end to end:
+  # config validates and forwards, repomap writes its own record.
+  let store = startComponent(root / "var" / "bin" / "store-sqlite", url, root = tmp)
+  defer:
+    if store.peekExitCode() == -1: store.terminate()
+    store.close()
+  check("store up for the settings check", waitRegistered(nc, "store"))
+  let config = startComponent(root / "var" / "bin" / "config", url, root = tmp)
+  defer:
+    if config.peekExitCode() == -1: config.terminate()
+    config.close()
+  check("config up for the settings check", waitRegistered(nc, "config"))
+  if rmTiny.peekExitCode() == -1: rmTiny.terminate()
+  sleep(300)
+  let rmCfg = startComponent(bin, url, root = tmp)
+  defer:
+    if rmCfg.peekExitCode() == -1: rmCfg.terminate()
+    rmCfg.close()
+  check("repomap registers against a config surface", waitRegistered(nc, "repomap"))
+
+  var declared = newJNull()
+  for i in 0 ..< 50:
+    declared = call(nc, "config", "config_list", %*{})
+    if declared{"count"}.getInt(0) > 0: break
+    sleep(100)
+  check("repomap declares its gates", declared{"count"}.getInt(0) == 1 and
+        declared{"domains"}[0]{"domain"}.getStr() == "repomap.gates", $declared)
+
+  let patched = call(nc, "config", "config_patch", %*{
+    "domain": "repomap.gates", "patch": {"minCensus": 1, "autoAppend": true}})
+  check("the gates are changed through config, not the environment",
+        patched{"ok"}.getBool(false), $patched)
+  var cfgSub: ptr natsSubscription
+  discard natsConnection_SubscribeSync(addr cfgSub, nc.conn,
+                                       "svc.session.sess-cfg.map".cstring)
+  nc.publish("ev.workspace.opened",
+    Envelope(v: 1, id: newId(), kind: ekEvent,
+             payload: %*{"workspace": ws,
+                         "conversationId": "sess-cfg"}).encode())
+  # minCensus=1 admits the workspace, but the content gate still refuses a
+  # stub map — proving the STORED floor was read (no restart, no env change).
+  check("the stored size floor took effect immediately",
+        recvMap(cfgSub, 3) == nil)
+  let off = call(nc, "config", "config_patch", %*{
+    "domain": "repomap.gates", "patch": {"autoAppend": false}})
+  check("auto-append can be turned off through config", off{"ok"}.getBool(false), $off)
+
   report("REPOMAP")
 
 main()

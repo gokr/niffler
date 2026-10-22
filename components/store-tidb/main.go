@@ -72,6 +72,9 @@ const (
 	listCap = 1000                 // hard cap on list limit, as in the other engines
 )
 
+// boundOwner is resolved once at open: document scope is never a tool argument.
+var boundOwner string
+
 func main() {
 	db, err := openStore()
 	if err != nil {
@@ -80,14 +83,23 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
+	if boundOwner == "" {
+		fmt.Println("store-tidb: no instance identity — serving the legacy owner (single-instance/test use only; shared deployments must set NIF_INSTANCE_ID)")
+	} else {
+		fmt.Println("store-tidb: serving documents for instance " + boundOwner)
+	}
+
 	comp := sdk.New("store", "0.1.0")
 	comp.
-		Tool("put", putSchema(), putHandler(db)).
-		Tool("get", getSchema(), getHandler(db)).
-		Tool("list", listSchema(), listHandler(db)).
-		Tool("search", searchSchema(), searchHandler(db)).
-		Tool("del", delSchema(), delHandler(db)).
-		Tool("selftest", selfTestSchema(), selfTestHandler(db, "tidb")).
+		Tool("store_claim", claimSchema(), claimHandler(db, boundOwner)).
+		Tool("instance_list", instanceSchema(false), instanceListHandler(db)).
+		Tool("instance_register", instanceSchema(true), instanceRegisterHandler(db)).
+		Tool("put", putSchema(), putHandler(db, boundOwner)).
+		Tool("get", getSchema(), getHandler(db, boundOwner)).
+		Tool("list", listSchema(), listHandler(db, boundOwner)).
+		Tool("search", searchSchema(), searchHandler(db, boundOwner)).
+		Tool("del", delSchema(), delHandler(db, boundOwner)).
+		Tool("selftest", selfTestSchema(), selfTestHandler(db, "tidb", boundOwner)).
 		OnDrain(func(c *sdk.Component) { _ = db.Close() })
 	if err := comp.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "store-tidb:", err)
@@ -114,7 +126,8 @@ func selfTestSchema() map[string]any {
 	}
 }
 
-func selfTestHandler(db *sql.DB, engine string) sdk.ToolHandler {
+func selfTestHandler(db *sql.DB, engine string, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		checks := make([]map[string]any, 0, 4)
 		allOK := true
@@ -141,8 +154,8 @@ func selfTestHandler(db *sql.DB, engine string) sdk.ToolHandler {
 		t = time.Now()
 		inserted := false
 		if _, err := db.Exec(
-			`INSERT INTO docs (kind, id, rev, value, updated_at)
-			 VALUES (?, ?, 1, ?, NOW())`, kind, id, value); err == nil {
+			`INSERT INTO docs (instance_id, kind, id, rev, value, updated_at)
+			 VALUES (?, ?, ?, 1, ?, NOW())`, instance, kind, id, value); err == nil {
 			inserted = true
 			check("put", true, "throwaway document written at rev 1", t)
 		} else {
@@ -152,8 +165,8 @@ func selfTestHandler(db *sql.DB, engine string) sdk.ToolHandler {
 		t = time.Now()
 		var got string
 		var rev int64
-		if err := db.QueryRow(`SELECT rev, value FROM docs WHERE kind = ? AND id = ?`,
-			kind, id).Scan(&rev, &got); err == nil {
+		if err := db.QueryRow(`SELECT rev, value FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`,
+			instance, kind, id).Scan(&rev, &got); err == nil {
 			check("get+rev", got == value && rev == 1,
 				fmt.Sprintf("read back verbatim at rev %d", rev), t)
 		} else {
@@ -162,7 +175,7 @@ func selfTestHandler(db *sql.DB, engine string) sdk.ToolHandler {
 
 		t = time.Now()
 		var n int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM docs WHERE kind = ?`, kind).
+		if err := db.QueryRow(`SELECT COUNT(*) FROM docs WHERE instance_id = ? AND kind = ?`, instance, kind).
 			Scan(&n); err == nil {
 			check("list prefix", n >= 1 && inserted,
 				fmt.Sprintf("%d document(s) visible under the kind prefix", n), t)
@@ -171,13 +184,13 @@ func selfTestHandler(db *sql.DB, engine string) sdk.ToolHandler {
 		}
 
 		t = time.Now()
-		if _, err := db.Exec(`DELETE FROM docs WHERE kind = ? AND id = ?`,
-			kind, id); err != nil {
+		if _, err := db.Exec(`DELETE FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`,
+			instance, kind, id); err != nil {
 			check("del", false, err.Error(), t)
 		} else {
 			var left int
-			_ = db.QueryRow(`SELECT COUNT(*) FROM docs WHERE kind = ? AND id = ?`,
-				kind, id).Scan(&left)
+			_ = db.QueryRow(`SELECT COUNT(*) FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`,
+				instance, kind, id).Scan(&left)
 			check("del", left == 0, "document and revision gone", t)
 		}
 
@@ -232,6 +245,12 @@ func openStore() (*sql.DB, error) {
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if owner, err := bindStoreOwner(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	} else {
+		boundOwner = owner
 	}
 	return db, nil
 }
@@ -340,7 +359,8 @@ func putSchema() map[string]any {
 	}
 }
 
-func putHandler(db *sql.DB) sdk.ToolHandler {
+func putHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -377,15 +397,15 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 			// the two cases apart, as in the other engines.
 			res, err := db.Exec(
 				`UPDATE docs SET rev = rev + 1, value = ?, updated_at = NOW()
-				 WHERE kind = ? AND id = ? AND rev = ?`,
-				string(value), kind, id, expectRev)
+				 WHERE instance_id = ? AND kind = ? AND id = ? AND rev = ?`,
+				string(value), instance, kind, id, expectRev)
 			if err != nil {
 				return nil, fmt.Errorf("put: %w", err)
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
 				var cur int64
 				switch err := db.QueryRow(
-					`SELECT rev FROM docs WHERE kind = ? AND id = ?`, kind, id).Scan(&cur); err {
+					`SELECT rev FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`, instance, kind, id).Scan(&cur); err {
 				case sql.ErrNoRows:
 					return sdk.ErrCode("not found", "rev-conflict"), nil
 				case nil:
@@ -408,13 +428,13 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 		}
 		var cur int64
 		switch err := tx.QueryRow(
-			`SELECT rev FROM docs WHERE kind = ? AND id = ? FOR UPDATE`,
-			kind, id).Scan(&cur); err {
+			`SELECT rev FROM docs WHERE instance_id = ? AND kind = ? AND id = ? FOR UPDATE`,
+			instance, kind, id).Scan(&cur); err {
 		case sql.ErrNoRows:
 			if _, err := tx.Exec(
-				`INSERT INTO docs (kind, id, rev, value, updated_at)
-				 VALUES (?, ?, 1, ?, NOW())`,
-				kind, id, string(value)); err != nil {
+				`INSERT INTO docs (instance_id, kind, id, rev, value, updated_at)
+				 VALUES (?, ?, ?, 1, ?, NOW())`,
+				instance, kind, id, string(value)); err != nil {
 				_ = tx.Rollback()
 				return nil, fmt.Errorf("put: %w", err)
 			}
@@ -426,8 +446,8 @@ func putHandler(db *sql.DB) sdk.ToolHandler {
 			}
 			if _, err := tx.Exec(
 				`UPDATE docs SET rev = rev + 1, value = ?, updated_at = NOW()
-				 WHERE kind = ? AND id = ?`,
-				string(value), kind, id); err != nil {
+				 WHERE instance_id = ? AND kind = ? AND id = ?`,
+				string(value), instance, kind, id); err != nil {
 				_ = tx.Rollback()
 				return nil, fmt.Errorf("put: %w", err)
 			}
@@ -465,7 +485,8 @@ func getSchema() map[string]any {
 	}
 }
 
-func getHandler(db *sql.DB) sdk.ToolHandler {
+func getHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -474,8 +495,8 @@ func getHandler(db *sql.DB) sdk.ToolHandler {
 		var rev int64
 		var value []byte
 		switch err := db.QueryRow(
-			`SELECT rev, value FROM docs WHERE kind = ? AND id = ?`,
-			rawString(m, "kind"), rawString(m, "id")).Scan(&rev, &value); err {
+			`SELECT rev, value FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`,
+			instance, rawString(m, "kind"), rawString(m, "id")).Scan(&rev, &value); err {
 		case sql.ErrNoRows:
 			return sdk.ErrCode("not found", "not-found"), nil
 		case nil:
@@ -522,7 +543,8 @@ func likeEscape(s string) string {
 	return s
 }
 
-func listHandler(db *sql.DB) sdk.ToolHandler {
+func listHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -547,12 +569,12 @@ func listHandler(db *sql.DB) sdk.ToolHandler {
 		// `id <= after` is skipped). ORDER BY id matches the barrel engine's
 		// key order, so paging is stable across every engine.
 		query := `SELECT id, rev, value FROM docs
-			 WHERE kind = ? AND id LIKE ? ESCAPE '\\' ORDER BY id LIMIT ?`
-		qargs := []any{kind, likeEscape(prefix) + "%", limit}
+			 WHERE instance_id = ? AND kind = ? AND id LIKE ? ESCAPE '\\' ORDER BY id LIMIT ?`
+		qargs := []any{instance, kind, likeEscape(prefix) + "%", limit}
 		if after != "" {
 			query = `SELECT id, rev, value FROM docs
-			 WHERE kind = ? AND id LIKE ? ESCAPE '\\' AND id > ? ORDER BY id LIMIT ?`
-			qargs = []any{kind, likeEscape(prefix) + "%", after, limit}
+			 WHERE instance_id = ? AND kind = ? AND id LIKE ? ESCAPE '\\' AND id > ? ORDER BY id LIMIT ?`
+			qargs = []any{instance, kind, likeEscape(prefix) + "%", after, limit}
 		}
 		rows, err := db.Query(query, qargs...)
 		if err != nil {
@@ -606,7 +628,8 @@ func delSchema() map[string]any {
 	}
 }
 
-func delHandler(db *sql.DB) sdk.ToolHandler {
+func delHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -614,8 +637,8 @@ func delHandler(db *sql.DB) sdk.ToolHandler {
 		}
 		// Idempotent, as in the other engines. The row (doc + rev) goes as
 		// one — a re-put starts fresh at rev 1.
-		if _, err := db.Exec(`DELETE FROM docs WHERE kind = ? AND id = ?`,
-			rawString(m, "kind"), rawString(m, "id")); err != nil {
+		if _, err := db.Exec(`DELETE FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`,
+			instance, rawString(m, "kind"), rawString(m, "id")); err != nil {
 			return nil, fmt.Errorf("del: %w", err)
 		}
 		return sdk.OK(nil), nil

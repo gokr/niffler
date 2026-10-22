@@ -242,7 +242,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | **Environment / `.env`** | 所有 `NIF_*` 變數（下表）：開機與匯流排、LLM 連線、各元件調校。`.env`（root，gitignored）存放機密與本機覆寫；shell 環境優先；含預設值的參考副本在 `.env.example` | 行程生命週期——元件在開機時讀取環境一次，因此變更需要 `core.kill` + `core.spawn`。*在啟動 core 的 shell 中匯出*的變數會被每個子行程繼承，改為需要重啟 harness |
 | **The store**（kind 表見 [The store](#the-store)） | 對話標頭、訊息、`provider` 註冊表（含憑證）、凍結的每對話工具集、slash 表、plugin/component 安裝記錄、subagent 工作/血統記錄、fabric 程式、MCP 伺服器配置 | 持久——harness 的資料庫 |
 | **Conversation header**（`conversation` kind） | 每對話選擇：provider、providerOverride、model、modelOverride、thinking、profile、title、預算/token 計量——透過 `session` 呼叫設定（UI 中的 `/model`、`/effort`），並在回合結果中回顯 | 每對話 |
-| **Home / project files** | skills 樹（專案 `.agents|.claude|.opencode/skills` > 內附 `skills/` > home `~/.niffler/skills` + agent 標準目錄 > `~/.config/opencode/skills`，然後是最後手段、編譯進二進位檔的樹）；LSP 註冊表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，使用者可編輯 |
+| **Home / project files** | skills: workspace `.agents/skills` > `~/.agents/skills` > bundled `skills/` (compiled fallback); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
 | **Edit undo + seen state** | 不再是家目錄檔案：每個（對話，檔案）一個 **store 文件** —— 類型 `edit-undo`（上次編輯前的位元組，供 `undo_last_edit` 使用）與 `edit-seen`（已觀察的摘要/大小/行數，用於未變更讀取 stub 與 `E_STALE` 閘門），id 為 `<session>:<絕對路徑>`。作用域限於擁有它們的對話，並隨對話一併刪除（`conversation_delete` 會清理這兩種類型）。它們曾共用一個 `$XDG_CONFIG_HOME/niffler-edit/undo.json`，每次修改都整體重寫——機器全域、無上限，也是 27 檔案批次替換曾佔用 edit 元件泵 53 秒的原因。刪除這些文件只會失去 undo 歷史與讀取 stub，絕不會失去檔案內容 | 持久，store 支撐 |
 | **`var/`**（gitignored） | `bin/` 建置的二進位檔、`logs/` 匯流排 JSONL 與各元件 JSONL（`.1`…`.N` 輪替）加上子行程日誌、`models/` 目錄快取、`nats-url`/`nats-pid` 匯流排認領、`processes/` spool（每次啟動的 `pN.out`/`pN.err`，開機時清空；id 從持久化計數器繼續，而非從 `p1` 重新開始）、`repomap-tags/` 每檔案標籤快取（以絕對路徑的 sha1 為鍵的 `{mtime, tags}` JSON；空結果永不快取）、`fetch/`、`captures/`、`store.db`（SQLite 引擎的檔案）加上其 `.lock`，同一時間只能由一個 `store` 行程持有 | 持久資料與可重新產生輸出混合；絕不要整體刪除 |
 | **Browser localStorage** | 僅顯示：reasoning/工具卡詳細程度、locale（`niffler-think`、`niffler-tools`） | 每瀏覽器 |
@@ -288,7 +288,6 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | `NIF_MODELS_REFRESH_INTERVAL` | 背景重新整理間隔；`0` 停用 | `1h` |
 | `NIF_FETCH_DIR` | 大型 fetch 結果與暫存解壓縮檔 | `$NIF_ROOT/var/fetch` |
 | `NIF_FETCH_ALLOW_PRIVATE` | `1`（也接受 `true`/`yes`）允許 `fetch` 工具連線 loopback/私有/link-local 目的地；僅用於受信任的本機開發服務 | unset (blocked) |
-| `NIF_SKILLS_BUNDLED_DIR` | `skills` 元件內附樹的明確位置，取代 `<repo>/skills` 及其 `$NIF_ROOT/skills` 後備。不存在的路徑會讓探索改為提供編譯進去的副本（目錄 `(baked)`） | `<repo>/skills` |
 | `NIF_MCP_DIRECT_THRESHOLD` | 配置為 `expose: direct` 的 MCP 伺服器可直接發布的快取工具數；更大的伺服器延後至漸進式探索 | `10` |
 | `NIF_MCP_BRIDGE_BIN` | mcp-bridge 二進位檔的明確路徑 | `<root>/var/bin/mcp-bridge` |
 | `NIF_PROCESSES_SPOOL_CAP` | `processes` spool 大小，超過時背景行程的輸出檔會在下次輪詢被截斷至其尾端——保留的尾端為 `min(2 MiB, cap div 2)`，且該值不經驗證，因此上限為零或以下會清空 spool | `33554432` |
@@ -978,29 +977,19 @@ discovery](#progressive-tool-discovery)）。載入 skill 會將其文字附加
 至歷史——這裡沒有任何東西會改寫凍結的 prompt 前綴，因此一次
 `skill_load` 的代價是快取讀取，而非快取未命中。
 
-探索涵蓋 repo 中隨附的 bundled skill，以及標準
-agent 目錄（每個 skill 名稱以第一個命中者勝出——project 勝過 bundled
-勝過 home 勝過 config）：
+Skill 依名稱按以下順序解析：
 
 | Source | Directories |
 |---|---|
-| project | `$NIF_ROOT/.agents/skills`, `$NIF_ROOT/.claude/skills`, `$NIF_ROOT/.opencode/skills` |
-| bundled | `<repo>/skills`——此 binary 被編譯所在的 checkout（一個建置時路徑）；`$NIF_ROOT/skills` 是搬遷部署的後備，且 `NIF_SKILLS_BUNDLED_DIR` 會覆寫兩者——永不可移除 |
-| home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
-| config | `~/.config/opencode/skills`（`npx skills add -g -a opencode` 安裝的位置） |
+| project | `<conversation workspace>/.agents/skills`（沒有工作區上下文的直接匯流排呼叫使用 `$NIF_ROOT`） |
+| home | `~/.agents/skills` |
+| bundled | `<repo>/skills`，搬遷部署時退回 `$NIF_ROOT/skills`；不可移除 |
 
-在單一來源內，目錄會依列出的順序嘗試，因此
-`~/.agents/skills/nats` 會優先於 `~/.claude/skills/nats` 被提供。探索是
-**每次呼叫都重新走訪**——沒有快取的 registry、沒有儲存紀錄、沒有
-refresh 操作——因此一次
-`skill_install` 或另一個 agent 的 `npx skills add` 會立即可見。
-走訪不會深入**符號連結目錄**：只透過符號連結
-到達掃描目錄的 skill 不會被探索，且
-`skill_audit` 也不會列出它；**符號連結的 SKILL.md** 檔案
-同樣不會被產出，因此 SKILL.md 是指向他處真實檔案的連結的 skill
-同樣不可見（像
-`~/.claude/skills → ~/.agents/skills` 這樣的符號連結農場因此不可見——當
-連結目標本來就會被掃描時無害，不會時則悄然無聲）。
+第一個命中者勝出，每次呼叫重新掃描。工作區透過私有呼叫上下文傳入，不改變凍結的 prompt。
+`skill_audit` 顯示被遮蔽和無效的副本。不再掃描其他 agent 或 XDG opencode 目錄；
+請明確複製/匯入上述目錄。舊 `~/.niffler/skills` 僅作為遷移來源，
+不再自動探索，也不會自動移動或覆寫檔案。已移除 `NIF_SKILLS_BUNDLED_DIR`。
+走訪不跟隨目錄或 SKILL.md 的符號連結，請複製實際 skill 樹。
 
 Bundled skill（`todo-markdown`——將 todo 狀態保存在 repo 的 TODO.md，
 而非工具狀態；`niffler-tools`——哪個工具適合哪項工作；
@@ -1024,7 +1013,7 @@ Bundled skill（`todo-markdown`——將 todo 狀態保存在 repo 的 TODO.md�
 | `skill_resources {name}` | skill 的 `references/`、`scripts/`、`assets/` 檔案，深入一層——`references/sub/x.md` 中的檔案，或符號連結的檔案，既不會被列出也無法讀取 |
 | `skill_resource {name, path}` | 隨需讀取單一資源 |
 | `skill_audit` | 磁碟上每個 SKILL.md 的唯讀、未合併清單——外加僅由編譯進的後備提供的名稱（dir `(baked)`）：標示每個名稱的作用中勝出者與每個被遮蔽/無效的副本（無效 = 無法讀取的 SKILL.md、無法解析的 frontmatter，或即使退回目錄名稱後仍無名稱——省略 `name:` 的 SKILL.md 會以其目錄名稱被接受；探索結果會在 `skill_list` 中合併，因此遮蔽只在此處可見） |
-| `skill_install {repo, skill?, global?}` | clone 一個 git repo，將選定的 SKILL.md 樹複製到 `~/.niffler/skills`（預設）或 `$NIF_ROOT/.opencode/skills` |
+| `skill_install {repo, skill?, global?}` | clone 一個 git repo，將選定的 SKILL.md 樹複製到 `~/.agents/skills`（預設）或 `<conversation workspace>/.agents/skills` |
 | `skill_remove {name}` | 僅從 Niffler 管理的目錄刪除 skill |
 
 - `skill_search` 是對 `https://skills.sh/api/search`
@@ -1033,11 +1022,9 @@ Bundled skill（`todo-markdown`——將 todo 狀態保存在 repo 的 TODO.md�
   命名空間。安裝流程為：搜尋 →
   `skill_install {repo, skill}` → 核准對話框 → 完成。
 
-- 以 `npx skills add <owner>/<repo>`（skills.sh
-  生態系 CLI）安裝的 skill 會落在上述標準目錄中，無需
-  重新安裝即可被探索；`skill_install` 的存在是為了讓 Niffler 無需 Node 也能運作，透過純
-  git。它只複製 SKILL.md 樹——不執行任何程式碼——並接受
-  `owner/name`、github.com URL 與 `file://` 本機 repo（封閉測試）。
+- 其他 agent 目錄中的 skill 須明確複製到工作區 `.agents/skills` 或使用者
+  `~/.agents/skills`。`skill_install` 使用 git 從 repo 匯入，不需 Node；
+  只複製 skill 樹，不執行程式碼，支援 GitHub 與本機 `file://` repo。
 - 含有多個 skill 的 repo（例如 `vercel-labs/agent-skills`）需要
   `skill` 參數；缺少時 `skill_install` 會列出候選項。
   該參數會比對 skill 的名稱或其目錄 basename。
@@ -1047,8 +1034,8 @@ Bundled skill（`todo-markdown`——將 todo 狀態保存在 repo 的 TODO.md�
   將 `repo` 指向鏡像來取得——並複製整個 skill 目錄，
   包含資源。它會拒絕目的地已存在的名稱
   （請先 `skill_remove`）；結果會回報 `source: home|project`。
-- `skill_remove` 會拒絕 `~/.niffler/skills` 與
-  `$NIF_ROOT/.opencode/skills` 之外的任何項目——其他 agent 安裝到共享
+- `skill_remove` 會拒絕 `~/.agents/skills` 與
+  `<conversation workspace>/.agents/skills` 之外的任何項目——其他 agent 安裝到共享
   目錄的 skill 應以它們自己的工具移除。
 - Install 與 remove 帶有 `x-harness.approval: "always"`（它們會寫入
   `var/` 之外）。
@@ -2230,8 +2217,8 @@ system prompt 不是 LLM 呼叫的工具 —— 它是每個會話開始時所�
 2. 儲存庫的本機 context 檔案，Pi 風格，在產品 prompt 之後以
    `<project_context>`/`<project_instructions path="...">` 標籤包住：
    - 每個目錄，先命中者勝：`AGENTS.override.md`、`AGENTS.md`、
-     `AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD`（每個目錄一個檔案 ——
-     `AGENTS.md` 會遮蔽旁邊的 `CLAUDE.md`；符號連結會被跟隨；
+     `AGENTS.MD`（每個目錄一個主要檔案；跟隨符號連結；
+     不再自動載入 `CLAUDE.md` 和 `CLAUDE.MD`；
      `AGENTS.local.md` 是額外加入，絕不作為候選：它絕不
      遮蔽主要檔案，且會為走訪的每個目錄收集，而非僅
      延遲收集）；
@@ -2244,7 +2231,7 @@ system prompt 不是 LLM 呼叫的工具 —— 它是每個會話開始時所�
    - worktree 遮蔽規則：當 harness 根目錄是主儲存庫下的 `git worktree` 時，主儲存庫根目錄的 context 檔案會被跳過 ——
      否則祖先走訪會將同一邏輯儲存庫範圍套用兩次；
    - 延遲載入：進入 harness 根目錄*之下*目錄的 `read` 會為路徑上的目錄附加任何新發現的 `AGENTS.override.md`/`AGENTS.md`/
-     `AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD`（+ `AGENTS.local.md`），每個以 `<lazy_project_instructions
+     `AGENTS.MD`（+ `AGENTS.local.md`），每個以 `<lazy_project_instructions
      path="…">` 包住，每個會話一次 —— monorepo 子樹會留在
      凍結的頭部之外，直到 model 實際進入它。
 3. 每個會話的 `<workspace>` 尾端，僅在會話的 cwd **不是** harness 根目錄時附加：它會指出工作

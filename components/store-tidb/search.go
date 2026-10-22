@@ -228,7 +228,8 @@ func naiveSnippet(text string, terms []string, maxBytes int) string {
 	return b.String()
 }
 
-func searchHandler(db *sql.DB) sdk.ToolHandler {
+func searchHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -276,8 +277,8 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		cursor := after
 		skipped := 0
 		for {
-			query := `SELECT id, rev, value FROM docs WHERE kind = ? AND id > ?`
-			qargs := []any{kind, cursor}
+			query := `SELECT id, rev, value FROM docs WHERE instance_id = ? AND kind = ? AND id > ?`
+			qargs := []any{instance, kind, cursor}
 			if idPrefix != "" {
 				query += ` AND id LIKE ?`
 				qargs = append(qargs, likePrefix(idPrefix))

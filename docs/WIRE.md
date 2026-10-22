@@ -1518,6 +1518,41 @@ a `selftest` request to every registered component that implements one
 
 ## Store contract (`svc.store.call`)
 
+Instance registry infrastructure (both engines, hidden from the model):
+
+- `instance_register {instanceId, name, root, gitHash}` atomically inserts or
+  refreshes metadata in the `instances` table. `instanceId` is exactly 32
+  lowercase hexadecimal characters. All fields are required strings; name,
+  root and gitHash are bounded to 255, 4096 and 64 UTF-8 bytes respectively;
+  NUL/CR/LF and unknown fields refuse `bad-request`. Refresh preserves
+  `firstSeen`, replaces supplied metadata and updates database `lastSeen`.
+  Returns `{ok: true, instanceId}`. This internal write carries no human
+  approval requirement: it records observations, never grants authority.
+- `instance_list {after?, limit?}` returns
+  `{ok, items: [{instanceId, name, root, gitHash, firstSeen, lastSeen}], hasMore,
+  nextAfter?}` in ascending identity order. `after` is an exclusive full ID;
+  `limit` defaults to 100 and must be 1..1000. One-row lookahead makes hasMore
+  exact; nextAfter is present only when more rows remain. Times are database
+  timestamp strings. Listing is read-effect; registration is write-effect.
+
+`store_claim {to, dryRun?, limit?, afterKind?, afterId?}` is the explicit,
+admin-only migration of pre-scoping documents into one instance. It is hidden,
+write-effect and approval-gated, and moves rows **only** from the unowned owner
+`''` to a valid instance id — never between two real instances. It reports
+`{ok, dryRun, to, examined, conflicts[], hasMore, nextAfterKind?, nextAfterId?,
+claimed?}`; when any examined document's `(kind, id)` is already owned by the
+target it refuses `claim-conflict` instead of overwriting it. Batches are capped
+at 1000 documents in `(kind, id)` order with an exclusive cursor, so a large
+history is claimed in resumable batches rather than one unbounded transaction.
+`dryRun` defaults to **true**. Neither engine adopts legacy rows implicitly:
+on a shared TiDB dataset `''` may be another instance's pre-scoping history.
+
+Registry metadata is not verified remote identity, connection routing or a
+permission grant. Hidden tools are not an authentication boundary: direct bus
+callers are trusted. No retirement/delete API or implicit shared configuration
+fallback is provided. The registry alone does not scope existing documents;
+instance-aware document ownership is separate work.
+
 The store's bus contract is the artifact; every engine implements exactly
 these tools (docs/MANUAL.md "Store engines"). `put` / `get` / `del` carry
 `{kind, id, value?, expectRev?}`; docs are opaque JSON, ids sort

@@ -294,6 +294,29 @@ proc main() =
         not lazy2.getStr("").contains("<lazy_project_instructions") and
         lazy2.getStr("").contains("nested content"), $lazy2)
 
+  for name in ["CLAUDE.md", "CLAUDE.MD"]:
+    let dir = if name == "CLAUDE.md": "claude-lower" else: "claude-upper"
+    createDir(tmp / dir)
+    writeFile(tmp / dir / name, "FOREIGN-LAZY-MUST-NOT-LOAD\n")
+    writeFile(tmp / dir / "code.txt", "plain subtree content\n")
+    let foreign = call(nc, "edit", "read", %*{
+      "path": dir / "code.txt", "__session": {"session": "agents-only"}})
+    check("lazy loader ignores " & name & " without AGENTS",
+      foreign.getStr("").contains("plain subtree content") and
+      not foreign.getStr("").contains("FOREIGN-LAZY-MUST-NOT-LOAD") and
+      not foreign.getStr("").contains("<lazy_project_instructions"), $foreign)
+    writeFile(tmp / dir / "AGENTS.MD", "UPPERCASE-LAZY-AGENTS\n")
+    writeFile(tmp / dir / "AGENTS.override.md", "OVERRIDE-LAZY-AGENTS\n")
+    writeFile(tmp / dir / "AGENTS.local.md", "ADDITIVE-LAZY-AGENTS\n")
+    let agents = call(nc, "edit", "read", %*{
+      "path": dir / "code.txt", "force": true,
+      "__session": {"session": "agents-only"}})
+    check("lazy AGENTS override and local rules remain beside " & name,
+      agents.getStr("").contains("OVERRIDE-LAZY-AGENTS") and
+      agents.getStr("").contains("ADDITIVE-LAZY-AGENTS") and
+      not agents.getStr("").contains("UPPERCASE-LAZY-AGENTS") and
+      not agents.getStr("").contains("FOREIGN-LAZY-MUST-NOT-LOAD"), $agents)
+
   # read: canonical "reads" array — several files/ranges in one call,
   # per-item errors, bounds; union semantics, legacy aliases, the cap
   writeFile(tmp / "m1.txt", "alpha\n")

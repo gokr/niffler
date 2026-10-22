@@ -159,6 +159,66 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   after the bus had disconnected the idle-looking component, losing the reply.
   Install/update/lifecycle and delegation-worker transports share the fix; a
   fast-heartbeat bus regression includes an unserviced negative control.
+- `lsp` publishes its warm-start budgets as the `lsp.warm` domain (`warmMax`,
+  `warmCheap`, `warmTotal`), so the number of pre-started language servers can
+  be tuned at runtime — including to 0 on a small machine. Its server registry
+  stays `lsp_registry` (already data, already approval-gated) rather than being
+  duplicated.
+- `models` publishes its catalog refresh policy as the `models.refresh` domain
+  (`offline`, `cacheTtlSeconds`, `refreshIntervalSeconds`), so an operator can
+  take the catalog offline or change its freshness without editing files. New
+  Go owner helper `sdk/go/configowner.go` mirrors the Nim one, so owners in
+  either SDK follow the same protocol. `NIF_MODELS_*` keeps working as the
+  migration path.
+- `logfile` publishes its retention and scan limits as the `logfile.retention`
+  domain (`maxBytes`, `keep`, `maxFiles`, `scanBytes`, `directoryEntries`).
+  Values are read from a snapshot refreshed on the idle seam, so the rotation
+  code needs no component handle and a change lands within one tick.
+  `NIF_LOGFILE_*` keeps working as the migration path. The captured subject set
+  stays a boot-time variable: it is a subscription, not a value.
+- `fetch` publishes its network settings as the `fetch.network` domain
+  (`allowPrivate`, `extractor`), so the private-destination opt-in can be
+  granted and revoked through `config` without a restart. `NIF_FETCH_ALLOW_PRIVATE`
+  and `NIF_TRAFILATURA` keep working as the migration path.
+- `repomap` publishes its publication gates as the `repomap.gates` configuration
+  domain (`autoAppend`, `minCensus`, `minBytes`, `minSymbols`, `minFiles`), so
+  they can be read and changed through the `config` surface without a restart.
+  The `NIF_REPOMAP_*` variables keep working as the migration path, with a
+  stored value winning over the environment. New wire-free owner helper
+  `sdk/niffler/configowner.nim`.
+
+- New optional `config` component: the one discoverable configuration surface.
+  Components declare a domain (JSON Schema subset + per-property metadata) and
+  keep owning their own store document; `config_list`/`config_get` discover
+  values, defaults, revisions and schemas (secrets redacted), while
+  `config_patch`/`config_reset` validate and forward to the OWNER's tool under
+  approval. Nothing is written on an owner's behalf, no value enters a prompt
+  prefix, and an unenforceable declaration is refused rather than ignored.
+
+- Fleet verified routes live in the store (kind `fleetinstance`, keyed by stable
+  instance identity) with `fleet_instances` and `fleet_instance_import`; install
+  and update record them after live identity verification. The registry grants
+  no authority — actions still verify identity and take an explicit profile.
+
+- Store engines add an `instances` metadata table and hidden validated
+  registration/listing tools, preserving first-seen timestamps on refresh.
+  Core checkpoints its persistent identity at boot; failures warn and do not
+  block startup. This is registry infrastructure only: document isolation and fleet registry
+  migration are not yet active. Staged document ownership migrations preserve
+  legacy rows. Store processes now bind their owner once at open; SQLite adopts
+  its own pre-scoping rows exactly once and refuses a different identity, while
+  a shared TiDB dataset never adopts them implicitly. Pre-scoping rows are moved
+  by an explicit, approval-gated `store_claim` (dry run by default, refuses
+  collisions, bounded batches).
+
+- Skill discovery now resolves workspace `.agents/skills`, user
+  `~/.agents/skills`, then bundled skills. Project install/removal uses the
+  conversation workspace; foreign-agent/XDG directories are no longer scanned.
+  Removed `NIF_SKILLS_BUNDLED_DIR`; compiled fallback tests use a build fixture.
+
+- Instruction discovery now uses AGENTS files only, at conversation birth and
+  during lazy subdirectory reads. `CLAUDE.md`/`CLAUDE.MD` are no longer loaded
+  automatically; existing persisted system prompts remain unchanged.
 
 - Replace supported Multipass transport with native Lima provisioning/relay; preserve SSH and Incus. Old Multipass profiles explicitly require new verified Lima receipts. Digest-pinned Ubuntu images, no host mounts or credential forwarding; real Lima smoke pending authorization.
 

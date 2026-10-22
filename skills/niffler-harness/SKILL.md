@@ -135,8 +135,10 @@ The `x-harness.*` schema extensions core honors:
   `plugin_update` / `plugin_remove`. Records live under store kind `plugin`;
   `"interactive": true` packages are built but not spawned (start them
   manually, e.g. niffler-tui). Clones honor `NIF_GIT_MIRROR`.
-- Skills: discovery order project → bundled → home → config (first match per
-  name wins); bundled (`skills/` in the repo) are never removable, and when
+- Skills: discovery order conversation workspace `.agents/skills` → user
+  `~/.agents/skills` → bundled (first match per name wins). Foreign-agent
+  directories are not scanned implicitly. Bundled (`skills/` in the repo) are
+  never removable, and when
   no disk tree exists (binary-only sandboxes) the bundled SKILL.md files
   compiled into the binary serve instead. `skill_audit` shows shadowed
   duplicates that `skill_list` hides. Loading a skill appends to the

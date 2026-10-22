@@ -185,10 +185,10 @@ func indexDocIn(tx *sql.Tx, rowid int64, kind, id string, value []byte) error {
 // indexDoc indexes the document written at (kind, id) in the caller's
 // transaction — looks the rowid up (same tx sees its own write) and hands
 // off to indexDocIn.
-func indexDoc(tx *sql.Tx, kind, id string, value []byte) error {
+func indexDoc(tx *sql.Tx, instance, kind, id string, value []byte) error {
 	var rowid int64
-	if err := tx.QueryRow(`SELECT rowid FROM docs WHERE kind = ? AND id = ?`,
-		kind, id).Scan(&rowid); err != nil {
+	if err := tx.QueryRow(`SELECT rowid FROM docs WHERE instance_id = ? AND kind = ? AND id = ?`,
+		instance, kind, id).Scan(&rowid); err != nil {
 		return fmt.Errorf("index lookup: %w", err)
 	}
 	return indexDocIn(tx, rowid, kind, id, value)
@@ -321,7 +321,8 @@ func likePrefix(prefix string) string {
 	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(prefix) + "%"
 }
 
-func searchHandler(db *sql.DB) sdk.ToolHandler {
+func searchHandler(db *sql.DB, owner ...string) sdk.ToolHandler {
+	instance := documentOwner(owner)
 	return func(c *sdk.Component, args json.RawMessage) (any, error) {
 		m, err := parseArgs(args)
 		if err != nil {
@@ -351,7 +352,7 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 		// kind are close to this?"), so a caller learns one shape and one set
 		// of paging rules.
 		if vectorArg, hasVector := m["vector"]; hasVector && vectorArg != nil {
-			return vectorSearchResult(db, kind, m)
+			return vectorSearchResult(db, instance, kind, m)
 		}
 
 		terms := searchTokens(rawString(m, "query"))
@@ -367,8 +368,8 @@ func searchHandler(db *sql.DB) sdk.ToolHandler {
 			snip = "snippet(docs_fts, 1, '[', ']', '…', 12)"
 		}
 		query := "SELECT d.id, d.rev, d.value, " + snip + ` FROM docs_fts, docs d
-			 WHERE docs_fts MATCH ? AND docs_fts.kind = ? AND d.rowid = docs_fts.rowid`
-		qargs := []any{match, kind}
+			 WHERE docs_fts MATCH ? AND docs_fts.kind = ? AND d.rowid = docs_fts.rowid AND d.instance_id = ?`
+		qargs := []any{match, kind, instance}
 		if idPrefix != "" {
 			query += ` AND d.id LIKE ? ESCAPE '\'`
 			qargs = append(qargs, likePrefix(idPrefix))

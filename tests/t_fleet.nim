@@ -460,7 +460,8 @@ proc main() =
                     "fleet_vm_stop", "fleet_update", "fleet_task_submit",
                     "fleet_task_status", "fleet_task_result",
                     "fleet_task_receipt", "fleet_task_cancel", "fleet_notices",
-                    "task_profile_set", "task_profile_list", "task_profile_remove"]
+                    "task_profile_set", "task_profile_list", "task_profile_remove",
+                    "fleet_instances", "fleet_instance_import"]
     var seen: seq[string]
     if data{"tools"} != nil:
       for tool in data["tools"]: seen.add(tool["name"].getStr())
@@ -478,10 +479,18 @@ proc main() =
           check("fleet inbox hidden runner machinery", ext{"hidden"}.getBool() and ext{"runner"}.getBool())
           continue
         check(name & " on demand", ext["onDemand"].getBool())
-        if name in ["fleet_probe", "fleet_status", "fleet_logs", "fleet_task_status", "fleet_task_result", "fleet_task_receipt", "task_profile_list"]:
+        if name in ["fleet_probe", "fleet_status", "fleet_logs", "fleet_task_status", "fleet_task_result", "fleet_task_receipt", "task_profile_list", "fleet_instances"]:
           check(name & " read effect", ext["effect"].getStr() == "read")
         else:
           check(name & " enforced approval", ext["approval"].getStr() == "always")
+  # --- registry: routes live in the store, not in a local instances.json ---
+  # The test's sandbox has no store; the registry tools must fail cleanly
+  # rather than invent a fallback, and the contract's shape is checked from
+  # the registration above. A real store roundtrip lives in t_fleet_registry.
+  let noStore = call(nc, "fleet", "fleet_instances", %*{})
+  check("registry list refuses without a store instead of faking one",
+        not noStore{"ok"}.getBool(false), $noStore)
+
   let busArgs = args.copy(); busArgs["profile"] = %(tmp / "bus.json")
   let reply = call(nc, "fleet", "fleet_install", busArgs)
   check("bus fake install", reply{"receipt", "expect"} == identity, $reply)

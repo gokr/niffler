@@ -34,6 +34,7 @@ import std/[algorithm, json, monotimes, os, osproc, posix, sequtils, streams, st
 import std/syncio
 import natsnim
 import niffler/sdk
+import niffler/configowner
 import niffler/maskedtools
 import niffler/readscope
 import roots
@@ -904,6 +905,15 @@ proc census(root: string): seq[tuple[ext: string, count: int]] =
   for ext, count in counts:
     result.add((ext, count))
 
+let ownerStore* = OwnerStore(kind: "lsp-settings", id: "main")
+let settings* = newOwnerSnapshot(ownerStore)
+
+proc warmLimit(name, envName: string, dflt: int): int =
+  ## Warm-process budgets are read from the snapshot: the warm path has no
+  ## component handle, and a change must land within one idle tick. The boot
+  ## env value stays the floor until the first successful refresh.
+  settings.num(name, envName, dflt)
+
 proc warmWorkspace(wsRoot: string): JsonNode =
   ## Pre-start language-server instances for the workspace's most prevalent
   ## languages, so the first real query doesn't pay cold-start mid-turn.
@@ -918,9 +928,9 @@ proc warmWorkspace(wsRoot: string): JsonNode =
   # (bash-language-server), and on a repo full of .sh files it used to take
   # one of those two slots away from the language the task is written in —
   # it now gets its own (smaller) budget and never displaces a heavy pick.
-  let heavyMax = intEnv("NIF_LSP_WARM_MAX", WARM_MAX_SERVERS)
-  let cheapMax = intEnv("NIF_LSP_WARM_CHEAP", WARM_MAX_CHEAP)
-  let totalMax = intEnv("NIF_LSP_WARM_TOTAL", WARM_MAX_TOTAL)
+  let heavyMax = warmLimit("warmMax", "NIF_LSP_WARM_MAX", WARM_MAX_SERVERS)
+  let cheapMax = warmLimit("warmCheap", "NIF_LSP_WARM_CHEAP", WARM_MAX_CHEAP)
+  let totalMax = warmLimit("warmTotal", "NIF_LSP_WARM_TOTAL", WARM_MAX_TOTAL)
   var heavy, cheap: seq[tuple[conf: ServerConf, count: int]]
   var seenNames: seq[string]
   for (ext, count) in langs:
@@ -1709,10 +1719,50 @@ proc publishDiag(c: Component, job: DiagJob, text: string, clean = false) =
   except CatchableError:
     discard
 
+# ---------------------------------------------------------------------------
+# configuration (slice 4): warm-server budgets, served by our own record.
+# The registry itself is ALREADY data with its own approved tool
+# (lsp_registry add/remove), so it is not duplicated here: this declaration
+# covers the process budgets that had no runtime surface at all.
+
+discard comp.tool("lsp_config", ownerToolSchema("lsp.warm",
+  "language-server warm-start budgets"), proc(c: Component, args: JsonNode): JsonNode =
+    c.ownerOp(ownerStore, args))
+
+let declaration* = %*{
+  "domain": "lsp.warm", "version": 1, "owner": "lsp",
+  "ownerTool": "lsp_config", "title": "Language-server warm start",
+  "description": "How many language servers are pre-started for a conversation workspace before the first query.",
+  "kind": ownerStore.kind, "id": ownerStore.id, "application": "immediate",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "warmMax": {"type": "integer", "minimum": 0, "maximum": 16,
+                  "default": WARM_MAX_SERVERS, "x-config": {
+        "title": "Heavy servers per workspace",
+        "description": "Whole-workspace indexers (gopls, rust-analyzer, jdtls, clangd, pyright). 0 disables warm starts."}},
+      "warmCheap": {"type": "integer", "minimum": 0, "maximum": 16,
+                    "default": WARM_MAX_CHEAP, "x-config": {
+        "title": "Cheap servers per workspace",
+        "description": "Servers that do not index the whole workspace (bash-language-server). They never displace a heavy pick."}},
+      "warmTotal": {"type": "integer", "minimum": 0, "maximum": 32,
+                    "default": WARM_MAX_TOTAL, "x-config": {
+        "title": "Total pre-started processes",
+        "description": "Ceiling across both classes. Lower it on a small machine."}}},
+    "additionalProperties": false}}
+
 # The wait a synchronous edit used to pay happens here instead: in the SDK's
 # idle seam, on the main thread, serialized like a handler — which is why this
 # needs no thread and no lock. One job per tick keeps the pump responsive.
+# NOTE: this is the component's ONLY idle handler (the SDK replaces a second
+# registration), so the settings refresh and the config declaration ride here
+# too. That is also why the refresh interval is DIAG_IDLE_MS rather than a
+# separate faster tick: one seam, no stacking.
+var configDeclared = false
 discard comp.onIdle(DIAG_IDLE_MS) do (c: Component):
+  settings.refresh(c)
+  if not configDeclared:
+    configDeclared = c.declareConfig(declaration) or configDeclared
   if gDiagJobs.len == 0: return
   let job = gDiagJobs[0]
   gDiagJobs.delete(0)

@@ -220,7 +220,7 @@ type vectorHit struct {
 // return nonsense. A dimension whose table does not exist yet has no vectors,
 // which is an empty answer rather than an error (a fresh store has no
 // embeddings, and that is not a failure).
-func vectorSearch(db *sql.DB, kind, model string, query []float64, limit int) ([]vectorHit, error) {
+func vectorSearch(db *sql.DB, instance, kind, model string, query []float64, limit int) ([]vectorHit, error) {
 	dim := len(query)
 	widths := make([]float32, dim)
 	for i, v := range query {
@@ -241,11 +241,16 @@ func vectorSearch(db *sql.DB, kind, model string, query []float64, limit int) ([
 	// LIMIT is refused (`A LIMIT or 'k = ?' constraint is required`). Ask for
 	// one extra row so the caller can tell a truncated result set from a
 	// complete one, the same rule as every other page in this store.
+	// instance_id is NOT optional here: vec0 partitions only by kind/model, and
+	// docs is shared by every instance in the file (PK instance_id,kind,id). A
+	// join on rowid alone would return another instance's vectors as this one's
+	// hits — the one scoping rule every read in this store must carry.
 	sqlText := fmt.Sprintf(`SELECT d.id, d.rev, d.value, v.distance
 		FROM %s v JOIN docs d ON d.rowid = v.docs_rowid
 		WHERE v.embedding MATCH ? AND k = ? AND v.kind = ? AND v.model = ?
+		  AND d.instance_id = ?
 		ORDER BY v.distance`, vectorTableName(dim))
-	rows, err := db.Query(sqlText, blob, limit+1, kind, model)
+	rows, err := db.Query(sqlText, blob, limit+1, kind, model, instance)
 	if err != nil {
 		// The table is chosen from the query's own width, so a width
 		// mismatch cannot reach here; an error is a real failure.
@@ -365,7 +370,7 @@ func indexVectorRow(tx *sql.Tx, kind, id string, value []byte) error {
 // vectorSearchResult is search's vector mode: parse the request, run the kNN,
 // and answer in the same envelope shape as the text mode (items/hasMore/
 // ranked) so a caller never has to learn two paging rules.
-func vectorSearchResult(db *sql.DB, kind string, m map[string]json.RawMessage) (any, error) {
+func vectorSearchResult(db *sql.DB, instance, kind string, m map[string]json.RawMessage) (any, error) {
 	model := strings.TrimSpace(rawString(m, "model"))
 	if model == "" {
 		return sdk.ErrCode(
@@ -393,7 +398,7 @@ func vectorSearchResult(db *sql.DB, kind string, m map[string]json.RawMessage) (
 	if limit > vectorLimitCap {
 		limit = vectorLimitCap
 	}
-	hits, err := vectorSearch(db, kind, model, query, limit)
+	hits, err := vectorSearch(db, instance, kind, model, query, limit)
 	if err != nil {
 		return nil, err
 	}

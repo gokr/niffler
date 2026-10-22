@@ -10,6 +10,7 @@ import std/[algorithm, base64, json, os, sequtils, strutils, tables, times,
             unicode]
 import regex
 import niffler/sdk
+import niffler/configowner
 
 loadDotEnv(".env", rootDir() / ".env")
 
@@ -35,15 +36,33 @@ let logDir =
   if configuredDir.len == 0: root / "var" / "logs"
   elif configuredDir.isAbsolute(): configuredDir
   else: root / configuredDir
-let maxBytes = configInt("NIF_LOGFILE_MAX_BYTES", DefaultMaxBytes, 256,
-                         MaxConfiguredBytes)
-let keepN = configInt("NIF_LOGFILE_KEEP", DefaultKeep, 0, 100)
-let maxComponentFiles = configInt("NIF_LOGFILE_MAX_FILES", DefaultMaxFiles, 1,
-                                  1024)
-let maxScanBytes = configInt("NIF_LOGFILE_SCAN_BYTES", DefaultScanBytes, 1024,
+# Retention is read from a snapshot refreshed on the idle seam: the rotation
+# code below has no component handle, but a settings change must still land
+# without restarting the component (the declaration promises "immediate").
+let ownerStore* = OwnerStore(kind: "logfile-settings", id: "main")
+let settings* = newOwnerSnapshot(ownerStore)
+
+# Boot-time values stay authoritative until the first successful refresh, so a
+# store that is slow to appear never changes retention behind the operator's
+# back (and a bad env value still fails loudly here, at boot).
+let bootMaxBytes = configInt("NIF_LOGFILE_MAX_BYTES", DefaultMaxBytes, 256,
+                             MaxConfiguredBytes)
+let bootKeep = configInt("NIF_LOGFILE_KEEP", DefaultKeep, 0, 100)
+let bootMaxFiles = configInt("NIF_LOGFILE_MAX_FILES", DefaultMaxFiles, 1, 1024)
+let bootScanBytes = configInt("NIF_LOGFILE_SCAN_BYTES", DefaultScanBytes, 1024,
                               MaxConfiguredBytes)
-let maxDirectoryEntries = configInt("NIF_LOGFILE_DIRECTORY_ENTRIES",
+let bootDirectoryEntries = configInt("NIF_LOGFILE_DIRECTORY_ENTRIES",
   DefaultDirectoryEntries, 100, 100_000)
+
+proc maxBytes(): int = settings.num("maxBytes", "NIF_LOGFILE_MAX_BYTES", bootMaxBytes)
+proc keepN(): int = settings.num("keep", "NIF_LOGFILE_KEEP", bootKeep)
+proc maxComponentFiles(): int =
+  settings.num("maxFiles", "NIF_LOGFILE_MAX_FILES", bootMaxFiles)
+proc maxScanBytes(): int =
+  settings.num("scanBytes", "NIF_LOGFILE_SCAN_BYTES", bootScanBytes)
+proc maxDirectoryEntries(): int =
+  settings.num("directoryEntries", "NIF_LOGFILE_DIRECTORY_ENTRIES",
+               bootDirectoryEntries)
 
 var writeErrors = 0
 var lastError = ""
@@ -94,7 +113,7 @@ proc pathFor(subject: string): string =
     let component = subject[7 .. ^1]
     if validComponentName(component):
       if componentFiles.hasKey(component) or
-         componentFiles.len < maxComponentFiles:
+         componentFiles.len < maxComponentFiles():
         componentFiles[component] = true
         return logDir / (component & ".jsonl")
   logDir / "bus.jsonl"
@@ -106,11 +125,11 @@ proc removeIfExists(path: string) =
 proc rotate(path: string) =
   if not fileExists(path):
     return
-  if keepN == 0:
+  if keepN() == 0:
     removeFile(path)
     return
-  removeIfExists(path & "." & $keepN)
-  for generation in countdown(keepN - 1, 1):
+  removeIfExists(path & "." & $keepN())
+  for generation in countdown(keepN() - 1, 1):
     let source = path & "." & $generation
     if fileExists(source):
       let target = path & "." & $(generation + 1)
@@ -131,7 +150,7 @@ proc pruneRotations() =
       continue
     let suffix = path[marker + 7 .. ^1]
     try:
-      if parseInt(suffix) > keepN:
+      if parseInt(suffix) > keepN():
         removeFile(path)
     except ValueError:
       discard
@@ -163,7 +182,7 @@ proc appendEntry(subject, data: string) =
   let line = $rawEntry(subject, data)
   let recordBytes = line.len + 1
   if fileExists(path) and getFileSize(path) > 0 and
-     getFileSize(path) + recordBytes > maxBytes:
+     getFileSize(path) + recordBytes > maxBytes():
     rotate(path)
   var file = open(path, fmAppend)
   try:
@@ -198,7 +217,7 @@ for kind, path in walkDir(logDir):
     continue
   let name = path.extractFilename()[0 .. ^7]
   if name != "bus" and validComponentName(name) and
-     componentFiles.len < maxComponentFiles:
+     componentFiles.len < maxComponentFiles():
     componentFiles[name] = true
 
 let comp = newComponent("logfile", "0.1.0")
@@ -330,7 +349,7 @@ comp.tool(%*{"onDemand": true}):
     var directoryTruncated = false
     for kind, path in walkDir(logDir):
       if kind == pcFile and isLogFile(path):
-        if files.len >= maxDirectoryEntries:
+        if files.len >= maxDirectoryEntries():
           directoryTruncated = true
           break
         files.add(path)
@@ -348,7 +367,7 @@ comp.tool(%*{"onDemand": true}):
     for path in files:
       if stopScanning:
         break
-      let remaining = maxScanBytes - scannedBytes
+      let remaining = maxScanBytes() - scannedBytes
       if remaining <= 0:
         truncated = true
         break
@@ -443,7 +462,7 @@ comp.tool(%*{"onDemand": true}):
        "scannedBytes": scannedBytes, "parseErrors": parseErrors,
        "readErrors": readErrors, "truncated": truncated,
        "directoryTruncated": directoryTruncated,
-       "maxDirectoryEntries": maxDirectoryEntries,
+       "maxDirectoryEntries": maxDirectoryEntries(),
        "responseBytes": responseBytes}
 
 comp.tool(%*{"onDemand": true}):
@@ -456,7 +475,7 @@ comp.tool(%*{"onDemand": true}):
     if dirExists(logDir):
       for kind, path in walkDir(logDir):
         if kind == pcFile and isLogFile(path):
-          if found.len >= maxDirectoryEntries:
+          if found.len >= maxDirectoryEntries():
             directoryTruncated = true
             break
           found.add((path.extractFilename(), getFileSize(path),
@@ -465,11 +484,11 @@ comp.tool(%*{"onDemand": true}):
     var files = newJArray()
     let metadata = %*{"dir": logDir, "files": newJArray(),
       "writeErrors": writeErrors, "lastError": lastError,
-      "lastErrorAt": lastErrorAt, "maxBytes": maxBytes, "keep": keepN,
-      "maxComponentFiles": maxComponentFiles,
+      "lastErrorAt": lastErrorAt, "maxBytes": maxBytes(), "keep": keepN(),
+      "maxComponentFiles": maxComponentFiles(),
       "componentFiles": componentFiles.len, "subjects": patterns,
       "totalFiles": found.len, "directoryTruncated": directoryTruncated,
-      "maxDirectoryEntries": maxDirectoryEntries}
+      "maxDirectoryEntries": maxDirectoryEntries()}
     var responseBytes = ($metadata).len
     var truncated = directoryTruncated
     for (name, size, mtime) in found:
@@ -483,12 +502,12 @@ comp.tool(%*{"onDemand": true}):
       responseBytes += itemBytes
     %*{"dir": logDir, "files": files, "writeErrors": writeErrors,
        "lastError": lastError, "lastErrorAt": lastErrorAt,
-       "maxBytes": maxBytes, "keep": keepN,
-       "maxComponentFiles": maxComponentFiles,
+       "maxBytes": maxBytes(), "keep": keepN(),
+       "maxComponentFiles": maxComponentFiles(),
        "componentFiles": componentFiles.len, "subjects": patterns,
        "totalFiles": found.len, "truncated": truncated,
        "directoryTruncated": directoryTruncated,
-       "maxDirectoryEntries": maxDirectoryEntries,
+       "maxDirectoryEntries": maxDirectoryEntries(),
        "responseBytes": responseBytes}
 
 # Self test (docs/WIRE.md): quick checks the sink directory and rotation
@@ -511,8 +530,8 @@ discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
           (if dirExists(logDir): "created at boot: " & logDir
            else: "missing — writes were rejected"))
     check("rotation config bounded",
-          maxBytes >= 256 and keepN >= 0,
-          "NIF_LOGFILE_MAX_BYTES=" & $maxBytes & ", NIF_LOGFILE_KEEP=" & $keepN)
+          maxBytes() >= 256 and keepN() >= 0,
+          "NIF_LOGFILE_MAX_BYTES=" & $maxBytes() & ", NIF_LOGFILE_KEEP=" & $keepN())
     check("subjects configured", patterns.len > 0,
           (if configuredSubjects.len == 0: "default ev.log.>"
            else: $patterns.len & " pattern(s) from NIF_LOGFILE_SUBJECTS"))
@@ -541,5 +560,48 @@ discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
   return %*{"ok": allOk,
             "summary": (if allOk: "logfile sink ok" else: "logfile sink FAILED"),
             "checks": checks})
+
+# ---------------------------------------------------------------------------
+# configuration (slice 4): retention/scan limits, served by our own record
+
+let declaration* = %*{
+  "domain": "logfile.retention", "version": 1, "owner": "logfile",
+  "ownerTool": "logfile_config", "title": "Log retention and scan limits",
+  "description": "How much persisted log history this harness keeps and how much a search may read.",
+  "kind": ownerStore.kind, "id": ownerStore.id, "application": "immediate",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "maxBytes": {"type": "integer", "minimum": 256, "maximum": MaxConfiguredBytes,
+                   "default": DefaultMaxBytes, "x-config": {"title": "Rotate a file at this size"}},
+      "keep": {"type": "integer", "minimum": 0, "maximum": 100,
+               "default": DefaultKeep, "x-config": {"title": "Rotated generations kept"}},
+      "maxFiles": {"type": "integer", "minimum": 1, "maximum": 1024,
+                   "default": DefaultMaxFiles, "x-config": {"title": "Component files kept"}},
+      "scanBytes": {"type": "integer", "minimum": 1024, "maximum": MaxConfiguredBytes,
+                    "default": DefaultScanBytes, "x-config": {"title": "Search scan budget (bytes)"}},
+      "directoryEntries": {"type": "integer", "minimum": 100, "maximum": 100000,
+                           "default": DefaultDirectoryEntries, "x-config": {"title": "Directory scan cap"}}},
+    "additionalProperties": false}}
+
+discard comp.tool("logfile_config", %*{
+  "type": "object",
+  "properties": {
+    "op": {"type": "string", "enum": ["get", "patch", "reset"]},
+    "patch": {"type": "object"},
+    "properties": {"type": "array", "items": {"type": "string"}},
+    "expectRev": {"type": "integer"}},
+  "required": ["op"],
+  "description": "Owner-side settings protocol for the logfile.retention domain. Called by the config component, which validates the schema and enforces approval; never call it directly.",
+  "x-harness": {"hidden": true}},
+  proc(c: Component, args: JsonNode): JsonNode = c.ownerOp(ownerStore, args))
+
+var declared = false
+discard comp.onIdle(500) do (c: Component):
+  # Refresh FIRST, then declare: a later change must be visible on the next
+  # tick, and a store that is still starting up keeps the boot values.
+  settings.refresh(c)
+  if not declared:
+    declared = c.declareConfig(declaration) or declared
 
 comp.run()

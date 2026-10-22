@@ -87,14 +87,13 @@ const reviewInstruction =
   ## cell for exactly that (gpt-6-sol spawned zero in three of four cells when
   ## the instruction was appended rather than mid-prompt).
 
-const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
-                    "CLAUDE.md", "CLAUDE.MD"]
+const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD"]
 const localCandidate = "AGENTS.local.md"
 
 proc loadContextFileFromDir(dir: string): tuple[path, content: string] =
-  ## Pi-style candidate order, first existing readable file wins.
+  ## AGENTS-only candidate order, first existing readable file wins.
   ## Symlinks resolve naturally (readFile follows them). Per directory:
-  ## one file only — AGENTS.md shadows a CLAUDE.md sitting next to it.
+  ## one primary file, plus the additive AGENTS.local.md below.
   for name in candidates:
     let p = dir / name
     if fileExists(p):

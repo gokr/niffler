@@ -427,6 +427,49 @@ printf '%s\n' 'Trafilatura selected article text' > "$output_dir/article.txt"
   check("masks do not weaken HTTP-only protocol restrictions",
     not localFile{"ok"}.getBool(true) and ($localFile).contains("http"), $localFile)
 
+  # --- the same opt-in as a SETTING (config surface, slice 4) --------------
+  # The env var above is the migration path. The durable setting must reach
+  # the identical refusal without restarting, because the declaration promises
+  # application: immediate — and this one is security-sensitive, so a stored
+  # "false" must never be weaker than an absent variable.
+  stopProcess(compProc)
+  compProc = startComponent(repoRoot / "var" / "bin" / "fetch", url,
+                            root = root, extra = [("NIF_TRAFILATURA", "off")])
+  check("fetch re-registers for the settings check", waitRegistered(nc, "fetch"))
+  let store = startComponent(repoRoot / "var" / "bin" / "store-sqlite", url, root = root)
+  defer:
+    if store.peekExitCode() == -1: store.terminate()
+    store.close()
+  check("store up for the settings check", waitRegistered(nc, "store"))
+  let config = startComponent(repoRoot / "var" / "bin" / "config", url, root = root)
+  defer:
+    if config.peekExitCode() == -1: config.terminate()
+    config.close()
+  check("config up for the settings check", waitRegistered(nc, "config"))
+  var listed = newJNull()
+  for i in 0 ..< 50:
+    listed = call(nc, "config", "config_list", %*{})
+    if listed{"count"}.getInt(0) > 0: break
+    sleep(100)
+  check("fetch declares its network settings", listed{"count"}.getInt(0) == 1 and
+        listed{"domains"}[0]{"domain"}.getStr() == "fetch.network", $listed)
+  let got = call(nc, "config", "config_get", %*{"domain": "fetch.network"})
+  check("allowPrivate defaults to false and is reported as a default",
+        got{"defaults"}{"allowPrivate"}.getBool(true) == false and
+        got{"values"}{"allowPrivate"} == nil, $got)
+  let enabled = call(nc, "config", "config_patch", %*{
+    "domain": "fetch.network", "patch": {"allowPrivate": true}})
+  check("a private-network opt-in is a settings change", enabled{"ok"}.getBool(false), $enabled)
+  let allowedNow = call(nc, "fetch", "fetch", %*{"url": base & "/page"})
+  check("the stored opt-in applies without a restart",
+        allowedNow{"ok"}.getBool(false), $allowedNow)
+  let disabled = call(nc, "config", "config_patch", %*{
+    "domain": "fetch.network", "patch": {"allowPrivate": false}})
+  let refusedNow = call(nc, "fetch", "fetch", %*{"url": base & "/page"})
+  check("turning it back off refuses again immediately",
+        disabled{"ok"}.getBool(false) and
+        refusedNow{"error"}.getStr("").contains("private"), $refusedNow)
+
   report("FETCH TEST")
 
 main()

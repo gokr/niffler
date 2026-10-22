@@ -236,7 +236,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | **Environment / `.env`** | 所有 `NIF_*` 变量（见下表）：启动与总线、LLM 连接、每组件调优。`.env`（根目录，gitignored）保存密钥和本地覆盖；shell 环境优先；带默认值的参考副本在 `.env.example` | 进程生命周期——组件在启动时读取一次环境，因此更改需要 `core.kill` + `core.spawn`。*在启动 core 的 shell 中导出的*变量会被每个子进程继承，需要重启 harness |
 | **The store**（kind 表见 [The store](#the-store)） | 对话头、消息、`provider` 注册表（含凭据）、冻结的每对话工具集、slash 表、插件/组件安装记录、子代理作业/血缘记录、fabric 程序、MCP 服务器配置 | 持久——harness 的数据库 |
 | **Conversation header**（`conversation` kind） | 每对话选择：provider、providerOverride、model、modelOverride、thinking、profile、title、预算/token 计量——通过 `session` 调用设置（UI 中的 `/model`、`/effort`），并在轮次结果中回显 | 每对话 |
-| **Home / project files** | skills 树（项目 `.agents|.claude|.opencode/skills` > 内置 `skills/` > home `~/.niffler/skills` + agent 标准目录 > `~/.config/opencode/skills`，最后是编译进二进制的树作为最后手段）；LSP 注册表 `~/.config/niffler-lsp/servers.json`（`NIF_LSP_REGISTRY`） | 持久，用户可编辑 |
+| **Home / project files** | skills: workspace `.agents/skills` > `~/.agents/skills` > bundled `skills/` (compiled fallback); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
 | **Edit undo + seen state** | 不再是主目录文件：每个（对话，文件）一个 **store 文档** —— 类型 `edit-undo`（上次编辑前的字节，供 `undo_last_edit` 使用）和 `edit-seen`（已观察的摘要/大小/行数，用于未更改读取存根和 `E_STALE` 门控），id 为 `<session>:<绝对路径>`。作用域限于拥有它们的对话，并随对话一起删除（`conversation_delete` 会清理这两种类型）。它们曾共用一个 `$XDG_CONFIG_HOME/niffler-edit/undo.json`，每次修改都整体重写——机器全局、无上限，也是 27 文件批量替换曾占用 edit 组件泵 53 秒的原因。删除这些文档只会丢失撤销历史和读取存根，绝不丢失文件内容 | 持久，store 支撑 |
 | **`var/`**（gitignored） | `bin/` 构建的二进制，`logs/` 总线 JSONL 和每组件 JSONL（`.1`…`.N` 轮转）加上子进程日志，`models/` 目录缓存，`nats-url`/`nats-pid` 总线认领，`processes/` 假脱机（每次启动的 `pN.out`/`pN.err`，启动时清空；id 从持久化计数器继续，而不是从 `p1` 重新开始），`repomap-tags/` 每文件标签缓存（以绝对路径的 sha1 为键的 `{mtime, tags}` JSON；空结果从不缓存），`fetch/`、`captures/`、`store.db`（SQLite 引擎的文件，也是唯一基于文件的引擎）加上其 `.lock`，同一时间只能有一个 `store` 进程持有 | 持久数据与可再生成输出混合；绝不要整体删除 |
 | **Browser localStorage** | 仅显示：推理/工具卡详情级别、locale（`niffler-think`、`niffler-tools`） | 每浏览器 |
@@ -282,7 +282,6 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | `NIF_MODELS_REFRESH_INTERVAL` | 后台刷新间隔；`0` 禁用 | `1h` |
 | `NIF_FETCH_DIR` | 大型 fetch 结果和临时提取文件 | `$NIF_ROOT/var/fetch` |
 | `NIF_FETCH_ALLOW_PRIVATE` | `1`（也接受 `true`/`yes`）允许 `fetch` 工具联系 loopback/私有/link-local 目的地；仅用于受信任的本地开发服务 | 未设置（阻止） |
-| `NIF_SKILLS_BUNDLED_DIR` | `skills` 组件内置树的显式位置，替换 `<repo>/skills` 及其 `$NIF_ROOT/skills` 回退。不存在的路径使发现服务编译内置的副本（目录 `(baked)`） | `<repo>/skills` |
 | `NIF_MCP_DIRECT_THRESHOLD` | 配置为 `expose: direct` 的 MCP 服务器可直接发布的缓存工具数量；更大的服务器推迟到渐进式发现 | `10` |
 | `NIF_MCP_BRIDGE_BIN` | mcp-bridge 二进制的显式路径 | `<root>/var/bin/mcp-bridge` |
 | `NIF_PROCESSES_SPOOL_CAP` | `processes` 假脱机大小，超过后后台进程的输出文件在下次轮询时被截断到其尾部——保留的尾部为 `min(2 MiB, cap div 2)`，且该值不被验证，因此上限为零或以下会清空假脱机 | `33554432` |
@@ -875,16 +874,19 @@ models.dev 无法发现嵌入模型：它的 `modalities.output` 即使对 `text
 
 全部八个工具都是**按需**的（`x-harness.onDemand`）：没有一个位于会话冻结的直接工具集中，因此第一次取用某个工具需要一次 `discover` + `invoke` 跳转（参见 [Progressive tool discovery](#progressive-tool-discovery)）。加载技能会将其文本追加到历史——这里没有任何东西会重写冻结的提示前缀，因此 `skill_load` 的代价是一次缓存读取，而不是缓存未命中。
 
-发现范围覆盖仓库中随附的技能，以及标准 agent 目录（每个技能名以首个匹配为准——项目优先于随附，随附优先于 home，home 优先于 config）：
+技能按名称依以下顺序解析：
 
 | Source | Directories |
 |---|---|
-| project | `$NIF_ROOT/.agents/skills`、`$NIF_ROOT/.claude/skills`、`$NIF_ROOT/.opencode/skills` |
-| bundled | `<repo>/skills`——编译此二进制文件时所用的检出目录（一个构建期路径）；`$NIF_ROOT/skills` 是迁移部署的兜底，`NIF_SKILLS_BUNDLED_DIR` 覆盖两者——永不可移除 |
-| home | `~/.agents/skills`、`~/.claude/skills`、`~/.opencode/skills`、`~/.niffler/skills` |
-| config | `~/.config/opencode/skills`（`npx skills add -g -a opencode` 安装的位置） |
+| project | `<conversation workspace>/.agents/skills`（无工作区上下文的直接总线调用使用 `$NIF_ROOT`） |
+| home | `~/.agents/skills` |
+| bundled | `<repo>/skills`，迁移部署时回退到 `$NIF_ROOT/skills`；不可移除 |
 
-在同一来源内，目录按列出的顺序尝试，因此 `~/.agents/skills/nats` 优先于 `~/.claude/skills/nats` 被提供。发现是**每次调用都全新遍历**——没有缓存注册表，没有存储记录，没有刷新操作——因此 `skill_install` 或另一个 agent 的 `npx skills add` 会立即可见。遍历不会进入**符号链接目录**：仅通过符号链接到达被扫描目录的技能不会被发现，`skill_audit` 也不会列出它；**符号链接的 SKILL.md** 文件同样不会被产出，因此 SKILL.md 是指向别处真实文件的链接的技能也不可见（诸如 `~/.claude/skills → ~/.agents/skills` 这样的符号链接农场因此不可见——当链接目标本来就被扫描时无害，不被扫描时则悄无声息）。
+首次匹配胜出，每次调用重新扫描。工作区由私有调用上下文传入，不改变冻结的提示。
+`skill_audit` 显示被遮蔽和无效的副本。不再扫描其他 agent 的目录或 XDG opencode
+目录；请显式复制/导入到上述目录。旧 `~/.niffler/skills` 仅作为迁移来源，
+不再自动发现，也不会自动移动或覆盖文件。已移除 `NIF_SKILLS_BUNDLED_DIR`。
+遍历不跟随目录或 SKILL.md 的符号链接，请复制真实技能树。
 
 随附技能（`todo-markdown`——把 todo 状态保存在仓库 TODO.md 中，而不是工具状态中；`niffler-tools`——哪个工具适合哪项工作；`niffler-fabric`——构造 fabric 程序；`niffler-harness`——操作正在运行的 harness 本身）让 Niffler 开箱即用；把一个同名技能放入项目或 home 目录即可遮蔽其中一个。
 
@@ -898,15 +900,17 @@ models.dev 无法发现嵌入模型：它的 `modalities.output` 即使对 `text
 | `skill_resources {name}` | 技能的 `references/`、`scripts/`、`assets/` 文件，一层深度——`references/sub/x.md` 中的文件，或符号链接文件，既不会被列出也不可读 |
 | `skill_resource {name, path}` | 按需读取一个资源 |
 | `skill_audit` | 只读、未合并的磁盘上每个 SKILL.md 的清单——外加仅由编译内置回退提供的名称（目录 `(baked)`）：标记每个名称的活跃胜出者和每个被遮蔽/无效的副本（无效 = SKILL.md 不可读、frontmatter 无法解析，或即使回退到目录名后仍无名称——省略 `name:` 的 SKILL.md 会以其目录名被接受；发现结果在 `skill_list` 中合并，因此遮蔽只在这里可见） |
-| `skill_install {repo, skill?, global?}` | 克隆一个 git 仓库，把选定的 SKILL.md 树复制到 `~/.niffler/skills`（默认）或 `$NIF_ROOT/.opencode/skills` |
+| `skill_install {repo, skill?, global?}` | 克隆一个 git 仓库，把选定的 SKILL.md 树复制到 `~/.agents/skills`（默认）或 `<conversation workspace>/.agents/skills` |
 | `skill_remove {name}` | 仅从 Niffler 管理的目录中删除一个技能 |
 
 - `skill_search` 是对 `https://skills.sh/api/search` 的只读 HTTP 调用（未认证）；它不受审批门控。每次调用最多返回 20 条命中，`owner` 缩小同一查询的范围——它不是单独的命名空间。安装流程是：搜索 → `skill_install {repo, skill}` → 审批对话框 → 完成。
 
-- 用 `npx skills add <owner>/<repo>`（skills.sh 生态 CLI）安装的技能会落在上述标准目录中，无需重新安装即可被发现；`skill_install` 的存在是为了让 Niffler 在没有 Node 的情况下通过普通 git 也能工作。它只复制 SKILL.md 树——不运行任何代码——并接受 `owner/name`、github.com URL 和 `file://` 本地仓库（封闭测试）。
+- 其他 agent 目录中的技能须显式复制到工作区 `.agents/skills` 或用户
+  `~/.agents/skills`。`skill_install` 使用 git 从仓库导入，无需 Node；
+  只复制技能树，不执行代码，支持 GitHub 和本地 `file://` 仓库。
 - 包含多个技能的仓库（例如 `vercel-labs/agent-skills`）需要 `skill` 参数；缺少时 `skill_install` 会列出候选。该参数匹配技能的名称或其目录 basename。
 - `skill_install` 需要 `PATH` 上有 `git`：它从 `https://github.com/` 以 `--depth 1` 克隆到 `$NIF_ROOT/var/skills-tmp/<name>`（之后再次删除）——旧版本只能通过把 `repo` 指向镜像来获取——并复制整个技能目录，包括资源。它拒绝目标已存在的名称（先 `skill_remove`）；结果报告 `source: home|project`。
-- `skill_remove` 拒绝 `~/.niffler/skills` 和 `$NIF_ROOT/.opencode/skills` 之外的任何内容——其他 agent 安装到共享目录中的技能要用它们自己的工具移除。
+- `skill_remove` 拒绝 `~/.agents/skills` 和 `<conversation workspace>/.agents/skills` 之外的任何内容——其他 agent 安装到共享目录中的技能要用它们自己的工具移除。
 - 安装和移除带有 `x-harness.approval: "always"`（它们会写入 `var/` 之外）。
 
 ## Provider registry (`provider`)
@@ -2063,8 +2067,8 @@ OAuth、环境凭据、headers、请求转换和原生 API
 2. 仓库的本地上下文文件，Pi 风格，在产品提示之后包裹在
    `<project_context>`/`<project_instructions path="...">` 标签中：
    - 每个目录，首次命中胜出：`AGENTS.override.md`、`AGENTS.md`、
-     `AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD`（每个目录一个文件——
-     `AGENTS.md` 遮蔽旁边的 `CLAUDE.md`；符号链接被跟随；
+     `AGENTS.MD`（每个目录一个主要文件；跟随符号链接；
+     不再自动加载 `CLAUDE.md` 和 `CLAUDE.MD`；
      `AGENTS.local.md` 是额外添加的，绝不是候选：它绝不
      遮蔽主文件，并且它为遍历的每个目录收集，而不仅是惰性收集）；
    - 从会话的 cwd **向上到 harness 根
@@ -2077,7 +2081,7 @@ OAuth、环境凭据、headers、请求转换和原生 API
      否则祖先遍历会应用同一逻辑仓库范围两次；
    - 惰性加载：进入 harness
      根*之下*目录的 `read` 会为路径上的目录追加任何新发现的 `AGENTS.override.md`/`AGENTS.md`/
-     `AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD`（+ `AGENTS.local.md`），每个包裹在 `<lazy_project_instructions
+     `AGENTS.MD`（+ `AGENTS.local.md`），每个包裹在 `<lazy_project_instructions
      path="…">` 中，每个会话一次——monorepo 子树在模型实际进入之前
      不进入冻结头部。
 3. 每个会话的 `<workspace>` 尾部，仅在

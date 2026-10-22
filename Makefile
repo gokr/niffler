@@ -327,6 +327,9 @@ var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/plugins: $(call NIM_SRCS,plugins) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/plugins/main.nim
 
+var/bin/config: components/config/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/config/main.nim
+
 var/bin/skills: components/skills/main.nim \
     $(wildcard skills/*/SKILL.md) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/skills/main.nim
@@ -422,7 +425,7 @@ components:
 components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
 	var/bin/niffler-sandbox \
 	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/heartbeat var/bin/fleet var/bin/grep var/bin/git \
-	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
+	var/bin/builder var/bin/plugins var/bin/config var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
@@ -538,10 +541,13 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 # them per sandbox started a dozen concurrent `nim c` runs per pooled gate and
 # those died under load without any compiler output (issue #108, deterministic
 # in CI). Not part of `build` — they are fixtures, not shipped components.
-FIXTURE_BINS := var/bin/fixture-fleet-fault-store var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool
+FIXTURE_BINS := var/bin/fixture-skills-baked var/bin/fixture-fleet-fault-store var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool
 
 var/bin/fixture-fleet-fault-store: tests/fixtures/fleet_fault_store.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/fixtures/fleet_fault_store.nim
+
+var/bin/fixture-skills-baked: components/skills/main.nim $(wildcard skills/*/SKILL.md) $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -d:skillsBundledDir=$(ROOT)/var/no-bundled-fixture-tree -o:$@ components/skills/main.nim
 
 var/bin/ctxtest: components/ctxtest/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/ctxtest/main.nim
@@ -652,6 +658,9 @@ test-clean: var/bin/test_t_clean
 test-fleet: build var/bin/test_t_fleet
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet
 
+test-fleet-registry: build var/bin/test_t_fleet_registry
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_registry
+
 test-fleet-tasks: build var/bin/test_t_fleet_tasks
 	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_fleet_tasks
 
@@ -685,7 +694,8 @@ test-store-tidb: build var/bin/test_t_store
 test-builder: build var/bin/test_t_builder ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_builder
 test-console: build var/bin/test_t_console ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_console
 test-plugins: build var/bin/test_t_plugins ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_plugins
-test-skills:  build var/bin/test_t_skills  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_skills
+test-config:  build var/bin/test_t_config ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_config
+test-skills:  build var/bin/test_t_skills var/bin/fixture-skills-baked ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_skills
 test-jev: build var/bin/test_t_jev ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_jev
 test-von: build var/bin/test_t_von ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_von
 test-fetch:   build var/bin/test_t_fetch   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fetch

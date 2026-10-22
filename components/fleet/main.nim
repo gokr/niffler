@@ -2,6 +2,7 @@
 import std/[json, os, strutils]
 import niffler/sdk
 import provision
+import registry
 import delegation
 import niffler/taskpolicy
 
@@ -24,6 +25,15 @@ proc handler(name: string): ToolHandler =
       result = if name == "install": install(runner, args)
         elif name == "update": update(runner, args)
         else: action(runner, name, args{"profile"}.getStr())
+      # Install/update already verified the live identity before returning.
+      # Record the verified receipt in the registry (best effort: the local
+      # file just written stays authoritative for this operation, and a store
+      # outage must not turn a successful remote install into a failure).
+      if name in ["install", "update"] and result{"receipt"} != nil:
+        try:
+          discard saveInstance(c, result["receipt"], name)
+        except CatchableError as e:
+          stderr.writeLine("fleet: registry write failed (" & name & "): " & e.msg)
       result["privateLogs"] = %logs
     except CatchableError as e:
       return errResult(e.msg, "fleet-refused")
@@ -188,6 +198,21 @@ discard comp.tool("fleet_notices", schema(%*{
   "Runner Fleet completion inbox. Read is non-consuming; acknowledge only after durable transcript append."),
   proc(c: Component, args: JsonNode): JsonNode = taskNotices(c, args),
   %*{"hidden": true, "runner": true, "effect": "read"})
+# Registry surface. These describe routes; they never grant authority — every
+# action above still proves the live identity before it writes. Import is the
+# explicit one-time migration from the receipt-file era, and list is what a
+# client reads instead of a local instances.json.
+discard comp.tool("fleet_instances", schema(%*{}, @[],
+  "List registered fleet instances (stable identity, name, root, transport and pinned revision). Read-only: entries are routes for selection, never proof that the peer is reachable or authorized now."),
+  proc(c: Component, args: JsonNode): JsonNode = listInstances(c),
+  %*{"onDemand": true, "effect": "read"})
+discard comp.tool("fleet_instance_import", schema(
+  %*{"profile": profile}, @["profile"],
+  "Import one existing private version-1 receipt file into the fleet registry (explicit migration; the file is left untouched and remains valid as an export). Validates the receipt and requires approval."),
+  proc(c: Component, args: JsonNode): JsonNode = importReceipt(c, args{"profile"}.getStr()),
+  %*{"onDemand": true, "approval": "always", "effect": "write",
+    "writes": {"none": true}, "workspace": {"pathFields": ["profile"]}})
+
 discard comp.onIdle(500) do (c: Component):
   try: idleJobs(c)
   except CatchableError as e: stderr.writeLine("fleet idle: " & e.msg)
