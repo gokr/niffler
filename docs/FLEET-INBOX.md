@@ -59,7 +59,15 @@ exactly why artifacts and commits live on your GitHub repos rather than here.
 
 ### Drilling down
 
-▢ *The TUI surface.* Opening a row calls `fleet_task_result {jobId}` — the
+**Who may read.** The owner check on job tools keeps *conversations* apart —
+one conversation cannot touch another's work. A person at a keyboard is not a
+conversation, so the human-scope read (`human: true`) opens any job this
+harness submitted, without session context. It changes **who** may read, never
+**what** is returned: receipts and profiles stay withheld. Without this scope
+the inbox could list every job and open none of them, which is exactly how it
+failed the first time it was tried against a real client.
+
+*The TUI surface.* Opening a row calls `fleet_task_result {jobId, human}` — the
 remote transcript, paged, `bounded: true` per line — and, when present, fetches
 the artifact descriptor's bytes through the scoped artifact protocol. This
 **does not work offline**: the worker's transcript is canonical there. A job
@@ -126,5 +134,6 @@ An `uncertain` job is honest; a `settled`-with-guess would not be.
 | ▢ | Slice |
 |---|---|
 | ✅ | `ev.fleet.settled` broadcast so a connected TUI can toast instead of polling |
-| ▢ | TUI: `/tasks` list, toast, client-local seen markers, baseline-on-connect, drill-down |
+| ✅ | TUI: `/tasks` list, toast, client-local seen markers, baseline-on-connect |
+| ✅ | Drill-down: `/tasks <jobId>` renders the peer's bounded report |
 | ▢ | Artifact retrieval for a settled activation |

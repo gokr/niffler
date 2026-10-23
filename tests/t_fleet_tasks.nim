@@ -194,6 +194,29 @@ proc main() =
   check("allowed on-demand tool frozen into direct schemas", ($exposure).contains("\"name\":\"read\""))
   check("bounded result summary persisted before delivery", done{"notice", "summary"}.getStr("").len <= 2051 and done{"notice", "summary"}.getStr("").len > 0)
 
+  # --- human-scope reads: a person is not a conversation -----------------
+  # The owner check keeps CONVERSATIONS apart. The inbox lists every job this
+  # harness submitted, so its drill-down must be openable by the same client —
+  # otherwise the UI can enumerate tasks it can never show. Found live: the
+  # TUI's `/tasks <jobId>` failed with "session context required" because
+  # authorized() demanded an owner the client legitimately does not have.
+  block humanScope:
+    check("a job read without context refuses",
+          rejected(proc() = discard authorized(c, %*{"jobId": id})))
+    let asHuman = c.storeGet("fleetjob", id)
+    check("a human-scope read needs no session context",
+          humanReadable(%*{"human": true}), "humanReadable rejected the scope")
+    check("humanReadable accepts a session-carried scope too",
+          humanReadable(%*{"__session": {"human": true}}))
+    check("humanReadable defaults to false (conversation scope)",
+          not humanReadable(%*{}))
+    check("the job is readable once the scope is human", asHuman.value != nil)
+    # Scope is not a capability: it changes WHO may read, never what is
+    # returned. The receipt stays withheld by publicJob regardless.
+    let pub = publicJob(asHuman.value)
+    check("a human-scope read withholds the receipt",
+          pub{"receipt"} == nil and pub{"profile"} == nil and pub{"task"} == nil, $pub)
+
   # --- the human inbox is a local read over fleetjob ----------------------
   # Contract (docs/FLEET-INBOX.md): a settled job is answerable from the INBOX
   # reply alone — the peer may be down, the remote transcript pruned, the
