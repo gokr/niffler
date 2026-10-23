@@ -435,6 +435,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`make build` works on a cold Go module cache again.** The sqlite-vec header
+  lookup ran `go list -m -f={{.Dir}}` before anything had fetched
+  `mattn/go-sqlite3`; for a module that `go.mod` names but nobody has
+  downloaded, that prints an empty `Dir` and still exits 0, so the build died
+  with `store-sqlite: cannot locate mattn/go-sqlite3` a moment before the
+  compile that would have fetched it. A fresh CI runner restores no module
+  cache (there is no `go.sum` at the repo root), so every run since `901b6e3`
+  failed in `make build` before a test ran — the bus-contract gate was dark and
+  PR CI carried no signal. The target now runs
+  `go mod download github.com/mattn/go-sqlite3` before the lookup; verified
+  with an empty `GOMODCACHE`, and `make build`, `make test-store` and
+  `make gotest` pass warm.
+
 - **A stopped write releases its workspace claim.** Stopping a long-running
   write ended the turn but left its lease live for the transport timeout plus
   60s (ten minutes at minimum), so the conversation could not retry its own
