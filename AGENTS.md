@@ -173,7 +173,8 @@ working in every language.
   happened twice (logfile's retained caps, observe's `byteCap`/`max`/
   `captureByteCap`), each time finding the JSON key, never the call site.
   Rename the definition and let the compiler list the call sites, or use an
-  LSP rename (verified: `nimtortoise` reports `renameProvider: true` and
+  LSP rename (specified in docs/research/SEMANTIC-EDIT.md; verified that
+  `nimtortoise` reports `renameProvider: true` and
   rewrites the definition *and* its call, leaving the string key alone). Both
   are symbol-aware; a textual substitution is not. `lsp` exposes the seven
   READ operations today — `findReferences` + a manual edit is the
