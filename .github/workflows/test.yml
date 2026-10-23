@@ -6,17 +6,20 @@ name: test
 # timeout-minutes is load-bearing: a hung test must fail the job, not eat
 # the runner (each Nim test binary has its own per-call NATS timeouts, but
 # a wedge anywhere has historically stalled the loop — see t_agent 2026-09).
+#
+# This job is the branch's required status check, so it must report on EVERY
+# pull request — see "Decide scope" below for why that is enforced in the job
+# rather than by a workflow-level `paths-ignore`.
 
 on:
   # Main runs the suite itself so the default-branch cache — the only one
   # PR runs can restore (GitHub cache scoping) — is populated after every
-  # merge, and so merges of paths-ignore-skipped PRs (docs-only etc.) are
-  # still verified.
+  # merge, and so a merge is verified even when its PR skipped the heavy
+  # steps as docs-only.
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    paths-ignore: ["docs/**", "website/**", "bench/**", "**.md"]
   workflow_dispatch:
 
 permissions:
@@ -33,16 +36,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Scope the run inside the job instead of with a workflow-level
+      # `paths-ignore`, and deliberately: a skipped *workflow* reports no
+      # check at all, so as the required status check it would leave every
+      # docs-only PR (the nightly `docs:` bot PRs above all) waiting forever
+      # on "Expected — waiting for status to be reported". A job whose steps
+      # are skipped still reports success, so the required check always
+      # resolves while a docs-only PR costs a few seconds, not 30 minutes.
+      #
+      # Fail-safe direction: anything unrecognized, an empty diff or an
+      # unfetchable base runs the full suite. A push to main always does.
+      - name: Decide scope
+        id: scope
+        run: |
+          set -euo pipefail
+          run=1
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            if git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
+              changed="$(git diff --name-only "$base" HEAD || true)"
+              if [ -n "$changed" ]; then
+                run=0
+                while IFS= read -r f; do
+                  # `case` globs match '/' too, so `*.md` covers any depth.
+                  case "$f" in
+                    docs/*|website/*|bench/*|*.md) ;;
+                    *) run=1; break ;;
+                  esac
+                done <<< "$changed"
+              fi
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = "1" ]; then
+            echo "scope: full suite"
+          else
+            echo "scope: docs/website/bench/markdown only — heavy steps skipped"
+          fi
+
       # Nim via choosenim, pinned to the version the repo develops against
       # (niffler.nimble requires >= 2.2.12). Cache the toolchain and the
       # nimble package store keyed on the .nimble file — first run builds
       # the deps, later runs reuse them.
       - name: Install Nim
+        if: steps.scope.outputs.run == '1'
         run: |
           curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.12
           echo "$HOME/.nimble/bin" >> "$GITHUB_PATH"
 
       - name: Cache nim toolchain + packages
+        if: steps.scope.outputs.run == '1'
         uses: actions/cache@v4
         with:
           path: |
@@ -51,6 +94,7 @@ jobs:
           key: nim-2.2.12-${{ hashFiles('niffler.nimble') }}
 
       - uses: actions/setup-go@v5
+        if: steps.scope.outputs.run == '1'
         with:
           go-version: 'stable'
 
@@ -63,6 +107,7 @@ jobs:
       # it because the bus-contract suite's grep/files tests shell out to it
       # (the grep component itself degrades gracefully without it).
       - name: Native and Nim dependencies
+        if: steps.scope.outputs.run == '1'
         run: |
           make install-native-deps
           make install-nim-deps
@@ -76,10 +121,12 @@ jobs:
       # toolchain. (The experimental desktop UI in gokr/niffler-ui runs its own
       # checks in its own repository; nothing here depends on it.)
       - name: make test-server
+        if: steps.scope.outputs.run == '1'
         run: make -j4 test-server
 
       # The benchmark adapter tests are separate from the bus contract and need
       # Node, which a stock harness install does not have — so `make test-server`
       # no longer pulls them in. CI runs them explicitly, so they keep coverage.
       - name: make test-bench
+        if: steps.scope.outputs.run == '1'
         run: make test-bench
