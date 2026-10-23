@@ -82,6 +82,21 @@ proc main() =
     sleep(200)
   check("fixture provider registers", up)
 
+  # The provider being up does not mean CORE is up: this loop talks to the
+  # provider component directly. The first real turn goes to svc.core.call, and
+  # under a loaded test pool core can still be finishing its subscription —
+  # the call then fails with NATS_NO_RESPONDERS (nats 23), which reads like a
+  # broken attachment path but is a readiness race. Wait for core explicitly.
+  var coreUp = false
+  for i in 0 ..< 100:
+    let r = call(nc, "core", "catalog", %*{"op": "list"}, 3_000)
+    if r{"error"} == nil and r{"tools"} != nil:
+      coreUp = true
+      break
+    sleep(100)
+  check("core accepts calls before the first turn", coreUp)
+  if not coreUp: quit(1)
+
   proc lastRequest(): JsonNode =
     if not fileExists(reqFile): return nil
     var last: JsonNode = nil
