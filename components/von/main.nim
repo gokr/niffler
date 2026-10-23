@@ -21,7 +21,7 @@
 ##   NIF_VON_BACKOFF_MAX_S  restart backoff cap (default 60)
 
 import std/[httpclient, json, os, osproc, strutils, times, uri]
-import niffler/sdk
+import niffler/[sdk, procutil]
 
 let binPath = getEnv("NIF_VON_BIN", getCurrentDir() / "var" / "jev-venv" / "bin" / "von").strip()
 let argsEnv = getEnv("NIF_VON_ARGS", "").strip()
@@ -65,16 +65,17 @@ proc spawnVon() =
   ## Start the venv binary under setpriv --pdeathsig (kernel-enforced child
   ## cleanup: if this launcher dies — even SIGKILL — the kernel SIGTERMs Von,
   ## so a 5 GB model process can never outlive its supervisor). Mirrors the
-  ## supervisor's own wrapper; falls back to a plain child when setpriv is
-  ## absent (then SIGTERM/SIGKILL of the launcher can orphan Von).
+  ## supervisor's own wrapper; falls back to a plain child when no setpriv
+  ## supports --pdeathsig (absent, or BusyBox's on stock Alpine) — then
+  ## SIGTERM/SIGKILL of the launcher can orphan Von.
   var args: seq[string]
   if argsEnv.len > 0: args = argsEnv.splitWhitespace()
   else: args = @["serve", "--model", model, "--host", host, "--port", port]
   var cmd = "exec "
   when defined(linux):
-    let sp = findExe("setpriv")
+    let sp = pdeathsigSetprivPath()
     if sp.len > 0: cmd.add(quoteShell(sp) & " --pdeathsig TERM ")
-    else: say("warn", "setpriv missing — Von cleanup falls back to non-kernel")
+    else: say("warn", "no setpriv with --pdeathsig — Von cleanup falls back to non-kernel")
   cmd.add(quoteShell(binPath))
   for a in args: cmd.add(" " & quoteShell(a))
   let logDir = getEnv("NIF_LOGFILE_DIR", getCurrentDir() / "var" / "logs")

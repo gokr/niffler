@@ -1,5 +1,5 @@
 ## Fleet policy and bus contract, with fake transports only.
-import std/[json, os, strutils, posix]
+import std/[json, os, osproc, strutils, posix]
 import natsnim
 import helpers
 import ../components/fleet/provision
@@ -101,6 +101,46 @@ proc main() =
     s.contains("checkout --detach") and
       s.contains("Adopting existing installation without updating") and
       not s.contains("git pull"))
+  let processArgs = args.copy()
+  processArgs["service"] = %"process"
+  processArgs["profile"] = %(tmp / "process.json")
+  commands.setLen(0); scripts.setLen(0)
+  discard install(runner, processArgs)
+  check("process mode is pinned in receipt", loadReceipt(tmp / "process.json")["service"].getStr() == "process")
+  let processScript = firstScript(scripts, "git clone")
+  let clone = processScript.find("git clone")
+  check("process install has explicit lifecycle and prepared dependencies",
+    "make build" in processScript and "NIFFLER_PROCESS_SERVICE" in processScript and
+      "server.sh install" notin processScript and "server.sh start" notin processScript)
+  check("process preflight runs the one embedded manager and the toolchain check before any clone",
+    processScript.find("\"$managerSrc\" preflight") in 0 ..< clone and
+      processScript.find("for tool in git make nim go") in 0 ..< clone and
+      processScript.count("<<'NIFFLER_PROCESS_SERVICE'") == 1)
+  let systemdScript = installScript("/srv/niffler", repeat('a', 40))
+  check("systemd install keeps bootstrap and no process manager",
+    "NIFFLER_PROCESS_SERVICE" notin systemdScript and
+      "scripts/bootstrap.sh\" --server" in systemdScript)
+  check("process manager environment matches the systemd unit", block:
+    let manager = readFile("components/fleet/process_service.sh")
+    var settings = 0
+    var same = true
+    for token in readFile("scripts/server.sh").split({'\'', '"'}):
+      if token.startsWith("Environment=NIF_"):
+        inc settings
+        let setting = token["Environment=".len .. ^1]
+        let wanted = if '$' in setting: setting.split('=')[0] & "=" else: setting
+        if (" " & wanted) notin manager: same = false
+    settings >= 6 and same)
+  commands.setLen(0); scripts.setLen(0)
+  discard action(runner, "status", tmp / "process.json")
+  check("process lifecycle does not fall back to systemd",
+    "fleet-process/manager.sh status" in scripts[0] and "XDG_RUNTIME_DIR" notin scripts[0])
+  let changedMode = processArgs.copy(); changedMode["service"] = %"systemd"
+  check("receipt refuses service mode drift", rejected(proc() = discard install(runner, changedMode)))
+  let invalidMode = processArgs.copy(); invalidMode["service"] = %"unknown"
+  check("unknown service mode refuses", rejected(proc() = discard install(runner, invalidMode)))
+  invalidMode["service"] = newJNull()
+  check("malformed service mode refuses", rejected(proc() = discard install(runner, invalidMode)))
   drift = true
   commands.setLen(0); scripts.setLen(0)
   check("drift refuses before install write", rejected(proc() = discard install(runner, args)) and not scripts.join("").contains("git clone"))
@@ -151,7 +191,8 @@ proc main() =
   check("stopped pinned Lima update requires administrator", rejected(proc() = discard update(stoppedInventory, %*{"profile": vmArgs["profile"], "revision": resolvedSha})) and commands.len == 0)
   commands.setLen(0); scripts.setLen(0)
   discard action(runner, "stop", profile)
-  check("service stop distinct from VM stop", commands.len == 1 and scripts[0].contains("server.sh stop") and not scripts[0].contains("lima"))
+  check("service stop distinct from VM stop", commands.len == 1 and scripts[0].contains("server.sh stop") and not scripts[0].contains("lima") and
+    scripts[0].contains("XDG_RUNTIME_DIR") and not scripts[0].contains("fleet-process"))
   commands.setLen(0)
   discard action(runner, "vm_stop", vmArgs["profile"].getStr())
   check("VM stop never delete", commands[^1] == @["limactl", "stop", "--tty=false", "fake-vm"])
@@ -503,6 +544,9 @@ proc main() =
   let changed = identity.copy(); changed["instanceId"] = %repeat('c', 32)
   writeFile(idFile, $changed)
   check("bus drift refuses", call(nc, "fleet", "fleet_probe", busProfile).hasKey("error"))
+  when defined(linux):
+    let processTest = execCmdEx("bash tests/t_fleet_process.sh")
+    check("real process lifecycle", processTest.exitCode == 0, processTest.output)
   report("FLEET TEST")
 
 main()

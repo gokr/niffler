@@ -150,6 +150,8 @@ proc main() =
   let exposure = call(remoteNc, "store", "get", %*{"kind": "session", "id": id & ":tools"})
   check("allowed on-demand tool frozen into direct schemas", ($exposure).contains("\"name\":\"read\""))
   check("bounded result summary persisted before delivery", done{"notice", "summary"}.getStr("").len <= 2051 and done{"notice", "summary"}.getStr("").len > 0)
+  check("successful reconciliation clears any stale diagnostic",
+    done{"reachable"}.getBool(false) and not done.hasKey("diagnostic"))
   var query = %*{"jobId": id, "__session": {"session": "origin"}}
   check("on-demand remote result", resultPage(c, query, run)["items"].len > 0)
   query["after"] = %"foreign:000001"

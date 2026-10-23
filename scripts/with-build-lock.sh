@@ -7,8 +7,8 @@
 #     for all of them. Without -s the lock is exclusive (builds, clean).
 # The lock file lives at the repository root (NIF_BUILD_LOCK), outside
 # every cleaned tree, so `make clean` cannot unlink it while held.
-# Test children must not inherit the lock: flock --close and the mkdir
-# fallback never hold the lock in a child process.
+# Test children must not inherit the lock: the flock fd is closed for the
+# command and the mkdir fallback never holds the lock in a child process.
 set -euo pipefail
 
 mode="exclusive"
@@ -23,10 +23,15 @@ lock_file="${NIF_BUILD_LOCK:-.niffler-build.lock}"
 mkdir -p "$(dirname "$lock_file")"
 
 if command -v flock >/dev/null 2>&1; then
-  if [[ "$mode" == "shared" ]]; then
-    exec flock -s -o "$lock_file" "$@"
-  fi
-  exec flock -o "$lock_file" "$@"
+  # Lock an fd this shell keeps and close it for the command, so children
+  # never inherit the lock. Unlike --close, the fd form also works with
+  # BusyBox flock (Alpine).
+  flag="-x"
+  if [[ "$mode" == "shared" ]]; then flag="-s"; fi
+  exec 9>>"$lock_file"
+  flock "$flag" 9
+  "$@" 9>&-
+  exit
 fi
 
 # macOS has no flock by default. mkdir is atomic and keeps concurrent access
