@@ -196,6 +196,25 @@ proc call*(nc: NatsConnection, comp, tool: string, args: JsonNode,
 # --------------------------------------------------------------------------
 # processes
 
+proc waitCoreUp*(nc: NatsConnection, secs = 20): bool =
+  ## Wait until CORE answers a call, before any test dispatches a real one.
+  ##
+  ## Waiting for a COMPONENT to register is not the same thing: component
+  ## registration goes through core, but it does not prove core has finished
+  ## subscribing to `svc.core.call`. A test whose readiness probe talks to
+  ## `models` or `provider` and then calls `core session` is racing that
+  ## subscription, and loses it under a loaded pool — the call fails with
+  ## NATS_NO_RESPONDERS (`nats 23`), which reads like a broken feature rather
+  ## than a race (t_attachments, t_llm_modelpin, t_provider_pin all hit it).
+  ##
+  ## Ask core itself, through the same subject a session turn uses.
+  for _ in 0 ..< secs * 10:
+    let r = call(nc, "core", "catalog", %*{"op": "list"}, 3_000)
+    if r{"error"} == nil and r{"tools"} != nil:
+      return true
+    sleep(100)
+  false
+
 proc startComponent*(bin: string, url: string, root = "",
                      extra: openArray[(string, string)] = [],
                      args: openArray[string] = [],

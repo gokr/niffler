@@ -176,6 +176,9 @@ proc main() =
       break
     sleep(200)
   check("models boots with the generated catalog", up)
+  # Talking to `models` proves nothing about core's own subscription; the turns
+  # below go to svc.core.call (see waitCoreUp).
+  check("core accepts calls before the first turn", waitCoreUp(nc))
 
   # --- the shape that broke the guard: a substring page clips the real owner
   let page = call(nc, "models", "models_list",
