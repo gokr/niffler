@@ -514,3 +514,119 @@ proc workerMain*() =
   c.nc = connect(getEnv("NIF_NATS_URL"))
   defer: c.nc.close()
   c.reconcileJob(paramStr(2), connectedRunner(c))
+
+# ---------------------------------------------------------------------------
+# Human inbox (docs/FLEET-INBOX.md)
+#
+# A READ VIEW over the `fleetjob` kind, not a new document type. Every job this
+# harness submitted already lives here — one record per job, whichever peer ran
+# it — carrying its task, lifecycle state and (once settled) a self-contained
+# bounded notice. So "an inbox across all remote nifflers" is a query over one
+# local kind: nothing is replicated, and no peer needs to be reachable to show
+# what happened.
+#
+# Seen/dismissed state is deliberately NOT here. It is client-local, keyed by
+# (instanceId, jobId, activation) — see docs/FLEET-INBOX.md for why: `delivered`
+# on the record means "a runner appended the notice to a transcript", which is
+# model acknowledgment, and a human's unread count must not be derivable from
+# it (FLEET.md §6). Reading this list never acknowledges anything.
+
+const inboxDefaultLimit = 20
+const inboxLimitCap = 100
+
+proc inboxEntry(j: JsonNode, peer: string): JsonNode =
+  ## One row, bounded. Absent keys are read with explicit defaults: a missing
+  ## JsonNode is nil and embedding nil in a `%*` literal crashes (json.nim).
+  let state = j{"state"}.getStr("")
+  let notice = j{"notice"}
+  var row = %*{
+    "jobId": j{"sessionId"}.getStr(""),
+    "peer": peer,
+    "state": state,
+    "mode": j{"task"}{"mode"}.getStr(""),
+    # The operator's own words, bounded — this is what the row is about.
+    "objective": summary(j{"task"}{"content"}.getStr("")),
+    "createdAt": j{"createdAt"}.getFloat(0.0),
+    "checkedAt": j{"checkedAt"}.getFloat(0.0),
+    # Reading a list is not acknowledging it: the runner's delivery flag is
+    # reported for transparency, never as a human's seen marker.
+    "notified": j{"delivered"}.getBool(false),
+  }
+  if j{"task"}{"cwd"} != nil: row["cwd"] = %j{"task"}{"cwd"}.getStr("")
+  if j{"task"}{"taskProfile"} != nil:
+    row["taskProfile"] = %j{"task"}{"taskProfile"}.getStr("")
+  if j{"admissionReceipt"}{"outcome"} != nil:
+    row["outcome"] = %j{"admissionReceipt"}{"outcome"}.getStr("")
+  if state == "settled" and notice != nil and notice.kind == JObject:
+    # A settled job's verdict must be answerable from THIS reply: the peer may
+    # be down, the remote transcript pruned, the artifact expired. The notice
+    # carries a bounded summary for exactly that reason; detail is a separate,
+    # on-demand call (fleet_task_result) that needs the peer to answer.
+    row["settled"] = %*{
+      "activation": notice{"activation"}.getInt(j{"completion"}{"seq"}.getInt(1)),
+      "status": notice{"status"}.getStr(j{"completion"}{"outcome"}.getStr("")),
+      "summary": notice{"summary"}.getStr(""),
+      "transcriptCommitted": notice{"transcriptCommitted"}.getBool(false),
+    }
+    if notice{"artifact"} != nil and notice{"artifact"}.kind == JObject:
+      # Descriptor only (name/size/media/digest) — bytes are never carried in
+      # an inbox row.
+      var desc = newJObject()
+      for key in ["name", "mediaType", "size", "digest"]:
+        if notice{"artifact"}{key} != nil: desc[key] = notice["artifact"][key]
+      if notice{"artifactSummary"} != nil:
+        desc["summary"] = %notice{"artifactSummary"}.getStr("")
+      row["artifact"] = desc
+  row
+
+proc taskInbox*(c: Component, args: JsonNode): JsonNode =
+  ## The human inbox: every submitted job, newest state first-class, paged by a
+  ## STABLE id cursor. Deliberately not a timestamp watermark: reconnect must be
+  ## able to walk the whole kind past any single page, and ids are the only
+  ## ordering that cannot shift under a concurrent write.
+  let after = args{"after"}.getStr("")
+  var limit = args{"limit"}.getInt(inboxDefaultLimit)
+  if limit < 1: limit = 1
+  if limit > inboxLimitCap: limit = inboxLimitCap
+  let wantPeer = args{"peer"}.getStr("")
+  let wantState = args{"state"}.getStr("")
+  if wantState.len > 0 and wantState notin ["queued", "submitting", "running",
+                                            "settled", "failed", "uncertain"]:
+    refuse("state must be one of queued|submitting|running|settled|failed|uncertain")
+
+  var items = newJArray()
+  var scanned = 0
+  var hasMore = false
+  var nextAfter = ""
+  # Walk by id, filtering after the fact: a filtered `list` cannot page
+  # correctly (the cursor must advance over rows the filter rejects, or a page
+  # of rejected rows looks like the end).
+  var cursor = after
+  while true:
+    let page = c.requestOk("store", "list",
+      %*{"kind": "fleetjob", "after": cursor, "limit": 50})
+    let entries = page{"items"}
+    if entries == nil or entries.kind != JArray: break
+    for entry in entries:
+      let j = entry["value"]
+      cursor = entry{"id"}.getStr("")
+      inc scanned
+      if wantState.len > 0 and j{"state"}.getStr("") != wantState: continue
+      # The peer is named by its registry identity when the route is still
+      # registered; a removed instance still shows what it reported, labelled
+      # by the transport target it ran on.
+      var peer = j{"receipt"}{"expect"}{"name"}.getStr("")
+      if peer.len == 0: peer = j{"receipt"}{"target"}.getStr("")
+      if wantPeer.len > 0 and peer != wantPeer and
+          j{"receipt"}{"expect"}{"instanceId"}.getStr("") != wantPeer: continue
+      if items.len >= limit:
+        hasMore = true
+        break
+      items.add(inboxEntry(j, peer))
+    if hasMore or not page{"hasMore"}.getBool(false): break
+    if entries.len == 0: break
+  if hasMore and items.len > 0:
+    nextAfter = items[items.len - 1]{"jobId"}.getStr("")
+  %*{"ok": true, "items": items, "count": items.len, "hasMore": hasMore,
+     "nextAfter": nextAfter, "scanned": scanned,
+     "note": "Reading this list does not acknowledge anything: seen/unread is client state."}

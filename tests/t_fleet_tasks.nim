@@ -150,6 +150,62 @@ proc main() =
   let exposure = call(remoteNc, "store", "get", %*{"kind": "session", "id": id & ":tools"})
   check("allowed on-demand tool frozen into direct schemas", ($exposure).contains("\"name\":\"read\""))
   check("bounded result summary persisted before delivery", done{"notice", "summary"}.getStr("").len <= 2051 and done{"notice", "summary"}.getStr("").len > 0)
+
+  # --- the human inbox is a local read over fleetjob ----------------------
+  # Contract (docs/FLEET-INBOX.md): a settled job is answerable from the INBOX
+  # reply alone — the peer may be down, the remote transcript pruned, the
+  # artifact expired — and reading never acknowledges the model's notice.
+  block humanInbox:
+    let inbox = taskInbox(c, newJObject())
+    check("inbox lists the settled job", inbox{"count"}.getInt(0) >= 1, $inbox)
+    var row: JsonNode
+    for item in inbox{"items"}:
+      if item{"jobId"}.getStr("") == id: row = item
+    check("the job appears with its peer named", row != nil and
+          row{"peer"}.getStr("").len > 0, $inbox)
+    if row != nil:
+      check("a settled row carries a self-contained verdict",
+            row{"state"}.getStr("") == "settled" and
+            row{"settled"}{"status"}.getStr("").len > 0 and
+            row{"settled"}{"summary"}.getStr("").len > 0, $row)
+      check("the row quotes the operator's objective",
+            row{"objective"}.getStr("").len > 0, $row)
+      # `notified` mirrors the RUNNER's delivery flag, which is false until it
+      # appends the notice to a transcript (that happens further down, via a
+      # real `origin` turn). The contract worth pinning here is that the inbox
+      # EXPOSES it and does not invent a human-read marker of its own — the row
+      # carries no "read"/"seen" field at all.
+      check("the row carries no human seen marker of its own",
+            row{"read"} == nil and row{"seen"} == nil and row{"unread"} == nil, $row)
+      check("the row reports the runner's delivery flag verbatim",
+            row{"notified"}.getBool(false) ==
+              c.storeGet("fleetjob", id).value{"delivered"}.getBool(false), $row)
+    # Reading is not acknowledging: the durable notice stays undelivered/
+    # delivered exactly as the runner left it, never flipped by an inbox read.
+    let beforeRead = c.storeGet("fleetjob", id).value{"delivered"}.getBool(false)
+    discard taskInbox(c, newJObject())
+    check("reading the inbox acknowledges nothing",
+          c.storeGet("fleetjob", id).value{"delivered"}.getBool(false) == beforeRead)
+    # Filtering keeps paging honest: a filtered page advances by id and never
+    # ends early because a scanned row was rejected.
+    let settledOnly = taskInbox(c, %*{"state": "settled"})
+    check("state filter narrows to settled jobs",
+          settledOnly{"count"}.getInt(0) >= 1 and
+          settledOnly{"scanned"}.getInt(0) >= settledOnly{"count"}.getInt(0),
+          $settledOnly)
+    let noMatch = taskInbox(c, %*{"state": "queued"})
+    check("a state with no jobs is empty, not an error", noMatch{"ok"}.getBool(false) and
+          noMatch{"count"}.getInt(-1) == 0, $noMatch)
+    check("an invalid state refuses",
+          rejected(proc() = discard taskInbox(c, %*{"state": "bogus"})))
+    # Limit + nextAfter walk the kind without loss (the reconnect contract).
+    let firstPage = taskInbox(c, %*{"limit": 1})
+    check("inbox caps a page", firstPage{"count"}.getInt(-1) <= 1, $firstPage)
+    if firstPage{"hasMore"}.getBool(false):
+      check("a truncated page carries a job-id cursor",
+            firstPage{"nextAfter"}.getStr("").len > 0, $firstPage)
+      check("the cursor continues the walk",
+            taskInbox(c, %*{"limit": 1, "after": firstPage{"nextAfter"}.getStr("")}){"count"}.getInt(-1) >= 0)
   check("successful reconciliation clears any stale diagnostic",
     done{"reachable"}.getBool(false) and not done.hasKey("diagnostic"))
   var query = %*{"jobId": id, "__session": {"session": "origin"}}
