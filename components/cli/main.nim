@@ -36,7 +36,6 @@ import subjects
 
 var components = initTable[string, seq[string]]()  ## component -> tools
 var toolIndex = initTable[string, string]()        ## tool -> component
-var toolTimeoutMs = initTable[string, int]()       ## tool -> x-harness.timeoutMs
 var servingRoot = ""                               ## harness root the bus serves
 var servingHash = ""                               ## its git revision
 
@@ -80,16 +79,6 @@ proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000): bool =
     ## visible instead of silent.
     servingRoot = r.args{"root"}.getStr("")
     servingHash = r.args{"gitHash"}.getStr("")
-    # Declared budgets arrive in this same reply (core fills toolTimeouts), so
-    # `call` can await a long tool without a second catalog request — which
-    # would break the seed-then-dispatch ordering this client guarantees. A
-    # core that does not send the field means "no declared caps": nil must not
-    # be iterated (json.nim's documented nil-JSON gotcha).
-    let declaredTimeouts = r.args{"toolTimeouts"}
-    if declaredTimeouts != nil and declaredTimeouts.kind == JObject:
-      for name, ms in declaredTimeouts:
-        let declared = ms.getInt(0)
-        if name.len > 0 and declared > 0: toolTimeoutMs[name] = declared
     var accepted = initTable[string, seq[string]]()
     var owners = initTable[string, string]()
     for name, tools in snapshot:
@@ -175,8 +164,7 @@ proc cmdCatalog(nc: NatsConnection): int =
   return 0
 
 proc cmdCall(nc: NatsConnection,
-             tool, argsStr: string, timeoutMs: int,
-             timeoutExplicit: bool): int =
+             tool, argsStr: string, timeoutMs: int): int =
   var args = newJObject()
   if argsStr.len > 0:
     try:
@@ -187,26 +175,11 @@ proc cmdCall(nc: NatsConnection,
   if not waitForTool(nc, tool, 60):
     echo "cli: no component provides tool '" & tool & "' (within 60s)"
     return 1
-  # An explicit --timeout is the operator's statement of intent and always
-  # wins. Otherwise honour the tool's own declared budget: a tool that says it
-  # may take 4400 s must not be cut off at 30 by the client.
-  var budget = timeoutMs
-  let declared = toolTimeoutMs.getOrDefault(tool)
-  if not timeoutExplicit and declared > budget:
-    budget = declared
   try:
-    let r = callTool(nc, tool, args, budget)
+    let r = callTool(nc, tool, args, timeoutMs)
     echo $r
   except CatchableError as e:
     echo "cli: " & e.msg
-    # Always say it, whatever the budget: NATS request/reply has no cancel
-    # semantics, so a client that gives up leaves the callee running. That is
-    # the dangerous ambiguity — an operator reads "timed out" as "failed" and
-    # retries an operation that is still in flight.
-    echo "cli: note — " & tool & " declares a " & $(declared div 1000) &
-         "s budget; a client timeout does NOT cancel work already dispatched, " &
-         "so verify the target's state before retrying (--timeout <secs> " &
-         "changes only how long this client waits)."
     return 1
   return 0
 
@@ -915,7 +888,6 @@ proc main() =
   var p = initOptParser()
   var positional: seq[string] = @[]
   var timeoutMs = 30_000
-  var timeoutExplicit = false
   var flags = initTable[string, string]()
   var switches = initTable[string, bool]()
   var mcpDecls: seq[string] = @[]   # --mcp is repeatable, so not a table entry
@@ -941,9 +913,7 @@ proc main() =
           else:
             echo "cli: --timeout needs a value (use --timeout=<secs>)"
             quit(2)
-        try:
-          timeoutMs = val.parseInt() * 1000
-          timeoutExplicit = true
+        try: timeoutMs = val.parseInt() * 1000
         except ValueError:
           echo "cli: bad --timeout value: " & val
           quit(2)
@@ -1102,7 +1072,7 @@ proc main() =
     if positional.len < 2:
       usage(); quit(2)
     let argsStr = if positional.len >= 3: positional[2] else: ""
-    quit(cmdCall(nc, positional[1], argsStr, timeoutMs, timeoutExplicit))
+    quit(cmdCall(nc, positional[1], argsStr, timeoutMs))
   of "wait":
     if positional.len < 2:
       usage(); quit(2)

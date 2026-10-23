@@ -784,22 +784,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       ## component→tools view for bus clients that missed the registrations
       ## (cli seeds its catalog from this)
       var comps = newJObject()
-      # Each tool's declared x-harness.timeoutMs, in the SAME reply. A client
-      # that must await a call (cli) needs the budget, and giving it here keeps
-      # that a single round trip: a second catalog request before dispatch
-      # would insert itself into the seed-then-dispatch ordering every such
-      # client relies on (tests/t_cli_catalog.nim pins exactly that).
-      # Absent entries mean "no declared cap" — the old default applies.
-      var timeouts = newJObject()
       for name in ct.cat.sortedComponentNames():
         let reg = ct.cat.components[name]
         var tools = newJArray()
         for t in reg.tools:
           tools.add(%t.name)
-          let declared = t.schema{"x-harness"}{"timeoutMs"}.getInt(0)
-          if declared > 0: timeouts[t.name] = %declared
         comps[name] = tools
-      return %*{"components": comps, "toolTimeouts": timeouts, "root": ct.root,
+      return %*{"components": comps, "root": ct.root,
                 "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
                 "admissionPolicyVersion": admissionPolicyVersion,
                 "taskPolicyVersion": taskPolicyVersion,

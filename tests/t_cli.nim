@@ -162,56 +162,6 @@ proc main() =
   let callJson = runCli(cliBin, url, @["call", "list", "not-json{"], root = root)
   check("cli call bad json fails", callJson.code != 0, callJson.output)
 
-  # --- call honours the tool's declared budget ------------------------------
-  # The bug this pins, found live: `fleet_update` declares a 4400 s budget
-  # because it rebuilds a remote checkout, but `call` used a flat 30 s default.
-  # A real update was reported as a timeout while the component kept working —
-  # and the operator could not tell "my client stopped waiting" from "it
-  # failed", on an operation that mutates another machine. A slow tool must be
-  # awaited for as long as it declared.
-  const slowSource = """
-    import niffler/sdk
-    import std/os
-
-    let comp = newComponent("cli-slow", "0.1.0")
-    comp.tool(%*{"timeoutMs": 60000, "hidden": true}):
-      proc cli_slow_operation(milliseconds: int = 40000): JsonNode =
-        ## Sleep, standing in for a long remote operation.
-        ## - milliseconds: how long to occupy the call
-        sleep(milliseconds)
-        %*{"ok": true, "waited": milliseconds}
-    comp.run()
-    """.dedent()
-  let built = call(nc, "builder", "build",
-                   %*{"lang": "nim", "name": "cli-slow", "source": slowSource},
-                   300_000)
-  check("builder builds a tool with a declared budget",
-        built{"ok"}.getBool(false), $built)
-  let spawned = call(nc, "core", "spawn",
-                     %*{"name": "cli-slow", "binary": built{"binary"}.getStr("")},
-                     60_000)
-  check("core spawns the slow tool", spawned{"ok"}.getBool(false), $spawned)
-  if spawned{"ok"}.getBool(false):
-    # 40 s of work against a 30 s default: the regression is exactly that this
-    # used to exit non-zero at 30 s.
-    let slow = runCli(cliBin, url, @["call", "cli_slow_operation"], 90_000,
-                      root = root)
-    check("cli call waits past the old 30s default for a tool that declares more",
-          slow.code == 0 and slow.output.contains("\"waited\":40000"),
-          slow.output)
-
-    # An explicit --timeout is the operator's intent and must still win,
-    # including when it is SHORTER than the declared budget.
-    let cut = runCli(cliBin, url,
-                     @["--timeout", "5", "call", "cli_slow_operation"], 60_000,
-                     root = root)
-    check("an explicit --timeout still cuts a long call short", cut.code != 0,
-          cut.output)
-    check("a cut-off call says the work may still be running",
-          cut.output.contains("does NOT cancel work already dispatched"),
-          cut.output)
-    discard call(nc, "core", "remove", %*{"name": "cli-slow"}, 60_000)
-
   # --- install + validate (opt-in: real network install, takes minutes) -----
   if getEnv("NIF_TEST_INSTALL") == "1":
     echo "-- install phase (network) --"
