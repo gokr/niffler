@@ -104,6 +104,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   round trip, and an explicit `--timeout` still wins. A client timeout says so
   plainly and notes that NATS request/reply cannot cancel work already
   dispatched, so "timed out" is not "failed".
+- Agent delegation (`NIF_AGENT_MAX_DEPTH`, `NIF_AGENT_WAKES`) stays in the
+  environment: their authoritative enforcement is in core (the dispatch gate and
+  the session runner), so a component-level settings domain would change a
+  mirror and not the rule.
+- Hooks were evaluated for the config surface and are **deliberately excluded**,
+  not deferred: a hook command is `sh -c`, and a `config_patch`-writable shell
+  command would hand a model arbitrary execution behind an approval prompt that
+  describes it far less legibly than the command itself. Same reasoning that
+  keeps `NIF_AUTO_APPROVE` in the environment.
 - `observe` publishes its capture budgets as the `observe.capture` domain
   (`ring`, `ringBytes`, `entryBytes`, `probeBytes`, `maxProbes`,
   `captureBytes`), so retention can be tuned at runtime.

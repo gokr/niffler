@@ -120,8 +120,35 @@ pass. Repository status is not a claim that installed binaries were updated.
   budgets. The capture directory and monitor URL stay variables (deployment
   paths). This migration forced the change-propagation seam from polling to
   `ev.config.updated`, because a store read in the idle seam starved the pump.
-- [ ] Hooks commands, subscriptions and deadlines (security-sensitive).
-- [ ] Agent defaults/delegation; harness/session birth and context defaults.
+- [x] **Hooks: deliberately EXCLUDED, not deferred** (decision, not a TODO).
+  A hook command is `sh -c` — shell execution. Exposing it through
+  `config_patch` would let a model (or a subagent) obtain arbitrary shell
+  execution via an approval prompt that reads "config_patch hooks.commands",
+  which is far less legible than a human reading the command they approve.
+  Same reasoning that keeps `NIF_AUTO_APPROVE` in env (§Q5). The subscription
+  set is a tap set — boot-time by construction, like logfile's captured
+  subjects — and the only remaining field is the timeout, which does not
+  justify a domain. Hooks stay env-configured (`core.kill` + `core.spawn`).
+- [x] **Agent delegation: EXCLUDED, and this one was learned by trying it.**
+  `maxDepth`/`wakes` look like ideal settings, so they were migrated into an
+  `agent.delegation` domain — and the slice was then reverted, because the
+  authoritative enforcement is **in core**: `core/dispatch.nim` checks
+  `NIF_AGENT_MAX_DEPTH` for every `noSpawn` tool *and says why* ("The check
+  MUST live here, not in the component's handler: the handler blocks its
+  component's pump for the child's whole turn"), and `core/conversation.nim`
+  reads `NIF_AGENT_WAKES` for the wake budget. The component's copies are
+  mirrors. A stored value would therefore change the mirror and not the
+  authority — `maxDepth: 2` would appear to be accepted and do nothing on the
+  path that actually refuses. Migrating these properly means teaching core to
+  read the owner's record for a boot-adjacent value, which reintroduces exactly
+  the "ask the thing being reconfigured" circularity §Q5 rejects. They stay
+  environment, like the tier→model map (a model name is an environment fact
+  too: a stored model would follow a copied database onto a machine that cannot
+  serve it).
+  **The lesson generalizes:** before exposing a variable, find its authoritative
+  reader. If it is core, a component-level domain is a lie.
+- [ ] Harness/session birth and context defaults (the remaining half of this
+  item: `NIF_RUNNER_IDLE_S`, context-window defaults, birth-time compaction).
 - [ ] Inventory remaining runtime env by owner; classify bootstrap, developer
   test seam, secret or migratable setting before removing any variable.
 
