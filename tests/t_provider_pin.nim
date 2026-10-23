@@ -130,6 +130,9 @@ proc main() =
       break
     sleep(200)
   check("llm boots and resolves the unpinned default", up)
+  # Provider/model readiness does not imply core readiness: the turns below
+  # call svc.core.call, so wait for core itself (see waitCoreUp in helpers).
+  check("core accepts calls before the first turn", waitCoreUp(nc))
 
   # --- 1. the pin that cannot be resolved: the turn must FAIL, not reroute
   # (a session turn reports ok:true with outcome "error" — the conversation

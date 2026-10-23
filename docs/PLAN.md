@@ -81,6 +81,12 @@ runtime deadline, and no fresh-grant continuation or in-flight revocation. See
 the blocker list in [FLEET.md](FLEET.md). Complete that artifact before treating
 F2 as shipped or proceeding to F3.
 
+The human inbox's local half has landed: `fleet_task_inbox` is a paged,
+read-only view over the `fleetjob` kind, so a settled job is answerable from
+your own machine without the peer being reachable (docs/FLEET-INBOX.md records
+the intended experience). Still open there: the settle event a connected client
+can toast on, and the TUI surface with client-local seen markers.
+
 Still open: multi-activation records and receipt retention (F1); scoped
 artifact retrieval, verification evidence and patch/commit return (F2/F4);
 active cancellation, steering and continuation (F3); sequenced

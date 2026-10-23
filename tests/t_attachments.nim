@@ -82,6 +82,11 @@ proc main() =
     sleep(200)
   check("fixture provider registers", up)
 
+  # The provider being up does not mean CORE is up: the loop above talks to
+  # the provider component directly. The first real turn goes to
+  # svc.core.call (see waitCoreUp).
+  check("core accepts calls before the first turn", waitCoreUp(nc))
+
   proc lastRequest(): JsonNode =
     if not fileExists(reqFile): return nil
     var last: JsonNode = nil

@@ -203,10 +203,17 @@ proc cmdCall(nc: NatsConnection,
     # semantics, so a client that gives up leaves the callee running. That is
     # the dangerous ambiguity — an operator reads "timed out" as "failed" and
     # retries an operation that is still in flight.
-    echo "cli: note — " & tool & " declares a " & $(declared div 1000) &
-         "s budget; a client timeout does NOT cancel work already dispatched, " &
-         "so verify the target's state before retrying (--timeout <secs> " &
-         "changes only how long this client waits)."
+    # Report the budget honestly: `declared` is 0 when the serving core does
+    # not publish toolTimeouts (an older core, i.e. one started before this
+    # field existed), and "declares a 0s budget" is nonsense an operator would
+    # rightly distrust.
+    let budgetText =
+      if declared > 0: "declares a " & $(declared div 1000) & "s budget"
+      else: "reported no declared budget (this harness does not publish tool timeouts)"
+    echo "cli: note — " & tool & " " & budgetText &
+         "; a client timeout does NOT cancel work already dispatched, so verify " &
+         "the target's state before retrying (--timeout <secs> changes only how " &
+         "long this client waits)."
     return 1
   return 0
 

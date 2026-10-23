@@ -208,6 +208,16 @@ discard comp.tool("fleet_instances", schema(%*{}, @[],
   "List registered fleet instances (stable identity, name, root, transport and pinned revision). Read-only: entries are routes for selection, never proof that the peer is reachable or authorized now."),
   proc(c: Component, args: JsonNode): JsonNode = listInstances(c),
   %*{"onDemand": true, "effect": "read"})
+discard comp.tool("fleet_task_inbox", schema(%*{
+  "peer": {"type": "string", "description": "Only jobs submitted to this instance (registry name or 32-hex identity); omitted = all peers"},
+  "state": {"type": "string", "enum": ["queued", "submitting", "running", "settled", "failed", "uncertain"],
+            "description": "Only jobs in this lifecycle state"},
+  "after": {"type": "string", "description": "Stable job-id cursor from a previous page's nextAfter (not a timestamp: reconnect must walk the whole kind)"},
+  "limit": {"type": "integer", "description": "Max rows per page (default 20, cap 100)"}},
+  @[],
+  "List the human inbox: every task this harness submitted to a remote Niffler, with its lifecycle state and — once settled — a self-contained verdict (status + bounded summary + artifact descriptor). Local read: no peer is contacted, so a job whose instance is down or gone still shows what it reported. Detail is a separate on-demand pull (fleet_task_result), which needs the peer to answer. Reading this list acknowledges nothing: seen/unread state is client-local by design (docs/FLEET-INBOX.md)."),
+  proc(c: Component, args: JsonNode): JsonNode = taskInbox(c, args),
+  %*{"onDemand": true, "effect": "read", "timeoutMs": 30000})
 discard comp.tool("fleet_remove", schema(%*{
   "instanceId": {"type": "string", "description": "32-hex instance identity (preferred)"},
   "name": {"type": "string", "description": "Registered instance name; refused if ambiguous"},
