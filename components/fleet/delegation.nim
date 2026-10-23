@@ -172,8 +172,19 @@ proc publicJob*(j: JsonNode): JsonNode =
   result = j.copy()
   for key in ["task", "receipt", "profile"]:
     if result.hasKey(key): result.delete(key)
+# Human-scope reads: these do NOT require session context, and that is
+# deliberate. The owner check on job tools exists so one CONVERSATION cannot
+# touch another conversation's work; a human at a keyboard is not a
+# conversation. Without this, the inbox (which lists every job) and the report
+# behind it (which needs a session to exist at all) would disagree about who is
+# allowed to look — shipping a drill-down that can never answer from a client.
+proc humanReadable*(args: JsonNode): bool =
+  result = args{"__session", "human"}.getBool(false) or
+           args{"human"}.getBool(false)
+
 proc authorized*(c: Component, args: JsonNode): StoreItem =
   result = c.storeGet("fleetjob", args{"jobId"}.getStr(""))
+  if humanReadable(args): return
   if result.value{"owner"}.getStr("") != owner(args): refuse("foreign fleet job")
 proc createJob*(c: Component, args: JsonNode): JsonNode =
   let session = owner(args)

@@ -165,8 +165,13 @@ proc taskReader(verb: string): ToolHandler =
         "remoteSession": j["sessionId"], "detail": "Full transcript remains on the pinned peer; open this remoteSession there."}
     else: publicJob(j)
 for name in ["status", "result"]:
+  # `human` is the one way to read a job without a conversation: the owner
+  # check keeps CONVERSATIONS apart, and a person at a keyboard is not one. The
+  # same argument gates fleet_task_inbox's sibling reads; without it a client
+  # could list every job and then be unable to open any of them.
   discard comp.tool("fleet_task_" & name, schema(%*{
-    "jobId": {"type": "string"}}, @["jobId"],
+    "jobId": {"type": "string"},
+    "human": {"type": "boolean", "description": "Human-scope read: a person may read any job this harness submitted, without session context (the inbox needs this to open what it lists)"}}, @["jobId"],
     "Read an owned remote task's durable status or cached bounded report. Unreachable and unknown do not mean failed or successful; no submission replay. Completion is pushed automatically."),
     taskReader(name),
     %*{"onDemand": true, "effect": "read", "sessionContext": true})
