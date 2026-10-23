@@ -34,6 +34,12 @@ are `failed` and `uncertain` — see "When things go wrong".)
 
 ### When it settles
 
+A connected client learns immediately: the settle transition publishes
+`ev.fleet.settled`, which carries enough to render a toast without a store read
+(peer, objective, status, bounded summary, artifact descriptor). Disconnected
+clients learn on their next inbox read — the event is a convenience, and the
+job record is the durable truth. Re-reading a settled job never re-alerts.
+
 The job's record gains a self-contained notice, and the row shows:
 
 | Field | Meaning |
@@ -119,6 +125,6 @@ An `uncertain` job is honest; a `settled`-with-guess would not be.
 
 | ▢ | Slice |
 |---|---|
-| ▢ | `ev.fleet.settled` broadcast so a connected TUI can toast instead of polling |
+| ✅ | `ev.fleet.settled` broadcast so a connected TUI can toast instead of polling |
 | ▢ | TUI: `/tasks` list, toast, client-local seen markers, baseline-on-connect, drill-down |
 | ▢ | Artifact retrieval for a settled activation |

@@ -229,7 +229,8 @@ proc summary*(text: string): string =
 proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
   var item = c.storeGet("fleetjob", id)
   var j = item.value.copy()
-  if j{"state"}.getStr("") == "settled": return
+  let wasSettled = j{"state"}.getStr("") == "settled"
+  if wasSettled: return
   # Every remotely loaded task is validated again before authority is spent.
   validateTask(j["task"])
   let p = j["receipt"]
@@ -436,6 +437,38 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     j["diagnostic"] = %summary(e.msg)
   j["checkedAt"] = %epochTime()
   discard c.storePut("fleetjob", id, j, item.rev)
+  # Settle event (docs/FLEET-INBOX.md): a CONNECTED client should be told, not
+  # have to poll. Emitted only on a real transition — a settled job returns
+  # early above, so re-reads never re-alert — and fire-and-forget: nobody is
+  # required to be listening, and a missed event costs nothing because the job
+  # record is the durable truth (the inbox reads it later).
+  #
+  # Carries enough to render a notification without a store round trip, and
+  # deliberately no authority: an event never grants anything, and a client
+  # that wants to act on it calls a tool like any other caller.
+  if not wasSettled and j{"state"}.getStr("") == "settled":
+    let notice = j{"notice"}
+    var payload = %*{
+      "jobId": id,
+      "state": "settled",
+      "peer": j{"receipt"}{"expect"}{"name"}.getStr(""),
+      "peerId": j{"receipt"}{"expect"}{"instanceId"}.getStr(""),
+      "objective": summary(j{"task"}{"content"}.getStr("")),
+      "status": notice{"status"}.getStr("unknown"),
+      "activation": notice{"activation"}.getInt(j{"completion"}{"seq"}.getInt(1)),
+      "summary": notice{"summary"}.getStr(""),
+      "transcriptCommitted": notice{"transcriptCommitted"}.getBool(false),
+      "at": epochTime(),
+    }
+    if payload{"peer"}.getStr("").len == 0:
+      # A removed instance still reports what it did: label the route it ran on.
+      payload["peer"] = %j{"receipt"}{"target"}.getStr("")
+    if notice{"artifact"} != nil and notice{"artifact"}.kind == JObject:
+      var desc = newJObject()
+      for key in ["name", "mediaType", "size", "digest"]:
+        if notice{"artifact"}{key} != nil: desc[key] = notice["artifact"][key]
+      payload["artifact"] = desc
+    c.emit("ev.fleet.settled", payload)
 
 proc resultPage*(c: Component, args: JsonNode, run: CommandRunner): JsonNode =
   let j = authorized(c, args).value

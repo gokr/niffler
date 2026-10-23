@@ -40,7 +40,14 @@ wall-clock deadline. Cancel is local queued-only; later cancellation is explicit
 on the peer. The result tool reads a cached bounded summary, not a blocking relay.
 
 Terminal job and `notice:{kind:"fleet-settled",jobId,status,summary}` commit in
-one revision before notification. Summary is a 2048-byte UTF-8-safe prefix plus
+one revision before notification. A real transition into `settled` also
+publishes `ev.fleet.settled` (an event, fire-and-forget): `{jobId, state, peer,
+peerId, objective, status, activation, summary, transcriptCommitted, artifact?,
+at}`. It exists so a connected client can alert instead of polling, and it
+grants nothing — a client that wants to act calls a tool like any other caller.
+No listener is required: the job record is the durable truth, so a missed event
+costs a later read, never the notice. Re-reads of an already-settled job never
+re-emit, so a client cannot be re-alerted by polling. Summary is a 2048-byte UTF-8-safe prefix plus
 optional ellipsis. Hidden runner tool `fleet_notices {session,peek?,ack?}` reads
 without consuming; ack marks delivered only for that owner. The conversation
 runner appends a machinery message durably BEFORE ack. It scans canonical
