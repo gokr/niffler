@@ -635,8 +635,8 @@ in phase 1, which stay env forever) is `research/SETTINGS.md`.
 
 ## Environment variables
 
-All components load `.env` (from the harness root and cwd, existing shell
-env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
+All components load the harness root's `.env` (never a working directory's —
+see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -775,11 +775,23 @@ NIF_OPENAI_MODEL=deepseek-chat
 ```
 
 Loading rules (same in the Nim, Go and TypeScript SDKs): existing shell
-environment **always wins** over `.env`; the SDKs load the current
-directory's `.env` first and the harness root's second, first definition of
-a key wins. A Wails-hosted client loads them in the opposite order (harness
-root, then cwd), so there the root file wins. So
-`NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
+environment **always wins** over `.env`, and the only file read is the
+harness root's own — `<root>/.env`, where the root is `NIF_ROOT` when an
+operator set it, else the clone containing the binary.
+
+**A working directory is not a trust boundary.** The harness is routinely
+launched from inside the repositories it works on, so a `.env` in the cwd — or
+in a conversation workspace or plugin checkout, which both also live *inside*
+the harness root — must never be honoured: a committed file there would hand
+that repository `NIF_AUTO_APPROVE=1` (approval bypass) or a `NIF_NATS_URL`
+pointing at a bus it controls. Earlier releases did read the cwd's `.env`;
+this rule removes exactly that. A refused file is reported on stderr
+(`dotenv: IGNORING .env — only <root>/.env is trusted: …`) rather than skipped
+silently, so a genuine misconfiguration stays diagnosable, and with no trusted
+root at all (a binary outside a clone layout, no `NIF_ROOT`) no `.env` is
+loaded and the environment is the only source.
+
+So `NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
 `unset NIF_OPENAI_API_KEY` before starting if you want the file value.
 `.env` must be a plain regular file: a symlinked or hardlinked copy is
 refused, the file is capped at 1 MiB, and values are never `$VAR`-expanded.

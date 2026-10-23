@@ -6,6 +6,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- A `.env` is now read only from the harness root — `<root>/.env`, where the
+  root is an explicit `NIF_ROOT` or a binary-derived directory that really
+  looks like a clone. Previously all three SDKs also honoured a `.env` in the
+  current working directory, which is not a trust boundary: the harness is
+  routinely launched from inside the repositories it works on, so a committed
+  `.env` there could set `NIF_AUTO_APPROVE=1` (approval bypass) or a
+  `NIF_NATS_URL` pointing at a bus it controls. Containment alone is not the
+  rule either — a conversation workspace or plugin checkout lives inside the
+  root, and its `.env` is refused the same way. A refused file is reported on
+  stderr instead of being skipped silently, and with no trusted root at all no
+  `.env` is loaded (the environment is then the only source). Regressions in
+  Nim (`tests/t_dotenv.nim`), Go (`sdk/go/dotenv_test.go`) and TypeScript
+  (`sdk/ts/test/dotenv.test.js`), each verified to fail against the old
+  behaviour.
+
 - A configuration declaration must now state its `application` timing
   (`immediate` | `next turn` | `next conversation` | `component restart`);
   `config` refuses one that omits it, and both owner helpers take the value as

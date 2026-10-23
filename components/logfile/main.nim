@@ -12,7 +12,7 @@ import regex
 import niffler/sdk
 import niffler/configowner
 
-loadDotEnv(".env", rootDir() / ".env")
+loadDotEnv(harnessRoot() / ".env")
 
 const
   DefaultMaxBytes = 10_485_760

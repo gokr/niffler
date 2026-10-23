@@ -183,8 +183,19 @@ pass. Repository status is not a claim that installed binaries were updated.
   recorded in [SKILL-LOCATIONS.md](SKILL-LOCATIONS.md).
 - [ ] Add optional external scan/import from a data-driven location registry;
   approval-gated copy, no overwrite by default, bounded safe tree handling.
-- [ ] Specify core/root dotenv versus client bootstrap dotenv; regressions for
+- [x] Specify core/root dotenv versus client bootstrap dotenv; regressions for
   explicit remote connection paths and hostile repository approval overrides.
+  Settled identically in all three SDKs (`sdk/dotenv.nim`, `sdk/go/dotenv.go`,
+  `sdk/ts/src/dotenv.ts`): the only file read is `<root>/.env`, where the root
+  is an explicit `NIF_ROOT` or a binary-derived directory that actually looks
+  like a clone (`niffler.nimble` / `var/bin`). Containment is NOT enough, so a
+  conversation workspace or plugin checkout inside the root is refused too.
+  No trusted root means no `.env` at all, and a refusal prints one stderr line.
+  Regressions: `tests/t_dotenv.nim` (`make test-dotenv`),
+  `sdk/go/dotenv_test.go` (inside `make gotest`), `sdk/ts/test/dotenv.test.js`
+  (`make test-dotenv-ts`); each was verified to fail against the old
+  cwd-honouring behaviour. The Wails-hosted client's opposite load order is
+  gone with it — there is only one order now.
 
 ### 7. Acceptance and release readiness
 

@@ -248,7 +248,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 
 ## Environment variables
 
-所有组件加载 `.env`（从 harness 根目录和 cwd，已存在的 shell 环境始终优先——见下文）并继承 core 的环境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 和 `NIF_LSP_BIN` 是仅用于构建和脚本的旋钮（`NIF_NATS_CLI` 是例外——树内 bash 演示 `examples/dialog/dialog.sh` 将其作为最后手段的 nats CLI 读取）：它们引导 `make` 和 `scripts/`，随附组件从不查询它们——仅测试用的 `ctxtest` 夹具读取 `NIF_REPO_ROOT` 以加载 fabric 示例——因此它们不属于下面运行时表的一部分。`NIF_LSP_BIN` 在那里仍有一行：它是 `make install-lsp` 的目标目录，其默认值（`~/.local/bin`）也是 `lsp` 组件搜索的位置。完整集合：
+所有组件加载 harness 根目录的 `.env`（绝不加载工作目录的——见[`.env` 文件](#the-env-file)）并继承 core 的环境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 和 `NIF_LSP_BIN` 是仅用于构建和脚本的旋钮（`NIF_NATS_CLI` 是例外——树内 bash 演示 `examples/dialog/dialog.sh` 将其作为最后手段的 nats CLI 读取）：它们引导 `make` 和 `scripts/`，随附组件从不查询它们——仅测试用的 `ctxtest` 夹具读取 `NIF_REPO_ROOT` 以加载 fabric 示例——因此它们不属于下面运行时表的一部分。`NIF_LSP_BIN` 在那里仍有一行：它是 `make install-lsp` 的目标目录，其默认值（`~/.local/bin`）也是 `lsp` 组件搜索的位置。完整集合：
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -369,7 +369,11 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`；SDK 先加载当前目录的 `.env`，再加载 harness 根目录的，键的首次定义优先。基于 Wails 的客户端以相反顺序加载它们（harness 根目录，然后 cwd），因此那里根文件优先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
+加载规则（Nim、Go 和 TypeScript SDK 中相同）：已存在的 shell 环境**始终优先**于 `.env`，且唯一读取的文件是 harness 根目录自己的——`<root>/.env`，其中 root 在操作者设置了 `NIF_ROOT` 时即为该值，否则为二进制所在的克隆。
+
+**工作目录不是信任边界。** harness 经常从它正在处理的仓库内部启动，因此 cwd 中的 `.env`——或会话工作区、插件检出目录中的 `.env`（这两者也位于 harness 根目录**内部**）——绝不能被采纳：那里的提交文件会让该仓库获得 `NIF_AUTO_APPROVE=1`（审批绕过），或获得指向它自己控制的 bus 的 `NIF_NATS_URL`。更早的版本确实会读取 cwd 的 `.env`；本规则移除的正是这一点。被拒绝的文件会在 stderr 上报告（`dotenv: IGNORING .env — only <root>/.env is trusted: …`）而不是静默跳过，因此真实的配置错误仍然可诊断；若完全不存在可信根（二进制不在克隆布局中且未设 `NIF_ROOT`），则完全不加载 `.env`，环境变量是唯一来源。
+
+所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 覆盖文件，如果你想使用文件值，在启动前 `unset NIF_OPENAI_API_KEY`。`.env` 必须是普通常规文件：符号链接或硬链接的副本被拒绝，文件上限为 1 MiB，值从不进行 `$VAR` 展开。
 
 仓库根目录中的 `.env.example` 是参考副本——每个变量都被注释掉，其默认值作为注释值——但它在两个方向上都不详尽（上表中的少数条目在其中缺失，且它携带 harness 在正常操作中不读取的测试/工具变量）；该表是权威。
 

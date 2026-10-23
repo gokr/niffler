@@ -13,7 +13,7 @@ import niffler/configowner
 import niffler/maskedtools
 import ../../sdk/dotenv
 
-loadDotEnv(".env", rootDir() / ".env")
+loadDotEnv(harnessRoot() / ".env")
 
 const
   DefaultRingMessages = 2000

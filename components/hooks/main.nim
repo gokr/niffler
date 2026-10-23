@@ -141,8 +141,7 @@ proc runHook(command, subject, payload: string, timeoutMs: int) =
 
 proc main() =
   let comp = newComponent("hooks", "0.1.0")
-  let root = getEnv("NIF_ROOT", getCurrentDir())
-  loadDotEnv(".env", root / ".env")
+  loadDotEnv(harnessRoot() / ".env")
 
   let timeoutMs = block:
     try:

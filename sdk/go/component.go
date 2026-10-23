@@ -700,7 +700,7 @@ func (c *Component) Connect() error {
 	// Ordinary peers inherit local configuration. Explicitly addressed clients
 	// must not load local dotenv into process-global state between connections.
 	if !c.explicitBus {
-		LoadDotEnv(".env", filepath.Join(os.Getenv("NIF_ROOT"), ".env"))
+		LoadDotEnv(filepath.Join(HarnessRoot(), ".env"))
 	}
 
 	url, err := c.dial()

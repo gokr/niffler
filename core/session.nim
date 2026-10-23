@@ -35,7 +35,7 @@ proc main() =
     quit(1)
   let sessionId = paramStr(1)
   let root = getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
-  loadDotEnv(".env", root / ".env")
+  loadDotEnv(root / ".env")
 
   if not checkStatus(nats_Open(-1)):
     quit(1)
