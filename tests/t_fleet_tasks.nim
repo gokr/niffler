@@ -241,6 +241,28 @@ proc main() =
       # real `origin` turn). The contract worth pinning here is that the inbox
       # EXPOSES it and does not invent a human-read marker of its own — the row
       # carries no "read"/"seen" field at all.
+    # The artifact must arrive as the peer produced it. A whitelist of
+    # name/mediaType/size/digest matched NONE of a coding artifact's fields
+    # (version/observed/base/head/dirty/verification/headMoved/onBase/diffstat/
+    # producedCommit), so the row claimed an artifact and described nothing.
+    # Guarded by row != nil: an unguarded `row{"artifact"} != nil` is vacuously
+    # true on a nil row, so these would never fire on the very failure they
+    # exist to catch.
+    if row != nil:
+      # An ADVISORY task has no coding artifact: core stamps one only when a
+      # task policy ran (unattended coding). So the row legitimately has none —
+      # and the bug this pins is different: when there IS one, it must arrive
+      # as produced, not filtered through a descriptor whitelist that matched
+      # none of its fields.
+      check("an advisory row carries no coding artifact",
+            row{"artifact"} == nil, $row)
+      if row{"artifact"} != nil and row{"artifact"}.kind == JObject:
+        check("the row's artifact keeps its coding shape",
+              row{"artifact"}{"version"}.getInt(0) >= 1 and
+              row{"artifact"}{"observed"} != nil, $row{"artifact"})
+        check("the row's artifact names a commit or says why not",
+              row{"artifact"}{"head"}{"short"} != nil or
+              row{"artifact"}{"reason"}.getStr("").len > 0, $row{"artifact"})
       check("the row carries no human seen marker of its own",
             row{"read"} == nil and row{"seen"} == nil and row{"unread"} == nil, $row)
       check("the row reports the runner's delivery flag verbatim",
@@ -458,6 +480,40 @@ proc main() =
     coding{"notice", "artifactSummary"}.getStr("").contains("commit"), $coding)
   check("the unattended submission was not replayed",
     submissions == submissionsBeforeTask + 1, $submissions)
+
+  # --- the artifact must survive into the INBOX ROW ----------------------
+  # This is the regression the whitelist bug needed and did not have: the row
+  # used to copy only name/mediaType/size/digest, none of which a coding
+  # artifact has, so it claimed an artifact and described nothing. Asserting on
+  # the STORED notice (above) could never catch that — the damage happened when
+  # building the row.
+  block inboxArtifact:
+    let inbox = taskInbox(c, %*{"state": "settled"})
+    var row: JsonNode
+    for item in inbox{"items"}:
+      if item{"jobId"}.getStr("") == codingId: row = item
+    check("the coding task appears in the inbox", row != nil, $inbox)
+    if row != nil:
+      let art = row{"artifact"}
+      check("the row carries the artifact object", art != nil and art.kind == JObject, $row)
+      if art != nil and art.kind == JObject:
+        check("the row's artifact is the one the peer produced",
+              art{"version"}.getInt(0) == 1 and
+              art{"base", "commit"}.getStr("") == peerBase, $art)
+        check("the row's artifact names the commit, not a media descriptor",
+              art{"producedCommit"}.getBool(false) and
+              art{"head", "short"}.getStr("").len >= 7, $art)
+        check("the row's artifact keeps the human one-liner",
+              art{"summary"}.getStr("").contains("commit"), $art)
+        check("the row's artifact is not a name/size descriptor shell",
+              art{"name"} == nil and art{"mediaType"} == nil, $art)
+    # And the settle EVENT carries the same, so a toast can say what changed.
+    var eventArtifact: JsonNode
+    for e in settleEvents():
+      if e{"jobId"}.getStr("") == codingId: eventArtifact = e{"artifact"}
+    check("the settle event carries the coding artifact too",
+          eventArtifact != nil and eventArtifact{"producedCommit"}.getBool(false),
+          $eventArtifact)
   report("FLEET TASKS TEST")
 
 main()

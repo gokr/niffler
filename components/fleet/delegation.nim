@@ -475,10 +475,9 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       # A removed instance still reports what it did: label the route it ran on.
       payload["peer"] = %j{"receipt"}{"target"}.getStr("")
     if notice{"artifact"} != nil and notice{"artifact"}.kind == JObject:
-      var desc = newJObject()
-      for key in ["name", "mediaType", "size", "digest"]:
-        if notice{"artifact"}{key} != nil: desc[key] = notice["artifact"][key]
-      payload["artifact"] = desc
+      # Whole artifact, as above: a toast should be able to say "commit 4a54dee
+      # +212/−40 on base 9cba035", which no name/size/digest descriptor can.
+      payload["artifact"] = notice{"artifact"}.copy()
     c.emit("ev.fleet.settled", payload)
 
 proc resultPage*(c: Component, args: JsonNode, run: CommandRunner): JsonNode =
@@ -613,11 +612,18 @@ proc inboxEntry(j: JsonNode, peer: string): JsonNode =
       "transcriptCommitted": notice{"transcriptCommitted"}.getBool(false),
     }
     if notice{"artifact"} != nil and notice{"artifact"}.kind == JObject:
-      # Descriptor only (name/size/media/digest) — bytes are never carried in
-      # an inbox row.
-      var desc = newJObject()
-      for key in ["name", "mediaType", "size", "digest"]:
-        if notice{"artifact"}{key} != nil: desc[key] = notice["artifact"][key]
+      # The artifact as the peer produced it, carried whole.
+      #
+      # A whitelist of "descriptor" fields was wrong here and shipped wrong: it
+      # listed name/mediaType/size/digest, while a coding artifact carries
+      # version/observed/base/head/dirty/untracked/verification/headMoved/
+      # onBase/diffstat/producedCommit — none of the four. The row claimed to
+      # describe an artifact and described nothing.
+      #
+      # Carrying it whole is safe because the producer bounds it
+      # (codingartifact.nim caps the diffstat and the verification list), and a
+      # future field must not need a change here to become visible.
+      var desc = notice{"artifact"}.copy()
       if notice{"artifactSummary"} != nil:
         desc["summary"] = %notice{"artifactSummary"}.getStr("")
       row["artifact"] = desc
