@@ -35,7 +35,7 @@ needed (C12) and a component written in any language can own settings.
 | `title`, `description` | label/help for a generated form |
 | `secret` | write-only: reads report `set: true`, never the value |
 | `readOnly` | excluded from patches (counters, caches, derived state) |
-| `application` | `immediate` \| `next turn` \| `next conversation` \| `component restart` |
+| `application` | `immediate` \| `next turn` \| `next conversation` \| `component restart` — **required, no default** |
 | `default` (JSON Schema) | the value used when the owner has no explicit value |
 
 `scope` other than `instance` is refused today: shared settings need the
@@ -72,12 +72,26 @@ open, and a store document is already instance-scoped.
 5. **Owner unavailable.** The declaration stays listable (it is durable), but
    `config_get`/`config_patch` report the owner as unavailable rather than
    inventing values. No silent fallback to defaults.
-6. **Timing is reported, not enforced by config.** `application` tells the
-   caller when a change takes effect; the owner decides what that means.
+6. **Timing is reported, not enforced by config — but it is REQUIRED.** The
+   owner decides what a value means; `config` refuses a declaration that omits
+   `application`, because a silent "immediate" default let an owner promise
+   more than it delivered (observe captures its byte caps at creation and must
+   say `component restart`). Both owner helpers make it a typed argument
+   (`Application` in Nim, `Declaration.Application` in Go).
 7. **No prompt content.** No config value enters a frozen prefix; a change is
    visible at the owner's next call (C5, prompt-cache discipline).
 8. **Scope is organisation, not authorization** (§11.6.2): approval gates the
    mutation, the bus itself is trusted.
+
+## The rule that decides whether a variable may be a domain
+
+Before exposing a variable, find who **enforces** it:
+`rg -n 'NIF_YOUR_VAR' core/ sdk/`. If core reads it too, a component-level
+domain is a lie — the stored value changes a mirror and not the rule. That is
+how the `agent.delegation` slice failed: `maxDepth` is enforced in
+`core/dispatch.nim` (whose comment explains the check cannot live in the
+component's handler) and `wakes` in `core/conversation.nim`. Secrets,
+deployment paths, subscription sets and test seams stay in env by category.
 
 ## Owner helper (Nim)
 

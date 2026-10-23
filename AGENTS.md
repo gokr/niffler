@@ -167,6 +167,16 @@ working in every language.
   `x-harness.runner` (`true` on a hidden tool = exempt from a subagent's
   frozen tool allowlist, for replaceable runner machinery — compaction,
   recall; docs/WIRE.md "x-harness schema extensions").
+- **Before making an env var a setting, find its authoritative reader**
+  (`rg -n 'NIF_X' core/ sdk/`). If core enforces it, a component-level config
+  domain is a lie: `config_patch` would change the component's mirror while the
+  rule keeps refusing — accepted and ignored, the worst shape of failure. This
+  is how the `agent.delegation` slice failed (`maxDepth` lives in
+  `core/dispatch.nim`, `wakes` in `core/conversation.nim`); six other owner
+  domains passed the same check. Secrets, deployment paths, subscription sets
+  and test seams stay in env by category. Detail:
+  docs/research/CONFIG-CONTRACT.md "The rule that decides whether a variable
+  may be a domain".
 - **Rename a SYMBOL, never a string that looks like one.** `%*{"maxBytes": v}`
   makes a JSON key and an identifier textually identical, so a regex rename
   silently rewrites reply/document keys and the build cannot see it — it has

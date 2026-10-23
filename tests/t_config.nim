@@ -78,7 +78,7 @@ discard comp.onIdle(100) do (c: Component):
     "domain": "cfgowner.main", "version": 1, "owner": "cfgowner",
     "ownerTool": "owner_config", "title": "Owner settings",
     "description": "Fixture domain.",
-    "kind": kind, "id": id,
+    "kind": kind, "id": id, "application": "immediate",
     "schema": {"type": "object",
       "properties": {
         "greeting": {"type": "string", "default": "hello", "x-config": {"title": "Greeting"}},
@@ -130,15 +130,23 @@ proc main() =
         empty{"count"}.getInt(-1) == 0, $empty)
 
   # --- a declaration this surface cannot enforce is refused ----------------
+  # A declaration without a timing is refused before anything else: "when does
+  # this take effect" has no default, so an owner cannot inherit "immediate".
+  let noTiming = call(nc, "config", "config_declare", %*{"declaration": {
+    "domain": "bad.timing", "owner": "cfgowner", "kind": "x",
+    "schema": {"type": "object"}}})
+  check("a declaration without application is refused, not defaulted",
+        noTiming{"code"}.getStr() == "bad-request" and
+        noTiming{"error"}.getStr().contains("application is required"), $noTiming)
   let unsupported = call(nc, "config", "config_declare", %*{"declaration": {
-    "domain": "bad.one", "owner": "cfgowner", "kind": "x",
+    "domain": "bad.one", "owner": "cfgowner", "kind": "x", "application": "immediate",
     "schema": {"type": "object", "oneOf": []}}})
   check("an unenforceable schema keyword is refused, not ignored",
         unsupported{"code"}.getStr() == "bad-request" and
         unsupported{"error"}.getStr().contains("unsupported schema keyword"), $unsupported)
   let badScope = call(nc, "config", "config_declare", %*{"declaration": {
     "domain": "bad.two", "owner": "cfgowner", "kind": "x", "scope": "shared",
-    "schema": {"type": "object"}}})
+    "application": "immediate", "schema": {"type": "object"}}})
   check("shared scope is refused rather than silently instance-scoped",
         badScope{"code"}.getStr() == "bad-request", $badScope)
 

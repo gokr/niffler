@@ -149,8 +149,25 @@ pass. Repository status is not a claim that installed binaries were updated.
   reader. If it is core, a component-level domain is a lie.
 - [ ] Harness/session birth and context defaults (the remaining half of this
   item: `NIF_RUNNER_IDLE_S`, context-window defaults, birth-time compaction).
-- [ ] Inventory remaining runtime env by owner; classify bootstrap, developer
-  test seam, secret or migratable setting before removing any variable.
+- [x] **The authoritative-reader rule** (learned by shipping the mistake):
+  before exposing a variable as a setting, find who ENFORCES it.
+  `rg -n 'NIF_YOUR_VAR' core/ sdk/` is the whole check. Three outcomes:
+  - **only the owner reads it** → safe to migrate (repomap, fetch, logfile,
+    models, lsp, observe — all verified);
+  - **core reads it too** → a component domain is a LIE, because the stored
+    value changes the mirror and not the rule (this is exactly how the
+    `agent.delegation` slice went wrong: `maxDepth` is enforced in
+    `core/dispatch.nim`, `wakes` in `core/conversation.nim`). Leave it in env,
+    or accept that migrating it means teaching core to read an owner's record —
+    which is the circularity §Q5 rejects for boot-adjacent values;
+  - **it is a secret, a deployment path, a subscription set, or a test seam**
+    → leave it in env by category (`.env`, `NIF_AUTO_APPROVE`, provider keys,
+    `NIF_MODELS_URL`, `NIF_LOGFILE_SUBJECTS`, `NIF_MOCK_*`/`NIF_TEST_*`).
+- [ ] Remaining inventory work (classification per variable, not new seams):
+  `NIF_HOOKS_*` (excluded, see §5), `NIF_AGENT_MODEL_*` (environment fact),
+  `NIF_RUNNER_IDLE_S`, context-window and birth-time compaction defaults
+  (core-owned — apply the rule above), `NIF_REPOMAP_*` (already dual: stored
+  value wins, env is the bench seam).
 
 ### 6. Discovery and client cleanup
 

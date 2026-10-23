@@ -6,6 +6,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- A configuration declaration must now state its `application` timing
+  (`immediate` | `next turn` | `next conversation` | `component restart`);
+  `config` refuses one that omits it, and both owner helpers take the value as
+  a typed argument. There is no silent "immediate" default — that default let
+  an owner promise more than it delivered.
 - The repository now includes a two-minute animated explainer at
   `website/movie/`, published at `/movie/` by the existing Pages workflow
   (which deploys all of `website/`). Ten scenes, self-contained and offline —

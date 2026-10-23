@@ -370,7 +370,15 @@ comp.tool(%*{"hidden": true, "effect": "write"}):
     if scope != "instance":
       return errResult("scope '" & scope & "' is not implemented; only 'instance' is",
                        "bad-request")
-    let application = declaration{"application"}.getStr("immediate")
+    # REQUIRED, with no default. "When does this take effect" is a claim the
+    # owner must make deliberately: a silent "immediate" default let a
+    # component promise more than it delivers (observe captured its caps at
+    # creation but would have declared "immediate").
+    let application = declaration{"application"}.getStr("")
+    if application.len == 0:
+      return errResult("application is required (immediate | next turn | " &
+                       "next conversation | component restart) — state when a " &
+                       "change takes effect", "bad-request")
     if application notin ["immediate", "next turn", "next conversation", "component restart"]:
       return errResult("invalid application timing", "bad-request")
     if declaration{"schema"} == nil:

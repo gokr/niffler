@@ -122,6 +122,24 @@ proc ownerOp*(c: Component, store: OwnerStore, args: JsonNode,
     errResult("unsupported config op '" & args{"op"}.getStr("") & "'",
               "bad-request")
 
+type
+  Application* = enum
+    ## When a declared change takes effect. There is deliberately no default
+    ## anywhere: a declaration that omits it is refused by config.
+    appImmediate = "immediate"
+    appNextTurn = "next turn"
+    appNextConversation = "next conversation"
+    appComponentRestart = "component restart"
+
+proc declaration*(domain, owner, ownerTool, title, description: string,
+                  kind: string; application: Application;
+                  schema: JsonNode; id = "main"; version = 1): JsonNode =
+  ## Build a declaration with the timing REQUIRED as a typed argument, so an
+  ## owner cannot inherit a silent "immediate" by forgetting the field.
+  %*{"domain": domain, "version": version, "owner": owner,
+     "ownerTool": ownerTool, "title": title, "description": description,
+     "kind": kind, "id": id, "application": $application, "schema": schema}
+
 proc declareConfig*(c: Component, declaration: JsonNode, timeoutMs = 1_000): bool =
   ## Publish this owner's declaration. Best effort by design: a failed
   ## declaration must not take the owner down — it only means the domain is not
