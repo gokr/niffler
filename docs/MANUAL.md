@@ -505,6 +505,25 @@ startup on disagreement, safe to drop. Only the sqlite engine implements it
 so far; tidb answers `code: "unsupported"` rather than running a text
 search and calling it a success (docs/WIRE.md "Store contract").
 
+**TiDB schema changes must avoid `DROP PRIMARY KEY`.** Since v5.0 every TiDB
+table has a *clustered* index, and v8.5 refuses
+`ALTER TABLE ... DROP PRIMARY KEY` with Error 8200 ("Unsupported drop primary
+key when the table is using clustered index"). A migration that needs a
+different primary key is a table rebuild: create the new shape, `INSERT ...
+SELECT`, then one atomic `RENAME TABLE old TO scratch, new TO old`. Because TiDB
+DDL is **not** transactional, write such a migration to converge on a
+partially-applied state (`DROP TABLE IF EXISTS` the scratch, `ADD COLUMN IF NOT
+EXISTS`), or a half-applied file leaves a schema goose cannot retry — which is
+exactly how the tidb engine came to be unbootable while the sqlite suite stayed
+green. The live engine suite only runs with a DSN:
+
+```bash
+docker run -d --rm -p 4000:4000 --name niffler-tidb pingcap/tidb:v8.5.0
+NIF_STORE_TIDB_DSN='root@tcp(127.0.0.1:4000)/test' make test-store-tidb
+```
+
+A SQLite-only green build proves nothing about TiDB DDL.
+
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
   contract on SQLite. Documents live verbatim as JSON TEXT; `put` is one
   atomic statement (doc + rev move together — the KV engine's two-key

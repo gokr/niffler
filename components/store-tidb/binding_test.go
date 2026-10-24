@@ -37,10 +37,12 @@ func TestBindingNeverAdoptsLegacyRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustOK(t, call(t, putHandler(db, bindB), `{"kind":"bindingtest","id":"mine","value":{"v":3}}`))
-	mineA := mustOK(t, call(t, getHandler(db, owner), `{"kind":"bindingtest","id":"mine"}`))
-	if len(mineA) == 0 {
-		t.Fatal("own document missing")
-	}
+	// Same kind and id in two instances: each reads its own value, and the
+	// second instance's write did not resurrect the first's deleted row —
+	// that is the isolation this test exists for. (Reading A's copy back as a
+	// success would be the leak, not the assertion.)
+	mustFail(t, call(t, getHandler(db, owner), `{"kind":"bindingtest","id":"mine"}`), "not-found")
+	mustOK(t, call(t, getHandler(db, bindB), `{"kind":"bindingtest","id":"mine"}`))
 	for _, id := range []string{bindA, bindB} {
 		if _, err := db.Exec(`DELETE FROM docs WHERE instance_id=? AND kind='bindingtest'`, id); err != nil {
 			t.Fatal(err)

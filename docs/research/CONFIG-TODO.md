@@ -64,10 +64,41 @@ pass. Repository status is not a claim that installed binaries were updated.
 - [x] Document `NIF_INSTANCE_ID` as a bootstrap variable (manual + .env.example).
 - [x] Explicit `store_claim` admin operation for legacy rows (dry run by
   default, collision refusal, bounded resumable batches, approval-gated).
-- [ ] Two-instance tests: same kind/id isolation; no foreign restore/recover,
-  heartbeat execution, grants, leases or settings; metadata registry roundtrip.
-- [ ] Exercise TiDB against a real test database when available; don't treat
-  SQLite-only tests as proof of TiDB DDL or concurrency correctness.
+- [x] Store-layer two-instance tests: same kind/id isolation, per-instance
+  revision sequence, scoped search index, delete isolation, pagination cursors,
+  and binding refusing a different identity on the same file
+  (`store-sqlite/scope_test.go`, `binding_test.go`, mirrored live in
+  `store-tidb`).
+- [ ] Harness-layer two-instance tests (no foreign restore/recover, heartbeat
+  execution, grants, leases or settings) — these need two live harnesses, not
+  two owners in one store.
+- [x] Exercise TiDB against a real test database.
+  `docker run -p 4000:4000 pingcap/tidb:v8.5.0`, then
+  `NIF_STORE_TIDB_DSN='root@tcp(127.0.0.1:4000)/test' make test-store-tidb`
+  (and `go test ./...` in `components/store-tidb`). Both pass as of this run.
+
+  **It had never passed, because migration 3 could not apply on TiDB.**
+  `00003_document_instances.sql` used
+  `ALTER TABLE docs DROP PRIMARY KEY, ADD PRIMARY KEY(...)`; since TiDB v5.0
+  every table has a clustered index, and v8.5 refuses with Error 8200
+  (`Unsupported drop primary key when the table is using clustered index`).
+  So the tidb engine could not boot AT ALL — every live test errored in
+  `openStore`, and nothing caught it because this suite only runs when a DSN is
+  set. The migration is now a table rebuild (create `docs_rebuild`, copy,
+  atomic `RENAME TABLE`), written to converge on the half-applied state the old
+  file left behind: `ADD COLUMN IF NOT EXISTS` first, so a database that
+  already has `instance_id` keeps each row's owner instead of resetting it to
+  `''`. Verified against a simulated half-applied database: PK rebuilt, an
+  already-owned row kept its owner (`cccc…`), an unclaimed row stayed legacy.
+
+  Two test bugs surfaced with it: `t_store.nim` crashed (SIGSEGV on a nil JSON
+  node) reading `items` from the tidb engine's explicit
+  `code: "unsupported"` vector refusal, and asserted sqlite's bm25
+  ranked-paging shape on an engine that returns `ranked: false` by design
+  (no index; issue #94). Both sections now branch on what the engine
+  advertises and still assert its OWN contract. Also made the live TiDB tests
+  re-runnable: they reuse one database, so a leftover document failed a
+  first-put revision assertion on the second run.
 
 ### 3. Fleet registry in the store
 
