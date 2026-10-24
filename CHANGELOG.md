@@ -6,6 +6,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Configuration properties can now be marked `x-config.humanOnly`: readable and
+  reportable by a model, but writable only from a human's own conversation or
+  from a direct (sessionless) tool call. Approval alone was not enough for a
+  field whose meaning is "a human decided this" — the gate prompt reaches
+  whoever delegated the task, so one agent's yes could consent on another's
+  behalf. The caller is classified from what core owns (the injected
+  `__session.session` and its `sessionmeta.parent` lineage record); a subagent
+  is refused with `code: "human-only"`, and an unreadable lineage record fails
+  closed. An unrestricted `config_reset` is checked against every writable
+  property so it cannot clear a gate the narrow check protects. Ordinary
+  properties stay editable by a subagent.
+
+- `config_get` reports per-property application timing as `timings` (properties
+  whose timing differs from the domain's) and `humanOnly` as a name list, and
+  `config_patch` returns `applies` naming when each changed property takes
+  effect — so a caller is told "this lands next turn" instead of reading a new
+  value back and assuming the behaviour is already live.
+
 - A `.env` is now read only from the harness root — `<root>/.env`, where the
   root is an explicit `NIF_ROOT` or a binary-derived directory that really
   looks like a clone. Previously all three SDKs also honoured a `.env` in the

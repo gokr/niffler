@@ -85,7 +85,11 @@ discard comp.onIdle(100) do (c: Component):
         "retries": {"type": "integer", "minimum": 1, "maximum": 10,
                     "default": 3, "x-config": {"application": "next turn"}},
         "token": {"type": "string", "x-config": {"secret": true}},
-        "uptime": {"type": "integer", "x-config": {"readOnly": true}}},
+        "uptime": {"type": "integer", "x-config": {"readOnly": true}},
+        "paidCalls": {"type": "boolean", "default": false,
+                       "x-config": {"humanOnly": true,
+                                    "application": "next turn",
+                                    "title": "Allow paid API calls"}}},
       "additionalProperties": false}}
   try:
     let r = c.requestOk("config", "config_declare", %*{"declaration": decl}, 10_000)
@@ -183,7 +187,7 @@ proc main() =
         listed{"count"}.getInt(0) == 1 and
         listed{"domains"}[0]{"domain"}.getStr() == "cfgowner.main" and
         listed{"domains"}[0]{"ownerAvailable"}.getBool(false) and
-        listed{"domains"}[0]{"properties"}.getInt(0) == 4 and
+        listed{"domains"}[0]{"properties"}.getInt(0) == 5 and
         listed{"domains"}[0]{"secrets"}.getInt(0) == 1, $listed)
 
   let got = call(nc, "config", "config_get", %*{"domain": "cfgowner.main"})
@@ -193,6 +197,16 @@ proc main() =
         got{"schema"}{"properties"}{"retries"}{"maximum"}.getInt(0) == 10 and
         got{"schema"}{"properties"}{"retries"}{"x-config"}{"application"}.getStr() == "next turn",
         $got)
+
+  # --- timing is reported, never invented --------------------------------
+  check("per-property timing is reported, domain fallback implied",
+        got{"timings"}{"retries"}.getStr("") == "next turn" and
+        got{"timings"}{"paidCalls"}.getStr("") == "next turn" and
+        got{"timings"}{"greeting"} == nil and
+        got{"application"}.getStr("") == "immediate", $got{"timings"})
+  check("human-only properties are listed for a form to lock down",
+        got{"humanOnly"}.len == 1 and
+        got{"humanOnly"}[0].getStr("") == "paidCalls", $got{"humanOnly"})
 
   # --- validation happens before the owner is touched ----------------------
   let badType = call(nc, "config", "config_patch", %*{
@@ -217,6 +231,10 @@ proc main() =
     "domain": "cfgowner.main", "patch": {"greeting": "hi", "retries": 5}})
   check("a valid patch is applied by the owner",
         patched{"ok"}.getBool(false) and patched{"rev"}.getInt(0) == 1, $patched)
+  check("the patch reports when each change takes effect",
+        patched{"applies"}{"retries"}.getStr("") == "next turn" and
+        patched{"applies"}{"greeting"}.getStr("") == "immediate",
+        $patched{"applies"})
   let withSecret = call(nc, "config", "config_patch", %*{
     "domain": "cfgowner.main", "patch": {"token": "s3cr3t"}, "expectRev": 1})
   check("a secret is written", withSecret{"ok"}.getBool(false), $withSecret)
@@ -242,6 +260,54 @@ proc main() =
   check("defaults apply again after reset",
         afterReset{"values"}{"greeting"} == nil and
         afterReset{"defaults"}{"greeting"}.getStr() == "hello", $afterReset)
+
+  # --- human-only: approval is necessary but not sufficient ---------------
+  # A subagent may tune ordinary properties (it is doing the work) but must
+  # not turn on the paid-call gate that governs its own reach. The lineage
+  # fact core owns decides this: a sessionmeta record with a parent.
+  discard call(nc, "store", "put", %*{
+    "kind": "sessionmeta", "id": "cfg-child",
+    "value": {"parent": "cfg-root"}}, 10_000)
+  discard call(nc, "store", "put", %*{
+    "kind": "sessionmeta", "id": "cfg-human-conv",
+    "value": {"parent": ""}}, 10_000)
+
+  let childPaid = callAsSession(nc, "config", "config_patch", %*{
+    "domain": "cfgowner.main", "patch": {"paidCalls": true}}, "cfg-child")
+  check("a subagent cannot enable a human-only gate",
+        childPaid{"code"}.getStr() == "human-only" and
+        childPaid{"error"}.getStr().contains("human-only"), $childPaid)
+  check("the refused human-only change left the value alone",
+        call(nc, "config", "config_get", %*{"domain": "cfgowner.main"}){"values"}{"paidCalls"} == nil)
+
+  let childTuning = callAsSession(nc, "config", "config_patch", %*{
+    "domain": "cfgowner.main", "patch": {"retries": 7}}, "cfg-child")
+  check("a subagent may still tune ordinary settings",
+        childTuning{"ok"}.getBool(false), $childTuning)
+
+  let childReset = callAsSession(nc, "config", "config_reset", %*{
+    "domain": "cfgowner.main"}, "cfg-child")
+  check("an unrestricted reset is refused for a subagent (it would clear the gate)",
+        childReset{"code"}.getStr() == "human-only", $childReset)
+  let childNarrowReset = callAsSession(nc, "config", "config_reset", %*{
+    "domain": "cfgowner.main", "properties": ["retries"]}, "cfg-child")
+  check("a narrow reset of an ordinary property is still allowed",
+        childNarrowReset{"ok"}.getBool(false), $childNarrowReset)
+
+  let humanPaid = callAsSession(nc, "config", "config_patch", %*{
+    "domain": "cfgowner.main", "patch": {"paidCalls": true}}, "cfg-human-conv")
+  check("a human's own conversation may enable it",
+        humanPaid{"ok"}.getBool(false), $humanPaid)
+  let humanOff = callAsSession(nc, "config", "config_patch", %*{
+    "domain": "cfgowner.main", "patch": {"paidCalls": false}}, "cfg-human-conv")
+  check("and may turn it back off", humanOff{"ok"}.getBool(false), $humanOff)
+
+  let directPaid = call(nc, "config", "config_patch", %*{
+    "domain": "cfgowner.main", "patch": {"paidCalls": true}})
+  check("a direct (sessionless) call is a human operator, so it is allowed",
+        directPaid{"ok"}.getBool(false), $directPaid)
+  discard call(nc, "config", "config_patch", %*{
+    "domain": "cfgowner.main", "patch": {"paidCalls": false}})
 
   # --- owner gone: durable declaration, unknown values --------------------
   stopProcess(owner)

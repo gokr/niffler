@@ -173,6 +173,31 @@ proc waitRegistered*(nc: NatsConnection, comp: string, secs = 15): bool =
   result = waitRegisteredOn(sub, comp, secs)
   natsSubscription_Destroy(sub)
 
+proc callAsSession*(nc: NatsConnection, comp, tool: string, args: JsonNode,
+                    session: string, timeoutMs = 15_000): JsonNode =
+  ## Call a tool AS the given conversation. Core injects `__session.session`
+  ## for `x-harness sessionId: true` tools (overwriting anything a caller
+  ## sends); a test has no runner, so it reproduces that injection exactly.
+  ## Going through the real path is the point: the component must read
+  ## `c.sessionContext`, never a tool argument.
+  var withSession = args
+  withSession["__session"] = %*{"session": session}
+  let data = callEnvelope(tool, withSession).encode()
+  var msg: ptr natsMsg
+  let st = natsConnection_Request(addr msg, nc.conn,
+                                  ("svc." & comp & ".call").cstring,
+                                  data.cstring, data.len.cint,
+                                  timeoutMs.int64)
+  if st == NATS_TIMEOUT:
+    return %*{"error": "timeout"}
+  if not checkStatus(st):
+    return %*{"error": "nats " & $st}
+  let r = decode($natsMsg_GetData(msg))
+  natsMsg_Destroy(msg)
+  if r.kind == ekError:
+    return %*{"error": r.error{"message"}.getStr("component error")}
+  r.args
+
 proc call*(nc: NatsConnection, comp, tool: string, args: JsonNode,
            timeoutMs = 10_000): JsonNode =
   ## Request/reply envelope call; returns the result args, or an

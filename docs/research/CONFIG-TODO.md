@@ -97,8 +97,13 @@ pass. Repository status is not a claim that installed binaries were updated.
 - [x] Test invalid patches, resets, secret redaction, stale revisions,
   unavailable owner and durable declarations. Contract:
   [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md).
-- [ ] Subagent restrictions and per-property application timing enforcement
+- [x] Subagent restrictions and per-property application timing enforcement
   (timing is reported to callers today; the owner decides what it means).
+  `x-config.humanOnly` + caller classification from `sessionmeta.parent`
+  (a subagent is refused, a human's conversation and a sessionless operator
+  call are not, an unreadable lineage record fails closed); per-property timing
+  reaches callers as `config_get.timings` and `config_patch.applies`. Contract:
+  [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md).
 - [ ] Add schema-driven TUI editor in the TUI repository; no per-owner forms.
 
 ### 5. Owner migrations (each with its own tests and docs)
@@ -204,6 +209,11 @@ pass. Repository status is not a claim that installed binaries were updated.
 - [ ] Live isolated harness verification for SDK/store/conversation changes;
   two instances sharing one test TiDB dataset, without production migration.
 - [ ] Update manual translations, migration docs, PLAN and changelog.
+  Known gap at this slice: `MANUAL.zh.md`/`MANUAL.zh-TW.md` are missing three
+  whole sections — "Declared configuration (the `config` component)", "Pinned
+  providers never reroute" and "GitHub CLI and a token" — so the config surface
+  (including `humanOnly`) has no localized documentation yet. A section-level
+  refresh, not a line edit: translate those three, then re-sync the rest.
 - [ ] Separate plugin/TUI commits, tests and release tracking. No implied
   production restart, migration or plugin release from source edits alone.
 

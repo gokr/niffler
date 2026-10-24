@@ -35,8 +35,43 @@ needed (C12) and a component written in any language can own settings.
 | `title`, `description` | label/help for a generated form |
 | `secret` | write-only: reads report `set: true`, never the value |
 | `readOnly` | excluded from patches (counters, caches, derived state) |
-| `application` | `immediate` \| `next turn` \| `next conversation` \| `component restart` — **required, no default** |
+| `humanOnly` | a model may read it and report a needed change, but only a human's own conversation (or a direct, sessionless call) may write it — see below |
+| `application` | `immediate` \| `next turn` \| `next conversation` \| `component restart` — overrides the domain fallback |
 | `default` (JSON Schema) | the value used when the owner has no explicit value |
+
+### `humanOnly`, and why approval alone is not enough
+
+Approval answers "may I run this tool?". That is the wrong question for a
+field whose whole meaning is *a human decided this*. When a subagent asks to
+widen its own reach (`paidCalls`, an access gate, a budget), the approval
+prompt reaches **whoever delegated the task**, not the human who owns the
+setting — so an "approved" answer can be one agent consenting on another's
+behalf. `humanOnly` closes that: the mutation is refused for a subagent
+whatever the approval gate would have said.
+
+The caller is classified from facts core owns, never from anything the caller
+supplies. `config_patch`/`config_reset` carry `x-harness sessionId: true`, so
+core injects the runner's private `__session.session` at dispatch
+(`c.sessionContext` in the SDK), and the config component asks the store for
+that session's `sessionmeta`:
+
+| caller | outcome |
+|---|---|
+| no session (`""`: CLI, script, another component) | allowed — a human operator |
+| session with no `parent` | allowed — a human's own conversation |
+| session whose `sessionmeta.parent` is set | **refused** with `code: "human-only"` |
+| session whose lineage record is unreadable | **refused** — unreadable is not root |
+
+This deliberately avoids prompt hints and tool arguments: both are supplied
+by the party being classified. `sessionmeta.parent` is the same durable
+relation `agent_run` authorizes against, and `agent_spawn` writes it before
+the child's first turn, so a subagent cannot exist without one.
+
+Only `humanOnly` properties are guarded, so an autonomous subagent keeps
+editing ordinary tuning fields. An empty `properties` list on `config_reset`
+means "every mutable property", so it is checked against every writable name —
+otherwise the broadest form of reset would clear the gate the narrow check
+just protected.
 
 `scope` other than `instance` is refused today: shared settings need the
 shared-namespace decision that [CONFIG.md](CONFIG.md) §11.7 deliberately left
@@ -74,10 +109,19 @@ open, and a store document is already instance-scoped.
    inventing values. No silent fallback to defaults.
 6. **Timing is reported, not enforced by config — but it is REQUIRED.** The
    owner decides what a value means; `config` refuses a declaration that omits
-   `application`, because a silent "immediate" default let an owner promise
-   more than it delivered (observe captures its byte caps at creation and must
-   say `component restart`). Both owner helpers make it a typed argument
-   (`Application` in Nim, `Declaration.Application` in Go).
+   the domain `application`, because a silent "immediate" default let an owner
+   promise more than it delivered (observe captures its byte caps at creation
+   and must say `component restart`). Both owner helpers make it a typed
+   argument (`Application` in Nim, `Declaration.Application` in Go).
+
+   Per-property `x-config.application` overrides the domain fallback, so one
+   domain can mix a live knob with a restart-only buffer size. `config_get`
+   reports the override map as `timings` (properties that differ) alongside the
+   domain's `application`, and `config_patch` returns `applies` naming the
+   timing of every property it just changed — so a caller is told "this lands
+   next turn" instead of reading a new value back and assuming the new
+   behaviour is already live. Enforcement is the owner's: it is the only party
+   that knows how to honor a timing.
 7. **No prompt content.** No config value enters a frozen prefix; a change is
    visible at the owner's next call (C5, prompt-cache discipline).
 8. **Scope is organisation, not authorization** (§11.6.2): approval gates the

@@ -2803,13 +2803,14 @@ An owner publishes a *declaration* at startup (`config_declare`, hidden —
 infrastructure, not a model tool): a stable domain id, its store kind, the tool
 that answers `get`/`patch`/`reset`, a JSON Schema subset for the values, and
 per-property `x-config` metadata (`title`, `description`, `secret`, `readOnly`,
-`application`). Declarations are durable, so a stopped owner still lists.
+`humanOnly`, `application`). Declarations are durable, so a stopped owner still
+lists.
 
 | Tool | What it does |
 |---|---|
 | `config_list` | every declared domain: title, owner, property count, whether the owner currently answers |
-| `config_get {domain}` | current values, defaults, revision and schema together; **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
-| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only fields), then forward it to the owner, which performs the compare-and-set write |
+| `config_get {domain}` | current values, defaults, revision and schema together, plus `timings` (properties whose application timing differs from the domain's) and `humanOnly` (names only a human may change); **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
+| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only and human-only fields), then forward it to the owner, which performs the compare-and-set write; the reply's `applies` says when each changed property takes effect |
 | `config_reset {domain, properties?, expectRev?}` | drop explicit values so declared defaults apply again |
 
 All four are on-demand (`discover` then `invoke`): changing configuration is a
@@ -2822,6 +2823,19 @@ constraint would report a validation that never happened. `scope` is
 `instance` only; a declaration asking for `shared` is refused until that design
 lands. No value enters a frozen prompt prefix — a change is visible at the
 owner's next call. Contract: [research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md).
+
+**`humanOnly` — approval is necessary, not sufficient.** For a field whose
+meaning is *a human decided this* (a paid-call gate, an access widening, a
+budget), the approval prompt would reach whoever delegated the task rather than
+the human who owns the setting, so one agent's "yes" could consent on another's
+behalf. Such a property is writable only from a human's own conversation or from
+a direct (sessionless) call — a CLI, a script, an operator. The caller is
+classified from what core owns: the injected `__session.session` plus its
+`sessionmeta.parent` lineage record. A subagent is refused with
+`code: "human-only"`, and so is a session whose lineage record cannot be read
+(unreadable is not root). Ordinary properties stay editable by a subagent, which
+is doing the work. An unrestricted `config_reset` is checked against every
+writable property, so it cannot clear a gate the narrow check protects.
 
 ### Instance identity
 
