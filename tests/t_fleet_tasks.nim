@@ -395,6 +395,26 @@ proc main() =
   let deniedCancel = call(nc, "fleet", "fleet_task_cancel", %*{"jobId": unknownId, "__session": {"session": "origin"}})
   check("uncertain remote cancellation refuses", deniedCancel{"error"} != nil)
 
+  # Cancelling ACTIVE work asks the PEER and reports its answer. The remote
+  # session id is the job's admission key — reading the settle notice for it
+  # was wrong, because a running job has no notice yet, so a cancel of active
+  # work could never have found its target.
+  block remoteCancelTargetsTheSession:
+    check("the remote session is the admission key",
+          admissionKey(cancelledId) == cancelledId)
+    # A dispatched job with no peer recording is "unknown", not "no session":
+    # the reply must not claim a cancellation it could not deliver.
+    let midFlight = call(nc, "fleet", "fleet_task_cancel",
+                         %*{"jobId": unknownId, "human": true})
+    check("a cancel with no known peer answer is not reported as success",
+          midFlight{"error"} != nil, $midFlight)
+    # A finished job cannot be cancelled and says so, rather than pretending.
+    let finished = call(nc, "fleet", "fleet_task_cancel",
+                        %*{"jobId": cancelledId, "human": true})
+    check("an already finished task refuses cancellation",
+          finished{"error"} != nil and finished{"code"}.getStr("") == "not-active",
+          $finished)
+
   # --- F2: one unattended coding task through the requester ---------------
   # The peer operator permits bash in its checkout; the requesting conversation
   # approves read+bash for this exact task. The model's control-plane store

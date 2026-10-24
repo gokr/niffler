@@ -292,6 +292,27 @@ proc main() =
   discard call(nc, "locks", "lock_release",
                %*{"leaseId": "conv-after-cancel:after-cancel"})
 
+  # The `stop` op is the peer-side surface for the same cooperative cancel: a
+  # delegating harness has no bus connection to the peer, so it cannot emit
+  # __cancel itself. It must be exactly equivalent — same message on the same
+  # subject — or a remotely stopped turn would behave differently from a
+  # locally stopped one.
+  block sessionStopOp:
+    let idleSid = "conv-stop-op"
+    let res = call(nc, "core", "session", %*{"sessionId": idleSid, "stop": true})
+    check("session stop reports that it REQUESTED, not that it stopped",
+          res{"ok"}.getBool(false) and res{"stopped"}.getStr("") == "requested",
+          $res)
+    check("session stop addresses the runner's steer subject",
+          res{"subject"}.getStr("") == "svc.session." & idleSid & ".steer", $res)
+    # It must not claim an outcome: publishing to a steer subject succeeds
+    # whether or not a turn is running (no responder is normal there), so a
+    # bare "stopped" would be a claim about remote state nobody verified.
+    check("session stop does not claim the turn ended",
+          res{"note"}.getStr("").contains("confirm"), $res)
+    check("session stop needs a sessionId",
+          call(nc, "core", "session", %*{"stop": true}){"error"} != nil)
+
   # Harness-state arbitration (WRITE-ARBITRATION phase 2). plugins writes
   # $NIF_ROOT/var/plugins and var/bin — NOT the conversation workspace. Before
   # the harness claim shape existed these tools declared nothing, so the gate

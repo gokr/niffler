@@ -4328,6 +4328,10 @@ proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
   except CatchableError as e:
     echo "core: WARNING workspace.opened publish failed: " & e.msg
 
+func steerSubject*(sessionId: string): string
+  ## Forward declaration: `session {stop: true}` publishes to this subject, and
+  ## it is defined far below with the turn machinery.
+
 proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                          sessions: var Table[string, Session],
                          caller = ""): JsonNode =
@@ -4338,6 +4342,30 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   ## session; approvals raised by the turn are routed to it.
   let sessionId = inputArgs{"sessionId"}.getStr("")
   var args = inputArgs
+  # --- stop: cancel a RUNNING turn from another process --------------------
+  # The cooperative cancel side-channel (`__cancel` on the steer subject) is
+  # how a bus client stops a turn — the TUI emits it directly. A DELEGATING
+  # harness across the country cannot: it has no bus connection to the peer.
+  # This op is that surface, and it is deliberately the same message the
+  # side-channel sends, so a stopped turn behaves identically however it was
+  # asked for: the flag is raised between rounds, an in-flight tool finishes,
+  # bash kills its process group.
+  #
+  # It reports what it DID, not what it hopes: publishing succeeds whether or
+  # not a turn is running (no responder on a steer subject is normal), so the
+  # reply says "sent" and the caller confirms the outcome from the job record.
+  if inputArgs{"stop"}.getBool(false):
+    if sessionId.len == 0:
+      return %*{"error": "session stop needs sessionId", "code": "bad-request"}
+    let subject = steerSubject(sessionId)
+    let env = Envelope(v: 1, id: newId(), kind: ekEvent,
+                       payload: %*{"__cancel": true})
+    ct.nc.publish(subject, env.encode())
+    return %*{"ok": true, "stopped": "requested", "sessionId": sessionId,
+              "subject": subject,
+              "note": "the runner raises its cancel flag between rounds; an " &
+                      "in-flight tool runs to completion, so confirm the " &
+                      "outcome from the task record rather than assuming it"}
   var agentExisting = ""
   let agentAsked = inputArgs{"agent"}.getStr("").strip()
   let agentAttached = inputArgs.hasKey("agent") or inputArgs.hasKey("persona")

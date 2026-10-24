@@ -1,5 +1,5 @@
 ## Opt-in Fleet provisioning, using the ordinary harness approval gate.
-import std/[json, os, strutils]
+import std/[json, os, strutils, times]
 import niffler/sdk
 import provision
 import registry
@@ -186,18 +186,52 @@ discard comp.tool("fleet_task_receipt", schema(%*{
       "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
       "checkedAt": j{"checkedAt"}.getFloat(0)},
   %*{"onDemand": true, "effect": "read", "sessionContext": true})
-discard comp.tool("fleet_task_cancel", schema(%*{"jobId": {"type": "string"}}, @["jobId"],
-  "Cancel a queued task before dispatch. An already attempted or unknown submission cannot be cancelled by this slice; inspect the pinned peer and cancel its remote session there. Never claims a remote cancellation succeeded."),
+discard comp.tool("fleet_task_cancel", schema(%*{"jobId": {"type": "string"},
+  "human": {"type": "boolean", "description": "Human-scope: cancel any job this harness submitted, without session context"}}, @["jobId"],
+  "Cancel a fleet task. A QUEUED task is cancelled locally and never dispatched. A task already carrying a remote session is stopped ON THE PEER, and the reply reports what the peer said — never a bare 'cancelled', because a local claim about remote work may be wrong. Cancellation is cooperative: an in-flight tool runs to completion, the turn ends after it. Re-calling is harmless."),
   proc(c: Component, args: JsonNode): JsonNode =
     var item = authorized(c, args)
-    if item.value["state"].getStr() != "queued":
-      return errResult("dispatch already attempted; cancel on peer explicitly", "unknown")
-    item.value["state"] = %"settled"
-    item.value["notice"] = %*{"kind": "fleet-settled", "jobId": item.id,
-      "status": "cancelled-before-dispatch", "summary": "No remote turn was submitted."}
-    item.value["delivered"] = %false
+    let state = item.value["state"].getStr("")
+    if state == "settled" or state == "failed":
+      return errResult("task already finished (" & state & ")", "not-active")
+    if state == "queued":
+      item.value["state"] = %"settled"
+      item.value["notice"] = %*{"kind": "fleet-settled", "jobId": item.id,
+        "status": "cancelled-before-dispatch", "summary": "No remote turn was submitted."}
+      item.value["delivered"] = %false
+      discard c.storePut("fleetjob", item.id, item.value, item.rev)
+      return publicJob(item.value)
+    # Already dispatched: ask the PEER. The reply is its own account of what
+    # happened, and the local record only follows it — never the reverse.
+    # The remote session id is the job's admission key, not something the
+    # settle notice stores: one job is one activation, so the job id IS the
+    # worker-side identity (delegation.nim:admissionKey). Reading the notice
+    # here was wrong — it exists only AFTER settling, and a running job has
+    # none, so a cancel of active work could never have found its target.
+    let remoteSession = admissionKey(item.id)
+    let transport = connectedRunner(c)
+    let run: CommandRunner = proc(argv: seq[string], input: string,
+                                  timeoutMs: int): CommandResult =
+      transport(argv, input, timeoutMs)
+    discard probe(run, item.value{"receipt"})
+    let reply = remoteCancel(run, item.value{"receipt"}, remoteSession)
+    let peerStatus = reply{"status"}.getStr("")
+    let now = epochTime()
+    item.value["checkedAt"] = %now
+    item.value["cancel"] = %*{"requestedAt": now, "remoteSession": remoteSession,
+                              "peerStatus": peerStatus}
+    if peerStatus in ["stopped", "done", "failed"]:
+      # The peer confirms it is terminal. Record that, and let the depression
+      # of the job follow its own settle path rather than assuming it here.
+      item.value["notice"]["status"] = %"cancelled-on-peer"
+      item.value["notice"]["summary"] = %("Peer reports the session as " & peerStatus & ".")
     discard c.storePut("fleetjob", item.id, item.value, item.rev)
-    publicJob(item.value),
+    # Merge the cancel report into the public job rather than crossing a
+    # JObject with `&` (which json.nim does not do for objects).
+    var report = publicJob(item.value)
+    report["cancelRequested"] = %true
+    report["peerStatus"] = %peerStatus
+    report,
   %*{"onDemand": true, "sessionContext": true, "approval": "always"})
 discard comp.tool("fleet_notices", schema(%*{
   "session": {"type": "string"}, "peek": {"type": "boolean"},

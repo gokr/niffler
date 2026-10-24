@@ -20,6 +20,22 @@ normal approval gate; receipts are client-local JSON, not prompt context.
 Lima clients use the installed native `cli relay` stdio/loopback seam,
 never a Python bridge; SSH clients use standard native port forwarding.
 
+### Session stop (cross-process turn cancellation)
+
+`session {sessionId, stop: true}` cancels a running turn from another process.
+It publishes the same `__cancel` control a UI emits on
+`svc.session.<id>.steer`, so a stopped turn behaves identically however it was
+asked for: the flag is raised between LLM rounds and an in-flight tool runs to
+completion (bash kills the command's process group).
+
+The reply says `stopped: "requested"`, never "stopped": publishing to a steer
+subject succeeds whether or not a turn is running, so claiming an outcome would
+be a claim about state nobody verified. The caller confirms from the record.
+
+This exists because the bus-side control is not reachable across machines — a
+delegating harness has no connection to the peer's bus, so `fleet_task_cancel`
+drives remote cancellation through this op.
+
 ## Fleet task settlement
 
 Optional fleet uses requester-owned `fleetjob` documents, never shared remote

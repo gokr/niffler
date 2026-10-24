@@ -112,6 +112,33 @@ url=$(< "$root/var/nats-url")
            (if why.len > 0: why else: "no reason given") &
            (if code.len > 0: " [" & code & "]" else: ""))
 
+# --- remote cancellation -----------------------------------------------------
+# Cancelling ACTIVE remote work is a cross-machine operation, and the honest
+# contract is narrower than "cancelled": the peer must acknowledge the request.
+# The alternative — flipping local state to "cancelled" — would be the exact
+# failure docs/FLEET.md §6 forbids, a local claim about remote work that may
+# still be running.
+#
+# Cancellation rides the same cooperative side-channel subagents use
+# (`__cancel` on the steer subject), which the runner checks between rounds,
+# plus the llm cancel channel to abort an in-flight streaming request. So the
+# peer stops PROMPTLY, not instantly: a tool already executing runs to
+# completion (bash kills its process group; see the cancel side-channel docs).
+
+proc remoteCancel*(run: CommandRunner, p: JsonNode, remoteSession: string): JsonNode =
+  ## Ask the peer to stop one of its sessions, and return the peer's own reply.
+  ##
+  ## `session {stop: true}` is the peer-side surface for the same cooperative
+  ## cancel a bus client sends directly: the runner raises its flag between
+  ## rounds, an in-flight tool finishes first. `agent_stop` was the wrong tool
+  ## and a useful mistake to have made live — it operates on `agentjob` records
+  ## (subagents), so it answered "unknown job" for a fleet task, which is a
+  ## CONVERSATION session. A peer without the `stop` op refuses, which is
+  ## correct: an operator must learn that cancellation is unavailable rather
+  ## than assume it worked.
+  remoteCall(run, p, "session", %*{"sessionId": remoteSession, "stop": true},
+             seconds = 20)
+
 proc validateCapabilities*(catalog, schemas, task: JsonNode) =
   if catalog{"taskScopeVersion"}.getInt(0) != 1:
     refuse("peer lacks model-originated tool scope enforcement")
