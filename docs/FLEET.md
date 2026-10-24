@@ -40,10 +40,10 @@ Example target interaction:
 |---|---|---|
 | Instances | Stable identity, root-scoped resident user service, SSH/Incus/Lima provisioning and lifecycle, pinned private connection receipts | Long-lived operation recovery/reporting and more live update acceptance |
 | Transports | SSH forwarding; native guest CLI relay; optional SSH management host; Multipass explicitly rejected | No new transport needed for task semantics |
-| Client | Per-instance connections and state, switching, identity checks, completion badges | Task inbox and background-instance approval interaction |
+| Client | Per-instance connections and state, switching, identity checks, completion badges | Background-instance approval interaction |
 | Task submission | `fleet_task_submit`, owner-bound durable `fleetjob`, explicit read-tool allowlist and round/call/token budgets | Named task peers, coding authority, agent/model selection, continuation |
-| Result | `fleet_task_status` and cached bounded `fleet_task_result`, remote-session pointer | Paged task-specific detail and artifact retrieval |
-| Notification | Durable `fleet-settled` notice; runner append before ack; canonical-history dedup; bounded idle wake and busy-turn drain | Blocked/approval-needed notices and a human job inbox |
+| Result | `fleet_task_status`, cached bounded `fleet_task_result`, local `fleet_task_inbox` listing, remote-session pointer | Paged task-specific detail and artifact retrieval |
+| Notification | Durable `fleet-settled` notice; `ev.fleet.settled` for connected clients; runner append before ack; canonical-history dedup; bounded idle wake and busy-turn drain | Blocked/approval-needed notices; artifact retrieval |
 | Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption; durable worker admission with an activation-bound terminal receipt ([WIRE.md](WIRE.md) "Durable task admission") | Multi-activation/continuation records and a receipt retention policy |
 | Cancellation | `fleet_task_cancel` cancels only queued, undispatched tasks | Confirmed cancellation of active remote work |
 | Approval | Submission approval locally; worker explicitly receives `approvals: ask`; read-only tasks by default; operator task profiles ∩ an exact human grant ([WIRE.md](WIRE.md) "Task policy"), enforced at birth with the honest `unconfined` verdict | No default unattended mode (by design); no human UI for profiles/grants |
@@ -207,6 +207,13 @@ Bound summaries and include peer, task, activation, outcome/blocker and a pointe
 to details. Child prose is labelled as a worker report, not a verified verdict.
 
 ### Human inbox (new)
+
+The local half is implemented: `fleet_task_inbox` is a paged, read-only view
+over the `fleetjob` kind, so the listing is answerable without the peer, and
+`fleet_task_status`/`fleet_task_result` take `human: true` to open a listed job
+without conversation context (the owner check separates conversations, not
+people). The TUI listing, toast, client-local seen markers and drill-down are
+implemented in the TUI repo; artifact retrieval remains.
 
 Add an owner-scoped, paged task listing/inbox and a matching TUI surface
 (proposed `/niffler tasks` or `/tasks`; settle naming in the TUI repo). Show peer,
@@ -427,8 +434,10 @@ can stop active remote work with an honest confirmation, and can follow up.
 ### F4 — Human inbox and reviewable artifacts
 
 Expose a paged owner-bound inbox and task detail; implement TUI navigation,
-per-job human read state and background-instance approval presentation. Add
-scoped artifact retrieval/integration preview and verification evidence.
+per-job human read state and background-instance approval presentation. The
+paged local listing, TUI navigation and per-job read state are implemented; the
+background-instance approval presentation remains. Add scoped artifact
+retrieval/integration preview and verification evidence.
 Test offline completions, first-use baseline, >1000 jobs, identity mismatch,
 foreign cursors/artifacts, changed base revision and cancelled partial results.
 

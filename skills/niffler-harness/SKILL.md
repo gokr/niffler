@@ -231,7 +231,9 @@ bash scripts/server.sh refresh "$root" && bash scripts/server.sh start "$root"
 Never hand-edit the unit or `rm` it to force an install: `refresh` exists
 precisely so an operator does not have to, and a deleted unit loses the enable
 symlink and the readiness trail. Service lifecycle is not VM lifecycle
-(`fleet_stop` ≠ `fleet_vm_stop`), and none of it deletes anything.
+(`fleet_stop` ≠ `fleet_vm_stop`/`fleet_vm_start`), and none of it deletes
+anything. `fleet_remove` forgets a registry entry only: the peer keeps running,
+keeps its receipt file and is never contacted.
 
 For an **SSH** target (no guest transport), linger and the user manager are
 operator setup, never implicit: enable linger, start `user@$(id -u)` at least
@@ -307,7 +309,9 @@ it uses the receipt route, never root/bootstrap sudo, preserves local changes by
 refusing dirty checkouts, stops/starts the scoped user service after rebuilding,
 and pins only the updated verified identity/revision. Missing pinned guests
 refuse recreation; identity drift refuses writes. `fleet_vm_stop` also stops
-Incus containers (never deletes); service stop is separate. Relay clients must
+Incus containers (never deletes), and `fleet_vm_start` powers a verified guest
+back on and waits for its Niffler service to verify; service stop/start is
+separate. Relay clients must
 use the same ubuntu runuser/HOME route, not root, even for root-readable endpoints.
 Tests use fake transports only; real-machine provisioning requires separate consent.
 
