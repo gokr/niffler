@@ -9,9 +9,10 @@ remote Bash are required for SSH targets, Lima for VMs, Incus for containers.
 `git ls-remote` before any remote write and recorded as the pinned revision), and
 local receipt `profile`. Optional VM resources: `cpus` (2), `memory` (4G),
 `disk` (20G). `fleet_probe`, `fleet_status`, `fleet_logs`, `fleet_start`,
-`fleet_stop`, `fleet_vm_stop` take `profile`; `fleet_update` takes `profile` and
-`revision`. Mutations use the enforced normal harness approval gate, never a
-terminal prompt. Profile paths are workspace-resolved; approved absolute paths
+`fleet_stop`, `fleet_vm_start`, `fleet_vm_stop` take `profile`; `fleet_update`
+takes `profile` and `revision`. Mutations use the enforced normal harness
+approval gate, never a terminal prompt. Profile paths are workspace-resolved;
+approved absolute paths
 are allowed. Installation leases claim `profile`; lifecycle actions declare no
 receipt writes. Separate aliases for one remote resource are not distributed locking.
 
@@ -50,7 +51,10 @@ identity before it writes, so a tampered document fails instead of granting
 access, and no document is used as a route implicitly — lifecycle tools still
 take an explicit `profile`. `fleet_instances` lists summaries for a client
 picker; a corrupt document is reported as `invalid` rather than silently
-dropped, because it still names somebody's instance.
+dropped, because it still names somebody's instance. `fleet_remove` forgets an
+entry (registry document only — the peer keeps running, keeps its receipt file
+and is never contacted; an ambiguous name refuses, and `expectRevision` guards
+a re-provisioned instance).
 
 Receipts are atomic mode-0600 JSON compatible with the TUI version-1 schema:
 `version,transport,target,root,expect:{instanceId,name,root,gitHash}` and optional
@@ -58,8 +62,9 @@ Receipts are atomic mode-0600 JSON compatible with the TUI version-1 schema:
 refuse. Durable identity is checked before writes; a reachable catalog is also
 checked, and a verified live service is required before saving. A stopped pinned
 guest being reinstalled must first be started explicitly by its administrator: Fleet cannot verify
-identity on a stopped VM. Service stop and VM stop are separate; neither deletes
-anything. Provenance grants no deletion authority.
+identity on a stopped VM. Service stop and VM stop are separate; `fleet_vm_start`
+powers a verified guest back on and waits for its Niffler service to verify;
+neither stop deletes anything. Provenance grants no deletion authority.
 
 Commands have bounded timeouts and process-group termination. Stderr is kept
 private and omitted from errors to avoid leaking credentials; catalog stdout

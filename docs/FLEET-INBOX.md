@@ -5,8 +5,9 @@ finding out what happened. It describes what you see and why, not the wire
 (docs/WIRE.md) or the delivery ladder (docs/FLEET.md §6). Where the two
 disagree, this document is wrong and should be fixed.
 
-Status: **the local half is implemented** (`fleet_task_inbox`); the TUI surface
-and the settle event are the remaining slices, marked ▢ below.
+Status: **implemented** — the local inbox (`fleet_task_inbox`), the settle
+event, and the TUI listing and drill-down. Artifact retrieval for a settled
+activation is the remaining slice, marked ▢ below.
 
 ## The shape of the thing
 
@@ -82,7 +83,7 @@ Two different "delivered" notions exist, and conflating them would be a bug:
   *conversation* can be woken with a settlement notice — runner machinery
   (`fleet_notices`, hidden). `delivered: true` means *a runner appended it to a
   transcript*. That is model acknowledgment.
-- **Your unread count.** Client state. ▢ The TUI keeps seen/dismissed markers
+- **Your unread count.** Client state. The TUI keeps seen/dismissed markers
   keyed by `(instanceId, jobId, activation)` **locally**. Nothing writes them to
   the store, so no model can mark its own work as read by you, and reading the
   inbox acknowledges nothing.
@@ -93,7 +94,7 @@ never looked at is unread because *your client* has not seen it yet.
 
 ### First connection baselines history
 
-▢ Opening the TUI against a harness with a long job history must not light up
+Opening the TUI against a harness with a long job history must not light up
 every past job as new. On first connect the client **baselines**: it records the
 current set as already-seen, and only later settlements alert. (Implemented
 client-side; the store has no opinion.)

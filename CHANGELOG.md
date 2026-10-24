@@ -6,6 +6,33 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Fleet has a human inbox: `fleet_task_inbox {peer?, state?, after?, limit?}`
+  lists every task this harness submitted as a local, paged read over the
+  `fleetjob` kind, so a settled job's verdict (status, bounded summary,
+  activation and artifact descriptor) is answerable while the peer is
+  unreachable, rebuilt or gone. Detail stays a separate on-demand pull, and
+  seen/unread state is client-local: reading the list acknowledges nothing.
+  `fleet_task_status`/`fleet_task_result` gained `human: true` for the same
+  reason — the owner check separates conversations, and a person at a keyboard
+  is not one — which widens *who* may read, not *what* is returned. A real
+  transition into `settled` publishes `ev.fleet.settled` (fire-and-forget;
+  re-reads never re-emit) so a connected client can alert instead of polling,
+  while the job record remains the durable truth. See docs/FLEET-INBOX.md.
+
+- Fleet lifecycle gained its two missing halves: `fleet_vm_start` powers a
+  verified Lima VM or Incus container back on (same durable identity guard as
+  stop, then waits for the Niffler service to verify), and `fleet_remove`
+  forgets a registry entry without touching the peer — it keeps running, keeps
+  its receipt file and is never contacted. An ambiguous name refuses,
+  `expectRevision` guards a re-provisioned identity, and no tool deletes a
+  guest.
+
+- `cli call` honours a tool's declared `x-harness.timeoutMs` instead of a flat
+  30 s: core's catalog `components` reply now carries `toolTimeouts` in the same
+  round trip, and an explicit `--timeout` still wins. A client timeout says so
+  plainly and notes that NATS request/reply cannot cancel work already
+  dispatched, so "timed out" is not "failed".
+
 - The store can answer "which documents are close to this vector?": `search`
   gained a vector mode (`{kind: "embedding", model, vector, limit?}` →
   `{items: [{id, rev, value, distance}], hasMore, ranked: true, vector: true}`),

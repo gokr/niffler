@@ -888,18 +888,20 @@ lookup also use core's
 authoritative directory, never raw registration broadcasts. A plugin repo's CI
 proves a package by running the harness itself through this one command. `file://` repo URLs
 install from local git repos (hermetic tests, mirrors). `call` first waits up to
-60 s for core to accept the tool, then waits `--timeout=<secs>` (default 30 s)
-for the reply — the cli's own budget, never the tool's `x-harness.timeoutMs`, so
-slow tools need an explicit extension (`cli --timeout=600 call build …`).
-Name-based verification
+60 s for core to accept the tool, then waits for the reply within the tool's
+declared `x-harness.timeoutMs` (published by core's catalog `components` reply
+as `toolTimeouts`), falling back to 30 s when the tool declares none. An explicit
+`--timeout=<secs>` always wins and is the operator's own cap
+(`cli --timeout=600 call build …`). A client timeout does not cancel work already
+dispatched; the cli says so, naming the tool's budget, so verify the target's
+state before retrying. Name-based verification
 does not distinguish an existing accepted component from a newly started
 process with the same name.
 
 It is a plain bus client: `cli call` dispatches straight to
 `svc.<component>.call` (only the catalog read goes through core), so its calls
-bypass the approval gate, the workspace and session injection, a tool's
-`x-harness.timeoutMs` and the hidden/on-demand filter — `cli call del …` and
-`cli call chat …` work. Treat it as an operator tool: give it the trust you
+bypass the approval gate, the workspace and session injection, and the
+hidden/on-demand filter — `cli call del …` and `cli call chat …` work. Treat it as an operator tool: give it the trust you
 give the shell you started the harness from.
 
 ### Headless turns (`cli run`)
@@ -2937,7 +2939,9 @@ it uses the receipt route, never root/bootstrap sudo, preserves local changes by
 refusing dirty checkouts, stops/starts the scoped user service after rebuilding,
 and pins only the updated verified identity/revision. Missing pinned guests
 refuse recreation; identity drift refuses writes. `fleet_vm_stop` also stops
-Incus containers (never deletes); service stop is separate. Relay clients must
+Incus containers (never deletes), and `fleet_vm_start` powers a verified guest
+back on and waits for its Niffler service to verify; service stop/start is
+separate. Relay clients must
 use the same ubuntu runuser/HOME route, not root, even for root-readable endpoints.
 Tests use fake transports only; real-machine provisioning requires separate consent.
 
@@ -2992,16 +2996,21 @@ SSH session), reinstalls and restarts the user service, and only then probes the
 leaves the receipt describing what was last actually verified. Updating to the
 revision already pinned reports `changed: false` and touches nothing.
 
-`fleet_install`, `fleet_update`, `fleet_start`, `fleet_stop` and `fleet_vm_stop`
-require the normal harness approval gate. The approval request names the target,
-root, revision and resources through its arguments. No second tty-consent
+`fleet_install`, `fleet_update`, `fleet_start`, `fleet_stop`, `fleet_vm_start`,
+`fleet_vm_stop` and `fleet_remove` require the normal harness approval gate. The
+approval request names the target, root, revision and resources through its
+arguments. No second tty-consent
 protocol exists. Standard harness auto-approval policy still applies when the
 human explicitly selected it. `fleet_probe`, `fleet_status` and `fleet_logs` are
 read-only; lifecycle and probe tools take
 `{profile:"/absolute/path/to/receipt.json"}`. Never expose NATS publicly.
 
 SSH honors aliases, keys, ProxyJump and known_hosts with agent forwarding disabled.
-Lima uses native limactl shell, no host mounts or key extraction. No delete/purge tool exists.
+Lima uses native limactl shell, no host mounts or key extraction. No guest
+delete/purge tool exists: `fleet_remove` forgets a registry entry only — the
+peer keeps running, keeps its receipt file and is never contacted. An ambiguous
+name refuses rather than picking one, and `expectRevision` guards a
+re-provisioned instance under the same identity.
 A scoped user service keeps the instance running when clients disconnect. A
 verified, atomically written 0600 receipt pins its root and stable instanceId;
 identity drift refuses remote writes, and a missing pinned VM is never recreated.
@@ -3025,7 +3034,8 @@ fake transports, never real hosts or VMs.
 ### Fleet tasks
 
 The optional fleet component offers session-context `fleet_task_submit`,
-`fleet_task_status`, `fleet_task_result` and `fleet_task_cancel`, distinct from
+`fleet_task_status`, `fleet_task_result`, `fleet_task_receipt` and
+`fleet_task_cancel`, plus the local `fleet_task_inbox` listing, distinct from
 service `fleet_status`/`fleet_stop`. Submit requires human approval, a private
 verified `profile` receipt, an idempotent `requestId`, `content`, remote `cwd`,
 explicit `tools`, and positive `maxRounds` (≤32), `maxCalls` (≤100), `maxTokens`
@@ -3057,9 +3067,23 @@ transcript before acknowledging, and deduplicates replay against canonical
 history, including after projection compaction. Busy turns drain at normal and
 would-stop boundaries; idle turns use the existing `NIF_AGENT_WAKES` budget.
 A declined wake leaves the notice pending. Human activity/seen state is separate.
-`fleet_task_result` returns the cached bounded report without blocking management
-on a remote transport. Full transcripts remain on the worker under `remoteSession`.
-No general mailbox, artifact transfer or automatic retry of uncertain work.
+A real transition into `settled` also publishes `ev.fleet.settled` for connected
+clients; it is fire-and-forget and grants nothing, and the job record remains the
+durable truth. `fleet_task_result` returns the cached bounded report without
+blocking management on a remote transport. Full transcripts remain on the worker
+under `remoteSession`.
+
+`fleet_task_inbox {peer?, state?, after?, limit?}` is the human listing over the
+same local `fleetjob` documents: peer, objective, lifecycle state and — once
+settled — the notice's status, bounded summary, activation and artifact
+descriptor, with no peer contacted. It pages by a stable job-id cursor
+(`nextAfter` → `after`), default 20 and cap 100, and reading it acknowledges
+nothing: seen/unread state is client-local. `fleet_task_status` and
+`fleet_task_result` accept `human: true` to read any job this harness submitted
+without conversation context — the owner check separates conversations, and the
+inbox must be able to open the jobs it lists. It widens who may read, never what
+is returned: the task record, receipt and profile stay withheld. No general
+mailbox, artifact transfer or automatic retry of uncertain work.
 
 #### Durable admission (F1)
 
