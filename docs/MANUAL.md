@@ -143,6 +143,68 @@ be mixed with content items. The first successful `edit` or `replace_across`
 mutation per conversation during the edit component's lifetime appends an
 `undo_last_edit` discovery hint; it is not repeated after every mutation.
 
+### Bulk literal replacement (`replace_across`)
+
+Use `replace_across` for identical literal substitutions across a known file
+set, without pre-reading every file. Use `edit` for changes requiring unique
+surrounding context, and a script in `bash` for computed, regex-based or
+syntax-aware transformations.
+
+```json
+{
+  "glob": "src/**/*.nim",
+  "replace": [
+    {"old": "relayBaseUrl", "new": "apiBaseUrl", "word": true},
+    {"old": "old.example.org", "new": "api.example.org"}
+  ],
+  "min_matches": 1
+}
+```
+
+**Selection and matching.** `paths` supplies explicit files; `glob` adds
+files to that set (deduplicated union, not intersection). Relative selectors
+resolve against the conversation workspace. Globs support `*`, `?` and
+recursive `**/`, not a full shell pattern language. At most 512 files may be
+selected. Each rule replaces every non-overlapping occurrence of its literal
+`old` string; `new: ""` deletes it. Multiline strings work. `word: true`
+requires boundaries on both sides, treating alphanumeric characters and
+underscore as word characters; this is textual matching, not semantic symbol
+renaming. Rules run in order: `A` → `B` followed by `B` → `C` also turns
+original `A` occurrences into `C`. Without `resolve_vars: true`, `$` stays
+literal, as do regex metacharacters, slashes and ampersands.
+
+**Plan before writing.** The tool loads text files and computes replacement
+counts and proposed contents before modifying anything. Unmatched files pass;
+missing explicit files are reported. A total below `min_matches` (default 1)
+refuses with `E_NO_MATCH` and leaves everything unchanged; set it to 0 only
+when a no-op is intentional. The threshold is aggregate, not per rule or per
+file. Changed files' undo pre-images must fit a 32 MiB per-call budget;
+otherwise the plan is refused. Binary files are refused rather than rewritten.
+All undo records must be persisted before the first write.
+
+**Writes and recovery.** Each changed file is written atomically, preserving
+its BOM and line-ending style. The batch is **not a multi-file transaction**:
+an I/O error during writing can leave earlier files changed. Each successful
+file has its own single-level, persisted undo entry; `undo_last_edit {path}`
+restores previous bytes, but refuses stale undo if the file has since changed.
+There is no automatic whole-batch rollback. Results report total occurrences,
+per-file/per-rule counts, complete structured `files`, `unmatched` and
+`missing` lists, and a bounded first-file diff preview. The current
+implementation queues LSP diagnostics for the first changed file, not every
+changed file; validate the complete change with appropriate tests.
+
+**Why prefer it to a shell replacement?** It avoids shell/sed escaping and
+GNU/BSD `sed -i` differences, refuses a mistyped needle instead of silently
+succeeding on zero matches, preserves formatting, supplies undo and structured
+counts, and bounds accidental broad edits. A shell script would need to
+implement these safeguards explicitly. Both tools remain approval-gated and
+participate in cooperative write arbitration: `replace_across` declares its
+selected paths (glob claims cover the base directory before the wildcard),
+whereas opaque `bash` takes a lease over the whole conversation workspace.
+Neither is an OS-level fence against external writers. Literal replacements
+are not a substitute for regex engines, parsers or build validation; selected
+files are read into memory rather than streamed.
+
 ### File pipelines
 
 File tools opt in to capture with `save_as: "name"` (default field `text`) or
