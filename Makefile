@@ -104,6 +104,7 @@ SQLITE_VEC_INC = shim="$${TMPDIR:-/tmp}/niffler-sqlite-inc"; mkdir -p "$$shim"; 
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-fleet-admission test-taskpolicy test-codingartifact test-server-lifecycle test-fleet \
         test-retry-unit test-ctx-accounting test-context-status test-compaction \
+        test-toolpair-unit test-toolpair-heal \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
         setup doctor recover install-go install-nim \
@@ -627,6 +628,13 @@ var/bin/test_t_tool_images: core/conversation.nim core/attachments.nim \
     var/bin/session var/bin/niffler var/bin/fixture-image-tool
 
 var/bin/test_t_context_drains: core/conversation.nim
+var/bin/test_t_toolpair_unit: core/conversation.nim
+
+# The repair is core's (a projection rule) but its proof is end to end: a real
+# sandbox conversation whose stored transcript lost a tool result must run
+# again against a provider that enforces pairing.
+var/bin/test_t_toolpair_heal: core/conversation.nim core/dispatch.nim \
+    var/bin/session var/bin/niffler var/bin/fixture-mock-llm
 var/bin/test_t_discover: core/catalog.nim
 
 # Drives the real llm + models binaries in a sandbox against a fake provider:
@@ -759,6 +767,8 @@ test-retry-unit: build var/bin/test_t_retry_unit ; $(TEST_LOCK) env "NIF_REPO_RO
 test-ctx-accounting: build var/bin/test_t_ctx_accounting ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_ctx_accounting
 test-context-status: build var/bin/test_t_context_status ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_context_status
 test-context-drains: build var/bin/test_t_context_drains ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_context_drains
+test-toolpair-unit: build var/bin/test_t_toolpair_unit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_toolpair_unit
+test-toolpair-heal: build var/bin/test_t_toolpair_heal ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_toolpair_heal
 test-compaction: build var/bin/test_t_compaction ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction
 # §8.7 conformance runner: suite run proves the shipped component; point
 # third-party implementations at it with
