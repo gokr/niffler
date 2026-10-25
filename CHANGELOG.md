@@ -17,6 +17,22 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `human: true` may cancel any job this harness submitted. See docs/WIRE.md
   "Session stop".
 
+- A conversation can no longer be wedged by a lost tool result. Message writes
+  are best-effort, so a store outage (or a runner killed mid-batch) can leave an
+  assistant `tool_calls` entry with no `tool` answer — and strict providers
+  re-validate that pairing on every request, so the transcript was permanently
+  unusable: the same 400, forever (observed on a 2.6k-message conversation).
+  The runner now repairs the PROJECTION once per load: an unanswered call gets
+  an honest "[no result was recorded … re-run it]" result, a tool message
+  answering no pending call is dropped from the request. Canonical history is
+  never rewritten (the store keeps its gap, recall stays honest) and the rule
+  is a pure function of that history, so the repaired prefix is byte-stable
+  across turns, resumes and forks (prompt cache intact). The repair is recorded
+  durably in a new `toolpairrepair` document per conversation — including writes
+  that failed *during* a turn, with the id they consumed — and `context_status`
+  reports it as `toolPairRepair`. Writes that lose a message are no longer
+  silent: the turn records the loss where the next load and a human can see it.
+
 - Fleet has a human inbox: `fleet_task_inbox {peer?, state?, after?, limit?}`
   lists every task this harness submitted as a local, paged read over the
   `fleetjob` kind, so a settled job's verdict (status, bounded summary,
