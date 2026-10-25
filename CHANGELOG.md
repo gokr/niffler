@@ -6,6 +6,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- A running turn can be stopped from another process: `session {sessionId,
+  stop: true}` publishes the same `__cancel` control a UI sends on the runner's
+  steer subject, so a remotely stopped turn behaves exactly like a locally
+  stopped one — the flag is raised between rounds, an in-flight tool finishes
+  first, and bash kills its command group. The reply reports `stopped:
+  "requested"`, never "stopped": publishing to a steer subject succeeds whether
+  or not a turn is running, so the caller confirms the outcome from the record.
+  Requires a `sessionId` and refuses without one.
+
 - Fleet can cancel active remote work: `fleet_task_cancel` still settles a
   queued task locally without dispatching it, but a dispatched task is now
   stopped on its pinned peer through the new `session {stop: true}` op — the
@@ -390,7 +399,8 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delegates one bounded investigation to a conversation on a pinned peer,
   with an explicit read-only tool allowlist and round/call/token budgets;
   `fleet_task_status`/`fleet_task_result` read the durable local pointer and a
-  cached bounded report, and `fleet_task_cancel` cancels only before dispatch.
+  cached bounded report, and `fleet_task_cancel` cancels a queued task locally
+  or asks the peer to stop dispatched work (see above).
   An unknown transport outcome is never replayed, and unreachable is never
   reported as failed or successful. Completion is pushed, not polled: a
   `fleet-settled` notice is appended to the requester's history (deduplicated
