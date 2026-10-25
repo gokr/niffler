@@ -1209,7 +1209,7 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Both fields are absent when nothing determined it, and absence is never read
   as "text-only".
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
+- `session {sessionId, stop?, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
   conversation-scoped provider and model override. `provider` names a stored
   provider nickname (empty clears it back to the harness-global default); a
   model-only call resolves and pins the provider it belongs to in the same
@@ -1239,6 +1239,14 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   a user message — no LLM turn, no promotion into the direct toolset.
   Core stores the choice in the conversation header and pins the resolved
   model across all tool rounds in a turn.
+- `stop: true` cancels a **running** turn from another process: it publishes
+  the same `__cancel` control a UI sends on `svc.session.<id>.steer`, so the
+  flag is raised between LLM rounds and an in-flight tool finishes first (bash
+  kills its process group). The reply reports `stopped: "requested"` — never
+  that the turn ended — because publishing succeeds whether or not a turn is
+  running; confirm the outcome from the record. This is the surface a
+  delegating harness uses, since it has no bus connection to the peer (see
+  [WIRE.md](WIRE.md) "Session stop").
 - The per-session controls freeze on the first call and persist in the
   header: `tools` (a tool allowlist the child may dispatch; at most 32 names
   are honoured, and the accepted arguments are not declared in the `session`
@@ -3058,8 +3066,13 @@ identity mismatch and missing completion receipts are not interruption or
 success. Only the first completion sequence is accepted; if human continuation
 has replaced that latest-per-session receipt, the task stays unknown rather
 than attributing the later turn to it. `settled` means a durable remote turn receipt was observed, not that
-the task's claims were verified. Cancellation is supported only before dispatch;
-after dispatch cancel the remote conversation explicitly on the pinned peer.
+the task's claims were verified. `fleet_task_cancel` cancels a queued task
+locally without dispatch; a dispatched job is stopped on the peer through the
+`session {stop: true}` op, and the reply reports the peer's own answer
+(`cancelRequested` plus `peerStatus`). The local notice records
+`cancelled-on-peer` only after the peer reports a terminal state; a job with no
+peer answer stays uncancelled and says so. Cancellation is cooperative: an
+in-flight tool finishes first.
 
 Completion is stored with a UTF-8-safe summary (2048-byte prefix plus ellipsis)
 before any wake. The runner folds notices as append-only machinery, commits the

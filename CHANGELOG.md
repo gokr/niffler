@@ -6,6 +6,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Cancelling remote work now works after dispatch, not only while queued.
+  `fleet_task_cancel` still cancels a queued task locally (it is never
+  dispatched); a job already running is stopped on the peer through the new
+  `session {stop: true}` op, which publishes the same `__cancel` control a UI
+  sends on the runner's steer channel — the flag is raised between LLM rounds
+  and an in-flight tool finishes first. The reply never claims success on its
+  own: it reports `cancelRequested` plus the peer's own `peerStatus`, and the
+  local notice records `cancelled-on-peer` only when the peer reports a
+  terminal state. A job with no peer answer stays uncancelled and says so.
+  `session {stop: true}` deliberately answers `stopped: "requested"`, because
+  publishing to a steer subject succeeds whether or not a turn is running. See
+  docs/WIRE.md "Session stop".
+
 - Fleet has a human inbox: `fleet_task_inbox {peer?, state?, after?, limit?}`
   lists every task this harness submitted as a local, paged read over the
   `fleetjob` kind, so a settled job's verdict (status, bounded summary,

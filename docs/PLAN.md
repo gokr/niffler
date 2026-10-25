@@ -27,7 +27,7 @@ worktrees have been removed; their commits are included in `main`.
 |---|---|---|
 | Write arbitration | Durable `locks` peer; session dispatch claims; path-bound and opaque writers; harness-state claims for plugins; explicit no-claim declarations; nested Fabric calls; restart/outage/TTL contracts | Automatic worktree allocation/ownership; fencing or confirmed termination for writers that outlive leases; evidence-based completion adjudication is a separate feature |
 | Sandboxing | Opt-in synchronous Linux bwrap shell guard; launch-time checks, environment clearing, network isolation and configured masks; partial component mask checks; pure versioned conversation-policy model | Persisted effective conversation policy and human controls; uniform dispatch propagation; approved-root enforcement; conditional grants; migration from global masks; background execution; Seatbelt and real Mac validation |
-| Fleet | SSH/Incus/Lima provisioning and lifecycle; pinned receipts; native relay and TUI switching; agent definitions/heartbeat; bounded read-only tasks and durable parent notices | Idempotent worker admission/activation receipts; authorized unattended coding; active cancellation/continuation; inbox, background approvals and artifacts; see [FLEET.md](FLEET.md) |
+| Fleet | SSH/Incus/Lima provisioning and lifecycle; pinned receipts; native relay and TUI switching; agent definitions/heartbeat; bounded read-only tasks and durable parent notices | Idempotent worker admission/activation receipts; authorized unattended coding; continuation (confirmed active cancellation is implemented); inbox, background approvals and artifacts; see [FLEET.md](FLEET.md) |
 | Vision path | Tool results may carry `images` (`docs/WIRE.md` "Tool results"): core validates them against the byte-sniffed allowlist, stores them as attachment docs under the tool message, and materializes them through the same budget/projection rule as a dropped image; `read` answers an image path with the image plus a caption; elision drops refs with text so a superseded screenshot leaves the projection | Re-encoding an oversized capture (reported today, never silently downscaled — needs an image codec in a component plus a bound on its output); provider-specific degradation beyond the honest elision marker; TUI-side rendering of tool images |
 
 ### Write arbitration: usable foundation, not a sandbox
@@ -88,12 +88,11 @@ alert instead of polling (docs/FLEET-INBOX.md records the experience). The TUI
 listing, toast, client-local seen markers and drill-down are implemented. Still
 open there: artifact retrieval for a settled activation.
 
-Still open: multi-activation records and receipt retention (F1); scoped
-artifact retrieval, verification evidence and patch/commit return (F2/F4);
-active cancellation, steering and continuation (F3); sequenced
-blocked/completion notices and a human task inbox (F3/F4); a human UI for task
-profiles and grants. Read-only tasks remain the default, and unattended coding
-is never enabled by requesting it. Human seen state stays separate from agent
+Still open: multi-activation records and receipt retention (F1); push authority
+and scoped artifact retrieval (F2/F4); steering and continuation (F3);
+sequenced blocked/resumed notices (F3); a human UI for task profiles and
+grants. Read-only tasks remain the default, and unattended coding is never
+enabled by requesting it. Human seen state stays separate from agent
 notice acknowledgement. Follow F1–F5 in the Fleet plan rather than the
 historical research ladders. Published-revision update and real-provider coding
 acceptance remain separate gates; the completed Linux Lima smoke does not

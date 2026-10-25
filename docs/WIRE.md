@@ -52,8 +52,10 @@ before remote preparation/submission; uncertain outcomes remain unknown, never
 replayed or inferred successful/interrupted from disconnection. A durable remote
 activity receipt establishes turn settlement, not factual task success. Remote
 budgets use supported maxRounds/maxCalls/maxTokens, not a transport timeout as a
-wall-clock deadline. Cancel is local queued-only; later cancellation is explicit
-on the peer. The result tool reads a cached bounded summary, not a blocking relay.
+wall-clock deadline. Cancelling a queued task is local and never dispatches it;
+a dispatched job is stopped on the peer through `session {stop: true}`, and the
+reply reports that request plus the peer's own status — never an assumed
+cancellation. The result tool reads a cached bounded summary, not a blocking relay.
 
 Terminal job and `notice:{kind:"fleet-settled",jobId,status,summary}` commit in
 one revision before notification. A real transition into `settled` also
