@@ -4200,11 +4200,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       # In particular, model-originated store writes must not rewrite a frozen
       # allowlist and evade single-hop delegation. Apply before both waves and
       # serial dispatch; internal persistence still uses the ordinary gate.
-      if ct.cat.toolSchema(name).isHidden() or
+      let schemaForGate = ct.cat.toolSchema(name)
+      if schemaForGate.isHidden() or
           (ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
            name notin ct.sessionAllowlist[]):
         parseFailed = true
-        args = %*{"__scopeDenied": true}
+        # Two different refusals, so the model learns the truth: a hidden tool
+        # is harness machinery nobody may call (the dispatch gate itself uses
+        # lock_acquire), while an allowlist miss is scoping. A conversation
+        # frozen BEFORE a tool became hidden still advertises it in its
+        # prefix — its refusal has to say why, not blame an allowlist it never
+        # had.
+        args = %*{"__scopeDenied": true,
+                  "__deniedHidden": schemaForGate.isHidden()}
       items.add((id: id, name: name, args: args,
                  parseFailed: parseFailed, rawArgs: rawArgs))
       if onEvent != nil:
@@ -4294,7 +4302,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       var oc: ToolCallOutcome
       if it.parseFailed:
         oc = ToolCallOutcome(error:
-          if it.args{"__scopeDenied"}.getBool(false):
+          if it.args{"__deniedHidden"}.getBool(false):
+            "tool '" & it.name & "' is harness machinery, not a model tool — " &
+            "the harness calls it internally and a model may not"
+          elif it.args{"__scopeDenied"}.getBool(false):
             "tool '" & it.name & "' is not in this session's tool allowlist"
           else:
             "tool call arguments were not valid JSON (truncated or garbled stream): " &

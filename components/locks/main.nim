@@ -357,7 +357,7 @@ discard comp.tool("lock_acquire", toolSchema(%*{
             "description": "Lease lifetime; a dead runner's claim expires (default from NIF_LOCK_TTL_MS)"}
 }, @["root", "paths", "sessionId", "tool"],
   "Take a write lease over the given file paths for one dispatched call, so a second conversation cannot mutate them concurrently. Denies with the holder named when another live lease overlaps. Internal to core's dispatch gate — the model never calls this."), hLockAcquire,
-  %*{"effect": "write", "timeoutMs": 10000})
+  %*{"hidden": true, "effect": "write", "timeoutMs": 10000})
 
 proc hLockRelease(c: Component, args: JsonNode): JsonNode =
   ## Release the lease a call holds. Idempotent: releasing an unknown or already
@@ -398,14 +398,14 @@ discard comp.tool("lock_release", toolSchema(%*{
              "description": "The dispatch call id that keyed the lease"}
 }, @[],
   "Release a write lease taken by lock_acquire. Idempotent — releasing an unknown or already expired lease succeeds, so a retry never fails a turn. Internal to core's dispatch gate."), hLockRelease,
-  %*{"effect": "write", "timeoutMs": 10000})
+  %*{"hidden": true, "effect": "write", "timeoutMs": 10000})
 
 discard comp.tool("lock_status", toolSchema(%*{
   "sessionId": {"type": "string",
                 "description": "Optional: only leases held by this conversation"}
 }, @[],
   "List live write leases: paths, holder, tool, age. Read-only; for diagnosing a refusal or an orphaned claim."), hLockStatus,
-  %*{"effect": "read", "timeoutMs": 10000})
+  %*{"onDemand": true, "effect": "read", "timeoutMs": 10000})
 
 # Stale-lease sweep on the idle tick: a runner that dies mid-call leaves its
 # lease behind, and nothing else would ever remove the document. Doing this
