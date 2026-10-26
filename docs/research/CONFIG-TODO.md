@@ -23,13 +23,23 @@ pass. Repository status is not a claim that installed binaries were updated.
 
 - [x] Recover the design discussion from `deepseek-search` in the store.
 - [x] Record the design and this implementation checklist.
-- [ ] Resolve the proposals in CONFIG.md §11 before SQL implementation:
+- [x] Resolve the proposals in CONFIG.md §11 before SQL implementation:
   actual instance key/column, shared-record representation, consistent SQLite
-  behavior, legacy ownership adoption and default query scope.
-- [ ] Specify declaration discovery, owner mutation routing, supported schema
-  subset, secrets/read-only handling, revision checks and application timing.
-- [ ] Specify instance/shared/default precedence and sunset rules for env.
-- [ ] Update WIRE and architecture notes with the reviewed contract.
+  behavior, legacy ownership adoption and default query scope. Answered by
+  building it; the answers are tabled in CONFIG.md §11 "Implementation" and
+  [INSTANCE-STORE.md](INSTANCE-STORE.md).
+- [x] Specify declaration discovery, owner mutation routing, supported schema
+  subset, secrets/read-only handling, revision checks and application timing:
+  [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md) (enforced in components/config,
+  `application` required with no default).
+- [x] Specify instance/shared/default precedence and sunset rules for env.
+  Precedence is `conversation header > store settings > env > code default`
+  (CONFIG.md). Sunset follows the **authoritative-reader rule** in §5 below:
+  a variable migrates only when its owner is its only reader; core-owned,
+  secret, path, subscription-set and test-seam variables stay env by category.
+- [x] Update WIRE and architecture notes with the reviewed contract.
+  `ev.config.updated` is now in WIRE.md's event index (it was published but
+  undocumented) and `config` is a row in ARCHITECTURE.md's peer table.
 
 ### 1. AGENTS-only instructions (first implementation slice)
 
@@ -42,20 +52,17 @@ pass. Repository status is not a claim that installed binaries were updated.
 
 ### 2. Instance-aware document storage
 
-- [ ] Add `instances` registry and document instance dimension to both engines.
-  Schema-only registry migrations and preservation tests added; `make gotest`
-  passed. `make test-store` and full `make test` passed (90 server tests).
+- [x] Add `instances` registry and document instance dimension to both engines.
+  Schema-only registry migrations and preservation tests added. `make gotest`
+  passed; `make test-store` and full `make test` passed (90 server tests).
   Registry API slice adds hidden validated instance_register/instance_list in
-  both engines; make gotest, test-store and full make test passed (90 server
-  tests). Core boot registration added; test-core passed. First full gate:
-  89 passed, fleet-task wake test raced notice acknowledgement versus turn
-  completion. Narrow rerun passed; test now retries only explicit mid-turn
-  refusals before asserting budget decline. Narrow fleet-task test and full
-  make test passed (90 server tests); git diff --check passed.
-  Ownership-column migrations and owner-captured handlers now added with
-  two-owner database tests. Existing process wiring still uses legacy owner;
-  stable identity binding and adoption remain pending. make gotest, test-store
-  and full make test passed (90 server tests). See [INSTANCE-STORE.md](INSTANCE-STORE.md).
+  both engines. Core boot registration added; test-core passed. Ownership-column
+  migrations and owner-captured handlers added with two-owner database tests.
+  Stable identity binding and adoption shipped (`store_claim`).
+  **Live TiDB verified**: `go test ./...` 17/17 and `make test-store-tidb`
+  pass against pingcap/tidb:v8.5.0 — which required fixing migration 3, since
+  TiDB refuses `DROP PRIMARY KEY` and the engine had never booted (see below).
+  See [INSTANCE-STORE.md](INSTANCE-STORE.md).
 - [x] Use existing persistent instance identity; binding resolved once at open
   (NIF_INSTANCE_ID, else var/instance-id, else legacy). SQLite adopts its own
   legacy rows once and refuses a different identity; TiDB never adopts.
@@ -111,8 +118,10 @@ pass. Repository status is not a claim that installed binaries were updated.
 - [ ] Import existing records once; conflict/invalid/identity-drift refusals;
   retain explicit export/import as interchange, not the authoritative registry.
 - [ ] Migrate lifecycle callers to address registry instances by identity rather
-  than a receipt path (today they still take `profile`, deliberately: the
-  registry is not authority). TUI consumption is a separate repository change.
+  than a receipt path. Still true: `fleet_*` actions take `profile`
+  (components/fleet/provision.nim `action(run, name, profile)`), deliberately,
+  because the registry is not authority. TUI consumption is a separate
+  repository change.
 - [ ] TUI: consume registry through the bus, with minimal local bootstrap
   information for the first connection and explicit offline behavior.
 - [ ] Test outage, restart, migration, route/pin mismatch and multiple scopes.
@@ -136,12 +145,34 @@ pass. Repository status is not a claim that installed binaries were updated.
   reaches callers as `config_get.timings` and `config_patch.applies`. Contract:
   [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md).
 - [ ] Add schema-driven TUI editor in the TUI repository; no per-owner forms.
+  **Already built; only the new fields are missing.** `/config`
+  (tui/config_command.go + config_editor.go) renders domains and fields from
+  declarations with no per-owner forms, including secret/readOnly/application.
+  Remaining work is small and blocked on the repo, not on design: surface
+  `humanOnly` (a list marker and a form note) and honour `applies` in the
+  "saved" note so a human is told a change lands next turn rather than
+  immediately. Do not start while another conversation holds uncommitted
+  changes there.
 
 ### 5. Owner migrations (each with its own tests and docs)
 
 - [ ] DeepSeek web enablement/request defaults; stable schemas and paid-call gate.
-- [ ] Models endpoint/offline/refresh policy and inline override patches.
-- [ ] LSP registry data, warmup policy and executable search preferences.
+  Not started. Note there is no `deepseek` component — it is a provider preset
+  (`NIF_LLM_PROVIDERS` / the `provider` registry), so this is a provider-record
+  schema rather than a component-owned domain. It is also precisely the field
+  shape `x-config.humanOnly` was added for (a paid-call gate).
+- [x] Models offline/refresh policy (`models.refresh`): `offline`,
+  `cacheTtlSeconds`, `refreshIntervalSeconds`.
+- [ ] ...plus a URL/path endpoint and inline override patches in that domain:
+  `NIF_MODELS_URL`/`NIF_MODELS_PATH` and `NIF_MODELS_OVERRIDE` are still
+  env-only, deliberately: an arbitrary URL or filesystem path is a deployment
+  fact and a possible egress path, so exposing it to a model is a `humanOnly`
+  decision, not a routine field.
+- [x] LSP warmup policy (`lsp.warm`): `warmMax`, `warmCheap`, `warmTotal`.
+- [ ] ...plus registry *data* and executable search preferences: the server
+  registry is still `servers.json` (by design — it is language data, and
+  `lsp_registry add` is the single-path mutation), and `NIF_LSP_BIN_DIRS` stays
+  env (an executable search path is a deployment fact, same category as above).
 - [x] Fetch extraction/network preferences (`fetch.network`): `allowPrivate`
   and `extractor`, with the `NIF_FETCH_ALLOW_PRIVATE`/`NIF_TRAFILATURA` env
   path retained. The test proves the stored opt-in both grants and revokes
@@ -239,12 +270,20 @@ pass. Repository status is not a claim that installed binaries were updated.
   (90 server tests, plus Go and bench gates). Repeat after later code slices.
 - [ ] Live isolated harness verification for SDK/store/conversation changes;
   two instances sharing one test TiDB dataset, without production migration.
+  Partly done: the **store layer** is verified against a live TiDB
+  (`make test-store-tidb`, `go test ./...` in components/store-tidb), and two
+  owners on one dataset are isolated there. What remains is the **harness**
+  layer — two live harnesses, one dataset — which §2 tracks separately.
 - [ ] Update manual translations, migration docs, PLAN and changelog.
-  Known gap at this slice: `MANUAL.zh.md`/`MANUAL.zh-TW.md` are missing three
-  whole sections — "Declared configuration (the `config` component)", "Pinned
-  providers never reroute" and "GitHub CLI and a token" — so the config surface
-  (including `humanOnly`) has no localized documentation yet. A section-level
-  refresh, not a line edit: translate those three, then re-sync the rest.
+  Changelog is current for every slice shipped so far. Still open: the
+  translations (below) and `docs/PLAN.md`, whose last entry predates this
+  branch's configuration/instance work.
+  Known gap: `MANUAL.zh.md`/`MANUAL.zh-TW.md` have 56 `###` sections against 58
+  in English — they are missing "Declared configuration (the `config`
+  component)", "Pinned providers never reroute" and "GitHub CLI and a token".
+  So the whole config surface (including `humanOnly`) has no localized
+  documentation. A section-level refresh, not a line edit: translate those
+  three, then re-sync the rest.
 - [ ] Separate plugin/TUI commits, tests and release tracking. No implied
   production restart, migration or plugin release from source edits alone.
 

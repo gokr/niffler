@@ -543,6 +543,12 @@ ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, lo
                        # models.updated reports effective model-catalog refreshes
                        # provider.switch selects the global backend; provider.changed
                        # invalidates redacted provider/runtime views
+                       # config.updated {domain, owner, rev} is published by the
+                       #   config component after every APPLIED settings change, so
+                       #   an owner that caches its values refreshes from it instead
+                       #   of polling the store on an idle tick (sdk/niffler/
+                       #   configowner.nim watchConfig). Fire-and-forget: a missed
+                       #   event leaves last-known values, never a failed write
 ev.log.<component>     # {component, level, msg, ctx?, at}; SDK log threshold applies
 ```
 

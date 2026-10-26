@@ -280,9 +280,26 @@ restore and `--recover` enumerate the same `component` records; heartbeat
 workers enumerate the same schedules; `provider:active` becomes global.
 Scoping must therefore cover persistence operations, not just settings forms.
 
-### Proposed implementation, not yet a settled contract
+### Implementation (settled — see INSTANCE-STORE.md)
 
-Candidate shape:
+> This section was written as a proposal. It has since been **implemented and
+> settled**; the authoritative record of what shipped is
+> [INSTANCE-STORE.md](INSTANCE-STORE.md). Every question below was answered by
+> building it:
+>
+> | question | answer as shipped |
+> |---|---|
+> | instance key/column | `instance_id`: 32-char lowercase hex, reusing `var/instance-id`; a real column on `docs`, not opaque JSON |
+> | shared-record representation | transport/route detail stays document payload, never a SQL column; shared *settings* scope is refused until decided (`config` is `instance`-only) |
+> | SQLite behaviour | identical logical contract in both engines (SQLite `00004`, TiDB `00003`); the same tests run against both |
+> | legacy adoption | SQLite adopts its own legacy rows once; TiDB **never** adopts; both offer an explicit approval-gated `store_claim` |
+> | default query scope | the store resolves its owner once at boot and uses it implicitly — never a tool argument, so a client cannot choose whose history it reads |
+>
+> One detail the implementation changed: TiDB cannot `DROP PRIMARY KEY`
+> (clustered index, Error 8200), so that migration is a convergent table
+> rebuild (docs/MANUAL.md "Store engines").
+
+The original proposal follows, kept for the reasoning:
 
 ```
 instances(instance_id PRIMARY KEY, ...metadata...)
