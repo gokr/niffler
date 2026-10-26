@@ -5,6 +5,7 @@
  *   node tools/render-voiceover.mjs --engine=openai  # neural TTS → audio/s1.mp3 …
  *   node tools/render-voiceover.mjs --engine=piper --piper-model=/path/en_US-amy.onnx
  *   node tools/render-voiceover.mjs --engine=piper --piper-length=0.9   # faster read
+ *   node tools/render-voiceover.mjs --engine=xtts --speaker-wav=me.wav  # clone a voice
  *   node tools/render-voiceover.mjs --engine=espeak  # offline placeholder (.wav)
  *   node tools/render-voiceover.mjs --engine=say     # macOS built-in voice
  *
@@ -225,6 +226,53 @@ async function synthEspeak(text, out) {
     text + '\n');
 }
 
+/* Coqui XTTS v2: zero-shot voice cloning. `--speaker-wav=<6-12s of clean
+ * speech>` and every cue is read in that voice. On CPU this is minutes per cue
+ * (20-60x slower than realtime), so it is a "render once, listen" engine, not
+ * an iteration loop. Requires `pip install TTS` and accepting the CPML licence
+ * on first run; the model is downloaded once into ~/.local/share/tts. */
+async function synthXtts(text, out) {
+  const speaker = flag('speaker-wav', process.env.NIF_XTTS_SPEAKER || '');
+  if (!speaker) {
+    throw new Error('xtts needs a reference voice: --speaker-wav=ref.wav (6-12 s, ' +
+                    'clean single speaker) or NIF_XTTS_SPEAKER');
+  }
+  const device = flag('xtts-device', process.env.NIF_XTTS_DEVICE || 'cpu');
+  const language = flag('xtts-language', process.env.NIF_XTTS_LANGUAGE || 'en');
+  /* One process for all cues would be far faster (model load dominates), but
+   * the renderer's contract is one synth call per cue; XTTS therefore pays a
+   * model load per line. Set NIF_XTTS_BATCH=1 to render every cue in ONE
+   * process instead — implemented below in main(). */
+  const script = `
+import sys
+from TTS.api import TTS
+tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(${JSON.stringify(device)})
+tts.tts_to_file(text=sys.stdin.read(), speaker_wav=${JSON.stringify(speaker)},
+                language=${JSON.stringify(language)}, file_path=${JSON.stringify(out)})
+`;
+  await run('python3', ['-c', script], text + '\n');
+}
+
+/** Batch variant for XTTS: load the model ONCE and render the whole cue list. */
+async function xttsBatch(cues, ext) {
+  const speaker = flag('speaker-wav', process.env.NIF_XTTS_SPEAKER || '');
+  if (!speaker) throw new Error('xtts needs --speaker-wav=<ref.wav>');
+  const device = flag('xtts-device', process.env.NIF_XTTS_DEVICE || 'cpu');
+  const language = flag('xtts-language', process.env.NIF_XTTS_LANGUAGE || 'en');
+  const jobs = cues.map((c) => ({ id: c.id, text: c.text, out: join(AUDIO, c.id + '.' + ext) }));
+  const script = `
+import json, sys
+from TTS.api import TTS
+jobs = json.loads(sys.argv[1])
+tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(${JSON.stringify(device)})
+for j in jobs:
+    print("  render", j["id"], flush=True)
+    tts.tts_to_file(text=j["text"], speaker_wav=${JSON.stringify(speaker)},
+                    language=${JSON.stringify(language)}, file_path=j["out"])
+`;
+  await run('python3', ['-c', script, JSON.stringify(jobs)]);
+}
+
 async function synthSay(text, out) {
   /* macOS: say → aiff, afconvert → wav (both ship with the OS) */
   const aiff = out.replace(/\.wav$/, '.aiff');
@@ -238,6 +286,7 @@ const ENGINES = {
   piper: { ext: 'wav', synth: synthPiper },
   espeak: { ext: 'wav', synth: synthEspeak },
   say: { ext: 'wav', synth: synthSay },
+  xtts: { ext: 'wav', synth: synthXtts, batch: xttsBatch },
 };
 
 /* ------------------------------------------------------------------ *
@@ -259,8 +308,17 @@ function srtTime(s) {
 async function main() {
   const cues = loadCues();
   const eng = ENGINES[engine];
-  if (!eng) throw new Error(`unknown engine ${engine} (openai|piper|espeak|say)`);
+  if (!eng) throw new Error(`unknown engine ${engine} (openai|piper|espeak|say|xtts)`);
   mkdirSync(AUDIO, { recursive: true });
+
+  /* XTTS loading its model per cue is wasteful by minutes; batch it unless the
+   * caller explicitly wants per-cue synthesis (NIF_XTTS_BATCH=0). */
+  const batched = eng.batch && !dryRun && !force &&
+    !cues.every((c) => existsSync(join(AUDIO, c.id + '.' + eng.ext)));
+  if (eng.batch && !dryRun && process.env.NIF_XTTS_BATCH !== '0') {
+    console.log(`  batch mode: loading the model once for ${cues.length} cues`);
+    await eng.batch(cues, eng.ext);
+  }
 
   const rows = [];
   let total = 0;
@@ -269,7 +327,7 @@ async function main() {
     const path = join(AUDIO, file);
     let seconds = null;
 
-    if (!dryRun) {
+    if (!dryRun && !(eng.batch && process.env.NIF_XTTS_BATCH !== '0')) {
       const reuse = existsSync(path) && !force;
       if (reuse) {
         seconds = measure(path);

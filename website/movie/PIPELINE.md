@@ -90,8 +90,9 @@ exits 2 on an overrun: an editorial error, caught before spending on a render.
 | engine | quality | cost | notes |
 |---|---|---|---|
 | **Piper** (local) | good, natural | free | `tools/fetch-piper.sh`; CPU, ~8× realtime, 60 MB/voice; **default** |
-| Kokoro (local) | very good | free | newer, needs Python/onnx; heavier setup |
-| Coqui XTTS (local) | very good, can clone a voice | free | slow without a GPU |
+| **Coqui XTTS v2** (local) | very good; **clones a voice from ~6 s of audio** | free | `pip install TTS` (~2 GB with deps), needs a licence click, minutes-per-cue on CPU, seconds on a GPU. `--engine=xtts` is a stub to fill (see below) |
+| Kokoro (local) | very good | free | newer, needs Python/onnx; heavier setup than Piper |
+| Chatterbox / StyleTTS2 (local) | very good | free | similar class to XTTS |
 | espeak-ng | robotic | free | already inside the Piper bundle; placeholder only |
 | macOS `say` | decent | free | Mac only (`--engine=say`) |
 | OpenAI `gpt-4o-mini-tts` | excellent, style-promptable | $/1k chars | needs a key **with `/audio/speech`**; `--engine=openai` |
@@ -103,6 +104,35 @@ Why Piper is the default here: this checkout's `.env` points
 `NIF_OPENAI_BASE_URL` at a provider with no `/audio/speech` endpoint (it 401s),
 so a cloud path cannot be the out-of-the-box answer. `--engine=openai` still
 works with `NIF_TTS_API_KEY` + `NIF_TTS_BASE_URL`.
+
+### Cloning a voice with Coqui XTTS (worth trying)
+
+XTTS v2 does zero-shot cloning: give it ~6 seconds of reference audio and it
+reads new text in that voice. On a laptop CPU it is roughly 20–60× slower than
+realtime, so expect minutes per cue; on a GPU it is a few seconds. Setup:
+
+```bash
+python3 -m pip install --user TTS          # ~2 GB with torch
+# it downloads the model on first use and asks you to accept the CPML licence
+```
+
+A reference sample is best as 6–12 s of clean, close-mic, single-speaker speech
+at 22–44 kHz — no music, no room echo. Then:
+
+```bash
+node tools/render-voiceover.mjs --engine=xtts --speaker-wav=my-voice.wav
+# GPU:      --xtts-device=cuda
+# per-cue:  NIF_XTTS_BATCH=0   (default batches: one model load for all 10 cues)
+```
+
+The engine loads the model once and writes `audio/s1.wav … s10.wav`; everything
+downstream (duration measurement, manifest, SRT, scene re-timing) is identical
+to Piper, so the film re-times itself and the picture stays in sync.
+
+Everything downstream is unchanged: durations are measured from the files, so
+the film re-times itself and the SRT regenerates. Two cautions: the licence is
+non-commercial (Coqui Public Model License), and a cloned voice should be your
+own or one you have permission to use — the model makes that easy to get wrong.
 
 For a human or cloud take: read at ~150 wpm, keep the cue boundaries (they are
 scene cuts), one file per id, normalise to **−16 LUFS / −1 dBTP** (web) or
