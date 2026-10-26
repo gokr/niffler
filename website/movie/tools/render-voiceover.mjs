@@ -24,7 +24,7 @@
  * Duration is measured in-process (MP3 frame walk / WAV header), so ffprobe is
  * NOT required — a stock checkout has no media tooling.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,10 @@ const args = new Map(
   })
 );
 const flag = (k, d = '') => (args.has(k) ? args.get(k) : d);
+const audition = args.has('audition');
+  /* --audition: render ONE cue with every voice installed in .piper/voices and
+   * write a player page, so "how do I hear the other voices?" is a click per
+   * voice instead of re-rendering the whole film ten times. */
 const engine = flag('engine', 'openai');
 const dryRun = args.has('dry-run');
 const force = args.has('force');
@@ -199,16 +203,21 @@ function piperPaths() {
   return { binDir, bin, model };
 }
 
-/* Pace control. Piper's own rate is slow for a modern explainer: measured
- * 125 wpm for en_GB-alan-medium at its default. `length_scale` < 1 shortens
- * phonemes (0.85 ≈ +15% speed); 1.0 is untouched. Override per render:
- *   --piper-length=0.85   or   NIF_PIPER_LENGTH=0.85
+/* Pace control. `length_scale` < 1 shortens phonemes (faster), > 1 lengthens
+ * them (calmer); 1.0 is the voice's own pace. Measured on this box, cue s5:
+ *   en_GB-alan-medium    125 wpm at 1.0   — slow, older timbre
+ *   en_US-kusal-medium   ~185 wpm at 1.0
+ *   en_US-ryan-high       196 wpm at 1.0  — the film's default (brisk, bright);
+ *                         ~180 wpm at 1.15 if that reads too quick
+ * Piper's own speed varies a lot by voice, so tune per voice rather than
+ * assuming a shared number. Override per render:
+ *   --piper-length=1.15   or   NIF_PIPER_LENGTH=1.15
  * (Piper also has --sentence_silence, which we leave at its default: the cue
  * breaks already provide the pauses, and a shorter silence makes the read
  * sound clipped between sentences.) */
 async function synthPiper(text, out) {
   const { binDir, bin, model } = piperPaths();
-  const lengthScale = flag('piper-length', process.env.NIF_PIPER_LENGTH || '0.85');
+  const lengthScale = flag('piper-length', process.env.NIF_PIPER_LENGTH || '1.0');
   if (!existsSync(bin)) {
     throw new Error(`piper binary not found at ${bin} — run tools/fetch-piper.sh`);
   }
@@ -305,8 +314,85 @@ function srtTime(s) {
 /* ------------------------------------------------------------------ *
  * main
  * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ *
+ * audition: one line, every installed voice, one page
+ * ------------------------------------------------------------------ */
+async function runAudition(cues) {
+  const { binDir, bin } = piperPaths();
+  const voicesDir = join(binDir, 'voices');
+  if (!existsSync(bin)) throw new Error(`piper not found at ${bin} — run tools/fetch-piper.sh`);
+  const voices = readdirSync(voicesDir).filter((f) => f.endsWith('.onnx')).sort();
+  if (voices.length === 0) throw new Error(`no voices in ${voicesDir} — run tools/fetch-piper.sh`);
+  const outDir = join(AUDIO, 'audition');
+  mkdirSync(outDir, { recursive: true });
+
+  /* Cue s5 is the best sample: it is the film's argument, and long enough to
+   * hear the timbre rather than a single sentence. */
+  const cue = cues.find((c) => c.id === (flag('audition-cue', 's5'))) || cues[0];
+  /* Native pace plus one calmer option: enough to choose without 15 rows. */
+  const lengths = flag('audition-lengths', '1,1.15').split(',').map((x) => x.trim());
+  const rows = [];
+  for (const voice of voices) {
+    for (const ls of lengths) {
+      const name = voice.replace(/\.onnx$/, '');
+      const file = `${name}@${ls}.wav`;
+      const path = join(outDir, file);
+      const wpm = await new Promise((resolve) => {
+        run(bin, ['-m', join(voicesDir, voice), '--length_scale', ls, '-f', path],
+            cue.text + '\n', { LD_LIBRARY_PATH: join(binDir, 'piper') })
+          .then(() => {
+            const seconds = measure(path);
+            resolve(seconds ? Math.round(words(cue.text) / (seconds / 60)) : 0);
+          })
+          .catch(() => resolve(0));
+      });
+      rows.push({ name, ls, file, wpm });
+      process.stdout.write('.');
+    }
+  }
+  process.stdout.write('\n');
+
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const html = `<!doctype html><meta charset="utf-8">
+<title>Niffler — voice audition</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 40px 32px 80px; background: #0b1826; color: #e8f4ee;
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  p.lede { color: #93a9b8; margin: 0 0 28px; max-width: 70ch; }
+  code { font-family: ui-monospace, Menlo, monospace; color: #42e6a4; }
+  table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #1e3b52; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #6f8698; font-weight: 500; }
+  td.voice { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
+  td.pace { font-family: ui-monospace, Menlo, monospace; color: #42e6a4; }
+  audio { height: 34px; width: 340px; }
+  tr:hover td { background: rgba(66,230,164,.05); }
+  .hint { margin-top: 26px; color: #6f8698; font-size: 13px; max-width: 80ch; }
+</style>
+<h1>Voice audition</h1>
+<p class="lede">One cue (“${esc(cue.id)}”, ${words(cue.text)} words) read by every voice in
+<code>.piper/voices/</code>, at each pace. Pick by ear, then render the film with that
+voice and pace:</p>
+<p class="lede"><code>node tools/render-voiceover.mjs --engine=piper
+--piper-model=.piper/voices/&lt;voice&gt;.onnx --piper-length=&lt;pace&gt;</code></p>
+<table>
+<tr><th>voice</th><th>pace</th><th>measured</th><th>listen</th></tr>
+${rows.map((r) => `<tr><td class="voice">${esc(r.name)}</td><td>${esc(r.ls)}</td>` +
+  `<td class="pace">${r.wpm} wpm</td><td><audio controls preload="none" src="audition/${esc(r.file)}"></audio></td></tr>`).join('\n')}
+</table>
+<p class="hint">Pace is Piper's <code>--length_scale</code>: lower is faster.
+A sensible landing zone for an explainer is 150–180 wpm.</p>
+`;
+  writeFileSync(join(AUDIO, 'audition.html'), html);
+  console.log(`wrote audio/audition.html — open it and press play on each row.`);
+  console.log(`  file://${join(AUDIO, 'audition.html')}`);
+}
+
 async function main() {
   const cues = loadCues();
+  if (audition && !dryRun) return runAudition(cues);
   const eng = ENGINES[engine];
   if (!eng) throw new Error(`unknown engine ${engine} (openai|piper|espeak|say|xtts)`);
   mkdirSync(AUDIO, { recursive: true });

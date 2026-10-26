@@ -14,20 +14,26 @@
     <!-- ============ s1 — cold open ============ -->
     <section class="scene" id="s1" data-scene="s1">
       <div class="s1-stack">
-        <svg class="logo-mark" viewBox="0 0 220 96" aria-label="Niffler logo">
+        <!-- The REAL brand lockup (website/niffler-logo-with-text.svg):
+             icon + "Niffler" on one baseline, viewBox 0 0 640 96. The film used
+             to stack the icon above a separate wordmark, which is not the logo.
+             Colours are adapted for a dark ground — the original text is
+             #08111D and the box #0B1826, both invisible against this stage. -->
+        <svg class="logo-lockup" viewBox="0 0 640 96" aria-label="Niffler logo">
           <g class="logo-strokes" fill="none" stroke="#42E6A4" stroke-width="8" stroke-linecap="round">
             <path class="draw" d="M12 30h46" pathLength="1"/>
             <path class="draw" d="M4 48h54" pathLength="1"/>
             <path class="draw" d="M18 66h40" pathLength="1"/>
           </g>
-          <rect class="logo-box" x="52" y="14" width="76" height="68" rx="12" fill="#0B1826"/>
-          <rect class="logo-box-stroke" x="52" y="14" width="76" height="68" rx="12" fill="none" stroke="#42E6A4" stroke-width="2" opacity=".55"/>
+          <rect class="logo-box" x="52" y="14" width="76" height="68" rx="12" fill="#16304A"/>
+          <rect class="logo-box-stroke" x="52" y="14" width="76" height="68" rx="12" fill="none" stroke="#42E6A4" stroke-width="2" opacity=".65"/>
           <g class="logo-prompt" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
             <path class="draw" d="M75 32l18 16-18 16" pathLength="1"/>
             <path class="draw" d="M99 64h14" pathLength="1"/>
           </g>
+          <text class="logo-word" x="150" y="68" font-family="Inter, Arial, Helvetica, sans-serif"
+                font-size="58" font-weight="700" letter-spacing="-2">Niffler</text>
         </svg>
-        <h1 class="wordmark"><span class="wm">Niffler</span><span class="dot">.</span></h1>
         <p class="kicker">a small, self-extending agent harness</p>
       </div>
     </section>
@@ -321,7 +327,7 @@
         <h2>Niffler — the movie</h2>
         <p>Two minutes, ten scenes. Sound optional.<br>Captions are always on.</p>
         <button id="startBtn" type="button">Play</button>
-        <p class="keys">space pause · ← → scene · c captions · f fullscreen</p>
+        <p class="keys">click or space pause · ← → scene · c captions · f fullscreen</p>
       </div>
     </div>
 

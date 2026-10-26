@@ -342,20 +342,30 @@ const Builders = {};
 
 /* s1 — cold open: the mark draws itself, the wordmark lands. */
 Builders.s1 = (tl, el, t0, dur, d) => {
-  const strokes = $$('.draw', el);
+  /* Draws the REAL lockup (icon + "Niffler" on one baseline) and ends on it:
+   * speed lines → terminal box → prompt → the word sliding in. The previous
+   * version stacked the icon above a separate wordmark with an invented dot,
+   * so the film never finished on the brand logo. */
+  const strokes = $$('.logo-strokes .draw', el);
   tl.fromTo(strokes,
     { strokeDasharray: 1, strokeDashoffset: 1 },
-    { strokeDashoffset: 0, duration: d(1.0), stagger: d(0.22), ease: 'power2.inOut' }, t0 + 0.25);
-  tl.fromTo($('.logo-box', el), { scale: 0.86, autoAlpha: 0 },
-    { scale: 1, autoAlpha: 1, duration: d(0.7), ease: 'power2.out' }, t0 + 0.55);
-  tl.fromTo($('.logo-box-stroke', el), { autoAlpha: 0 }, { autoAlpha: 1, duration: d(0.8) }, t0 + 0.9);
-  tl.fromTo($('.wm', el),
-    { y: 26, autoAlpha: 0, letterSpacing: '0.16em' },
-    { y: 0, autoAlpha: 1, letterSpacing: '-0.05em', duration: d(1.2), ease: 'expo.out' }, t0 + 1.25);
-  tl.fromTo($('.wordmark .dot', el), { scale: 0, autoAlpha: 0 },
-    { scale: 1, autoAlpha: 1, duration: d(0.5), ease: 'back.out(3)' }, t0 + 2.2);
+    { strokeDashoffset: 0, duration: d(0.85), stagger: d(0.18), ease: 'power2.inOut' }, t0 + 0.2);
+  /* Fade only. A `scale` tween on an SVG <rect> left a residual
+   * translate(-16.2,-8.64) baked into the element (measured: the fill box sat
+   * 29px left and 15px above its own stroke rect, so the mark read as two
+   * offset squares), because GSAP compensates a pixel transformOrigin unless
+   * transform-box is set. The mark is symmetric — a fade-in is enough. */
+  tl.fromTo($('.logo-box', el), { autoAlpha: 0 },
+    { autoAlpha: 1, duration: d(0.55), ease: 'power2.out' }, t0 + 0.5);
+  tl.fromTo($('.logo-box-stroke', el), { autoAlpha: 0 }, { autoAlpha: 1, duration: d(0.7) }, t0 + 0.85);
+  tl.fromTo($$('.logo-prompt .draw', el),
+    { strokeDasharray: 1, strokeDashoffset: 1 },
+    { strokeDashoffset: 0, duration: d(0.55), stagger: d(0.18), ease: 'power2.out' }, t0 + 1.15);
+  /* the wordmark completes the logo */
+  tl.fromTo($('.logo-word', el), { x: -26, autoAlpha: 0 },
+    { x: 0, autoAlpha: 1, duration: d(1.1), ease: 'expo.out' }, t0 + 1.6);
   tl.fromTo($('.kicker', el), { y: 16, autoAlpha: 0 },
-    { y: 0, autoAlpha: 1, duration: d(0.8), ease: 'power2.out' }, t0 + 2.9);
+    { y: 0, autoAlpha: 1, duration: d(0.8), ease: 'power2.out' }, t0 + 2.7);
   tl.fromTo($('.s1-stack', el), { scale: 0.985 }, { scale: 1.015, duration: dur, ease: 'none' }, t0);
 };
 
@@ -723,6 +733,8 @@ function showGate(label) {
 
 function startPlayback() {
   $('#gate').classList.add('hidden');
+  /* Hand focus back to the document so Space/arrows reach the transport. */
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   Voice.enabled = true;
   Voice.stop();
   const at = Master.tl.time();
@@ -763,11 +775,18 @@ function jumpScene(dir) {
   const now = Master.tl.time();
   const cur = Scenes.findIndex((s) => s === sceneAt(now));
   const idx = Math.min(Math.max(cur + dir, 0), Scenes.length - 1);
-  const target = Scenes[idx].start + 0.05;
+  const scene = Scenes[idx];
+  const target = scene.start + 0.05;
   Master.tl.pause();
   Master.tl.seek(target);
   Voice.stop();
-  if (Master.playing) Master.tl.play();
+  if (Master.playing) {
+    /* Skipping used to kill the narration for good: the timeline resumed but
+     * nothing restarted the audio, so every scene after the first skip was
+     * silent (reported as "cursor left/right and the voice is gone"). */
+    Voice.start(scene.id, scene.text);
+    Master.tl.play();
+  }
 }
 
 /** DevTools / deep-link seek: exact, idempotent, audio-safe. */
@@ -787,8 +806,15 @@ function seek(t) {
 
 function wireControls() {
   $('#startBtn').addEventListener('click', startPlayback);
+  /* Clicking Play used to leave focus on the (now hidden) button in some
+   * browsers, and the guard below then let the BUTTON handle Space — which
+   * re-ran startPlayback on an already-playing film, so pause appeared broken.
+   * Playback now moves focus off the button, and the guard only defers for
+   * real text fields. */
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLButtonElement && (e.key === ' ' || e.key === 'Enter')) return;
+    const t = e.target;
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement ||
+        t instanceof HTMLSelectElement) return;
     switch (e.key) {
       case ' ': e.preventDefault(); togglePlay(); break;
       case 'ArrowRight': e.preventDefault(); jumpScene(1); break;
@@ -805,6 +831,14 @@ function wireControls() {
         break;
       }
     }
+  });
+  /* Click the picture to pause/resume — the convention for every video player,
+   * and the discoverable alternative to the keyboard. The gate and the HUD are
+   * excluded so its button and progress bar stay usable. */
+  $('#stage').addEventListener('click', (e) => {
+    if (e.target.closest('#gate') || e.target.closest('#hud')) return;
+    if (!Master.tl || $('#gate').classList.contains('hidden') === false) return;
+    togglePlay();
   });
   window.addEventListener('resize', fitStage);
   /* hide the HUD when the pointer rests, like a video player */

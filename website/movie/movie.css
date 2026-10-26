@@ -139,26 +139,22 @@ html, body {
 /* ---------- s1: cold open ---------- */
 
 .s1-stack { display: flex; flex-direction: column; align-items: center; gap: 30px; }
-.logo-mark { width: 300px; height: 131px; overflow: visible; }
-/* The brand mark's terminal box is #0B1826 in the site logo, where it sits on a
- * light page and reads as a solid panel. On this stage the background IS that
- * navy, so the box vanished and the mark looked like an unfinished outline
- * (with the white prompt floating in a hole). Lift the panel so the box reads
- * as a window — matching the intent, not the literal pixel value. */
+/* The brand lockup, scaled up for the stage. The site SVG is 640x96 (icon +
+ * word on one baseline); at 960px wide it reads as a title card. */
+.logo-lockup { width: 960px; height: auto; overflow: visible; }
+/* Colours adapted for a DARK ground: the original word is #08111D and the box
+ * #0B1826 — on this stage the box vanished (mark looked like an unfinished
+ * outline) and the word would vanish too. */
+/* Any SVG transform animation must rotate/scale about the element's own box,
+ * not the viewBox origin — GSAP otherwise bakes an offset into the element. */
+.logo-lockup rect, .logo-lockup path, .logo-lockup text { transform-box: fill-box; }
 .logo-box { fill: #16304a; }
 .logo-box-stroke { stroke: #42e6a4; }
+.logo-word { fill: #f2f7f5; }
+.logo-mark { width: 300px; height: 131px; overflow: visible; }
 .logo-mark path, .logo-mark rect {
   vector-effect: non-scaling-stroke;
 }
-.wordmark {
-  font-size: 120px;
-  font-weight: 750;
-  letter-spacing: -0.05em;
-  line-height: 1;
-  display: flex;
-  align-items: baseline;
-}
-.wordmark .dot { color: var(--mint); }
 .kicker {
   font-family: var(--mono);
   font-size: 24px;

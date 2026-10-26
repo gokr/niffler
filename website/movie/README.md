@@ -103,6 +103,15 @@ node tools/render-voiceover.mjs --engine=say      # macOS built-in
 bash tools/fetch-piper.sh en_GB-cori-high         # a different Piper voice
 ```
 
+**Hear the other voices before committing to one:**
+
+```bash
+node tools/render-voiceover.mjs --audition
+# → audio/audition.html: one cue read by every voice in .piper/voices/ at two
+#   paces, with measured wpm and a player per row
+bash tools/fetch-piper.sh en_US-kusal-medium   # install another voice first
+```
+
 `PIPELINE.md` compares the available TTS options and explains how to swap in a
 human recording.
 
