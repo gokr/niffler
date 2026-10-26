@@ -22,7 +22,9 @@ website/movie/
 bash tools/play.sh
 ```
 
-That serves the folder on `127.0.0.1:8000`, opens a browser at
+That serves the folder on an **OS-assigned port** (printed in the URL it opens,
+so it cannot collide with another dev server in another checkout — pin one with
+`MOVIE_PORT=8721` if you prefer), opens a browser at
 `…/index.html?voice=track&autoplay=1`, and prints the URL (so it also works from
 another machine on your LAN, or when no browser opener exists). Options:
 `--no-voice`, `--voice=browser`, `--at=58`.
@@ -36,8 +38,9 @@ node tools/render-voiceover.mjs --engine=piper
 ```
 
 Or simply open `index.html` directly and press **Play** — the film is fully
-interactive from `file://` too; `?voice=track` is the only flag that matters for
-sound. Nothing is fetched over the network; the only requests are the local
+interactive from `file://` too. Sound is **on by default** as soon as the clips
+exist (`voice=auto` probes `audio/narration.js`, and falls back to captions when
+it is absent), so there is no URL flag to remember. Nothing is fetched over the network; the only requests are the local
 files.
 
 > Browsers refuse audio before a user gesture. Pressing **Play** *is* that
@@ -62,7 +65,8 @@ index.html?autoplay=1              # from the top, no start overlay
 index.html?t=47.5&autoplay=1       # an exact frame
 index.html?scene=s5&into=6         # 6s into one scene
 index.html?voice=browser           # speak the narration with OS voices
-index.html?voice=track             # play rendered clips from audio/
+index.html?voice=track             # require rendered clips (warns if missing)
+index.html?voice=none              # force captions only
 index.html?captions=off            # no caption line
 index.html?reduce=1                # near-instant transitions (also honours
                                    #  the OS prefers-reduced-motion setting)

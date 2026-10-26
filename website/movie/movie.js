@@ -62,29 +62,41 @@ function fitStage() {
  * ------------------------------------------------------------------ */
 
 const Voice = {
-  mode: params.get('voice') || 'none', // none | browser | track
+  mode: params.get('voice') || 'auto', // auto | none | browser | track
   meta: {},                            // id -> {file, seconds}
   audios: {},                          // id -> HTMLAudioElement
   bed: null,
   current: null,
   enabled: false,
 
-  /** Only `track` mode loads anything from audio/: the default artifact must
-   *  play with zero network/file requests (and zero console 404s) when no
-   *  voice-over has been rendered yet. */
+  /** `auto` (the default) probes for a rendered voice-over and uses it.
+   *  Only `track`/`auto` load anything from audio/, and only a MISSING
+   *  manifest in explicit `track` mode warns: with clips present, opening
+   *  index.html plainly plays WITH sound, which is what a viewer expects —
+   *  requiring a URL flag to hear the narration is how "I still don't hear
+   *  sound" happens. A silent clone (no clips) is not an error. */
   async load() {
-    if (this.mode !== 'track') return;
+    if (this.mode !== 'track' && this.mode !== 'auto') return;
+    const explicit = this.mode === 'track';
     await new Promise((resolve) => {
       const s = document.createElement('script');
       s.src = 'audio/narration.js';
       s.onload = resolve;
       s.onerror = () => {
-        console.warn('[movie] audio/narration.js missing — falling back to captions only. ' +
-                     'Run: node tools/render-voiceover.mjs');
+        if (explicit) {
+          console.warn('[movie] audio/narration.js missing — captions only. ' +
+                       'Run: bash tools/fetch-piper.sh && ' +
+                       'node tools/render-voiceover.mjs --engine=piper');
+        }
         resolve();
       };
       document.head.appendChild(s);
     });
+    if (!Array.isArray(window.NARRATION_AUDIO) || window.NARRATION_AUDIO.length === 0) {
+      if (this.mode === 'auto') this.mode = 'none';   // silent clone: captions carry it
+      return;
+    }
+    this.mode = 'track';
     const list = window.NARRATION_AUDIO || [];
     for (const cue of list) {
       if (!cue.file) continue;
