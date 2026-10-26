@@ -1,16 +1,17 @@
-# Local TTS engine + voices (tools/fetch-piper.sh) — ~60-115 MB per voice
+# Local TTS engines + models — machine-local caches, never shipped.
 .piper/
-
-# Generated narration (tools/render-voiceover.mjs); regenerate in ~20 s
-audio/*.mp3
-audio/*.wav
-audio/*.aiff
-audio/narration.js
-audio/narration.srt
-audio/audition/
-audio/audition.html
 models/
 
-# scratch frames from the screenshot loop
+# Dev-only scratch
 scratch/
 var/
+
+# The RENDERED NARRATION IS COMMITTED (audio/s*.wav, narration.js, .srt):
+# 4.9 MB of 24 kHz mono WAV, so the published film plays with sound and needs no
+# render step. Regenerate with:
+#   bash tools/fetch-kokoro.sh && node tools/render-voiceover.mjs --engine=kokoro
+#
+# The audition is a local comparison tool, not part of the film: 19 clips and a
+# page whose rows point at whatever voices happen to be installed.
+audio/audition/
+audio/audition.html
