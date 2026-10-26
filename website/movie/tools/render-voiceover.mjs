@@ -490,17 +490,21 @@ async function main() {
     const path = join(AUDIO, file);
     let seconds = null;
 
-    if (!dryRun && !useBatch) {
-      const reuse = existsSync(path) && !force;
-      if (reuse) {
-        seconds = measure(path);
-        if (seconds != null) process.stdout.write(`  reuse  ${cue.id}\n`);
-      } else {
+    /* ALWAYS measure what is on disk — batched engines write their files above
+     * and never enter the per-cue branch, which silently left every duration
+     * null: the manifest then carried seconds: 0, the film could not re-time
+     * itself, and the table printed the WPM estimate instead of the truth.
+     * (Caught when a Kokoro render reported 153 wpm for every cue.) */
+    if (!dryRun) {
+      if (!useBatch && (!existsSync(path) || force)) {
         process.stdout.write(`  render ${cue.id} … `);
         await eng.synth(cue.text, path);
-        seconds = measure(path);
-        process.stdout.write(seconds == null
-          ? 'ok (duration unmeasured — .mp3/.wav only)\n' : `ok ${seconds.toFixed(2)}s\n`);
+      }
+      seconds = measure(path);
+      if (seconds != null) {
+        process.stdout.write(`  ${cue.id} ${seconds.toFixed(2)}s\n`);
+      } else {
+        console.warn(`  ${cue.id}: file present but duration unreadable (${path})`);
       }
     }
 

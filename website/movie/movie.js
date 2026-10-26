@@ -108,10 +108,22 @@ const Voice = {
     }
   },
 
+  /** How long a scene holds.
+   *
+   * `Math.max(authored, spoken)` is right for a SLOW voice (the scene must
+   * stretch) but wrong for a fast one: with Kokoro's af_nova at ~180 wpm the
+   * film kept every authored length and sat in silence for ~38 s of its 142 s
+   * (measured: 100 s of speech, 142 s of scenes). So the scene follows the
+   * voice with a bounded dwell — at most `HOLD_MAX` seconds of room after the
+   * line — and never exceeds the authored length, which stays the animation's
+   * budget. `?hold=full` restores the old behaviour (scene >= authored). */
   sceneSeconds(id, authored) {
     if (this.mode !== 'track') return authored;
     const m = this.meta[id];
-    return m && m.seconds > 0 ? Math.max(authored, m.seconds + 0.45) : authored;
+    if (!m || !(m.seconds > 0)) return authored;
+    if (Master.holdFull) return Math.max(authored, m.seconds + 0.45);
+    const HOLD_MAX = Number(params.get('holdMax') || 2.0);
+    return Math.min(authored, Math.max(m.seconds + 0.9, m.seconds + HOLD_MAX));
   },
 
   start(id, text) {
@@ -603,7 +615,8 @@ Builders.s10 = (tl, el, t0, dur, d) => {
 
 const Cues = (window.NARRATION || []).slice();
 const Scenes = [];   // {id, start, dur, text, el}
-const Master = { tl: null, captions: true, playing: false };
+const Master = { tl: null, captions: true, playing: false,
+                 holdFull: params.get('hold') === 'full' };
 
 function setCaption(text) {
   const cap = $('#captions');

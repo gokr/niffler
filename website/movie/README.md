@@ -68,6 +68,8 @@ index.html?voice=browser           # speak the narration with OS voices
 index.html?voice=track             # require rendered clips (warns if missing)
 index.html?voice=none              # force captions only
 index.html?captions=off            # no caption line
+index.html?hold=full               # scene length = authored (old behaviour)
+index.html?holdMax=0.5             # tighter: less silence after each line
 index.html?reduce=1                # near-instant transitions (also honours
                                    #  the OS prefers-reduced-motion setting)
 ```
