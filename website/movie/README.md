@@ -16,8 +16,34 @@ website/movie/
   audio/          generated voice-over clips (empty until you render them)
 ```
 
-Open `index.html` in a browser and press **Play**. Nothing is fetched over the
-network; the only requests are the six local files.
+**To watch it with sound, run one command:**
+
+```bash
+bash tools/play.sh
+```
+
+That serves the folder on `127.0.0.1:8000`, opens a browser at
+`…/index.html?voice=track&autoplay=1`, and prints the URL (so it also works from
+another machine on your LAN, or when no browser opener exists). Options:
+`--no-voice`, `--voice=browser`, `--at=58`.
+
+If it reports *"no narration rendered yet"*, the voice clips are missing — they
+are gitignored because they are 60 MB per voice and regenerate in ~20 s:
+
+```bash
+bash tools/fetch-piper.sh                  # engine + voice → .piper/ (~63 MB, once)
+node tools/render-voiceover.mjs --engine=piper
+```
+
+Or simply open `index.html` directly and press **Play** — the film is fully
+interactive from `file://` too; `?voice=track` is the only flag that matters for
+sound. Nothing is fetched over the network; the only requests are the local
+files.
+
+> Browsers refuse audio before a user gesture. Pressing **Play** *is* that
+> gesture. If you deep-link with `?autoplay=1` the narration waits for your next
+> click and then starts from the beginning of the current line — it never plays
+> silently off-sync.
 
 ## Watching it
 
