@@ -107,8 +107,17 @@ bash tools/fetch-piper.sh en_GB-cori-high         # a different Piper voice
 
 **Hear every voice before committing to one:**
 
+**This film's voice is Kokoro `af_nova` at speed `0.9`** — chosen by listening,
+confirmed by measurement: ~173 wpm average, 2:05, 16% dwell. A bare
+`--engine=kokoro` reproduces it exactly (the pair is the default, not a flag you
+have to remember):
+
 ```bash
-bash tools/fetch-kokoro.sh                 # Kokoro-82M: 54 voices, best quality here
+bash tools/fetch-kokoro.sh              # Kokoro-82M: 54 voices, best quality here
+node tools/render-voiceover.mjs --engine=kokoro
+```
+
+```bash
 node tools/render-voiceover.mjs --audition # → audio/audition.html
 ```
 
@@ -117,8 +126,9 @@ Piper together — sorted by measured pace, one player per row. Pick, then rende
 the film with it:
 
 ```bash
-node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=af_heart
+node tools/render-voiceover.mjs --engine=kokoro                                  # af_nova @ 0.9
 node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=bm_george --kokoro-speed=1.1
+node tools/render-voiceover.mjs --engine=kokoro --kokoro-speed=0.85           # calmer still
 ```
 
 Kokoro is the better-sounding family (~1.3× realtime on CPU, 340 MB of model in

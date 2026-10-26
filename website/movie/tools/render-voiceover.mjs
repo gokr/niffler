@@ -6,7 +6,7 @@
  *   node tools/render-voiceover.mjs --engine=piper --piper-model=/path/en_US-amy.onnx
  *   node tools/render-voiceover.mjs --engine=piper --piper-length=0.9   # faster read
  *   node tools/render-voiceover.mjs --engine=xtts --speaker-wav=me.wav  # clone a voice
- *   node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=af_heart
+ *   node tools/render-voiceover.mjs --engine=kokoro   # af_nova @ 0.9 (this film)
  *   node tools/render-voiceover.mjs --engine=espeak  # offline placeholder (.wav)
  *   node tools/render-voiceover.mjs --engine=say     # macOS built-in voice
  *
@@ -308,8 +308,17 @@ async function runKokoroJobs(jobs) {
   }
 }
 
-function kokoroVoice() { return flag('kokoro-voice', process.env.NIF_KOKORO_VOICE || 'af_heart'); }
-function kokoroSpeed() { return flag('kokoro-speed', process.env.NIF_KOKORO_SPEED || '1.0'); }
+/* THE FILM'S VOICE (chosen by listening, measured to confirm):
+ *   kokoro af_nova @ 0.9  →  ~173 wpm average, 2:05, 16% dwell
+ * Nova at 1.0 was too brisk (217 wpm on the opening cue, ~183 average); 0.9
+ * tightens the per-scene spread from 132-217 to 121-210 and lands the long
+ * middle scenes at 168-185, which is the comfortable explainer range. These
+ * defaults exist so a re-render reproduces the shipped film without flags. */
+const KOKORO_VOICE_DEFAULT = 'af_nova';
+const KOKORO_SPEED_DEFAULT = '0.9';
+
+function kokoroVoice() { return flag('kokoro-voice', process.env.NIF_KOKORO_VOICE || KOKORO_VOICE_DEFAULT); }
+function kokoroSpeed() { return flag('kokoro-speed', process.env.NIF_KOKORO_SPEED || KOKORO_SPEED_DEFAULT); }
 
 async function synthKokoro(text, out) {
   await runKokoroJobs([{ id: 'cue', text, out, voice: kokoroVoice(), speed: kokoroSpeed() }]);
@@ -382,7 +391,7 @@ async function runAudition(cues) {
       console.warn('  (kokoro not installed — skipped; run tools/fetch-kokoro.sh)');
     } else {
       const picks = (flag('kokoro-voices', '') ||
-        'af_heart,af_bella,af_sarah,af_sky,af_kore,af_nova,' +
+        `af_nova,${KOKORO_VOICE_DEFAULT},af_heart,af_bella,af_sarah,af_sky,af_kore,` +
         'am_michael,am_fenrir,am_puck,am_adam,bm_george,bm_fable,bf_emma').split(',');
       const speeds = flag('kokoro-speeds', '1.0').split(',');
       const jobs = [], index = [];

@@ -106,6 +106,26 @@ Why Piper is the default here: this checkout's `.env` points
 so a cloud path cannot be the out-of-the-box answer. `--engine=openai` still
 works with `NIF_TTS_API_KEY` + `NIF_TTS_BASE_URL`.
 
+### Choosing a voice: what worked here, and how to repeat it
+
+This film ships **Kokoro `af_nova` at speed 0.9**. The path to it is the
+reusable part:
+
+1. `node tools/render-voiceover.mjs --audition` — one cue in every installed
+   voice, sorted by measured pace, one player per row. Choose by ear.
+2. Judge pace from the *measured* column, not the flag. Kokoro's voices range
+   150–195 wpm at speed 1.0; a `speed` step of 0.1 is worth ~10 wpm.
+3. Watch the **dwell**: `film length − speech length`. Above ~25% the film feels
+   sluggish even with a quick narrator, because the picture waits in silence.
+   `?holdMax=<s>` tunes it (default 2 s of room after each line).
+4. Confirm with the numbers before re-rendering the whole film:
+   `--engine=kokoro --kokoro-voice=<id> --kokoro-speed=<n>`.
+
+What the measurements showed here: `af_nova` at 1.0 read 217 wpm on the opening
+cue and left 27% dwell across the film — brisk narrator, sluggish film. At 0.9
+the average fell to 173 wpm, the per-scene spread tightened from 132–217 to
+121–210, and the long middle scenes settled at 168–185.
+
 ### Cloning a voice with Coqui XTTS (worth trying)
 
 XTTS v2 does zero-shot cloning: give it ~6 seconds of reference audio and it
