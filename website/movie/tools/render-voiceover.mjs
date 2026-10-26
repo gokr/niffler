@@ -169,9 +169,10 @@ async function synthOpenAI(text, out) {
   throw new Error('TTS failed after 3 attempts');
 }
 
-function run(cmd, argv, stdin) {
+function run(cmd, argv, stdin, extraEnv) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, argv, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const env = extraEnv ? { ...process.env, ...extraEnv } : process.env;
+    const p = spawn(cmd, argv, { stdio: ['pipe', 'pipe', 'pipe'], env });
     let err = '';
     p.stderr.on('data', (d) => (err += d));
     p.on('error', reject);
@@ -181,10 +182,32 @@ function run(cmd, argv, stdin) {
   });
 }
 
+/* Piper: the default local engine. `tools/fetch-piper.sh` drops a
+ * self-contained build (binary + espeak-ng data + libonnxruntime) into
+ * .piper/ and a voice into .piper/voices/, so this needs no pip, no sudo and
+ * no network at render time. The bundled binary needs its own directory on
+ * the loader path, which is why LD_LIBRARY_PATH is set here rather than left
+ * to the caller. */
+function piperPaths() {
+  const binDir = flag('piper-dir', process.env.NIF_PIPER_DIR ||
+    join(ROOT, '.piper'));
+  const bin = process.env.NIF_PIPER_BIN || join(binDir, 'piper', 'piper');
+  const model = flag('piper-model', process.env.NIF_PIPER_MODEL ||
+    join(binDir, 'voices', 'en_GB-alan-medium.onnx'));
+  return { binDir, bin, model };
+}
+
 async function synthPiper(text, out) {
-  const model = flag('piper-model', process.env.NIF_PIPER_MODEL || '');
-  if (!model) throw new Error('piper needs --piper-model=/path/voice.onnx');
-  await run('piper', ['--model', model, '--output_file', out], text + '\n');
+  const { binDir, bin, model } = piperPaths();
+  if (!existsSync(bin)) {
+    throw new Error(`piper binary not found at ${bin} — run tools/fetch-piper.sh`);
+  }
+  if (!existsSync(model)) {
+    throw new Error(`piper voice not found at ${model} — run tools/fetch-piper.sh`);
+  }
+  await run(bin, ['-m', model, '-f', out], text + '\n', {
+    LD_LIBRARY_PATH: join(binDir, 'piper'),
+  });
 }
 
 async function synthEspeak(text, out) {

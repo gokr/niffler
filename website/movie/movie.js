@@ -108,8 +108,9 @@ const Voice = {
       const a = this.audios[id];
       if (a) {
         a.currentTime = 0;
-        a.play().catch(() => {});
         this.current = a;
+        this.pendingId = id;
+        this.tryPlay(a);
         if (this.bed) this.bed.volume = 0.06;
       }
       return;
@@ -125,6 +126,43 @@ const Voice = {
       this.current = u;
       speechSynthesis.speak(u);
     }
+  },
+
+  /** Play, and if the browser blocks it (autoplay policy: no user gesture
+   *  yet), remember that so the next click/keypress resumes the SAME line
+   *  instead of leaving the film silently mute. */
+  tryPlay(media) {
+    const p = media.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => {
+        this.blocked = (err && err.name) || 'blocked';
+        if (!this.warned) {
+          this.warned = true;
+          console.warn('[movie] narration is blocked until a click or keypress ' +
+                       '(' + this.blocked + '). It will start on the next gesture.');
+        }
+        this.armGesture();
+      });
+    }
+  },
+
+  armGesture() {
+    if (this.gestureArmed) return;
+    this.gestureArmed = true;
+    const resume = () => {
+      this.gestureArmed = false;
+      window.removeEventListener('pointerdown', resume, true);
+      window.removeEventListener('keydown', resume, true);
+      if (!this.enabled || !this.pendingId) return;
+      const a = this.audios[this.pendingId];
+      if (!a || !a.paused) return;
+      /* restart at the line's start: it should feel like the narration was
+       * simply waiting for permission, not clipped from the middle */
+      a.currentTime = 0;
+      this.tryPlay(a);
+    };
+    window.addEventListener('pointerdown', resume, true);
+    window.addEventListener('keydown', resume, true);
   },
 
   stop() {
@@ -784,6 +822,25 @@ async function boot() {
   Master.seek = seek;
   Master.play = () => { $('#gate').classList.add('hidden'); Master.playing = true; Master.tl.play(); };
   Master.pause = () => { Master.playing = false; Master.tl.pause(); };
+  /* Audio is otherwise invisible to an automated check: an Audio() element is
+   * not in the DOM, so "did the voice actually play?" would be answered by ear.
+   * This exposes the facts (which clip, currentTime, paused, muted, error). */
+  Master.voice = Voice;
+  Master.audioState = () => {
+    const out = { mode: Voice.mode, enabled: Voice.enabled, clips: {} };
+    for (const [id, a] of Object.entries(Voice.audios)) {
+      out.clips[id] = {
+        t: +a.currentTime.toFixed(2),
+        dur: +a.duration.toFixed(2),
+        paused: a.paused, muted: a.muted, volume: a.volume,
+        error: a.error ? a.error.code : null,
+        readyState: a.readyState,
+      };
+    }
+    if (Voice.mode === 'browser') out.speaking = window.speechSynthesis?.speaking;
+    out.blocked = Voice.blocked || null;
+    return out;
+  };
   Master.state = () => ({
     t: Master.tl.time(), duration: Master.duration,
     scene: sceneAt(Master.tl.time()).id,

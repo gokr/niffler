@@ -29,12 +29,12 @@ window.NARRATION = [
   },
   {
     id: "s3",
-    seconds: 14,
+    seconds: 15,
     text: "Niffler starts from the other end. Its core is tiny, and it speaks exactly one thing: JSON envelopes over a message bus. No plugins loaded into the core. No core code linked into anything."
   },
   {
     id: "s4",
-    seconds: 14,
+    seconds: 15,
     text: "Every capability is its own process. Bash. Edit. Grep. Git. A language server. A store. They are peers on the bus, and they come and go while the conversation keeps running."
   },
   {

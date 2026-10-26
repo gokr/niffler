@@ -51,13 +51,30 @@ The narration is authored as **data** (`narration.js`), not as prose inside the
 animation. One cue per scene, each with a `seconds` minimum. Three consumers
 read it: the captions, the browser-voice preview, and the renderer.
 
+The default engine is **Piper**, local and free — no account, no key, CPU-only,
+≈8× faster than realtime. This checkout's `.env` points `NIF_OPENAI_BASE_URL` at
+a provider with no `/audio/speech` endpoint, so a cloud engine cannot be the
+out-of-the-box answer.
+
 ```bash
-node tools/render-voiceover.mjs --dry-run            # plan + pacing check
-NIF_TTS_API_KEY=… node tools/render-voiceover.mjs --engine=openai
-node tools/render-voiceover.mjs --engine=piper --piper-model=~/voices/en_US-amy.onnx
-node tools/render-voiceover.mjs --engine=espeak      # offline placeholder
-node tools/render-voiceover.mjs --engine=say         # macOS built-in
+bash tools/fetch-piper.sh                    # once: engine + voice → .piper/ (gitignored)
+node tools/render-voiceover.mjs --dry-run    # plan + pacing check, no network
+node tools/render-voiceover.mjs --engine=piper
+index.html?voice=track                      # ← now you hear it
 ```
+
+Other engines, same command:
+
+```bash
+NIF_TTS_API_KEY=… node tools/render-voiceover.mjs --engine=openai   # needs a key
+                                                                    # with /audio/speech
+node tools/render-voiceover.mjs --engine=espeak   # robotic placeholder, offline
+node tools/render-voiceover.mjs --engine=say      # macOS built-in
+bash tools/fetch-piper.sh en_GB-cori-high         # a different Piper voice
+```
+
+`PIPELINE.md` compares the available TTS options and explains how to swap in a
+human recording.
 
 It writes one clip per scene (`audio/s1.mp3` …), `audio/narration.js` (the
 duration manifest the player reads) and `audio/narration.srt`.
@@ -152,11 +169,21 @@ screenshot cannot:
 - **frame rate**: sample `requestAnimationFrame` deltas during playback —
   median should be 16.7 ms.
 
+## Reusing this for another movie
+
+See **[PIPELINE.md](PIPELINE.md)**: the stack and why each piece, the order of
+work, the seven invariants (each one a bug that happened), the verification
+table DevTools drives, and a six-step "start a new film" checklist.
+
 ## Known limits
 
 - 1600×900 stage, scaled to the viewport; it letterboxes on extreme aspect
   ratios rather than reflowing.
 - Type falls back to system sans/mono when Inter and IBM Plex Mono are absent
   (the website has the same dependency, so the look stays consistent).
-- No audio assets ship in the repo; the film is silent until you render a
-  voice-over (captions carry the narration).
+- No audio assets ship in the repo (60 MB of WAV per voice, and they are
+  regenerable in ~20 s): the film is silent with captions until you run
+  `tools/fetch-piper.sh` + `render-voiceover.mjs --engine=piper`.
+- Browsers block audio until the first click/keypress. Pressing **Play** is
+  that gesture; if you deep-link with `?autoplay=1`, the narration waits and
+  starts on your next click (it never plays silently out of sync).
