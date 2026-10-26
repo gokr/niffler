@@ -5,34 +5,44 @@
   body { margin: 0; padding: 40px 32px 80px; background: #0b1826; color: #e8f4ee;
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
-  p.lede { color: #93a9b8; margin: 0 0 28px; max-width: 70ch; }
+  p.lede { color: #93a9b8; margin: 0 0 12px; max-width: 74ch; }
   code { font-family: ui-monospace, Menlo, monospace; color: #42e6a4; }
-  table { border-collapse: collapse; width: 100%; max-width: 1100px; }
-  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #1e3b52; }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #6f8698; font-weight: 500; }
+  table { border-collapse: collapse; width: 100%; max-width: 1100px; margin-top: 22px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid #1e3b52; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #6f8698; font-weight: 500;
+       position: sticky; top: 0; background: #0b1826; }
   td.voice { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
   td.pace { font-family: ui-monospace, Menlo, monospace; color: #42e6a4; }
-  audio { height: 34px; width: 340px; }
+  audio { height: 32px; width: 320px; }
   tr:hover td { background: rgba(66,230,164,.05); }
-  .hint { margin-top: 26px; color: #6f8698; font-size: 13px; max-width: 80ch; }
+  .hint { margin-top: 24px; color: #6f8698; font-size: 13px; max-width: 84ch; }
 </style>
 <h1>Voice audition</h1>
-<p class="lede">One cue (“s5”, 42 words) read by every voice in
-<code>.piper/voices/</code>, at each pace. Pick by ear, then render the film with that
-voice and pace:</p>
-<p class="lede"><code>node tools/render-voiceover.mjs --engine=piper
---piper-model=.piper/voices/&lt;voice&gt;.onnx --piper-length=&lt;pace&gt;</code></p>
+<p class="lede">Cue <code>s5</code> (42 words) in every available voice,
+sorted by measured pace. <b>19</b> samples.</p>
+<p class="lede">Then render the film with the one you like:<br>
+<code>node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=&lt;id&gt; --kokoro-speed=&lt;n&gt;</code></p>
 <table>
 <tr><th>voice</th><th>pace</th><th>measured</th><th>listen</th></tr>
-<tr><td class="voice">en_GB-alan-medium</td><td>1</td><td class="pace">148 wpm</td><td><audio controls preload="none" src="audition/en_GB-alan-medium@1.wav"></audio></td></tr>
-<tr><td class="voice">en_GB-alan-medium</td><td>0.9</td><td class="pace">159 wpm</td><td><audio controls preload="none" src="audition/en_GB-alan-medium@0.9.wav"></audio></td></tr>
-<tr><td class="voice">en_GB-alan-medium</td><td>0.85</td><td class="pace">164 wpm</td><td><audio controls preload="none" src="audition/en_GB-alan-medium@0.85.wav"></audio></td></tr>
-<tr><td class="voice">en_US-kusal-medium</td><td>1</td><td class="pace">185 wpm</td><td><audio controls preload="none" src="audition/en_US-kusal-medium@1.wav"></audio></td></tr>
-<tr><td class="voice">en_US-kusal-medium</td><td>0.9</td><td class="pace">196 wpm</td><td><audio controls preload="none" src="audition/en_US-kusal-medium@0.9.wav"></audio></td></tr>
-<tr><td class="voice">en_US-kusal-medium</td><td>0.85</td><td class="pace">200 wpm</td><td><audio controls preload="none" src="audition/en_US-kusal-medium@0.85.wav"></audio></td></tr>
-<tr><td class="voice">en_US-ryan-high</td><td>1</td><td class="pace">193 wpm</td><td><audio controls preload="none" src="audition/en_US-ryan-high@1.wav"></audio></td></tr>
-<tr><td class="voice">en_US-ryan-high</td><td>0.9</td><td class="pace">207 wpm</td><td><audio controls preload="none" src="audition/en_US-ryan-high@0.9.wav"></audio></td></tr>
-<tr><td class="voice">en_US-ryan-high</td><td>0.85</td><td class="pace">209 wpm</td><td><audio controls preload="none" src="audition/en_US-ryan-high@0.85.wav"></audio></td></tr>
+<tr><td class="voice">piper · en_GB-alan-medium</td><td>1.15</td><td class="pace">137 wpm</td><td><audio controls preload="none" src="audition/en_GB-alan-medium@1.15.wav"></audio></td></tr>
+<tr><td class="voice">piper · en_GB-alan-medium</td><td>1</td><td class="pace">150 wpm</td><td><audio controls preload="none" src="audition/en_GB-alan-medium@1.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · am_michael</td><td>1.0</td><td class="pace">157 wpm</td><td><audio controls preload="none" src="audition/kokoro-am_michael@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · bm_george</td><td>1.0</td><td class="pace">164 wpm</td><td><audio controls preload="none" src="audition/kokoro-bm_george@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · af_bella</td><td>1.0</td><td class="pace">169 wpm</td><td><audio controls preload="none" src="audition/kokoro-af_bella@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · af_heart</td><td>1.0</td><td class="pace">171 wpm</td><td><audio controls preload="none" src="audition/kokoro-af_heart@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · af_kore</td><td>1.0</td><td class="pace">172 wpm</td><td><audio controls preload="none" src="audition/kokoro-af_kore@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · af_sarah</td><td>1.0</td><td class="pace">175 wpm</td><td><audio controls preload="none" src="audition/kokoro-af_sarah@1.0.wav"></audio></td></tr>
+<tr><td class="voice">piper · en_US-kusal-medium</td><td>1.15</td><td class="pace">175 wpm</td><td><audio controls preload="none" src="audition/en_US-kusal-medium@1.15.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · am_puck</td><td>1.0</td><td class="pace">177 wpm</td><td><audio controls preload="none" src="audition/kokoro-am_puck@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · am_fenrir</td><td>1.0</td><td class="pace">180 wpm</td><td><audio controls preload="none" src="audition/kokoro-am_fenrir@1.0.wav"></audio></td></tr>
+<tr><td class="voice">piper · en_US-ryan-high</td><td>1.15</td><td class="pace">180 wpm</td><td><audio controls preload="none" src="audition/en_US-ryan-high@1.15.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · af_sky</td><td>1.0</td><td class="pace">182 wpm</td><td><audio controls preload="none" src="audition/kokoro-af_sky@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · am_adam</td><td>1.0</td><td class="pace">184 wpm</td><td><audio controls preload="none" src="audition/kokoro-am_adam@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · bf_emma</td><td>1.0</td><td class="pace">184 wpm</td><td><audio controls preload="none" src="audition/kokoro-bf_emma@1.0.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · bm_fable</td><td>1.0</td><td class="pace">189 wpm</td><td><audio controls preload="none" src="audition/kokoro-bm_fable@1.0.wav"></audio></td></tr>
+<tr><td class="voice">piper · en_US-kusal-medium</td><td>1</td><td class="pace">190 wpm</td><td><audio controls preload="none" src="audition/en_US-kusal-medium@1.wav"></audio></td></tr>
+<tr><td class="voice">piper · en_US-ryan-high</td><td>1</td><td class="pace">190 wpm</td><td><audio controls preload="none" src="audition/en_US-ryan-high@1.wav"></audio></td></tr>
+<tr><td class="voice">kokoro · af_nova</td><td>1.0</td><td class="pace">193 wpm</td><td><audio controls preload="none" src="audition/kokoro-af_nova@1.0.wav"></audio></td></tr>
 </table>
-<p class="hint">Pace is Piper's <code>--length_scale</code>: lower is faster.
-A sensible landing zone for an explainer is 150–180 wpm.</p>
+<p class="hint">Kokoro "speed" &gt;1 is faster (its own knob); Piper pace is
+<code>--length_scale</code>, where lower is faster. 150–180 wpm suits an explainer.</p>

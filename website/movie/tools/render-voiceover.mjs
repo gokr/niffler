@@ -6,6 +6,7 @@
  *   node tools/render-voiceover.mjs --engine=piper --piper-model=/path/en_US-amy.onnx
  *   node tools/render-voiceover.mjs --engine=piper --piper-length=0.9   # faster read
  *   node tools/render-voiceover.mjs --engine=xtts --speaker-wav=me.wav  # clone a voice
+ *   node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=af_heart
  *   node tools/render-voiceover.mjs --engine=espeak  # offline placeholder (.wav)
  *   node tools/render-voiceover.mjs --engine=say     # macOS built-in voice
  *
@@ -24,7 +25,7 @@
  * Duration is measured in-process (MP3 frame walk / WAV header), so ffprobe is
  * NOT required — a stock checkout has no media tooling.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -282,6 +283,46 @@ for j in jobs:
   await run('python3', ['-c', script, JSON.stringify(jobs)]);
 }
 
+/* Kokoro-82M: the best-sounding local option here (~1.3x realtime on CPU, 54
+ * English voices). A private venv + model live in ~/.cache (tools/
+ * fetch-kokoro.sh); jobs go to a small python bridge so the model loads ONCE
+ * for the whole cue list. `speed` is Kokoro's own rate knob (>1 = faster),
+ * unlike Piper's inverse `length_scale`. */
+function kokoroEnv() {
+  const home = process.env.NIF_KOKORO_HOME || join(process.env.HOME || '', '.cache', 'niffler-movie');
+  const py = process.env.NIF_KOKORO_PYTHON || join(home, 'venv', 'bin', 'python');
+  return { py, bridge: join(HERE, 'kokoro-say.py') };
+}
+
+async function runKokoroJobs(jobs) {
+  const { py, bridge } = kokoroEnv();
+  if (!existsSync(py)) {
+    throw new Error(`kokoro venv not found at ${py} — run tools/fetch-kokoro.sh`);
+  }
+  const jobsFile = join(AUDIO, `.jobs-${process.pid}.json`);
+  writeFileSync(jobsFile, JSON.stringify(jobs));
+  try {
+    await run(py, [bridge, '--jobs', jobsFile]);
+  } finally {
+    try { unlinkSync(jobsFile); } catch (e) { /* nothing to clean up */ }
+  }
+}
+
+function kokoroVoice() { return flag('kokoro-voice', process.env.NIF_KOKORO_VOICE || 'af_heart'); }
+function kokoroSpeed() { return flag('kokoro-speed', process.env.NIF_KOKORO_SPEED || '1.0'); }
+
+async function synthKokoro(text, out) {
+  await runKokoroJobs([{ id: 'cue', text, out, voice: kokoroVoice(), speed: kokoroSpeed() }]);
+}
+
+/** Batch: one model load for every cue. */
+async function kokoroBatch(cues, ext) {
+  await runKokoroJobs(cues.map((c) => ({
+    id: c.id, text: c.text, out: join(AUDIO, c.id + '.' + ext),
+    voice: kokoroVoice(), speed: kokoroSpeed(),
+  })));
+}
+
 async function synthSay(text, out) {
   /* macOS: say → aiff, afconvert → wav (both ship with the OS) */
   const aiff = out.replace(/\.wav$/, '.aiff');
@@ -296,6 +337,7 @@ const ENGINES = {
   espeak: { ext: 'wav', synth: synthEspeak },
   say: { ext: 'wav', synth: synthSay },
   xtts: { ext: 'wav', synth: synthXtts, batch: xttsBatch },
+  kokoro: { ext: 'wav', synth: synthKokoro, batch: kokoroBatch },
 };
 
 /* ------------------------------------------------------------------ *
@@ -318,41 +360,72 @@ function srtTime(s) {
  * audition: one line, every installed voice, one page
  * ------------------------------------------------------------------ */
 async function runAudition(cues) {
-  const { binDir, bin } = piperPaths();
-  const voicesDir = join(binDir, 'voices');
-  if (!existsSync(bin)) throw new Error(`piper not found at ${bin} — run tools/fetch-piper.sh`);
-  const voices = readdirSync(voicesDir).filter((f) => f.endsWith('.onnx')).sort();
-  if (voices.length === 0) throw new Error(`no voices in ${voicesDir} — run tools/fetch-piper.sh`);
   const outDir = join(AUDIO, 'audition');
   mkdirSync(outDir, { recursive: true });
-
-  /* Cue s5 is the best sample: it is the film's argument, and long enough to
-   * hear the timbre rather than a single sentence. */
-  const cue = cues.find((c) => c.id === (flag('audition-cue', 's5'))) || cues[0];
-  /* Native pace plus one calmer option: enough to choose without 15 rows. */
-  const lengths = flag('audition-lengths', '1,1.15').split(',').map((x) => x.trim());
+  const which = flag('audition-engine', 'all');   // all | piper | kokoro
+  /* Cue s5 is the best sample: it is the film's argument, long enough to hear
+   * timbre rather than a single sentence. */
+  const cue = cues.find((c) => c.id === flag('audition-cue', 's5')) || cues[0];
+  const wordCount = words(cue.text);
+  const esc = (x) => String(x).replace(/[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const rows = [];
-  for (const voice of voices) {
-    for (const ls of lengths) {
-      const name = voice.replace(/\.onnx$/, '');
-      const file = `${name}@${ls}.wav`;
-      const path = join(outDir, file);
-      const wpm = await new Promise((resolve) => {
-        run(bin, ['-m', join(voicesDir, voice), '--length_scale', ls, '-f', path],
-            cue.text + '\n', { LD_LIBRARY_PATH: join(binDir, 'piper') })
-          .then(() => {
-            const seconds = measure(path);
-            resolve(seconds ? Math.round(words(cue.text) / (seconds / 60)) : 0);
-          })
-          .catch(() => resolve(0));
-      });
-      rows.push({ name, ls, file, wpm });
-      process.stdout.write('.');
+  const wpmOf = (file) => {
+    const sec = measure(join(outDir, file));
+    return sec ? Math.round(wordCount / (sec / 60)) : 0;
+  };
+
+  /* ---- Kokoro: 54 voices, the better-sounding family ---- */
+  if (which === 'all' || which === 'kokoro') {
+    const { py, bridge } = kokoroEnv();
+    if (!existsSync(py)) {
+      console.warn('  (kokoro not installed — skipped; run tools/fetch-kokoro.sh)');
+    } else {
+      const picks = (flag('kokoro-voices', '') ||
+        'af_heart,af_bella,af_sarah,af_sky,af_kore,af_nova,' +
+        'am_michael,am_fenrir,am_puck,am_adam,bm_george,bm_fable,bf_emma').split(',');
+      const speeds = flag('kokoro-speeds', '1.0').split(',');
+      const jobs = [], index = [];
+      for (const v of picks) {
+        for (const sp of speeds) {
+          const file = `kokoro-${v}@${sp}.wav`;
+          jobs.push({ id: `${v}@${sp}`, text: cue.text, out: join(outDir, file),
+                      voice: v, speed: sp });
+          index.push({ voice: `kokoro · ${v}`, pace: sp, file });
+        }
+      }
+      const jobsFile = join(AUDIO, `.audition-${process.pid}.json`);
+      writeFileSync(jobsFile, JSON.stringify(jobs));
+      try { await run(py, [bridge, '--jobs', jobsFile]); }
+      finally { try { unlinkSync(jobsFile); } catch (e) {} }
+      for (const i of index) rows.push({ ...i, wpm: wpmOf(i.file) });
+      process.stdout.write('.'.repeat(index.length));
+    }
+  }
+
+  /* ---- Piper: every voice installed in .piper/voices ---- */
+  if (which === 'all' || which === 'piper') {
+    const { binDir, bin } = piperPaths();
+    const voicesDir = join(binDir, 'voices');
+    if (!existsSync(bin)) throw new Error(`piper not found at ${bin} — run tools/fetch-piper.sh`);
+    const voices = readdirSync(voicesDir).filter((f) => f.endsWith('.onnx')).sort();
+    if (voices.length === 0) throw new Error(`no voices in ${voicesDir} — run tools/fetch-piper.sh`);
+    const lengths = flag('audition-lengths', '1,1.15').split(',').map((x) => x.trim());
+    for (const voice of voices) {
+      for (const ls of lengths) {
+        const name = voice.replace(/\.onnx$/, '');
+        const file = `${name}@${ls}.wav`;
+        await run(bin, ['-m', join(voicesDir, voice), '--length_scale', ls,
+                        '-f', join(outDir, file)],
+                  cue.text + '\n', { LD_LIBRARY_PATH: join(binDir, 'piper') });
+        rows.push({ voice: `piper · ${name}`, pace: ls, file, wpm: wpmOf(file) });
+        process.stdout.write('.');
+      }
     }
   }
   process.stdout.write('\n');
+  rows.sort((a, b) => a.wpm - b.wpm);
 
-  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const html = `<!doctype html><meta charset="utf-8">
 <title>Niffler — voice audition</title>
 <style>
@@ -360,33 +433,34 @@ async function runAudition(cues) {
   body { margin: 0; padding: 40px 32px 80px; background: #0b1826; color: #e8f4ee;
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
-  p.lede { color: #93a9b8; margin: 0 0 28px; max-width: 70ch; }
+  p.lede { color: #93a9b8; margin: 0 0 12px; max-width: 74ch; }
   code { font-family: ui-monospace, Menlo, monospace; color: #42e6a4; }
-  table { border-collapse: collapse; width: 100%; max-width: 1100px; }
-  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #1e3b52; }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #6f8698; font-weight: 500; }
+  table { border-collapse: collapse; width: 100%; max-width: 1100px; margin-top: 22px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid #1e3b52; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #6f8698; font-weight: 500;
+       position: sticky; top: 0; background: #0b1826; }
   td.voice { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
   td.pace { font-family: ui-monospace, Menlo, monospace; color: #42e6a4; }
-  audio { height: 34px; width: 340px; }
+  audio { height: 32px; width: 320px; }
   tr:hover td { background: rgba(66,230,164,.05); }
-  .hint { margin-top: 26px; color: #6f8698; font-size: 13px; max-width: 80ch; }
+  .hint { margin-top: 24px; color: #6f8698; font-size: 13px; max-width: 84ch; }
 </style>
 <h1>Voice audition</h1>
-<p class="lede">One cue (“${esc(cue.id)}”, ${words(cue.text)} words) read by every voice in
-<code>.piper/voices/</code>, at each pace. Pick by ear, then render the film with that
-voice and pace:</p>
-<p class="lede"><code>node tools/render-voiceover.mjs --engine=piper
---piper-model=.piper/voices/&lt;voice&gt;.onnx --piper-length=&lt;pace&gt;</code></p>
+<p class="lede">Cue <code>${esc(cue.id)}</code> (${wordCount} words) in every available voice,
+sorted by measured pace. <b>${rows.length}</b> samples.</p>
+<p class="lede">Then render the film with the one you like:<br>
+<code>node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=&lt;id&gt; --kokoro-speed=&lt;n&gt;</code></p>
 <table>
 <tr><th>voice</th><th>pace</th><th>measured</th><th>listen</th></tr>
-${rows.map((r) => `<tr><td class="voice">${esc(r.name)}</td><td>${esc(r.ls)}</td>` +
-  `<td class="pace">${r.wpm} wpm</td><td><audio controls preload="none" src="audition/${esc(r.file)}"></audio></td></tr>`).join('\n')}
+${rows.map((r) => `<tr><td class="voice">${esc(r.voice)}</td><td>${esc(r.pace)}</td>` +
+  `<td class="pace">${r.wpm} wpm</td>` +
+  `<td><audio controls preload="none" src="audition/${esc(r.file)}"></audio></td></tr>`).join('\n')}
 </table>
-<p class="hint">Pace is Piper's <code>--length_scale</code>: lower is faster.
-A sensible landing zone for an explainer is 150–180 wpm.</p>
+<p class="hint">Kokoro "speed" &gt;1 is faster (its own knob); Piper pace is
+<code>--length_scale</code>, where lower is faster. 150–180 wpm suits an explainer.</p>
 `;
   writeFileSync(join(AUDIO, 'audition.html'), html);
-  console.log(`wrote audio/audition.html — open it and press play on each row.`);
+  console.log(`wrote audio/audition.html (${rows.length} samples)`);
   console.log(`  file://${join(AUDIO, 'audition.html')}`);
 }
 
@@ -394,14 +468,17 @@ async function main() {
   const cues = loadCues();
   if (audition && !dryRun) return runAudition(cues);
   const eng = ENGINES[engine];
-  if (!eng) throw new Error(`unknown engine ${engine} (openai|piper|espeak|say|xtts)`);
+  if (!eng) throw new Error(`unknown engine ${engine} (openai|piper|kokoro|espeak|say|xtts)`);
   mkdirSync(AUDIO, { recursive: true });
 
   /* XTTS loading its model per cue is wasteful by minutes; batch it unless the
    * caller explicitly wants per-cue synthesis (NIF_XTTS_BATCH=0). */
   const batched = eng.batch && !dryRun && !force &&
     !cues.every((c) => existsSync(join(AUDIO, c.id + '.' + eng.ext)));
-  if (eng.batch && !dryRun && process.env.NIF_XTTS_BATCH !== '0') {
+  const batchOff = engine === 'xtts' && process.env.NIF_XTTS_BATCH === '0';
+  const useBatch = !!eng.batch && !dryRun && !batchOff &&
+    (force || !cues.every((c) => existsSync(join(AUDIO, c.id + '.' + eng.ext))));
+  if (useBatch) {
     console.log(`  batch mode: loading the model once for ${cues.length} cues`);
     await eng.batch(cues, eng.ext);
   }
@@ -413,7 +490,7 @@ async function main() {
     const path = join(AUDIO, file);
     let seconds = null;
 
-    if (!dryRun && !(eng.batch && process.env.NIF_XTTS_BATCH !== '0')) {
+    if (!dryRun && !useBatch) {
       const reuse = existsSync(path) && !force;
       if (reuse) {
         seconds = measure(path);

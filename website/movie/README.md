@@ -103,14 +103,26 @@ node tools/render-voiceover.mjs --engine=say      # macOS built-in
 bash tools/fetch-piper.sh en_GB-cori-high         # a different Piper voice
 ```
 
-**Hear the other voices before committing to one:**
+**Hear every voice before committing to one:**
 
 ```bash
-node tools/render-voiceover.mjs --audition
-# → audio/audition.html: one cue read by every voice in .piper/voices/ at two
-#   paces, with measured wpm and a player per row
-bash tools/fetch-piper.sh en_US-kusal-medium   # install another voice first
+bash tools/fetch-kokoro.sh                 # Kokoro-82M: 54 voices, best quality here
+node tools/render-voiceover.mjs --audition # → audio/audition.html
 ```
+
+`audio/audition.html` plays one cue in *every* available voice — Kokoro and
+Piper together — sorted by measured pace, one player per row. Pick, then render
+the film with it:
+
+```bash
+node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=af_heart
+node tools/render-voiceover.mjs --engine=kokoro --kokoro-voice=bm_george --kokoro-speed=1.1
+```
+
+Kokoro is the better-sounding family (~1.3× realtime on CPU, 340 MB of model in
+`~/.cache/niffler-movie`); Piper stays the zero-install fallback. Voice ids:
+`af_*`/`am_*` American female/male, `bf_*`/`bm_*` British — `bash
+tools/fetch-kokoro.sh --voices` lists all 54.
 
 `PIPELINE.md` compares the available TTS options and explains how to swap in a
 human recording.

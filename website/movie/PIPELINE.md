@@ -90,6 +90,7 @@ exits 2 on an overrun: an editorial error, caught before spending on a render.
 | engine | quality | cost | notes |
 |---|---|---|---|
 | **Piper** (local) | good, natural | free | `tools/fetch-piper.sh`; CPU, ~8× realtime, 60 MB/voice; **default** |
+| **Kokoro-82M** (local) | very good — best here | free | `tools/fetch-kokoro.sh`; 54 English voices, ~1.3× realtime CPU, 340 MB model. **Recommended over Piper** |
 | **Coqui XTTS v2** (local) | very good; **clones a voice from ~6 s of audio** | free | `pip install TTS` (~2 GB with deps), needs a licence click, minutes-per-cue on CPU, seconds on a GPU. `--engine=xtts` is a stub to fill (see below) |
 | Kokoro (local) | very good | free | newer, needs Python/onnx; heavier setup than Piper |
 | Chatterbox / StyleTTS2 (local) | very good | free | similar class to XTTS |

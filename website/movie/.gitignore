@@ -7,6 +7,9 @@ audio/*.wav
 audio/*.aiff
 audio/narration.js
 audio/narration.srt
+audio/audition/
+audio/audition.html
+models/
 
 # scratch frames from the screenshot loop
 scratch/
