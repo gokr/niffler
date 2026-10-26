@@ -4,6 +4,7 @@
  *   node tools/render-voiceover.mjs --dry-run        # plan + pacing check, no network
  *   node tools/render-voiceover.mjs --engine=openai  # neural TTS → audio/s1.mp3 …
  *   node tools/render-voiceover.mjs --engine=piper --piper-model=/path/en_US-amy.onnx
+ *   node tools/render-voiceover.mjs --engine=piper --piper-length=0.9   # faster read
  *   node tools/render-voiceover.mjs --engine=espeak  # offline placeholder (.wav)
  *   node tools/render-voiceover.mjs --engine=say     # macOS built-in voice
  *
@@ -193,19 +194,27 @@ function piperPaths() {
     join(ROOT, '.piper'));
   const bin = process.env.NIF_PIPER_BIN || join(binDir, 'piper', 'piper');
   const model = flag('piper-model', process.env.NIF_PIPER_MODEL ||
-    join(binDir, 'voices', 'en_GB-alan-medium.onnx'));
+    join(binDir, 'voices', 'en_US-ryan-high.onnx'));
   return { binDir, bin, model };
 }
 
+/* Pace control. Piper's own rate is slow for a modern explainer: measured
+ * 125 wpm for en_GB-alan-medium at its default. `length_scale` < 1 shortens
+ * phonemes (0.85 ≈ +15% speed); 1.0 is untouched. Override per render:
+ *   --piper-length=0.85   or   NIF_PIPER_LENGTH=0.85
+ * (Piper also has --sentence_silence, which we leave at its default: the cue
+ * breaks already provide the pauses, and a shorter silence makes the read
+ * sound clipped between sentences.) */
 async function synthPiper(text, out) {
   const { binDir, bin, model } = piperPaths();
+  const lengthScale = flag('piper-length', process.env.NIF_PIPER_LENGTH || '0.85');
   if (!existsSync(bin)) {
     throw new Error(`piper binary not found at ${bin} — run tools/fetch-piper.sh`);
   }
   if (!existsSync(model)) {
     throw new Error(`piper voice not found at ${model} — run tools/fetch-piper.sh`);
   }
-  await run(bin, ['-m', model, '-f', out], text + '\n', {
+  await run(bin, ['-m', model, '--length_scale', lengthScale, '-f', out], text + '\n', {
     LD_LIBRARY_PATH: join(binDir, 'piper'),
   });
 }

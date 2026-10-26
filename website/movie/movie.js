@@ -68,6 +68,7 @@ const Voice = {
   bed: null,
   current: null,
   enabled: false,
+  hasPlayed: false,   /* any narration actually heard? decides rewind vs resume */
 
   /** `auto` (the default) probes for a rendered voice-over and uses it.
    *  Only `track`/`auto` load anything from audio/, and only a MISSING
@@ -145,8 +146,8 @@ const Voice = {
    *  instead of leaving the film silently mute. */
   tryPlay(media) {
     const p = media.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch((err) => {
+    if (p && typeof p.then === 'function') {
+      p.then(() => { this.hasPlayed = true; this.blocked = null; }).catch((err) => {
         this.blocked = (err && err.name) || 'blocked';
         if (!this.warned) {
           this.warned = true;
@@ -166,10 +167,21 @@ const Voice = {
       window.removeEventListener('pointerdown', resume, true);
       window.removeEventListener('keydown', resume, true);
       if (!this.enabled || !this.pendingId) return;
+
+      /* A block can happen at two very different moments, and resuming the
+       * LINE is only right for one of them:
+       *  - at startup (?autoplay=1, no gesture yet): nothing has been heard, so
+       *    the film has been running SILENTLY and is now in some later scene.
+       *    Resuming that line is how "I only hear it from the second segment"
+       *    happened — the opening was already gone. Rewind to the top and let
+       *    picture and voice start together.
+       *  - mid-film (rare): restart the current line, staying in sync. */
+      if (!this.hasPlayed) {
+        if (Master.seek) { Master.seek(0); Master.tl.play(); Master.playing = true; }
+        this.pendingId = (Master.scenes && Master.scenes[0] && Master.scenes[0].id) || this.pendingId;
+      }
       const a = this.audios[this.pendingId];
       if (!a || !a.paused) return;
-      /* restart at the line's start: it should feel like the narration was
-       * simply waiting for permission, not clipped from the middle */
       a.currentTime = 0;
       this.tryPlay(a);
     };

@@ -2,8 +2,17 @@
 # Install a local, self-contained TTS engine for the movie's narration.
 #
 #   bash tools/fetch-piper.sh                 # piper + en_GB-alan-medium
-#   bash tools/fetch-piper.sh en_GB-cori-high # a different voice (higher quality)
+#   bash tools/fetch-piper.sh en_US-ryan-high # a different voice
 #   VOICE=en_US-lessac-medium bash tools/fetch-piper.sh
+#
+# Voice notes (all measured on this box, 30-word cue):
+#   en_GB-alan-medium    125 wpm at default pace — warm, but slow and older
+#   en_US-ryan-high      154 wpm, brighter/firmer; at --length_scale 0.85 ≈173
+#                        wpm — the current default for this film
+#   en_US-kusal-medium   ≈157 wpm at 0.85, light and quick (medium = fast to render)
+#   en_US-kristin-medium / en_GB-cori-high   female alternatives
+# The US voices are the younger-sounding ones; alan/cori are the older,
+# more "documentary" timbre.
 #
 # Why Piper: it runs on CPU (≈8× faster than realtime here), needs no GPU, no
 # account and no API key, and the model is 60 MB. The harness's own .env points
@@ -19,7 +28,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOVIE="$(dirname "$HERE")"
 DEST="$MOVIE/.piper"
-VOICE="${1:-${VOICE:-en_GB-alan-medium}}"
+# Ryan-high is the film's default: brighter and noticeably brisker than alan,
+# which read as slow/older on first listen.
+VOICE="${1:-${VOICE:-en_US-ryan-high}}"
 REL="${PIPER_RELEASE:-2023.11.14-2}"
 
 mkdir -p "$DEST/voices"
