@@ -1,0 +1,17 @@
+# Local TTS engines + models — machine-local caches, never shipped.
+.piper/
+models/
+
+# Dev-only scratch
+scratch/
+var/
+
+# The RENDERED NARRATION IS COMMITTED (audio/s*.wav, narration.js, .srt):
+# 4.9 MB of 24 kHz mono WAV, so the published film plays with sound and needs no
+# render step. Regenerate with:
+#   bash tools/fetch-kokoro.sh && node tools/render-voiceover.mjs --engine=kokoro
+#
+# The audition is a local comparison tool, not part of the film: 19 clips and a
+# page whose rows point at whatever voices happen to be installed.
+audio/audition/
+audio/audition.html

@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Niffler — a small, self-extending agent harness (movie)</title>
+<meta name="description" content="A two-minute animated explainer: what Niffler is, how its bus-and-processes architecture works, and why a harness the agent can extend is different.">
+<link rel="stylesheet" href="movie.css">
+</head>
+<body>
+<div id="viewport">
+  <div id="stage" role="region" aria-label="Animated explainer about the Niffler agent harness">
+
+    <!-- ============ s1 — cold open ============ -->
+    <section class="scene" id="s1" data-scene="s1">
+      <div class="s1-stack">
+        <!-- The REAL brand lockup (website/niffler-logo-with-text.svg):
+             icon + "Niffler" on one baseline, viewBox 0 0 640 96. The film used
+             to stack the icon above a separate wordmark, which is not the logo.
+             Colours are adapted for a dark ground — the original text is
+             #08111D and the box #0B1826, both invisible against this stage. -->
+        <svg class="logo-lockup" viewBox="0 0 640 96" aria-label="Niffler logo">
+          <g class="logo-strokes" fill="none" stroke="#42E6A4" stroke-width="8" stroke-linecap="round">
+            <path class="draw" d="M12 30h46" pathLength="1"/>
+            <path class="draw" d="M4 48h54" pathLength="1"/>
+            <path class="draw" d="M18 66h40" pathLength="1"/>
+          </g>
+          <rect class="logo-box" x="52" y="14" width="76" height="68" rx="12" fill="#16304A"/>
+          <rect class="logo-box-stroke" x="52" y="14" width="76" height="68" rx="12" fill="none" stroke="#42E6A4" stroke-width="2" opacity=".65"/>
+          <g class="logo-prompt" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+            <path class="draw" d="M75 32l18 16-18 16" pathLength="1"/>
+            <path class="draw" d="M99 64h14" pathLength="1"/>
+          </g>
+          <text class="logo-word" x="150" y="68" font-family="Inter, Arial, Helvetica, sans-serif"
+                font-size="58" font-weight="700" letter-spacing="-2">Niffler</text>
+        </svg>
+        <p class="kicker">a small, self-extending agent harness</p>
+      </div>
+    </section>
+
+    <!-- ============ s2 — the monolith ============ -->
+    <section class="scene" id="s2" data-scene="s2">
+      <p class="eyebrow">the usual shape</p>
+      <div class="s2-grid">
+        <div>
+          <div class="monolith">
+            <div class="mono-title"><span>coding agent</span><span class="bad">one process</span></div>
+            <div class="tool-pile" id="toolPile"></div>
+            <div class="meter"><div class="meter-fill" id="millMeter"></div></div>
+          </div>
+        </div>
+        <div>
+          <h2 class="h-md">One big program.<br><span class="mint">Every tool in every prompt.</span></h2>
+          <div class="stat-row">
+            <div class="stat"><b>1</b><span>process</span></div>
+            <div class="stat"><b>all</b><span>schemas</span></div>
+            <div class="stat"><b>every</b><span>request</span></div>
+          </div>
+          <p class="lede" style="margin-top:22px">Changing what the agent can do means patching the monolith — and shipping every schema whether the task needs it or not.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ s3 — the bus ============ -->
+    <section class="scene tight" id="s3" data-scene="s3">
+      <div class="s3-grid">
+        <div class="s3-left">
+          <p class="eyebrow">the bet</p>
+          <h2 class="h-md">A small core.<br><span class="mint">One protocol.</span></h2>
+          <div class="envelope-card">
+            <div class="label">every message, in full</div>
+            <pre class="code">{"v": 1, "id": "9f2ac1",
+ "kind": "call", "tool": "bash",
+ "args": {"command": "make test"}}</pre>
+            <div class="note-row">
+              <span class="mono dimc">call · result · error · event — that is the whole wire</span>
+            </div>
+          </div>
+        </div>
+        <div class="bus-wrap" id="busWrap">
+          <svg class="bus-svg" id="busSvg" aria-hidden="true"></svg>
+          <div class="core-node" id="coreNode3">core<small>niffler</small></div>
+          <div class="chip alt" id="busLabel" style="font-size:14px">NATS · one subject tree</div>
+          <ul class="subjects" id="subjects">
+            <li>svc.<b>core</b>.call</li>
+            <li>svc.session.&lt;id&gt;.call</li>
+            <li>svc.<b>bash</b>.call · svc.edit.call · svc.llm.call</li>
+            <li>ev.session.&lt;id&gt;.&gt;</li>
+            <li>cancel.&lt;component&gt;</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ s4 — peers ============ -->
+    <section class="scene tight" id="s4" data-scene="s4">
+      <p class="eyebrow">everything else is a process</p>
+      <h2 class="h-sm">The tools are <span class="mint">peers</span>, not plugins.</h2>
+      <div class="bus-wrap" id="peerWrap">
+        <svg class="bus-svg" id="peerSvg" aria-hidden="true"></svg>
+        <div class="core-node" id="coreNode4">core<small>only the protocol</small></div>
+        <div id="peers">
+          <div class="chip" data-name="bash">bash</div>
+          <div class="chip" data-name="edit">edit</div>
+          <div class="chip" data-name="grep">grep</div>
+          <div class="chip" data-name="git">git</div>
+          <div class="chip" data-name="lsp">lsp</div>
+          <div class="chip" data-name="fetch">fetch</div>
+          <div class="chip" data-name="store">store</div>
+          <div class="chip" data-name="llm">llm</div>
+          <div class="chip" data-name="mcp">mcp</div>
+          <div class="chip" data-name="builder">builder</div>
+          <div class="chip" data-name="skills">skills</div>
+          <div class="chip" data-name="processes">processes</div>
+          <div class="chip" data-name="observe">observe</div>
+          <div class="chip" data-name="recall">recall</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ s5 — self-extension ============ -->
+    <section class="scene" id="s5" data-scene="s5">
+      <p class="eyebrow">the validation criterion</p>
+      <h2 class="h-sm">The agent extends <span class="mint">itself</span> — mid-conversation.</h2>
+      <div class="flow">
+        <div class="step" id="stepWrite">
+          <div class="step-tag"><i>1</i> write source <span class="check">✓</span></div>
+          <pre class="code"><span class="c">// a new component, written by the agent</span>
+<span class="k">func</span> main() {
+  sdk.<span class="k">New</span>(<span class="s">"weather"</span>, <span class="s">"0.1.0"</span>).
+    <span class="k">Tool</span>(<span class="s">"forecast"</span>, schema, forecast).
+    <span class="k">Run</span>()
+}</pre>
+        </div>
+        <div class="step" id="stepBuild">
+          <div class="step-tag"><i>2</i> builder.build <span class="check">✓</span></div>
+          <div class="log">
+            <span class="line">$ builder.build {lang: "go", name: "weather"}</span>
+            <span class="line">  resolve sdk → niffler.dev/sdk</span>
+            <span class="line">  go build ./…</span>
+            <span class="line ok">  ✓ built var/bin/weather (1.4s)</span>
+          </div>
+          <div class="progress"><i id="buildBar"></i></div>
+        </div>
+        <div class="step" id="stepSpawn">
+          <div class="step-tag"><i>3</i> core.spawn <span class="check">✓</span></div>
+          <div class="log">
+            <span class="line">$ core.spawn {name: "weather"}</span>
+            <span class="line ok">  ✓ weather online · 2 tools</span>
+            <span class="line ok">  ✓ forecast → 18°C, clear</span>
+          </div>
+          <div class="bus-wrap" style="min-height:64px">
+            <div class="chip new" id="newChip" style="left:50%;top:50%">weather · forecast</div>
+          </div>
+        </div>
+      </div>
+      <p class="lede wide">No restart, no rebuild, no patch to the core — <span class="mint">the catalog it just extended is the one it is running on.</span></p>
+    </section>
+
+    <!-- ============ s6 — concurrency ============ -->
+    <section class="scene tight" id="s6" data-scene="s6">
+      <p class="eyebrow">one conversation = one process</p>
+      <h2 class="h-sm">Turns never nest. <span class="mint">Conversations never block.</span></h2>
+      <div class="lane-head"><span>conversation</span><span>turn</span><span>state</span></div>
+      <div class="lanes">
+        <div class="lane busy" id="laneA">
+          <div class="who">session · conv 8f2a<small>process var/bin/session 8f2a</small></div>
+          <div class="track"><div class="work" id="workA"></div></div>
+          <div class="verdict">
+            <span class="v-idle">working</span><span class="v-done ok">busy · refused</span>
+          </div>
+        </div>
+        <div class="lane" id="laneB">
+          <div class="who">session · conv 4c11<small>process var/bin/session 4c11</small></div>
+          <div class="track"><div class="work" id="workB"></div></div>
+          <div class="verdict">
+            <span class="v-idle">working</span><span class="v-done ok">ok · 240ms</span>
+          </div>
+        </div>
+      </div>
+      <div class="note-row">
+        <span class="mono dimc">one runner per conversation</span>
+        <span class="mono dimc">·</span>
+        <span class="mono dimc">killed and resumed from the store, losing only the in-flight turn</span>
+        <span class="mono dimc">·</span>
+        <span class="mono dimc">core never blocks on either</span>
+      </div>
+    </section>
+
+    <!-- ============ s7 — frozen prefix + discovery ============ -->
+    <section class="scene tight" id="s7" data-scene="s7">
+      <p class="eyebrow">prompt-cache discipline</p>
+      <h2 class="h-sm">New powers, <span class="mint">same prefix.</span></h2>
+      <div class="s7-body">
+        <div class="reqs">
+          <div class="req" id="req1">
+            <span class="req-id">request 41</span>
+            <div class="req-blocks">
+              <i class="pre"></i><i class="hist"></i><i class="hist"></i>
+            </div>
+            <span class="req-note">cached</span>
+          </div>
+          <div class="req" id="req2">
+            <span class="req-id">request 42</span>
+            <div class="req-blocks">
+              <i class="pre"></i><i class="hist"></i><i class="hist"></i><i class="hist"></i>
+            </div>
+            <span class="req-note">cached</span>
+          </div>
+          <div class="req" id="req3">
+            <span class="req-id">request 43</span>
+            <div class="req-blocks">
+              <i class="pre"></i><i class="hist"></i><i class="hist"></i><i class="hist"></i><i class="hist new"></i>
+            </div>
+            <span class="req-note mint">+1 appended</span>
+          </div>
+          <div class="req-legend">
+            <span><i class="sw pre"></i> frozen prefix — byte-identical</span>
+            <span><i class="sw hist"></i> history — append only</span>
+          </div>
+        </div>
+        <div class="cache-stat">
+          <b id="cacheHit">97%</b>
+          <span>prompt-cache hit rate</span>
+          <em>prefix rebuilt 0×</em>
+        </div>
+      </div>
+      <div class="discovery">
+        <span class="small dimc">new capability</span>
+        <span class="arrow">→</span>
+        <span class="pill" id="pillDiscover">discover</span>
+        <span class="arrow">→</span>
+        <span class="pill" id="pillInvoke">invoke</span>
+        <span class="arrow">→</span>
+        <span class="pill lit" id="pillTool">weather.forecast</span>
+        <span class="small dimc" style="margin-left:6px">one schema, on demand</span>
+      </div>
+      <div class="note-row">
+        <span class="mono dimc">a capability discovered mid-turn is appended as a tool result — never spliced into the head of the request</span>
+      </div>
+    </section>
+
+    <!-- ============ s8 — reliability ============ -->
+    <section class="scene tight" id="s8" data-scene="s8">
+      <p class="eyebrow">failure is designed</p>
+      <h2 class="h-sm">Concurrency and loss, <span class="mint">handled by contract.</span></h2>
+      <div class="reli-grid">
+        <div class="card">
+          <h3>write arbitration · leases</h3>
+          <div class="lease-row">
+            <span class="file">src/api.ts</span>
+            <span class="mint swap"><span class="v-idle">free</span><span class="v-done">leased · conv 8f2a</span></span>
+          </div>
+          <div class="lease-row" id="denyRow">
+            <span class="file">conv · 4c11</span>
+            <span class="denied">E_WRITE_BUSY — held by conv · 8f2a (edit, 2s)</span>
+          </div>
+          <div class="split">
+            <span class="mono dimc">overlapping paths → serial</span>
+            <span class="mono dimc">disjoint paths → parallel</span>
+            <span class="mono dimc">holder dies → lease expires</span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>tool-pair repair · history is never rewritten</h3>
+          <div class="stitch">
+            <div class="row"><span class="mint">✓</span><span>call a — result recorded</span></div>
+            <div class="row"><span class="gap">✗</span><span>call b — write lost to an outage</span></div>
+            <div class="row" id="healRow"><span class="healed">✚</span><span class="healed">call b — repaired on load, and recorded</span></div>
+          </div>
+          <div class="split">
+            <span class="mono dimc">kind <b>toolpairrepair</b> · 3 entries</span>
+            <span class="mono dimc">canonical bytes untouched</span>
+            <span class="mono dimc">visible in <b>context_status</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ s9 — SDKs ============ -->
+    <section class="scene tight" id="s9" data-scene="s9">
+      <p class="eyebrow">portable by construction</p>
+      <h2 class="h-sm">One wire. <span class="mint">Three SDKs.</span></h2>
+      <div class="sdk-row">
+        <div class="sdk">Nim<small>the reference</small></div>
+        <div class="sdk">Go<small>sdk/go</small></div>
+        <div class="sdk">TypeScript<small>niffler-sdk</small></div>
+      </div>
+      <div class="wire">
+        <span class="wire-label"><b>envelope</b> · ~77 lines of std/json runtime data, mirrored 1:1</span>
+      </div>
+      <div class="note-row center">
+        <span class="mono dimc">a component is whatever language runs best next to the job</span>
+      </div>
+    </section>
+
+    <!-- ============ s10 — close ============ -->
+    <section class="scene" id="s10" data-scene="s10">
+      <div class="s10-stack">
+        <svg class="logo-mark" style="width:190px;height:83px" viewBox="0 0 220 96" aria-hidden="true">
+          <g fill="none" stroke="#42E6A4" stroke-width="8" stroke-linecap="round">
+            <path d="M12 30h46"/><path d="M4 48h54"/><path d="M18 66h40"/>
+          </g>
+          <rect class="logo-box" x="52" y="14" width="76" height="68" rx="12" fill="#0B1826"/>
+          <g fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M75 32l18 16-18 16"/><path d="M99 64h14"/>
+          </g>
+        </svg>
+        <h2 class="h-md">Simple and fast.<br><span class="mint">Batteries included.</span></h2>
+        <div class="terminal"><span class="prompt">$</span> niffler<span id="cmdRest"></span><span class="cursor" id="cmdCaret"></span></div>
+        <p class="url">niffler.flatout.works</p>
+      </div>
+    </section>
+
+    <!-- ============ captions + HUD ============ -->
+    <div id="grain" aria-hidden="true"></div>
+    <div id="captions" aria-live="polite"><span></span></div>
+    <div id="hud">
+      <span id="sceneLabel">s1</span>
+      <div id="progress"><i></i></div>
+      <span id="clock">0:00 / 0:00</span>
+    </div>
+
+    <!-- ============ start overlay ============ -->
+    <div id="gate">
+      <div class="panel">
+        <h2>Niffler — the movie</h2>
+        <p>Two minutes, ten scenes. Sound optional.<br>Captions are always on.</p>
+        <button id="startBtn" type="button">Play</button>
+        <p class="keys">click or space pause · ← → scene · c captions · f fullscreen</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="vendor/gsap.min.js"></script>
+<script src="narration.js"></script>
+<script src="movie.js"></script>
+</body>
+</html>

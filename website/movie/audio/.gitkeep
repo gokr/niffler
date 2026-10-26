@@ -1,0 +1,3 @@
+# Generated voice-over clips land here (audio/s1.mp3, audio/narration.js,
+# audio/narration.srt). Empty by design: the movie plays silently with
+# captions until you run tools/render-voiceover.mjs.

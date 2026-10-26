@@ -1,0 +1,39 @@
+1
+00:00:00,000 --> 00:00:09,075
+Every coding agent claims to be different. This one is built on a bet: a harness should be small, and the agent should be able to extend it. This is Niffler.
+
+2
+00:00:14,000 --> 00:00:25,336
+The usual shape is a monolith. One program, dozens of tools, and every schema shipped in every prompt. It works, until you want to change what the agent can do. Then you patch the monolith.
+
+3
+00:00:29,000 --> 00:00:40,955
+Niffler starts from the other end. Its core is tiny, and it speaks exactly one thing: JSON envelopes over a message bus. No plugins loaded into the core. No core code linked into anything.
+
+4
+00:00:44,000 --> 00:00:54,504
+Every capability is its own process. Bash. Edit. Grep. Git. A language server. A store. They are peers on the bus, and they come and go while the conversation keeps running.
+
+5
+00:00:59,000 --> 00:01:12,832
+And here is the part that matters. When the agent needs a capability it does not have, it writes a component, builds it, and spawns it. Mid-conversation. The harness extends itself, and the agent doing it is the proof the architecture holds.
+
+6
+00:01:18,000 --> 00:01:29,208
+One conversation is one process. Turns never nest inside a conversation, so a long job cannot corrupt its own history. And separate conversations never block each other.
+
+7
+00:01:31,000 --> 00:01:40,821
+New capabilities do not rewrite the prompt. The prefix stays frozen and cached, while discovery hands the model one small tool at a time, exactly when it asks.
+
+8
+00:01:44,000 --> 00:01:57,064
+Failure is designed, not hoped for. Two conversations writing one file are arbitrated by a lease that names its holder. A tool result lost to an outage is repaired when the history loads, not fatal forever.
+
+9
+00:01:59,500 --> 00:02:08,383
+The wire is a hundred lines of runtime data, mirrored in Nim, Go, and TypeScript. Write a component in the language that fits the job.
+
+10
+00:02:11,500 --> 00:02:19,145
+Small core. Real processes. A harness that extends itself. Niffler. Simple and fast, batteries included.
