@@ -1653,10 +1653,52 @@ make test-fleet 使用假傳輸，不操作真實主機或 VM。
 `make test-fleet-admission` 涵蓋記錄/冪等契約，`t_fleet_admission_e2e` 涵蓋
 真實 store 加執行器在使用模擬模型下的行為。
 
+#### 向受信任工作端委派目標
+
+最簡單的方式：指名一個已註冊工作端，給出目標。工作端自行決定步驟，使用其正常能力，
+以文字報告結果 —— 例如「已修復 #123，已開設草稿 PR #456，#124 需要澄清」。
+無需 task profile，也無需必須提供工具清單或預算。這是推薦的委派方式；下方 (F2)
+的 profile 機制是更舊的、更窄的形式。
+
+```bash
+# 在工作端執行一次（其操作員，需核准 —— 絕不是模型決定）：
+./var/bin/cli call fleet_delegation_set '{
+  "enabled": true,
+  "tools": ["read", "grep", "edit", "write", "bash", "git_status", "git_diff"],
+  "roots": ["/home/ubuntu/work"]}'
+
+./var/bin/cli call fleet_delegation_get '{}'   # 本機接受什麼
+```
+
+```jsonc
+// 從請求端對話（fleet_task_submit，需核准）：
+{"instance": "worker", "requestId": "fix-123", "mode": "delegate",
+ "cwd": "/home/ubuntu/work",
+ "content": "修復失敗的測試並執行測試套件。報告你改動了什麼。"}
+// 選用："tools": ["read","edit","bash"], "maxTokens": 200000
+//  —— 你指定的任何值只能收窄工作端設定的上限。
+```
+
+依賴它之前值得了解三個誠實的限制：
+
+- **信任按機器劃分，且匯流排上的呼叫方標識是自述的。** `enabled: true` 信任的是
+能存取該私有匯流排/SSH 路由的人，而不是每個請求者的憑證。停用它只影響**未來**的
+委派；正在執行的任務保留其被接納時的權限。
+- **擁有 `bash` 與自身 GitHub 憑證的工作端可以推送並開 PR。** 這是普通的 shell
+權限；沒有可單獨撤銷的推送許可，也不宣稱任何沙箱。只把 `bash` 授予你信任其能做到
+這一點的機器。
+- **結果是工作端的聲明**，而不是已驗證的事實。報告是文字；請閱讀它。當工作區是
+檢出倉庫時，通知中會出現選用的 Git 中繼資料（基點、提交、diffstat、驗證結束碼），
+但它們刻意不作為任務完成的前提。
+
+若未儲存任何設定，委派目標會在工作端**啟動任何回合之前**被拒絕 —— 絕不會出現
+靜默等待永遠無人核准的核准的任務。缺少 `delegationPolicyVersion` 的舊工作端也會
+被請求端以同樣理由拒絕。
+
 #### Unattended coding tasks (F2)
 
-唯讀任務是預設行為。要讓被委派的任務真正**編輯、建置和測試**，工作端操作員必須先
-允許它，同時仍由人工核准每個任務：
+唯讀任務是預設行為。更窄的基於 profile 的形式：工作端操作員宣告一個**命名**
+profile，由人工針對該 profile 核准每個任務：
 
 ```bash
 # 1. 在 WORKER 上（其操作員，需匯流排存取權）—— 每個 profile 一次：

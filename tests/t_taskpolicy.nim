@@ -202,6 +202,62 @@ proc main() =
     let r = resolveTaskPolicy(profile(), grant, "")
     check("an unattended task needs an explicit workspace",
           r.refusal.code == "task-policy-invalid")
+  block:
+    # --- trusted goal delegation: one operator setting, optional limits -----
+    let settings = %*{"name": "trusted-delegation", "unattended": true,
+      "tools": %*["read", "edit", "bash", "git_status"], "roots": %[root],
+      "maxRounds": 16, "maxCalls": 120, "maxTokens": 300000}
+    let goal = %*{"delegate": true, "workspace": root}
+    let bare = resolveDelegationPolicy(settings, goal, root)
+    check("a goal with no tools/budgets takes the worker ceiling",
+          bare.refusal.code == "" and
+          bare.policy{"tools"}.len == 4 and
+          bare.policy{"budget", "maxRounds"}.getInt(0) == 16 and
+          bare.policy{"budget", "maxTokens"}.getInt(0) == 300000,
+          bare.refusal.reason)
+    # Optional limits really are optional: a setting with no budgets delegates
+    # with the runner's ordinary turn default rather than inventing a cap.
+    var unbudgeted = settings.copy(); delete(unbudgeted, "maxRounds")
+    let plain = resolveDelegationPolicy(unbudgeted, goal, root)
+    check("an unbudgeted worker setting delegates without a new cap",
+          plain.refusal.code == "" and
+          plain.policy{"budget", "maxRounds"}.getInt(0) == 0)
+    var narrowed = goal.copy()
+    narrowed["tools"] = %*["read"]
+    narrowed["maxCalls"] = %3
+    let narrow = resolveDelegationPolicy(settings, narrowed, root)
+    check("the caller narrows but never widens",
+          narrow.refusal.code == "" and narrow.policy{"tools"}.len == 1 and
+          narrow.policy{"budget", "maxCalls"}.getInt(0) == 3)
+    var wider = goal.copy(); wider["maxCalls"] = %500
+    check("a wider budget refuses instead of clamping",
+          resolveDelegationPolicy(settings, wider, root).refusal.code ==
+            "task-policy-widened")
+    var outsider = goal.copy(); outsider["tools"] = %*["write"]
+    check("a tool outside the setting refuses",
+          resolveDelegationPolicy(settings, outsider, root).refusal.code ==
+            "task-policy-widened")
+    var takeover = goal.copy(); takeover["tools"] = %*["fleet_task_submit"]
+    check("control-plane machinery is never granted",
+          resolveDelegationPolicy(settings, takeover, root).refusal.code ==
+            "task-policy-denied")
+    check("no worker setting means no delegation",
+          resolveDelegationPolicy(nil, goal, root).refusal.code ==
+            "task-policy-denied")
+    var attended = settings.copy(); attended["unattended"] = %false
+    check("a disabled setting denies delegation",
+          resolveDelegationPolicy(attended, goal, root).refusal.code ==
+            "task-policy-denied")
+    var elsewhere = goal.copy()
+    elsewhere["workspace"] = %"/etc"
+    check("a workspace outside the approved roots refuses",
+          resolveDelegationPolicy(settings, elsewhere, "/etc").refusal.code ==
+            "task-policy-refused-root")
+    var sandboxedSetting = settings.copy()
+    sandboxedSetting["confinement"] = %"sandbox"
+    check("an unenforceable confinement claim is still refused",
+          resolveDelegationPolicy(sandboxedSetting, goal, root).refusal.code ==
+            "task-policy-unsupported")
   report("TASK POLICY TEST")
 
 main()

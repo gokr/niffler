@@ -4751,8 +4751,10 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         return %*{"error": "the task grant does not match the authority the" &
                             " requester recorded before dispatch",
                    "code": "task-policy-grant-mismatch"}
-      if not validProfileName(profileName):
-        return %*{"error": "task.profile must name an operator task profile",
+      if not validProfileName(profileName) and
+          not grant{"delegate"}.getBool(false):
+        return %*{"error": "task.profile must name an operator task profile" &
+                            " (or set task.delegate for trusted delegation)",
                    "code": "task-policy-invalid"}
       if grant{"workspace"}.getStr("").len > 0:
         # An unattended task states its workspace explicitly; it never
@@ -4762,12 +4764,26 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           return %*{"error": requested.error, "code": "task-policy-invalid"}
         entry.workspace = requested.path
       var profileDoc: JsonNode
-      try:
-        profileDoc = ct.storeGetItem(taskProfileKind, profileName).value
-      except CatchableError as e:
-        return %*{"error": "task profile is unreadable: " & e.msg,
-                   "code": "task-policy-unavailable"}
-      let resolved = resolveTaskPolicy(profileDoc, grant, entry.workspace)
+      if grant{"delegate"}.getBool(false):
+        # Goal delegation to a trusted worker (docs/FLEET-SIMPLIFICATION.md):
+        # ONE operator setting is the ceiling; tools and budgets are optional.
+        # An absent setting refuses here, before any turn can run.
+        try:
+          profileDoc = ct.storeGetItem(delegationSettingsKind,
+                                       delegationSettingsId).value
+        except CatchableError as e:
+          return %*{"error": "delegation settings are unreadable: " & e.msg,
+                     "code": "task-policy-unavailable"}
+      else:
+        try:
+          profileDoc = ct.storeGetItem(taskProfileKind, profileName).value
+        except CatchableError as e:
+          return %*{"error": "task profile is unreadable: " & e.msg,
+                     "code": "task-policy-unavailable"}
+      let resolved = if grant{"delegate"}.getBool(false):
+                       resolveDelegationPolicy(profileDoc, grant, entry.workspace)
+                     else:
+                       resolveTaskPolicy(profileDoc, grant, entry.workspace)
       if resolved.refusal.code.len > 0:
         return %*{"error": resolved.refusal.reason,
                    "code": resolved.refusal.code}

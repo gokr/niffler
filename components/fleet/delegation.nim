@@ -42,18 +42,20 @@ proc admissionKey*(id: string): string =
   ## existing acceptance/receipt or refuses a second turn.
   id
 proc taskMode*(args: JsonNode): string =
-  ## "ask" (the original read-only slice) or "unattended" (F2). An absent
-  ## `mode` is the read-only slice, so an existing caller keeps exactly the
-  ## authority it had.
+  ## "ask" (the original read-only slice), "unattended" (an operator task
+  ## profile) or "delegate" (trusted goal delegation: one worker setting is the
+  ## ceiling, tools/budgets optional). An absent `mode` is the read-only slice,
+  ## so an existing caller keeps exactly the authority it had.
   ##
   ## The RECORDED grant answers too: validation runs again on the stored job
   ## during reconciliation, and by then the mode lives beside the grant fields
   ## it describes instead of in the caller's original argument.
   var mode = args{"mode"}.getStr("").strip()
   if mode.len == 0: mode = args{"task", "mode"}.getStr("").strip()
+  if mode.len == 0 and args{"task", "delegate"}.getBool(false): return "delegate"
   if mode.len == 0: return "ask"
-  if mode notin ["ask", "unattended"]:
-    refuse("mode must be 'ask' or 'unattended'")
+  if mode notin ["ask", "unattended", "delegate"]:
+    refuse("mode must be 'ask', 'unattended' or 'delegate'")
   mode
 
 proc profileName*(args: JsonNode): string =
@@ -64,13 +66,48 @@ proc profileName*(args: JsonNode): string =
   result = args{"taskProfile"}.getStr("").strip()
   if result.len == 0: result = args{"task", "profile"}.getStr("").strip()
 
+proc delegationBudgetCeiling*(key: string): int =
+  ## The hard bound a caller-supplied limit may not exceed. Generous on
+  ## purpose (this is the supported maximum, not a policy): the worker's own
+  ## setting decides the real ceiling, and an omitted value takes that.
+  case key
+  of "maxRounds": 32
+  of "maxCalls": 500   # matches local agent_spawn's documented ceiling
+  of "maxTokens": 2_000_000
+  else: 0
+
 proc validateTask*(args: JsonNode) =
   if args{"content"}.getStr("").len notin 1..65536: refuse("content must be 1..65536 bytes")
   validateRoot(args{"cwd"}.getStr(""))
+  let mode = taskMode(args)
+  if mode == "delegate":
+    # Trusted goal delegation (docs/FLEET-SIMPLIFICATION.md): a goal and a
+    # workspace are required; tools and budgets are OPTIONAL, because the
+    # worker's operator configured its ceiling once. Anything named here only
+    # narrows that ceiling, and control-plane machinery is refused outright.
+    if args{"taskProfile"}.getStr("").strip().len > 0 or
+        args{"task", "profile"}.getStr("").strip().len > 0:
+      refuse("mode 'delegate' takes the worker's own trust setting; do not" &
+             " name a taskProfile (use mode 'unattended' for a named profile)")
+    let listed = args{"tools"}
+    if listed != nil and listed.kind == JArray:
+      if listed.len > 16: refuse("tools lists more than 16 entries")
+      for t in listed:
+        let name = t.getStr("")
+        if name.len == 0: refuse("tools entries must be non-empty")
+        if isControlPlane(name):
+          refuse("tool '" & name & "' is control-plane machinery and cannot be requested")
+    elif listed != nil and listed.kind != JNull:
+      refuse("tools must be an array when given")
+    for key in ["maxRounds", "maxCalls", "maxTokens"]:
+      let value = args{key}.getInt(0)
+      if value > 0 and value > delegationBudgetCeiling(key):
+        refuse(key & " exceeds the supported ceiling")
+    return
   let tools = args{"tools"}
   if tools == nil or tools.kind != JArray or tools.len notin 1..16:
     refuse("explicit tools required (1..16)")
-  if taskMode(args) == "ask":
+  if mode == "ask":
     for t in tools:
       let name = t.getStr("")
       if name notin ["read", "grep", "git_status", "git_diff", "git_log", "git_show", "git_blame"]:
@@ -149,7 +186,15 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
   if catalog{"admissionPolicyVersion"}.getInt(0) != admissionPolicyVersion:
     refuse("peer lacks durable task admission (admissionPolicyVersion " &
            $admissionPolicyVersion & ")")
-  if taskMode(task) == "unattended" and
+  if taskMode(task) == "delegate":
+    # Goal delegation needs the worker's trust-setting epoch, and nothing else
+    # about the older task-policy machinery: tools and budgets are optional
+    # here, so there is no grant intersection to negotiate up front. An older
+    # peer is refused rather than silently downgraded to `ask`.
+    if catalog{"delegationPolicyVersion"}.getInt(0) != delegationPolicyVersion:
+      refuse("peer lacks trusted goal delegation (delegationPolicyVersion " &
+             $delegationPolicyVersion & ")")
+  elif taskMode(task) == "unattended" and
       catalog{"taskPolicyVersion"}.getInt(0) != taskPolicyVersion:
     refuse("peer lacks unattended task policy enforcement (taskPolicyVersion " &
            $taskPolicyVersion & ")")
@@ -176,8 +221,10 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
   #   boundary (docs/FLEET.md §3) and it applies in every mode, so `invoke`,
   #   `fabric`, `agent*`, `fleet_*` and friends are refused whatever the
   #   operator's profile says — and the worker re-checks it too.
-  let unattended = taskMode(task) == "unattended"
-  for t in task["tools"]:
+  let unattended = taskMode(task) in ["unattended", "delegate"]
+  # A delegated goal may name no tools (the worker's own setting decides), so
+  # iterate the list that exists rather than a possibly-nil key.
+  for t in listOf(task{"tools"}):
     let name = t.getStr()
     var found = false
     for entry in entries:
@@ -219,10 +266,20 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
   validateTask(args)
   let id = jobId(session, args{"requestId"}.getStr(""))
   var task = newJObject()
+  # Copy only keys the caller actually sent: a delegated goal may omit tools and
+  # budgets entirely, and embedding a nil JsonNode crashes `encode` (the
+  # documented json.nim gotcha).
   for key in ["content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"]:
-    task[key] = args[key]
+    if args{key} != nil and args[key].kind != JNull: task[key] = args[key].copy()
   let mode = taskMode(args)
-  if mode == "unattended":
+  if mode == "delegate":
+    # A delegated goal carries the goal and whatever restrictions the human
+    # chose; the worker's single trust setting supplies the ceiling as the
+    # worker resolves it. `delegate: true` is what the worker keys the policy
+    # off, and the recorded job keeps no profile name by design.
+    task["mode"] = %"delegate"
+    task["delegate"] = %true
+  elif mode == "unattended":
     # The immutable grant this job carries: which operator profile, and the
     # scope the requesting human approved. Folded into the job record BEFORE
     # dispatch, so the same requestId can never be reused with a wider grant
@@ -282,7 +339,13 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
   try:
     if j{"state"}.getStr("") == "queued":
       let catalog = remoteCall(run, p, "catalog", %*{"op": "components"})
-      let schemas = remoteCall(run, p, "catalog", %*{"op": "schemas", "tools": j["task"]["tools"]})
+      # A delegated goal may name no tools at all (the worker's setting decides),
+      # and `%*{"tools": nil}` would embed nil and crash `encode` — the
+      # documented json.nim gotcha. Ask for schemas only when there is a list.
+      let named = j["task"]{"tools"}
+      let schemas = if named != nil and named.kind == JArray and named.len > 0:
+                      remoteCall(run, p, "catalog", %*{"op": "schemas", "tools": named})
+                    else: %*{"tools": newJArray()}
       validateCapabilities(catalog, schemas, j["task"])
       # Preparing creates an empty header, not a turn. Refuse an occupied id.
       let existing = remoteCall(run, p, "list", %*{"kind": "conversation", "idPrefix": id, "limit": 2})
@@ -302,7 +365,21 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       discard remoteCall(run, p, "session_prepare", %*{"sessionId": id})
       var task = j["task"].copy()
       task["sessionId"] = %id
-      if taskMode(j["task"]) == "unattended":
+      if taskMode(j["task"]) == "delegate":
+        # Trusted goal delegation: send the goal and only the restrictions the
+        # caller actually named. `delegate: true` selects the worker's single
+        # operator trust setting; omitted tools/budgets take its ceiling.
+        var grant = %*{"delegate": true,
+                       "workspace": j["task"]{"cwd"}.getStr("")}
+        for key in ["tools", "maxRounds", "maxCalls", "maxTokens"]:
+          if j["task"]{key} != nil and j["task"][key].kind != JNull:
+            grant[key] = j["task"][key].copy()
+        task["task"] = grant
+        if task.hasKey("approvals"): task.delete("approvals")
+        # The requester hashed this grant before dispatch; the worker recomputes
+        # it, so authority cannot be widened in transit.
+        task["task"]["grantDigest"] = %grantDigest(task["task"])
+      elif taskMode(j["task"]) == "unattended":
         # Unattended: hand the worker the grant (its operator profile ∩ the
         # tools/workspace/budgets this human approved) and let IT resolve the
         # effective policy before any work runs. Deliberately no blanket

@@ -503,7 +503,8 @@ proc main() =
                     "fleet_task_receipt", "fleet_task_cancel", "fleet_notices",
                     "task_profile_set", "task_profile_list", "task_profile_remove",
                     "fleet_instances", "fleet_instance_import",
-                    "fleet_remove", "fleet_vm_start", "fleet_task_inbox"]
+                    "fleet_remove", "fleet_vm_start", "fleet_task_inbox",
+                    "fleet_delegation_set", "fleet_delegation_get"]
     var seen: seq[string]
     if data{"tools"} != nil:
       for tool in data["tools"]: seen.add(tool["name"].getStr())
@@ -521,7 +522,7 @@ proc main() =
           check("fleet inbox hidden runner machinery", ext{"hidden"}.getBool() and ext{"runner"}.getBool())
           continue
         check(name & " on demand", ext["onDemand"].getBool())
-        if name in ["fleet_probe", "fleet_status", "fleet_logs", "fleet_task_status", "fleet_task_result", "fleet_task_receipt", "task_profile_list", "fleet_instances", "fleet_task_inbox"]:
+        if name in ["fleet_probe", "fleet_status", "fleet_logs", "fleet_task_status", "fleet_task_result", "fleet_task_receipt", "task_profile_list", "fleet_instances", "fleet_task_inbox", "fleet_delegation_get"]:
           check(name & " read effect", ext["effect"].getStr() == "read")
         else:
           check(name & " enforced approval", ext["approval"].getStr() == "always")

@@ -150,6 +150,32 @@ The admission record does not extend authority: a caller cannot widen a peer's
 ceiling by naming a profile in it, and the record is read from the same store
 its writer owns.
 
+## Trusted goal delegation (`mode: "delegate"`)
+
+The simplified form of the above: **one** operator decision per machine instead
+of a named profile per assignment, with tools and budgets optional.
+
+- Worker setting: store kind `delegation`, id `settings` — the same document
+  shape as a task profile (`unattended`, `tools`, `roots`, optional budgets,
+  `confinement`), written only by `fleet_delegation_set` (approval-gated, and on
+  the control-plane deny list so a task can never write it). Absent = off.
+- `delegationPolicyVersion: 1` is advertised in catalog `components`/`snapshot`.
+  A requester asking for `mode: "delegate"` refuses an older peer rather than
+  downgrading to `ask`; the worker refuses a grant whose shape it cannot honor.
+- Grant: the session call's `task` carries `{delegate: true, workspace, …}`. An
+  omitted `tools`/`maxRounds`/`maxCalls`/`maxTokens` takes the worker's ceiling
+  (and, for rounds, the runner's ordinary turn default when the ceiling is 0);
+  a named value may only narrow, and a wider one refuses with
+  `task-policy-widened`. Control-plane tools are refused in every case
+  (`task-policy-denied`), as is `confinement: "sandbox"` — this harness
+  enforces no sandbox for delegated work and will not claim one.
+- The resolved policy is persisted in the conversation header exactly like a
+  profile-based task (`profile: "trusted-delegation"` when it came from the
+  setting), so an exact retry replays its receipt and a widened retry refuses.
+- **Not authentication.** The envelope's `caller` is self-declared; `enabled:
+  true` trusts reachability of that private bus/SSH route. Old `taskProfile`
+  jobs keep their recorded policy verbatim and are never reinterpreted.
+
 ## Task policy (unattended authority)
 
 An unattended task runs ordinary coding tools **without approval prompts**,

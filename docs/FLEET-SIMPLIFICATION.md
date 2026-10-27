@@ -70,10 +70,12 @@ running tasks keep the policy they were admitted under.
   access", exactly like today's `taskProfile`. Do not describe it as
   per-requester authentication.
 
-Optional limits: when a caller omits `maxRounds`/`maxCalls`/`maxTokens`, the
-worker's configured defaults apply, falling back to the runner's normal turn
-defaults (`NIF_MAX_TURN_ROUNDS`). Omitted limits must never mean unbounded,
-and a limit that stops work must report `needs-attention` with the reason.
+Optional limits: when a caller omits `maxRounds`/`maxCalls`/`maxTokens` the
+worker's settings decide — its own configured ceiling if it set one, else
+the runner's normal turn default (for rounds) and no extra cap (for calls and
+tokens), exactly like a local `agent_spawn` without budgets. An explicit
+caller value may only narrow. A limit that stops work must report
+`needs-attention` with the reason.
 
 Compatibility: an existing `taskProfile`-based job keeps its recorded policy
 verbatim; the new path never reinterprets or widens it. Old requesters that

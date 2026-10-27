@@ -42,6 +42,20 @@ const
     ## Version of the effective-policy schema. Peers advertise
     ## `taskPolicyVersion` in catalog components/snapshot; a requester that
     ## needs unattended authority refuses a peer without the matching version.
+  delegationSettingsKind* = "delegation"
+    ## Worker-owned settings for goal delegation (docs/FLEET-SIMPLIFICATION.md):
+    ## ONE explicit trust decision by the operator, instead of a profile
+    ## reconstructed per assignment. Same document shape as a task profile, so
+    ## the same validation and confinement honesty apply.
+  delegationSettingsId* = "settings"
+  delegationPolicyVersion* = 1
+    ## Advertised as `delegationPolicyVersion` in catalog components/snapshot.
+    ## A requester that asks for goal delegation refuses an older peer rather
+    ## than silently downgrading to `ask` (a task that starts and waits for an
+    ## approval nobody will give).
+  delegationProfileName* = "trusted-delegation"
+    ## The name an effective policy carries when it came from the delegation
+    ## settings rather than a named `taskProfile`.
   maxProfileNameBytes* = 64
 
   # The control plane is never reachable from an unattended task. This is an
@@ -279,6 +293,101 @@ proc resolveTaskPolicy*(profile: JsonNode, requested: JsonNode,
       "confinement 'sandbox' is not enforced for delegated tasks in this" &
       " harness version; configure the profile as unconfined to proceed" &
       " honestly, or wait for a sandboxed task slice"))
+
+proc resolveDelegationPolicy*(settings: JsonNode, requested: JsonNode,
+                              workspace: string): tuple[policy: JsonNode,
+                                                        refusal: PolicyRefusal] =
+  ## The effective policy of one TRUSTED-WORKER delegation
+  ## (docs/FLEET-SIMPLIFICATION.md): the worker's single operator setting is
+  ## the ceiling, and the caller only narrows it. Same validation, same
+  ## control-plane denial and same confinement honesty as a task profile —
+  ## what changes is that tools and budgets are OPTIONAL (absent = the
+  ## worker's own ceiling, then the runner's normal turn default), because
+  ## this is delegation to a trusted machine, not a per-task permission
+  ## negotiation.
+  ##
+  ## Refusals stay explicit: no setting, or a setting that does not permit
+  ## unattended work, refuses rather than starting a turn that waits forever
+  ## for an approval nobody will give.
+  if requested == nil or requested.kind != JObject:
+    return (newJNull(), refusePolicy("task-policy-invalid",
+      "goal delegation needs a `task` request object"))
+  if settings == nil:
+    return (newJNull(), refusePolicy("task-policy-denied",
+      "this worker does not accept unattended delegation; its operator must" &
+      " enable it (store kind " & delegationSettingsKind & ", id " &
+      delegationSettingsId & ")"))
+  let problem = taskProfileProblem(settings)
+  if problem.len > 0:
+    return (newJNull(), refusePolicy("task-policy-invalid",
+      "the worker's delegation setting is invalid: " & problem))
+  if not settings{"unattended"}.getBool(false):
+    return (newJNull(), refusePolicy("task-policy-denied",
+      "the worker's delegation setting does not permit unattended execution"))
+  let allowed = profileToolList(settings)
+  # --- tools: requested names must be permitted; absent = the ceiling ------
+  var wanted: seq[string] = @[]
+  for item in requested{"tools"}.listOf:
+    let name = item.getStr("").strip()
+    if name.len > 0 and name notin wanted: wanted.add(name)
+  if wanted.len == 0: wanted = allowed
+  wanted.sort()
+  if wanted.len == 0:
+    return (newJNull(), refusePolicy("task-policy-invalid",
+      "the worker's delegation setting lists no tools"))
+  for tool in wanted:
+    if isControlPlane(tool):
+      return (newJNull(), refusePolicy("task-policy-denied",
+        "tool '" & tool & "' is control-plane machinery and is never granted" &
+        " to a delegated task: single-hop delegation, no indirect authority"))
+    if tool notin allowed:
+      return (newJNull(), refusePolicy("task-policy-widened",
+        "tool '" & tool & "' is not permitted by the worker's delegation" &
+        " setting (allowed: " & allowed.join(", ") & ")"))
+  # --- workspace: must be inside an approved root --------------------------
+  let roots = profileRoots(settings)
+  if roots.len == 0:
+    return (newJNull(), refusePolicy("task-policy-invalid",
+      "the worker's delegation setting lists no writable roots"))
+  if workspace.len == 0:
+    return (newJNull(), refusePolicy("task-policy-invalid",
+      "a delegated task needs an explicit workspace"))
+  if not rootAllowed(roots, workspace):
+    return (newJNull(), refusePolicy("task-policy-refused-root",
+      "workspace " & workspace & " is outside the worker's approved roots (" &
+      roots.join(", ") & ")"))
+  # --- budgets: optional; a caller value only narrows the ceiling ----------
+  var budget = newJObject()
+  for key in ["maxRounds", "maxCalls", "maxTokens"]:
+    let ceil = settings{key}.getInt(0)
+    let asked = requested{key}.getInt(0)
+    if asked <= 0:
+      # Absent means "the worker's normal default": its own ceiling when one is
+      # configured, else the runner's ordinary turn default (0 = none).
+      budget[key] = %ceil
+    elif ceil > 0 and asked > ceil:
+      return (newJNull(), refusePolicy("task-policy-widened",
+        key & " " & $asked & " exceeds the worker ceiling of " & $ceil))
+    else:
+      budget[key] = %asked
+  let confinement = settings{"confinement"}.getStr("unconfined")
+  if confinement == "sandbox":
+    # Same honesty rule as a profile: nothing in this slice sandboxes delegated
+    # work, so the setting cannot assert it.
+    return (newJNull(), refusePolicy("task-policy-unsupported",
+      "confinement 'sandbox' is not enforced for delegated tasks in this" &
+      " harness version; configure the setting as unconfined to proceed honestly"))
+  result.policy = %*{
+    "version": taskPolicyVersion,
+    "profile": delegationProfileName,
+    "unattended": true,
+    "tools": %wanted,
+    "roots": %roots,
+    "workspace": normalizeTaskRoot(workspace),
+    "budget": budget,
+    "confinement": confinement,
+    "confined": false,
+    "controlPlaneDenied": true}
 
 proc taskToolSchemaProblem*(tool: string, schema: JsonNode): string =
   ## Shared admission check; the worker must not trust the requester's audit.
