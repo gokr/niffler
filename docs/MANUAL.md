@@ -3058,8 +3058,13 @@ identity mismatch and missing completion receipts are not interruption or
 success. Only the first completion sequence is accepted; if human continuation
 has replaced that latest-per-session receipt, the task stays unknown rather
 than attributing the later turn to it. `settled` means a durable remote turn receipt was observed, not that
-the task's claims were verified. Cancellation is supported only before dispatch;
-after dispatch cancel the remote conversation explicitly on the pinned peer.
+the task's claims were verified. `fleet_task_cancel` settles a queued task
+locally without dispatching it; a dispatched task is stopped on the pinned peer
+through its `session {stop: true}` op (docs/WIRE.md "Session stop"). Cancellation
+is cooperative, so an in-flight tool runs to completion before the turn ends.
+The reply reports the peer's own `peerStatus` rather than a bare "cancelled"; an
+unreachable peer or one without the stop op leaves the task uncancelled and says
+so, and cancelling a finished task refuses (`not-active`).
 
 Completion is stored with a UTF-8-safe summary (2048-byte prefix plus ellipsis)
 before any wake. The runner folds notices as append-only machinery, commits the
@@ -3082,7 +3087,9 @@ nothing: seen/unread state is client-local. `fleet_task_status` and
 `fleet_task_result` accept `human: true` to read any job this harness submitted
 without conversation context — the owner check separates conversations, and the
 inbox must be able to open the jobs it lists. It widens who may read, never what
-is returned: the task record, receipt and profile stay withheld. No general
+is returned: the task record, receipt and profile stay withheld.
+`fleet_task_cancel` accepts `human: true` for the same reason, widening who may
+cancel a job this harness submitted. No general
 mailbox, artifact transfer or automatic retry of uncertain work.
 
 #### Durable admission (F1)

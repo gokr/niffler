@@ -45,7 +45,7 @@ Example target interaction:
 | Result | `fleet_task_status`, cached bounded `fleet_task_result`, local `fleet_task_inbox` listing, remote-session pointer | Paged task-specific detail and artifact retrieval |
 | Notification | Durable `fleet-settled` notice; `ev.fleet.settled` for connected clients; runner append before ack; canonical-history dedup; bounded idle wake and busy-turn drain | Blocked/approval-needed notices; artifact retrieval |
 | Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption; durable worker admission with an activation-bound terminal receipt ([WIRE.md](WIRE.md) "Durable task admission") | Multi-activation/continuation records and a receipt retention policy |
-| Cancellation | `fleet_task_cancel` cancels only queued, undispatched tasks | Confirmed cancellation of active remote work |
+| Cancellation | `fleet_task_cancel` settles queued work locally and requests a peer-side stop (`session {stop: true}`) for dispatched work; the reply follows the peer's status | Live acceptance of a remote stop's success path |
 | Approval | Submission approval locally; worker explicitly receives `approvals: ask`; read-only tasks by default; operator task profiles ∩ an exact human grant ([WIRE.md](WIRE.md) "Task policy"), enforced at birth with the honest `unconfined` verdict | No default unattended mode (by design); no human UI for profiles/grants |
 | Scheduling | Optional heartbeat, durable admission marks, daily attempt cap | Cron, daily token/cost budgets, retention and completion integration |
 

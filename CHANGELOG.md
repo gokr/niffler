@@ -6,6 +6,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Fleet can cancel active remote work: `fleet_task_cancel` still settles a
+  queued task locally without dispatching it, but a dispatched task is now
+  stopped on its pinned peer through the new `session {stop: true}` op — the
+  same cooperative `__cancel` control a local UI emits, so an in-flight tool
+  finishes and the turn ends after it. The reply reports the peer's own
+  `peerStatus` (`cancelRequested` plus that status) rather than a bare
+  "cancelled"; a job with no peer answer stays uncancelled and says so, and a
+  finished task refuses (`not-active`). The human scope reaches this tool too:
+  `human: true` may cancel any job this harness submitted. See docs/WIRE.md
+  "Session stop".
+
 - Fleet has a human inbox: `fleet_task_inbox {peer?, state?, after?, limit?}`
   lists every task this harness submitted as a local, paged read over the
   `fleetjob` kind, so a settled job's verdict (status, bounded summary,
