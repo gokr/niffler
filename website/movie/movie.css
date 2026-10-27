@@ -34,8 +34,11 @@ html, body {
 #viewport {
   position: fixed;
   inset: 0;
-  display: grid;
-  place-items: center;
+  overflow: hidden;
+  /* No grid/place-items: #stage is positioned by fitStage()'s transform, so
+     centring does not depend on the parent (a grid centred the OVERFLOWING
+     1600px box on a phone and put the Play button off-screen left). */
+  display: block;
   background:
     radial-gradient(1200px 700px at 50% 42%, #0d2033 0%, #050d15 72%);
   cursor: default;
@@ -681,6 +684,58 @@ html, body {
 #gate button:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(66, 230, 164, 0.35); }
 #gate button:focus-visible { outline: 3px solid var(--mint-pale); outline-offset: 3px; }
 #gate .keys { font-family: var(--mono); font-size: 13px; color: #5d7385; }
+
+/* ---------- portrait phones ----------
+ * A 16:9 stage on a 390x844 screen is 382x215 with 5px captions — the film
+ * "loads" and is unreadable. In portrait the stage is given a 9:16-ish box
+ * instead, so fitStage() scales the CONTENT to fill the height; the scenes
+ * reflow to one column and the caption band grows. Landscape phones are 16:9
+ * already and need none of this. */
+@media (max-aspect-ratio: 1/1) {
+  /* fitStage() sets the pixel size; this keeps the CSS consistent for the
+     no-JS case and for anything that measures before the first fit. */
+  #stage { border-radius: 0; width: 900px; height: 1600px; }
+  .scene { padding: 40px 34px 300px; gap: 16px; }
+  .scene.tight { padding-bottom: 250px; }
+  .h-lg { font-size: 62px; }
+  .h-md { font-size: 44px; }
+  .h-sm { font-size: 36px; }
+  .lede { font-size: 25px; max-width: none; }
+  .eyebrow { font-size: 19px; }
+  /* single column: side-by-side layouts are unreadable at this width */
+  .s2-grid, .s3-grid, .s7-body, .reli-grid, .flow { display: flex; flex-direction: column; gap: 18px; }
+  /* .stat-row is a flex row of three; in portrait it sat inline with the
+     heading line (seen in the s2 phone frame). Stack it explicitly. */
+  .stat-row { flex-direction: row; flex-wrap: wrap; gap: 18px 28px; margin: 6px 0 10px; }
+  .stat b { font-size: 34px; }
+  .stat span { font-size: 13px; }
+  #s2 .h-md, #s5 .lede { font-size: 38px; }
+  #s2 .lede { font-size: 24px; max-width: none; }
+  .note-row { font-size: 17px; gap: 8px; }
+  .req-legend { padding-left: 0; flex-wrap: wrap; gap: 10px 18px; font-size: 15px; }
+  .stitch, .lease-row { font-size: 17px; }
+  .split .mono { font-size: 15px; }
+  .flow { gap: 12px; }
+  .step { min-height: 0; }
+  .lane, .lane-head { grid-template-columns: 1fr; gap: 6px; }
+  .lane .verdict { text-align: left; }
+  .lane-head { display: none; }
+  .req { grid-template-columns: 84px 1fr; }
+  .req-note { display: none; }
+  .cache-stat { align-items: flex-start; border-left: 0; padding-left: 0; }
+  .sdk-row { flex-wrap: wrap; gap: 14px; }
+  .sdk { min-width: 130px; font-size: 20px; padding: 14px 18px; }
+  .wire { margin: 20px 10px 0; }
+  .terminal { min-width: 0; font-size: 18px; }
+  #captions { left: 24px; right: 24px; bottom: 96px; }
+  #captions span { font-size: 30px; line-height: 1.45; min-height: 0; padding: 12px 16px; }
+  #hud { height: 62px; font-size: 15px; padding: 0 20px; }
+  #clock { min-width: 120px; }
+  #gate h2 { font-size: 52px; }
+  #gate p { font-size: 22px; line-height: 1.6; }
+  #gate button { font-size: 26px; padding: 20px 44px; }
+  #gate .keys { font-size: 17px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   #grain { animation: none; }
