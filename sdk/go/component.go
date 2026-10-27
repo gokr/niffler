@@ -1188,6 +1188,14 @@ func (c *Component) Announce() error {
 // Register BEFORE Connect (like events and taps). One handler per component: a
 // second registration replaces the first. The interval is floored at 10ms.
 func (c *Component) OnIdle(interval time.Duration, handler func(*Component)) *Component {
+	// Replacing device is deliberate (periodic work must not stack) but it is
+	// not silent: the failure mode is invisible, because the first handler
+	// simply stops running and nothing else says so. Mirrors the Nim SDK.
+	if c.idleHandler != nil {
+		fmt.Fprintf(os.Stderr, "sdk: %s: OnIdle replaces an existing idle "+
+			"handler — the earlier one will never run again; fold periodic "+
+			"work into a single handler\n", c.Name)
+	}
 	if interval < 10*time.Millisecond {
 		interval = 10 * time.Millisecond
 	}

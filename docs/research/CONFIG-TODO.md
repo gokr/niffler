@@ -180,6 +180,15 @@ pass. Repository status is not a claim that installed binaries were updated.
   registry is still `servers.json` (by design — it is language data, and
   `lsp_registry add` is the single-path mutation), and `NIF_LSP_BIN_DIRS` stays
   env (an executable search path is a deployment fact, same category as above).
+- [x] Background process limits (`processes.limits`): `spoolCap`, `pollChunk`,
+  with `NIF_PROCESSES_*` retained as the migration path and bench seam. The test
+  proves a STORED value changes what a poll actually returns (1024 bytes instead
+  of the env's 4096), without a restart — the declaration's own "immediate"
+  claim, checked on the observable it controls.
+  Caught while shipping it: registering the declaration from a SECOND `onIdle()`
+  silently replaced `processes`' child reaper (the SDK keeps one handler), so
+  background exits went unannounced. Both SDKs now warn on a replacing
+  registration, and the declaration rides the existing handler.
 - [x] Fetch extraction/network preferences (`fetch.network`): `allowPrivate`
   and `extractor`, with the `NIF_FETCH_ALLOW_PRIVATE`/`NIF_TRAFILATURA` env
   path retained. The test proves the stored opt-in both grants and revokes

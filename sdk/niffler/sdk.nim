@@ -460,9 +460,20 @@ proc onIdle*(c: Component, intervalMs: int, handler: IdleHandler): Component =
   ## serve, at most once per `intervalMs` (floored at 10ms). Chainable like
   ## tool/onDrain/tap.
   ##
-  ## One handler per component: a second registration replaces the first, so
-  ## periodic work cannot silently stack. Runs on the main thread with the
-  ## shared connection — never block in it.
+  ## One handler per component: a second registration replaces the first. That
+  ## is deliberate (periodic work must not stack), but it is NOT silent any
+  ## more: replacing an existing handler warns, because the failure mode is
+  ## invisible — a component that registered its reaper first simply stops
+  ## reaping, and nothing in the log says why. (This cost a debugging session:
+  ## a settings declaration registered from its own onIdle() disabled
+  ## processes' child reaper, so background exits went unannounced.)
+  ##
+  ## Fold extra periodic work into the ONE handler instead of adding another.
+  ## Runs on the main thread with the shared connection — never block in it.
+  if c.idleHandler != nil:
+    stderr.writeLine("sdk: " & c.name & ": onIdle replaces an existing idle " &
+      "handler — the earlier one will never run again; fold periodic work " &
+      "into a single handler")
   c.idleEveryMs = max(intervalMs, 10)
   c.idleHandler = handler
   return c
