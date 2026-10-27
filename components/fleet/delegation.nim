@@ -197,7 +197,7 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
 
 proc publicJob*(j: JsonNode): JsonNode =
   result = j.copy()
-  for key in ["task", "receipt", "profile"]:
+  for key in ["task", "receipt", "profile", "report"]:
     if result.hasKey(key): result.delete(key)
 # Human-scope reads: these do NOT require session context, and that is
 # deliberate. The owner check on job tools exists so one CONVERSATION cannot
@@ -366,6 +366,7 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       var reply = ""
       var transcriptComplete = false
       var userMessages = 0
+      var ambiguous = false
       for pageNo in 0..<32:
         let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
         let entries = page{"items"}
@@ -377,11 +378,12 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
               entry{"value", "mail"} == nil:
             inc userMessages
           if userMessages > 1:
+            ambiguous = true
             transcriptComplete = true
             reply = "[summary unavailable: unmarked user/steer boundary; inspect remote transcript]"
             break
           if role == "assistant":
-            reply = summary(entry{"value", "content"}.getStr(""))
+            reply = entry{"value", "content"}.getStr("")
         if transcriptComplete: break
         if not page{"hasMore"}.getBool(false):
           transcriptComplete = true
@@ -389,7 +391,10 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         let next = page{"nextAfter"}.getStr("")
         if next <= after: refuse("invalid transcript cursor")
         after = next
-      if not transcriptComplete: reply = summary("[transcript scan capped; report may be partial] " & reply)
+      j["report"] = %reply
+      j["reportComplete"] = %(transcriptComplete and not ambiguous)
+      if not transcriptComplete: reply = "[transcript scan capped; report may be partial] " & reply
+      reply = summary(reply)
       j["state"] = %"settled"
       j["completion"] = %*{"sessionId": id,
         "turnId": admissionDoc{"turnId"}.getStr(""),
@@ -429,6 +434,7 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       var reply = ""
       var transcriptComplete = false
       var userMessages = 0
+      var ambiguous = false
       for pageNo in 0..<32:
         let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
         let entries = page{"items"}
@@ -440,11 +446,12 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
               entry{"value", "mail"} == nil:
             inc userMessages
           if userMessages > 1:
+            ambiguous = true
             transcriptComplete = true
             reply = "[summary unavailable: unmarked user/steer boundary; inspect remote transcript]"
             break # unmarked steering and new human turns are indistinguishable
           if role == "assistant":
-            reply = summary(entry{"value", "content"}.getStr(""))
+            reply = entry{"value", "content"}.getStr("")
         if transcriptComplete: break
         if not page{"hasMore"}.getBool(false):
           transcriptComplete = true
@@ -452,7 +459,10 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         let next = page{"nextAfter"}.getStr("")
         if next <= after: refuse("invalid transcript cursor")
         after = next
-      if not transcriptComplete: reply = summary("[transcript scan capped; report may be partial] " & reply)
+      j["report"] = %reply
+      j["reportComplete"] = %(transcriptComplete and not ambiguous)
+      if not transcriptComplete: reply = "[transcript scan capped; report may be partial] " & reply
+      reply = summary(reply)
       j["state"] = %"settled"
       j["completion"] = receipt
       j["notice"] = %*{"kind": "fleet-settled", "jobId": id,
@@ -523,6 +533,28 @@ proc resultPage*(c: Component, args: JsonNode, run: CommandRunner): JsonNode =
     result["items"].add(%*{"id": entry["id"], "role": entry{"value", "role"}.getStr(""),
       "content": summary(entry{"value", "content"}.getStr("")), "bounded": true})
     result["nextAfter"] = entry["id"]
+
+proc reportPage*(j, args: JsonNode): JsonNode =
+  ## Local UTF-8-safe pages; never relay to a worker during report reads.
+  let text = if j{"report"} != nil: j{"report"}.getStr("")
+             else: j{"notice", "summary"}.getStr("")
+  let offset = args{"offset"}.getInt(0)
+  let limit = args{"limit"}.getInt(8192)
+  if offset < 0 or offset > text.len: refuse("report offset out of bounds")
+  if limit notin 4..32768: refuse("report limit must be 4..32768 bytes")
+  if offset < text.len and (ord(text[offset]) and 0xc0) == 0x80:
+    refuse("report offset must be a UTF-8 boundary")
+  var finish = min(text.len, offset + limit)
+  while finish < text.len and finish > offset and
+      (ord(text[finish]) and 0xc0) == 0x80: dec finish
+  result = %*{"jobId": j["id"], "state": j["state"],
+    "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
+    "summary": j{"notice", "summary"}.getStr(""), "bounded": true,
+    "remoteSession": j["sessionId"], "report": text[offset..<finish],
+    "offset": offset, "nextOffset": finish, "hasMore": finish < text.len,
+    "reportBytes": text.len, "reportComplete": j{"reportComplete"}.getBool(false)}
+  if j{"report"} == nil:
+    result["detail"] = %"Legacy job: only the short summary was cached; full transcript remains on the worker."
 
 proc taskNotices*(c: Component, args: JsonNode): JsonNode =
   let session = args{"session"}.getStr("")

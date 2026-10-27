@@ -160,9 +160,7 @@ proc taskReader(verb: string): ToolHandler =
   result = proc(c: Component, args: JsonNode): JsonNode =
     let j = authorized(c, args).value
     if verb == "result":
-      %*{"jobId": j["id"], "state": j["state"], "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
-        "summary": j{"notice", "summary"}.getStr(""), "bounded": true,
-        "remoteSession": j["sessionId"], "detail": "Full transcript remains on the pinned peer; open this remoteSession there."}
+      reportPage(j, args)
     else: publicJob(j)
 for name in ["status", "result"]:
   # `human` is the one way to read a job without a conversation: the owner
@@ -171,8 +169,10 @@ for name in ["status", "result"]:
   # could list every job and then be unable to open any of them.
   discard comp.tool("fleet_task_" & name, schema(%*{
     "jobId": {"type": "string"},
+    "offset": {"type": "integer", "minimum": 0, "description": "Report cursor from nextOffset; result only"},
+    "limit": {"type": "integer", "minimum": 4, "maximum": 32768, "description": "Report page bytes (default 8192); result only"},
     "human": {"type": "boolean", "description": "Human-scope read: a person may read any job this harness submitted, without session context (the inbox needs this to open what it lists)"}}, @["jobId"],
-    "Read an owned remote task's durable status or cached bounded report. Unreachable and unknown do not mean failed or successful; no submission replay. Completion is pushed automatically."),
+    "Read an owned task's status or locally cached final prose report. Use nextOffset as offset while hasMore. Legacy reports explicitly mark summary-only data incomplete. No peer contacted or submission replay."),
     taskReader(name),
     %*{"onDemand": true, "effect": "read", "sessionContext": true})
 discard comp.tool("fleet_task_receipt", schema(%*{

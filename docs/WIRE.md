@@ -53,7 +53,14 @@ replayed or inferred successful/interrupted from disconnection. A durable remote
 activity receipt establishes turn settlement, not factual task success. Remote
 budgets use supported maxRounds/maxCalls/maxTokens, not a transport timeout as a
 wall-clock deadline. Cancel is local queued-only; later cancellation is explicit
-on the peer. The result tool reads a cached bounded summary, not a blocking relay.
+on the peer. The result tool reads a locally cached prose report, not a blocking relay.
+`fleet_task_result {jobId, offset?, limit?}` returns `report`, `nextOffset`,
+`hasMore`, `reportBytes` and `reportComplete`, alongside the short `summary`.
+Offsets are UTF-8 byte boundaries, limit is 4..32768 bytes (default 8192).
+Continue with `offset: nextOffset` while `hasMore`. Legacy jobs return their
+summary with `reportComplete:false` and explicit detail. Ambiguous or capped
+transcript scans never claim complete reports. Full reports are excluded from
+status/notices; reading them never contacts the peer or replays work.
 
 Terminal job and `notice:{kind:"fleet-settled",jobId,status,summary}` commit in
 one revision before notification. A real transition into `settled` also
