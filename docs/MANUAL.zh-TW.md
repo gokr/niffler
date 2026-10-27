@@ -740,7 +740,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
 
 - **output** window 會與 context window 一併解析，並以 `output`/`outputSource` 回傳：catalog 的 `model.limit.output`，否則為刻意設定的 32768 預設值——若無明確上限，provider 會套用其自身的伺服器端上限，並在串流中途截斷冗長的回答。每次呼叫的 `maxTokens` 只會調降已解析的值（expert judge 的微小裁決），而 Codex 通道則完全忽略它。
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受一個會話範圍的 provider 與模型覆寫。`provider` 指名一個已儲存的 provider 暱稱（空值會清除它，回到 harness 全域預設）；僅指定 model 的呼叫會在同一次標頭寫入中解析並釘住其所屬的 provider，因此 provider 與 model 總是一起出現——model 不會在事後因為另一個 UI 切換了全域預設而被送往不支援它的 provider。無法解析的明確 `provider` 是一個指名它的錯誤，而不是靜默回退（見 WIRE.md「Provider/model pins are one selection」）。僅指定 model 的呼叫會在不進行推論的情況下持續保存並解析該選取；帶有空值的存在則會清除它。`profile` 指名一個已儲存的工具 profile，僅在會話的第一次呼叫時解析進直接工具集（`NIF_PROFILE` 提供預設值）；未知的 profile 會使該呼叫失敗，而續接會忽略該引數。`thinking` 是推理強度，為 `""`、`low`、`medium`、`high`、`max` 之一；`""` 是 provider 預設值（UI 顯示為「auto」），且是唯一能清除先前選擇的值。它會以 `reasoning_effort` 轉送給 provider——且僅在非空時，因此不支援該欄位的 provider 永遠不會看到它；`llm` 轉接器會將該值對應到各協定自身的形式（Codex `reasoning {effort, summary}`、Anthropic `thinking` 加上 `output_config.effort`）——並攜帶於會話標頭上。
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受一個會話範圍的 provider 與模型覆寫。`provider` 指名一個已儲存的 provider 暱稱（空值會清除它，回到 harness 全域預設）；僅指定 model 的呼叫會在同一次標頭寫入中解析並釘住其所屬的 provider，因此 provider 與 model 總是一起出現——model 不會在事後因為另一個 UI 切換了全域預設而被送往不支援它的 provider。無法解析的明確 `provider` 是一個指名它的錯誤，而不是靜默回退（見 WIRE.md「Provider/model pins are one selection」）。僅指定 model 的呼叫會在不進行推論的情況下持續保存並解析該選取；帶有空值的存在則會清除它。`profile` 指名一個已儲存的工具 profile，僅在會話的第一次呼叫時解析進直接工具集（`NIF_PROFILE` 提供預設值）；未知的 profile 會使該呼叫失敗，而續接會忽略該引數。`thinking` 是推理強度，為 `""`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 之一；`""` 是 provider 預設值（UI 顯示為「auto」），且是唯一能清除先前選擇的值；`none` 明確要求不進行推理，與 provider 預設值不同。它會以 `reasoning_effort` 轉送給 provider——且僅在非空時，因此不支援該欄位的 provider 永遠不會看到它；`llm` 轉接器會將該值對應到各協定自身的形式（Codex `reasoning {effort, summary}`、Anthropic `thinking` 加上 `output_config.effort`）——並攜帶於會話標頭上。當 provider 拒絕該**值**時，`llm` 會記錄 `status=effort-rejected`，並在不帶該欄位的情況下重試一次，而不是讓該回合失敗。
   `discovery {…}` 是明確的用戶端探索：它執行 `discover`，將 schemas 記錄於持久 discovery summary 中，並將它們附加為一則使用者訊息——不進行 LLM 回合，也不晉升進直接工具集。
   Core 會將該選擇儲存於會話標頭，並在一個回合中的所有工具回合間釘住已解析的模型。
 - 各會話的控制項會在第一次呼叫時凍結並持續保存於標頭中：`tools`（子項可分派的工具允許清單；最多接受 32 個名稱，且可接受的引數不會宣告於 `session` 工具 schema 中）、`maxRounds`
@@ -2713,9 +2713,10 @@ core 中所有必須看見整個種類的東西都走 `storeListAll`——
 基準適配器在私有匯流排上等待全部八個直接工具、`systemprompt.systemprompt` 和 manifest 中每個 required autostart 元件，並在建立會話前檢查目錄 root 與物件 schema。上下文排除項不變，包括 `AGENTS.md` 與 `AGENTS.local.md`；就緒檢查不允許將 harness 貢獻者上下文注入基準任務。
 
 ```bash
-make test           # the full gate: the bus-contract suite
-make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test           # the full gate: the bus-contract suite + bench adapters
+make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
 make test-bench     # ... Node adapter readiness and telemetry tests only
+                    #     (skips cleanly when Node is absent)
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

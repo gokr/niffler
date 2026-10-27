@@ -161,6 +161,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   blocking store read or declaration stalled every other message the component
   owed whenever the store or config component was absent (a supported
   deployment). Declaration is now one short best-effort attempt per tick.
+- Reasoning effort gained `none`, `minimal` and `xhigh` (alongside `""`, `low`,
+  `medium`, `high`, `max`). `none` is the point: with `reasoning_effort` absent
+  a model picks its own default, so "don't think" was previously unreachable;
+  `none` and `minimal` are now distinct from empty, which still means the
+  provider default. The declared ladder is treated as a preference rather than
+  a constraint — measured against Synthetic's own `/models` metadata, one
+  alias declares none/low/medium/high yet rejects `max`, while others accept
+  values they never declare — so when a provider rejects the *value*, `llm`
+  logs `status=effort-rejected` and retries once without the field instead of
+  failing the turn. Anything that is not a value rejection propagates
+  unchanged.
+
+- A base install no longer needs Node to run the bus-contract gate.
+  `make test-server` stopped depending on `test-bench` (the benchmark adapter
+  tests), so a stock harness install no longer aborts with
+  `node: command not found` before running a single test; `make test` still
+  covers both, and CI runs `make test-bench` as its own step. Without Node,
+  `make test-bench` skips with a clear message instead of exit 127, and
+  `make doctor` reports Node as optional. The suite itself was already pure
+  Nim/Go.
+
+- `scripts/server.sh persist <root>` no longer invents a verdict when it cannot
+  reach the systemd user manager. `incus shell` (or `su` without a logind
+  session) leaves `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` unset, so every
+  `systemctl --user` query returned empty and a healthy instance was reported
+  as "NOT persistent yet" with instructions to reinstall it. It now probes the
+  manager first and reports UNKNOWN (exit 2), naming the two variables that
+  fix the shell, and reserves the failure verdict for states it actually
+  observed.
 
 - The store can answer "which documents are close to this vector?": `search`
   gained a vector mode (`{kind: "embedding", model, vector, limit?}` →

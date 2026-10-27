@@ -1319,14 +1319,18 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Legacy `profile`, `NIF_PROFILE` and store kind `profile` remain compatible.
   `persona` selects prompt text; `agent` selects a technical definition (see
   [Agent definitions](#agent-definitions)), with explicit arguments winning.
-  `thinking` is the reasoning effort, one of `""`, `low`, `medium`, `high`,
-  `max`; `""` is the provider default (UIs show it as "auto") and is the only
-  value that clears an earlier choice. It is forwarded to the provider as
-  `reasoning_effort` — and only when non-empty, so a provider that does not
-  support the field never sees one; the `llm` adapter maps the value onto each
-  protocol's own form (Codex `reasoning {effort, summary}`, Anthropic
-  `thinking` plus `output_config.effort`) — and carried on the conversation
-  header.
+  `thinking` is the reasoning effort, one of `""`, `none`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max`; `""` is the provider default (UIs show it
+  as "auto") and is the only value that clears an earlier choice; `none` asks
+  for no reasoning at all and is distinct from the provider default. It is
+  forwarded to the provider as `reasoning_effort` — and only when non-empty,
+  so a provider that does not support the field never sees one; the `llm`
+  adapter maps the value onto each protocol's own form (Codex
+  `reasoning {effort, summary}`, Anthropic `thinking` plus
+  `output_config.effort`) — and carried on the conversation header. Which
+  levels a model accepts varies; when a provider rejects the *value*, `llm`
+  logs `status=effort-rejected` and retries once without the field rather
+  than failing the turn.
   `discovery {…}` is an explicit client discovery: it runs `discover`,
   records the schemas in the durable discovery summary and appends them as
   a user message — no LLM turn, no promotion into the direct toolset.
@@ -2261,7 +2265,10 @@ conversation's `.diag` lane — and the edit result names that lane, so
 Clean verdicts are display/storage-only (`diagnostic` records), not LLM
 messages; failures and actionable diagnostics still append to model history.
 Late clean checks deliver while the runner is idle without waking the model.
-When the check
+The background job has a 20 s budget; an `E_LSP_TIMEOUT` on a post-edit push
+means that budget expired, not that the harness is wedged (a direct
+`lsp {operation: "diagnostics"}` query has a 60 s budget and answers the same
+file normally). When the check
 cannot be queued (a file outside the conversation workspace, or a failure to
 reach the lsp component) the edit result says so instead, with the reason.
 Silence is reserved for files whose extension no registry entry claims: a
@@ -2923,7 +2930,7 @@ leaving it to inspection: it checks the installed unit against the checkout that
 should own it, the enable state, the active state, the restart policy and linger,
 and names the fix for each failure. Host boot policy is reported as what it is
 (`boot=container (lxc) - verify on the management host: incus config get <container>
-boot.autostart`) and never claimed as verified from inside the guest. It exits non-zero while anything is unproven.
+boot.autostart`) and never claimed as verified from inside the guest. It exits non-zero while anything is unproven. When this shell cannot reach the systemd user manager at all — `incus shell`, or `su` without a logind session, leaves `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` unset — it reports UNKNOWN and exits 2 instead: the state was not observed, so that is not a verdict.
 
 When a checkout's `server.sh` changes, `install` **refuses** the unit it
 previously wrote (rendered text is compared, never adopted — that is what stops a
@@ -4910,9 +4917,10 @@ Its context exclusions remain unchanged, including `AGENTS.md` and
 context into benchmark tasks.
 
 ```bash
-make test           # the full gate: the bus-contract suite
-make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test           # the full gate: the bus-contract suite + bench adapters
+make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
 make test-bench     # ... Node adapter readiness and telemetry tests only
+                    #     (skips cleanly when Node is absent)
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`
@@ -5078,7 +5086,7 @@ make install-jev    # install the Von runtime for jev (opt-in, ~5.4 GB;
                     # never part of `make setup`)
 make von-up         # enable the supervised Von launcher (persisted spawn
                     # record; `make von-down` removes it again)
-make test           # the full gate: the bus-contract suite
+make test           # the full gate: the bus-contract suite + bench adapters
 make test-server    # the bus-contract suite alone (each test owns a private bus)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
