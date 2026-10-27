@@ -941,8 +941,8 @@ proc reattach(c: Component) =
 proc run*(c: Component) =
   dieWithParent()
   installSignals()
-  # .env from cwd and the harness root (existing env always wins)
-  loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
+  # .env from the harness root only — never the cwd (existing env always wins)
+  loadDotEnv(harnessRoot() / ".env")
   let url = getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222")
   # Bounded initial-connect retry. Components are started alongside the bus
   # — at boot the supervisor spawns them while NATS is still binding, and at

@@ -505,6 +505,25 @@ startup on disagreement, safe to drop. Only the sqlite engine implements it
 so far; tidb answers `code: "unsupported"` rather than running a text
 search and calling it a success (docs/WIRE.md "Store contract").
 
+**TiDB schema changes must avoid `DROP PRIMARY KEY`.** Since v5.0 every TiDB
+table has a *clustered* index, and v8.5 refuses
+`ALTER TABLE ... DROP PRIMARY KEY` with Error 8200 ("Unsupported drop primary
+key when the table is using clustered index"). A migration that needs a
+different primary key is a table rebuild: create the new shape, `INSERT ...
+SELECT`, then one atomic `RENAME TABLE old TO scratch, new TO old`. Because TiDB
+DDL is **not** transactional, write such a migration to converge on a
+partially-applied state (`DROP TABLE IF EXISTS` the scratch, `ADD COLUMN IF NOT
+EXISTS`), or a half-applied file leaves a schema goose cannot retry — which is
+exactly how the tidb engine came to be unbootable while the sqlite suite stayed
+green. The live engine suite only runs with a DSN:
+
+```bash
+docker run -d --rm -p 4000:4000 --name niffler-tidb pingcap/tidb:v8.5.0
+NIF_STORE_TIDB_DSN='root@tcp(127.0.0.1:4000)/test' make test-store-tidb
+```
+
+A SQLite-only green build proves nothing about TiDB DDL.
+
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
   contract on SQLite. Documents live verbatim as JSON TEXT; `put` is one
   atomic statement (doc + rev move together — the KV engine's two-key
@@ -635,8 +654,8 @@ in phase 1, which stay env forever) is `research/SETTINGS.md`.
 
 ## Environment variables
 
-All components load `.env` (from the harness root and cwd, existing shell
-env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
+All components load the harness root's `.env` (never a working directory's —
+see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -775,11 +794,23 @@ NIF_OPENAI_MODEL=deepseek-chat
 ```
 
 Loading rules (same in the Nim, Go and TypeScript SDKs): existing shell
-environment **always wins** over `.env`; the SDKs load the current
-directory's `.env` first and the harness root's second, first definition of
-a key wins. A Wails-hosted client loads them in the opposite order (harness
-root, then cwd), so there the root file wins. So
-`NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
+environment **always wins** over `.env`, and the only file read is the
+harness root's own — `<root>/.env`, where the root is `NIF_ROOT` when an
+operator set it, else the clone containing the binary.
+
+**A working directory is not a trust boundary.** The harness is routinely
+launched from inside the repositories it works on, so a `.env` in the cwd — or
+in a conversation workspace or plugin checkout, which both also live *inside*
+the harness root — must never be honoured: a committed file there would hand
+that repository `NIF_AUTO_APPROVE=1` (approval bypass) or a `NIF_NATS_URL`
+pointing at a bus it controls. Earlier releases did read the cwd's `.env`;
+this rule removes exactly that. A refused file is reported on stderr
+(`dotenv: IGNORING .env — only <root>/.env is trusted: …`) rather than skipped
+silently, so a genuine misconfiguration stays diagnosable, and with no trusted
+root at all (a binary outside a clone layout, no `NIF_ROOT`) no `.env` is
+loaded and the environment is the only source.
+
+So `NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
 `unset NIF_OPENAI_API_KEY` before starting if you want the file value.
 `.env` must be a plain regular file: a symlinked or hardlinked copy is
 refused, the file is capped at 1 MiB, and values are never `$VAR`-expanded.
@@ -2791,13 +2822,14 @@ An owner publishes a *declaration* at startup (`config_declare`, hidden —
 infrastructure, not a model tool): a stable domain id, its store kind, the tool
 that answers `get`/`patch`/`reset`, a JSON Schema subset for the values, and
 per-property `x-config` metadata (`title`, `description`, `secret`, `readOnly`,
-`application`). Declarations are durable, so a stopped owner still lists.
+`humanOnly`, `application`). Declarations are durable, so a stopped owner still
+lists.
 
 | Tool | What it does |
 |---|---|
 | `config_list` | every declared domain: title, owner, property count, whether the owner currently answers |
-| `config_get {domain}` | current values, defaults, revision and schema together; **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
-| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only fields), then forward it to the owner, which performs the compare-and-set write |
+| `config_get {domain}` | current values, defaults, revision and schema together, plus `timings` (properties whose application timing differs from the domain's) and `humanOnly` (names only a human may change); **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
+| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only and human-only fields), then forward it to the owner, which performs the compare-and-set write; the reply's `applies` says when each changed property takes effect |
 | `config_reset {domain, properties?, expectRev?}` | drop explicit values so declared defaults apply again |
 
 All four are on-demand (`discover` then `invoke`): changing configuration is a
@@ -2810,6 +2842,19 @@ constraint would report a validation that never happened. `scope` is
 `instance` only; a declaration asking for `shared` is refused until that design
 lands. No value enters a frozen prompt prefix — a change is visible at the
 owner's next call. Contract: [research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md).
+
+**`humanOnly` — approval is necessary, not sufficient.** For a field whose
+meaning is *a human decided this* (a paid-call gate, an access widening, a
+budget), the approval prompt would reach whoever delegated the task rather than
+the human who owns the setting, so one agent's "yes" could consent on another's
+behalf. Such a property is writable only from a human's own conversation or from
+a direct (sessionless) call — a CLI, a script, an operator. The caller is
+classified from what core owns: the injected `__session.session` plus its
+`sessionmeta.parent` lineage record. A subagent is refused with
+`code: "human-only"`, and so is a session whose lineage record cannot be read
+(unreadable is not root). Ordinary properties stay editable by a subagent, which
+is doing the work. An unrestricted `config_reset` is checked against every
+writable property, so it cannot clear a gate the narrow check protects.
 
 ### Instance identity
 

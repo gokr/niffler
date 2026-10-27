@@ -12,7 +12,7 @@ import regex
 import niffler/sdk
 import niffler/configowner
 
-loadDotEnv(".env", rootDir() / ".env")
+loadDotEnv(harnessRoot() / ".env")
 
 const
   DefaultMaxBytes = 10_485_760
@@ -596,11 +596,12 @@ discard comp.tool("logfile_config", %*{
   "x-harness": {"hidden": true}},
   proc(c: Component, args: JsonNode): JsonNode = c.ownerOp(ownerStore, args))
 
+# Values follow config's change event (no store read in the idle seam, which
+# runs on the pump thread and would starve the record stream).
+comp.watchConfig(settings, "logfile.retention")
+
 var declared = false
 discard comp.onIdle(500) do (c: Component):
-  # Refresh FIRST, then declare: a later change must be visible on the next
-  # tick, and a store that is still starting up keeps the boot values.
-  settings.refresh(c)
   if not declared:
     declared = c.declareConfig(declaration) or declared
 

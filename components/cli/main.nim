@@ -1003,7 +1003,7 @@ proc main() =
     usage()
     quit(2)
 
-  loadDotEnv(".env", rootDir() / ".env")
+  loadDotEnv(harnessRoot() / ".env")
 
   # `cli run` owns or attaches to its own bus, so it never shares the plain
   # request/reply connection the other commands use.

@@ -208,33 +208,55 @@ proc main() =
   check("search rank+snippet answers with a ranked flag and span-marked hits",
         sRankedOk, $sRanked)
 
-  # ranked paging by offset: pages cover the match set without gaps or
-  # overlaps, and the reply names nextOffset when more remain
-  discard call(nc, "store", "put",
-               %*{"kind": "message", "id": "conv-s3:000001",
-                  "value": %*{"role": "user",
-                              "content": "yet another retry policy thought"}})
-  var rPage: seq[string] = @[]
-  var rOffset = 0
-  var rHasMore = true
-  while rHasMore and rPage.len < 10:
-    let pg = call(nc, "store", "search",
-                  %*{"kind": "message", "query": "retry", "rank": true,
-                     "limit": 1, "offset": rOffset})
-    check("ranked page ok", pg{"ok"}.getBool(false), $pg)
-    for it in pg{"items"}:
-      rPage.add(it{"id"}.getStr(""))
-    rHasMore = pg{"hasMore"}.getBool(false)
-    if rHasMore:
-      let nxt = pg{"nextOffset"}.getInt(-1)
-      check("ranked page carries nextOffset", nxt > rOffset, $pg)
-      rOffset = nxt
-  check("ranked offset paging covers the match set exactly once",
-        rPage.len == 3 and rPage == @["conv-s1:000001", "conv-s2:000001",
-                                     "conv-s3:000001"] or
-        (rPage.len == 3 and
-         ("conv-s1:000001" in rPage) and ("conv-s2:000001" in rPage) and
-         ("conv-s3:000001" in rPage)), $rPage)
+  # Ranked paging is an ENGINE feature: sqlite/sqlite-fts5 rank with bm25 and
+  # page by offset; the tidb engine has no index, says `ranked: false` honestly
+  # and pages the match set by id order. Assert each engine's own contract
+  # instead of sqlite's — the honesty of the flag is the contract, not bm25.
+  if sRanked{"ranked"}.getBool(false):
+    # ranked paging by offset: pages cover the match set without gaps or
+    # overlaps, and the reply names nextOffset when more remain
+    discard call(nc, "store", "put",
+                 %*{"kind": "message", "id": "conv-s3:000001",
+                    "value": %*{"role": "user",
+                                "content": "yet another retry policy thought"}})
+    var rPage: seq[string] = @[]
+    var rOffset = 0
+    var rHasMore = true
+    while rHasMore and rPage.len < 10:
+      let pg = call(nc, "store", "search",
+                    %*{"kind": "message", "query": "retry", "rank": true,
+                       "limit": 1, "offset": rOffset})
+      check("ranked page ok", pg{"ok"}.getBool(false), $pg)
+      for it in pg{"items"}:
+        rPage.add(it{"id"}.getStr(""))
+      rHasMore = pg{"hasMore"}.getBool(false)
+      if rHasMore:
+        let nxt = pg{"nextOffset"}.getInt(-1)
+        check("ranked page carries nextOffset", nxt > rOffset, $pg)
+        rOffset = nxt
+    check("ranked offset paging covers the match set exactly once",
+          rPage.len == 3 and rPage == @["conv-s1:000001", "conv-s2:000001",
+                                       "conv-s3:000001"] or
+          (rPage.len == 3 and
+           ("conv-s1:000001" in rPage) and ("conv-s2:000001" in rPage) and
+           ("conv-s3:000001" in rPage)), $rPage)
+  else:
+    # The engine has no index, so it accepts `rank: true` and answers in id
+    # order, SAYING SO with `ranked: false`. `offset` and `nextOffset` are
+    # still contract, so paging must still cover the match set — an honest
+    # `ranked: false` is not a licence to lose results.
+    let offFirst = call(nc, "store", "search",
+                        %*{"kind": "message", "query": "retry", "rank": true,
+                           "limit": 1, "offset": 0})
+    let offSecond = call(nc, "store", "search",
+                         %*{"kind": "message", "query": "retry", "rank": true,
+                            "limit": 1, "offset": 1})
+    check("an unranked engine still pages by offset without repeating a hit",
+          offFirst{"ok"}.getBool(false) and offSecond{"ok"}.getBool(false) and
+          offFirst{"items"}.len == 1 and offSecond{"items"}.len == 1 and
+          offFirst{"items"}[0]{"id"}.getStr("") !=
+            offSecond{"items"}[0]{"id"}.getStr(""),
+          $offFirst & " / " & $offSecond)
 
   # pagination: 25 conversations, every 5th not matching → 20 results, paged
   # in ascending id order with no gaps and no repeats (list's cursor rule)
@@ -332,58 +354,68 @@ proc main() =
   putEmbedding("vec-volcano", @[0.0, 1.0, 0.0])
   putEmbedding("vec-other-model", @[1.0, 0.0, 0.0], model = "fixture-other-3d")
 
+  # Vector search is an ENGINE feature, not a store-contract requirement: the
+  # tidb engine refuses it explicitly ("vector search is not implemented by
+  # this store engine") and sqlite implements it. Probe once and skip the whole
+  # section when the engine declines — reading `items` off a refusal is how this
+  # test used to crash on tidb instead of reporting anything.
   let nn = call(nc, "store", "search", %*{
     "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0]})
-  check("vector search answers a kNN envelope",
-        nn{"ok"}.getBool(false) and nn{"vector"}.getBool(false) and
-        nn{"ranked"}.getBool(false), $nn)
-  check("vector search is nearest-first",
-        nn{"items"}.len == 3 and
-        nn{"items"}[0]{"id"}.getStr("") == "vec-cat" and
-        nn{"items"}[1]{"id"}.getStr("") == "vec-dog" and
-        nn{"items"}[2]{"id"}.getStr("") == "vec-volcano", $nn)
-  check("an identical vector has distance 0",
-        nn{"items"}[0]{"distance"}.getFloat(-1) < 0.0001, $nn)
-  check("the model partition excludes other models' vectors",
-        not ($nn).contains("vec-other-model"), $nn)
+  if nn{"code"}.getStr("") == "unsupported":
+    check("an engine without vector search refuses it explicitly",
+          nn{"error"}.getStr("").contains("vector search"), $nn)
+    echo "SKIP: vector search — " & nn{"error"}.getStr("")
+  else:
+    check("vector search answers a kNN envelope",
+          nn{"ok"}.getBool(false) and nn{"vector"}.getBool(false) and
+          nn{"ranked"}.getBool(false), $nn)
+    check("vector search is nearest-first",
+          nn{"items"}.len == 3 and
+          nn{"items"}[0]{"id"}.getStr("") == "vec-cat" and
+          nn{"items"}[1]{"id"}.getStr("") == "vec-dog" and
+          nn{"items"}[2]{"id"}.getStr("") == "vec-volcano", $nn)
+    check("an identical vector has distance 0",
+          nn{"items"}[0]{"distance"}.getFloat(-1) < 0.0001, $nn)
+    check("the model partition excludes other models' vectors",
+          not ($nn).contains("vec-other-model"), $nn)
 
-  let nnPaged = call(nc, "store", "search", %*{
-    "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0],
-    "limit": 1})
-  check("vector search pages with hasMore",
-        nnPaged{"items"}.len == 1 and nnPaged{"hasMore"}.getBool(false), $nnPaged)
+    let nnPaged = call(nc, "store", "search", %*{
+      "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0],
+      "limit": 1})
+    check("vector search pages with hasMore",
+          nnPaged{"items"}.len == 1 and nnPaged{"hasMore"}.getBool(false), $nnPaged)
 
-  # An unindexable embedding is refused at WRITE time: a stored-but-unfindable
-  # vector is the failure mode with no error anywhere to explain it.
-  let badWidth = call(nc, "store", "put", %*{
-    "kind": "embedding", "id": "vec-bad",
-    "value": %*{"model": embeddingModel, "dimensions": 2,
-                "vector": [1.0, 0.0]}})
-  check("an embedding of a new width creates its own index",
-        badWidth{"ok"}.getBool(false), $badWidth)
-  let mismatch = call(nc, "store", "put", %*{
-    "kind": "embedding", "id": "vec-bad2",
-    "value": %*{"model": embeddingModel, "dimensions": 5,
-                "vector": [1.0, 0.0, 0.0]}})
-  check("a dimensions/vector mismatch is refused as bad-embedding",
-        not mismatch{"ok"}.getBool(true) and
-        mismatch{"code"}.getStr("") == "bad-embedding", $mismatch)
+    # An unindexable embedding is refused at WRITE time: a stored-but-unfindable
+    # vector is the failure mode with no error anywhere to explain it.
+    let badWidth = call(nc, "store", "put", %*{
+      "kind": "embedding", "id": "vec-bad",
+      "value": %*{"model": embeddingModel, "dimensions": 2,
+                  "vector": [1.0, 0.0]}})
+    check("an embedding of a new width creates its own index",
+          badWidth{"ok"}.getBool(false), $badWidth)
+    let mismatch = call(nc, "store", "put", %*{
+      "kind": "embedding", "id": "vec-bad2",
+      "value": %*{"model": embeddingModel, "dimensions": 5,
+                  "vector": [1.0, 0.0, 0.0]}})
+    check("a dimensions/vector mismatch is refused as bad-embedding",
+          not mismatch{"ok"}.getBool(true) and
+          mismatch{"code"}.getStr("") == "bad-embedding", $mismatch)
 
-  # A vector query without a model is refused: two models are different
-  # embedding spaces, so an unnamed one could only return nonsense.
-  let noModel = call(nc, "store", "search", %*{
-    "kind": "embedding", "vector": [1.0, 0.0, 0.0]})
-  check("vector search refuses a missing model",
-        not noModel{"ok"}.getBool(true) and
-        noModel{"code"}.getStr("") == "bad-request", $noModel)
+    # A vector query without a model is refused: two models are different
+    # embedding spaces, so an unnamed one could only return nonsense.
+    let noModel = call(nc, "store", "search", %*{
+      "kind": "embedding", "vector": [1.0, 0.0, 0.0]})
+    check("vector search refuses a missing model",
+          not noModel{"ok"}.getBool(true) and
+          noModel{"code"}.getStr("") == "bad-request", $noModel)
 
-  # The vector index follows deletes in the same transaction.
-  discard call(nc, "store", "del", %*{"kind": "embedding", "id": "vec-dog"})
-  let afterVecDel = call(nc, "store", "search", %*{
-    "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0]})
-  check("a deleted embedding stops answering kNN",
-        afterVecDel{"items"}.len == 2 and
-        not ($afterVecDel).contains("vec-dog"), $afterVecDel)
+    # The vector index follows deletes in the same transaction.
+    discard call(nc, "store", "del", %*{"kind": "embedding", "id": "vec-dog"})
+    let afterVecDel = call(nc, "store", "search", %*{
+      "kind": "embedding", "model": embeddingModel, "vector": [1.0, 0.0, 0.0]})
+    check("a deleted embedding stops answering kNN",
+          afterVecDel{"items"}.len == 2 and
+          not ($afterVecDel).contains("vec-dog"), $afterVecDel)
 
   # And the text mode is untouched by the vector mode.
   let textStill = call(nc, "store", "search",

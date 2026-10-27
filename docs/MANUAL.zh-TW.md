@@ -254,7 +254,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 
 ## Environment variables
 
-所有元件都會載入 `.env`（從 harness root 與 cwd，既有的 shell 環境永遠優先——見下文）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——樹內 bash 示範 `examples/dialog/dialog.sh` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
+所有元件都會載入 harness root 的 `.env`（絕不載入工作目錄的——見[`.env` 檔案](#the-env-file)）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——樹內 bash 示範 `examples/dialog/dialog.sh` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -375,7 +375,11 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。以 Wails 為基礎的用戶端以相反順序載入它們（harness root，然後 cwd），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
+載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`，且唯一讀取的檔案是 harness root 自己的——`<root>/.env`，其中 root 在操作者設定了 `NIF_ROOT` 時即為該值，否則為二進位檔所在的複製。
+
+**工作目錄不是信任邊界。** harness 經常從它正在處理的儲存庫內部啟動，因此 cwd 中的 `.env`——或會話工作區、外掛檢出目錄中的 `.env`（這兩者也都位於 harness root **內部**）——絕不能被採納：那裡的提交檔案會讓該儲存庫取得 `NIF_AUTO_APPROVE=1`（審批繞過），或取得指向它自己控制的 bus 的 `NIF_NATS_URL`。較早的版本確實會讀取 cwd 的 `.env`；本規則移除的正是這一點。被拒絕的檔案會在 stderr 上報告（`dotenv: IGNORING .env — only <root>/.env is trusted: …`）而非默默略過，因此真實的設定錯誤仍然可診斷；若完全沒有可信根（二進位檔不在複製佈局中且未設 `NIF_ROOT`），則完全不載入 `.env`，環境變數是唯一來源。
+
+所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
 
 repo root 的 `.env.example` 是參考副本——每個變數都被註解掉，其預設值作為註解值——但它在兩個方向上都不完整（上表有少數項目不在其中，而它帶有 harness 在正常運作中不會讀取的測試/工具變數）；表格才是權威。
 

@@ -129,7 +129,7 @@ proc followBus() =
       nc.close()
       return
 
-loadDotEnv(".env", rootDir() / ".env")
+loadDotEnv(harnessRoot() / ".env")
 while true:
   try:
     followBus()

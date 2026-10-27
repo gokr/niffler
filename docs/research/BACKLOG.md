@@ -12,6 +12,14 @@ in the manual and active plan.
 
 ### Editing and tool results
 
+- **Semantic refactoring tools (LSP-driven)** — `refactor_apply` plus
+  `refactor_rename`/`refactor_references`: apply a language server's
+  `WorkspaceEdit` (symbol ranges) instead of a text substitution, reusing
+  `edit`'s undo store and write claims. Motivated by two real defects where a
+  rename rewrote `%*{...}` JSON keys and missed call sites. `lsp` stays
+  read-only; a new `refactor` component owns application
+  ([SEMANTIC-EDIT.md](SEMANTIC-EDIT.md)).
+
 - **Edit repair tier** — a repair hook tier behind the match cascade. The
   ambiguity half shipped (an ambiguous match is refused *with* its occurrence
   count, never fuzzied away); the learned repair tier did not

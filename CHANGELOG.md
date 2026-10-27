@@ -6,6 +6,44 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Configuration properties can now be marked `x-config.humanOnly`: readable and
+  reportable by a model, but writable only from a human's own conversation or
+  from a direct (sessionless) tool call. Approval alone was not enough for a
+  field whose meaning is "a human decided this" — the gate prompt reaches
+  whoever delegated the task, so one agent's yes could consent on another's
+  behalf. The caller is classified from what core owns (the injected
+  `__session.session` and its `sessionmeta.parent` lineage record); a subagent
+  is refused with `code: "human-only"`, and an unreadable lineage record fails
+  closed. An unrestricted `config_reset` is checked against every writable
+  property so it cannot clear a gate the narrow check protects. Ordinary
+  properties stay editable by a subagent.
+
+- `config_get` reports per-property application timing as `timings` (properties
+  whose timing differs from the domain's) and `humanOnly` as a name list, and
+  `config_patch` returns `applies` naming when each changed property takes
+  effect — so a caller is told "this lands next turn" instead of reading a new
+  value back and assuming the behaviour is already live.
+
+- A `.env` is now read only from the harness root — `<root>/.env`, where the
+  root is an explicit `NIF_ROOT` or a binary-derived directory that really
+  looks like a clone. Previously all three SDKs also honoured a `.env` in the
+  current working directory, which is not a trust boundary: the harness is
+  routinely launched from inside the repositories it works on, so a committed
+  `.env` there could set `NIF_AUTO_APPROVE=1` (approval bypass) or a
+  `NIF_NATS_URL` pointing at a bus it controls. Containment alone is not the
+  rule either — a conversation workspace or plugin checkout lives inside the
+  root, and its `.env` is refused the same way. A refused file is reported on
+  stderr instead of being skipped silently, and with no trusted root at all no
+  `.env` is loaded (the environment is then the only source). Regressions in
+  Nim (`tests/t_dotenv.nim`), Go (`sdk/go/dotenv_test.go`) and TypeScript
+  (`sdk/ts/test/dotenv.test.js`), each verified to fail against the old
+  behaviour.
+
+- A configuration declaration must now state its `application` timing
+  (`immediate` | `next turn` | `next conversation` | `component restart`);
+  `config` refuses one that omits it, and both owner helpers take the value as
+  a typed argument. There is no silent "immediate" default — that default let
+  an owner promise more than it delivered.
 - The repository now includes a two-minute animated explainer at
   `website/movie/`, published at `/movie/` by the existing Pages workflow
   (which deploys all of `website/`). Ten scenes, self-contained and offline —
@@ -104,6 +142,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   round trip, and an explicit `--timeout` still wins. A client timeout says so
   plainly and notes that NATS request/reply cannot cancel work already
   dispatched, so "timed out" is not "failed".
+- Agent delegation (`NIF_AGENT_MAX_DEPTH`, `NIF_AGENT_WAKES`) stays in the
+  environment: their authoritative enforcement is in core (the dispatch gate and
+  the session runner), so a component-level settings domain would change a
+  mirror and not the rule.
+- Hooks were evaluated for the config surface and are **deliberately excluded**,
+  not deferred: a hook command is `sh -c`, and a `config_patch`-writable shell
+  command would hand a model arbitrary execution behind an approval prompt that
+  describes it far less legibly than the command itself. Same reasoning that
+  keeps `NIF_AUTO_APPROVE` in the environment.
+- `observe` publishes its capture budgets as the `observe.capture` domain
+  (`ring`, `ringBytes`, `entryBytes`, `probeBytes`, `maxProbes`,
+  `captureBytes`), so retention can be tuned at runtime.
+- Settings changes now propagate by EVENT: `config` publishes
+  `ev.config.updated` after every applied change and snapshot owners reload
+  from that handler. Polling the store from the idle seam was the earlier
+  design and it starved the pump — that seam runs on the main thread, and a
+  blocking store read or declaration stalled every other message the component
+  owed whenever the store or config component was absent (a supported
+  deployment). Declaration is now one short best-effort attempt per tick.
 
 - The store can answer "which documents are close to this vector?": `search`
   gained a vector mode (`{kind: "embedding", model, vector, limit?}` →

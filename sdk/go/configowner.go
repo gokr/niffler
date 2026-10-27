@@ -139,6 +139,57 @@ func (c *Component) OwnerOp(store OwnerStore, args OwnerArgs, timeout time.Durat
 	}
 }
 
+// Declaration is the shape every owner publishes through config_declare.
+// Application is required and typed, because "when does this take effect" is a
+// claim the owner must make deliberately — config refuses a declaration that
+// omits it (there is no silent "immediate" default).
+type Declaration struct {
+	Domain      string         // stable id, unique per owner
+	Owner       string         // component that answers get/patch/reset
+	OwnerTool   string         // its tool; "" when it owns no state
+	Title       string         // presentation
+	Description string         //
+	Kind        string         // store kind holding the values
+	ID          string         // store id; "" for a collection
+	Application Application    // when a change takes effect
+	Version     int            // declaration revision
+	Schema      map[string]any // JSON Schema subset + per-property x-config
+}
+
+// Application is the declared timing of a change. Only these four exist.
+type Application string
+
+const (
+	// Applied on the owner's next read of its values.
+	Immediate Application = "immediate"
+	// Applied to the next turn, never mid-turn.
+	NextTurn Application = "next turn"
+	// Applied when the next conversation starts.
+	NextConversation Application = "next conversation"
+	// Needs the owner restarted (a subscription set, a buffer already sized).
+	ComponentRestart Application = "component restart"
+)
+
+// Payload renders the declaration as config_declare expects it.
+func (d Declaration) Payload() map[string]any {
+	version := d.Version
+	if version == 0 {
+		version = 1
+	}
+	return map[string]any{
+		"domain": d.Domain, "version": version, "owner": d.Owner,
+		"ownerTool": d.OwnerTool, "title": d.Title,
+		"description": d.Description, "kind": d.Kind, "id": d.ID,
+		"application": string(d.Application), "schema": d.Schema,
+	}
+}
+
+// DeclareConfigAs publishes a declaration. Best effort, like DeclareConfig:
+// a harness without the config component is not an error.
+func (c *Component) DeclareConfigAs(d Declaration, timeout time.Duration) bool {
+	return c.DeclareConfig(d.Payload(), timeout)
+}
+
 // OwnerToolSchema is the hidden schema every owner tool shares.
 func OwnerToolSchema(domain, description string) map[string]any {
 	return map[string]any{

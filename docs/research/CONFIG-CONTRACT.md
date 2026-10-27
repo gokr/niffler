@@ -35,8 +35,43 @@ needed (C12) and a component written in any language can own settings.
 | `title`, `description` | label/help for a generated form |
 | `secret` | write-only: reads report `set: true`, never the value |
 | `readOnly` | excluded from patches (counters, caches, derived state) |
-| `application` | `immediate` \| `next turn` \| `next conversation` \| `component restart` |
+| `humanOnly` | a model may read it and report a needed change, but only a human's own conversation (or a direct, sessionless call) may write it — see below |
+| `application` | `immediate` \| `next turn` \| `next conversation` \| `component restart` — overrides the domain fallback |
 | `default` (JSON Schema) | the value used when the owner has no explicit value |
+
+### `humanOnly`, and why approval alone is not enough
+
+Approval answers "may I run this tool?". That is the wrong question for a
+field whose whole meaning is *a human decided this*. When a subagent asks to
+widen its own reach (`paidCalls`, an access gate, a budget), the approval
+prompt reaches **whoever delegated the task**, not the human who owns the
+setting — so an "approved" answer can be one agent consenting on another's
+behalf. `humanOnly` closes that: the mutation is refused for a subagent
+whatever the approval gate would have said.
+
+The caller is classified from facts core owns, never from anything the caller
+supplies. `config_patch`/`config_reset` carry `x-harness sessionId: true`, so
+core injects the runner's private `__session.session` at dispatch
+(`c.sessionContext` in the SDK), and the config component asks the store for
+that session's `sessionmeta`:
+
+| caller | outcome |
+|---|---|
+| no session (`""`: CLI, script, another component) | allowed — a human operator |
+| session with no `parent` | allowed — a human's own conversation |
+| session whose `sessionmeta.parent` is set | **refused** with `code: "human-only"` |
+| session whose lineage record is unreadable | **refused** — unreadable is not root |
+
+This deliberately avoids prompt hints and tool arguments: both are supplied
+by the party being classified. `sessionmeta.parent` is the same durable
+relation `agent_run` authorizes against, and `agent_spawn` writes it before
+the child's first turn, so a subagent cannot exist without one.
+
+Only `humanOnly` properties are guarded, so an autonomous subagent keeps
+editing ordinary tuning fields. An empty `properties` list on `config_reset`
+means "every mutable property", so it is checked against every writable name —
+otherwise the broadest form of reset would clear the gate the narrow check
+just protected.
 
 `scope` other than `instance` is refused today: shared settings need the
 shared-namespace decision that [CONFIG.md](CONFIG.md) §11.7 deliberately left
@@ -72,12 +107,35 @@ open, and a store document is already instance-scoped.
 5. **Owner unavailable.** The declaration stays listable (it is durable), but
    `config_get`/`config_patch` report the owner as unavailable rather than
    inventing values. No silent fallback to defaults.
-6. **Timing is reported, not enforced by config.** `application` tells the
-   caller when a change takes effect; the owner decides what that means.
+6. **Timing is reported, not enforced by config — but it is REQUIRED.** The
+   owner decides what a value means; `config` refuses a declaration that omits
+   the domain `application`, because a silent "immediate" default let an owner
+   promise more than it delivered (observe captures its byte caps at creation
+   and must say `component restart`). Both owner helpers make it a typed
+   argument (`Application` in Nim, `Declaration.Application` in Go).
+
+   Per-property `x-config.application` overrides the domain fallback, so one
+   domain can mix a live knob with a restart-only buffer size. `config_get`
+   reports the override map as `timings` (properties that differ) alongside the
+   domain's `application`, and `config_patch` returns `applies` naming the
+   timing of every property it just changed — so a caller is told "this lands
+   next turn" instead of reading a new value back and assuming the new
+   behaviour is already live. Enforcement is the owner's: it is the only party
+   that knows how to honor a timing.
 7. **No prompt content.** No config value enters a frozen prefix; a change is
    visible at the owner's next call (C5, prompt-cache discipline).
 8. **Scope is organisation, not authorization** (§11.6.2): approval gates the
    mutation, the bus itself is trusted.
+
+## The rule that decides whether a variable may be a domain
+
+Before exposing a variable, find who **enforces** it:
+`rg -n 'NIF_YOUR_VAR' core/ sdk/`. If core reads it too, a component-level
+domain is a lie — the stored value changes a mirror and not the rule. That is
+how the `agent.delegation` slice failed: `maxDepth` is enforced in
+`core/dispatch.nim` (whose comment explains the check cannot live in the
+component's handler) and `wakes` in `core/conversation.nim`. Secrets,
+deployment paths, subscription sets and test seams stay in env by category.
 
 ## Owner helper (Nim)
 
@@ -91,12 +149,36 @@ needs no envelope, store-contract or cross-SDK change:
 | `declareConfig(declaration)` | idempotent, best-effort declaration after registration |
 | `settingStr/Bool/Int(values, name, envName, dflt)` | one setting: **stored value > env > default** |
 
-Two rules the helper encodes, learned from the first migration:
+| `newOwnerSnapshot` / `watchConfig` | for owners whose values are read deep in code with no component handle |
+| `ownerToolSchema` | the hidden schema every owner tool shares |
+
+Rules the helper encodes, each learned the hard way:
 
 - **Declare after `comp.run()`'s registration**, from the idle seam — a request
   issued before the component is on the bus has no connection.
 - **An explicit `null` in a patch unsets a value.** That is how a secret is
   cleared; it is not the same as omitting the property.
+- **Never block in the idle seam.** It runs on the main pump thread, so a
+  blocking request there starves every message the component owes. This bit
+  twice: a store read per tick stalled for the full store timeout in a
+  component run WITHOUT a harness (every component contract test starts
+  components standalone, which is why the suite caught it), and a 10s
+  declaration timeout per tick starved `observe`'s tap delivery outright. The
+  seam now does one short best-effort declaration and nothing else.
+  Note what this is NOT: a running harness always has a store — `store` is
+  `required: true` and autostarted, and the config component depends on it.
+  The storeless case is a component standing alone, which components must
+  tolerate (their tools report "store unreachable" instead of hanging), not a
+  harness configuration anyone runs on purpose.
+- **Owners learn about changes by EVENT, not by polling.** `config` publishes
+  `ev.config.updated {domain, owner, rev}` after every applied change, and
+  `watchConfig` reloads the snapshot from that handler. Polling was the earlier
+  design; the event is free when nothing changes.
+
+Two consequences worth stating: a component that misses the event keeps its
+last values until its next real read (no correctness hole — the values are a
+cache of the owner's record), and a publish failure can never fail a mutation
+that already succeeded.
 
 The env fallback is the migration path: while an owner's variable exists,
 `stored > env > default` means a stored choice wins and an existing deployment

@@ -122,6 +122,7 @@ The mechanisms that *are* components, and the capability they carry:
 | `lsp` | language-server seam | one `lsp` tool (`diagnostics`, `documentSymbol`, `workspaceSymbol`, `goToDefinition`, `findReferences`, `goToImplementation`, `hover`, `warmup`) plus `lsp_servers`/`lsp_registry` over any configured stdio language server; the registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`), so adding a language is a config entry or an approval-gated `lsp_registry add` — never code |
 | `observe` | live introspection | bounded raw-bus ring, targeted probes/traces, and server monitoring |
 | `logfile` | diagnostic persistence | rotating best-effort JSONL sink; no JetStream/audit guarantee |
+| `config` | settings surface | discovery/validation/editing over domains an owner declares: `config_list`/`config_get`/`config_patch`/`config_reset`, owner-routed under approval, revision-safe and redacted; the owner stays the only writer of its own record |
 
 The pattern: state, access, build, and exec are all replaceable peers. If a
 mechanism can be rebuilt by the agent at runtime, it must be one. A process is
