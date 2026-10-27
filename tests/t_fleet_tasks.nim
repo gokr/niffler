@@ -98,6 +98,21 @@ proc main() =
     check("requires finite " & key, rejected(proc() = validateTask(bad)))
   check("malformed capabilities refuse safely", rejected(proc() = validateCapabilities(%*{}, %*{}, args)))
   block:
+    discard c.storePut("fleetinstance", identity["instanceId"].getStr(), receipt)
+    let named = args.copy()
+    named.delete("profile")
+    named["instance"] = identity["name"]
+    named["requestId"] = %"named-worker"
+    let created = createJob(c, named)
+    let pinned = c.storeGet("fleetjob", created["id"].getStr()).value
+    check("named worker pins the registered receipt", pinned["receipt"] == receipt)
+    discard c.requestOk("store", "del", %*{"kind": "fleetinstance", "id": identity["instanceId"]})
+    check("named retry uses durable job after registry removal",
+      createJob(c, named)["id"] == created["id"])
+    let unknown = named.copy(); unknown["requestId"] = %"unknown-worker"
+    check("unknown named worker refuses", rejected(proc() = discard createJob(c, unknown)))
+    discard c.requestOk("store", "del", %*{"kind": "fleetjob", "id": created["id"]})
+  block:
     let schemas = call(remoteNc, "core", "catalog",
       %*{"op": "schemas", "tools": args["tools"]})
     var coding = args.copy()

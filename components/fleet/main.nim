@@ -82,7 +82,8 @@ discard comp.tool("fleet_update", schema(%*{
     "effect": "write", "timeoutMs": 4400000,
     "writes": {"paths": ["profile"]}, "workspace": {"pathFields": ["profile"]}})
 let taskProps = %*{
-  "profile": profile, "requestId": {"type": "string"},
+  "profile": profile, "instance": {"type": "string", "description": "Registered worker name or identity; use instead of profile"},
+  "requestId": {"type": "string"},
   "mode": {"type": "string", "enum": ["ask", "unattended"],
            "description": "ask (default): the original read-only slice, where the worker stops for human approvals. unattended: run coding tools under the peer operator's task profile, without approval prompts. Omit for read-only work."},
   "taskProfile": {"type": "string",
@@ -93,8 +94,8 @@ let taskProps = %*{
   "maxCalls": {"type": "integer", "minimum": 1, "maximum": 100},
   "maxTokens": {"type": "integer", "minimum": 1, "maximum": 100000}}
 discard comp.tool("fleet_task_submit", schema(taskProps,
-  @["profile", "requestId", "content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"],
-  "Delegate a bounded task to another machine using a private verified receipt. Explicit tools and round/call/token budgets required. Same requestId is idempotent; unknown outcomes are never replayed. Completion automatically notifies this conversation; do not poll to wait. Read-only work is the default ('ask': the worker still stops for human approvals). mode 'unattended' runs ordinary coding tools (edit, bash, git, tests) without approval prompts, bounded by the peer operator's task profile and by these budgets — the effective policy is the intersection of the two, the notice says whether the work was confined, and control-plane or indirect-delegation tools are never granted. Results are claims by the worker, not proof of factual success."),
+  @["requestId", "content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"],
+  "Delegate a bounded task to a registered instance (name or identity) or a private verified profile receipt; supply exactly one. Explicit tools and round/call/token budgets required. Same requestId is idempotent; unknown outcomes are never replayed. Completion automatically notifies this conversation; do not poll to wait. Read-only work is the default ('ask': the worker still stops for human approvals). mode 'unattended' runs ordinary coding tools (edit, bash, git, tests) without approval prompts, bounded by the peer operator's task profile and by these budgets — the effective policy is the intersection of the two, the notice says whether the work was confined, and control-plane or indirect-delegation tools are never granted. Results are claims by the worker, not proof of factual success."),
   proc(c: Component, args: JsonNode): JsonNode = createJob(c, args),
   %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true,
     "workspace": {"pathFields": ["profile"]}})

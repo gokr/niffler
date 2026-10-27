@@ -5,6 +5,7 @@ import checksums/sha1
 import natsnim
 import niffler/sdk
 import provision
+import registry
 # The admission contract (key shape, policy version, receipt vocabulary) is
 # core's generic seam — importing the pure module keeps the requester and the
 # worker from drifting into two spellings of one protocol.
@@ -240,15 +241,21 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
   else:
     task["mode"] = %"ask"
     task["approvals"] = %"ask"
-  let path = receiptPath(args{"profile"}.getStr(""))
+  let instance = args{"instance"}.getStr("")
+  if instance.len > 0 and args{"profile"}.getStr("").len > 0:
+    refuse("choose instance or profile, not both")
+  let path = if instance.len > 0: "instance:" & instance
+             else: receiptPath(args{"profile"}.getStr(""))
   try:
     let previous = c.storeGet("fleetjob", id).value
     if previous["task"] != task or previous{"profile"}.getStr("") != path:
       refuse("requestId already used for different task")
     return publicJob(previous)
   except StoreNotFoundError: discard
-  let p = loadReceipt(path)
-  if p == nil or getFilePermissions(path) != {fpUserRead, fpUserWrite}:
+  let p = if instance.len > 0: c.resolveInstance(instance)
+          else: loadReceipt(path)
+  if p == nil or (instance.len == 0 and
+      getFilePermissions(path) != {fpUserRead, fpUserWrite}):
     refuse("private verified receipt required (0600)")
   let j = %*{"id": id, "sessionId": id, "owner": session, "profile": path,
     "receipt": p, "task": task, "state": "queued", "createdAt": epochTime(),
