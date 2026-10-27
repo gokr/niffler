@@ -204,7 +204,16 @@ timeline, captions, ticks and HUD all derive from the cue list.
 ```bash
 node --check movie.js                       # syntax
 node tools/render-voiceover.mjs --dry-run   # script/pacing sanity
+node tools/stamp-assets.mjs --check         # asset cache stamps are current
 ```
+
+**Re-stamp the assets after touching movie.css, movie.js or narration.js** —
+`node tools/stamp-assets.mjs`. GitHub Pages answers every file with
+`cache-control: max-age=600`, so without the content hash a phone (or any
+browser) keeps running the previous script for ten minutes after a deploy. That
+is not cosmetic: a stale `movie.js` against a fresh `movie.css` mixes the old
+layout logic with the new styles, and the film looks broken in a way no
+screenshot of the deploy can show.
 
 Frame regression (headless Chrome; the page needs no server):
 
