@@ -6,6 +6,42 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The repository now includes a two-minute animated explainer at
+  `website/movie/`, published at `/movie/` by the existing Pages workflow
+  (which deploys all of `website/`). Ten scenes, self-contained and offline —
+  GSAP is vendored, there is no build step, and the whole film is ~200 KB. The
+  narration is data in `narration.js`, shared by the captions and the voice-over;
+  the player defaults to `?voice=auto`, using the rendered clips when present
+  and falling back to captions when they are not. The published copy commits
+  its rendered narration (ten 24 kHz WAV clips, 4.9 MB, plus the duration
+  manifest and SRT) so the deployed film plays with sound without a build step.
+  The film is not linked from the site index.
+
+- The explainer is usable on a phone. The stage is a fixed 1600x900 box scaled
+  by `transform`; centreing was left to the parent grid, which only works while
+  the scaled box still fits — on a phone the box overflows, so the start overlay
+  (including Play) sat off-screen and the film looked like it had not loaded.
+  Portrait now gets a tall logical stage sized from the screen's own aspect plus
+  a portrait stylesheet (single-column scenes, a larger caption band, real tap
+  targets); landscape and desktop are unchanged.
+
+- The explainer's asset URLs carry a content hash. GitHub Pages answers every
+  file with `cache-control: max-age=600`, so after a deploy a phone kept running
+  the previous `movie.js` against the new stylesheet — a stale-JS/fresh-CSS mix
+  that looks like a broken deploy. `tools/stamp-assets.mjs` rewrites the stamps
+  and `--check` fails when one is stale.
+
+- The film's reusable voice-over pipeline lives beside it:
+  `tools/render-voiceover.mjs` renders one clip per cue with Piper (the
+  default), Kokoro, Coqui XTTS v2 voice cloning, OpenAI, espeak or macOS `say`;
+  measures each clip's duration in-process (MP3 frame walk, WAV header — no
+  ffprobe); writes the duration manifest and SRT; and re-times each scene from
+  the measurement, so re-recording one line shifts only that scene.
+  `tools/fetch-piper.sh` and `tools/fetch-kokoro.sh` install local engines
+  outside the repository, `tools/play.sh` serves the folder on an OS-assigned
+  port and opens it with sound, and `PIPELINE.md` documents the pipeline and
+  its invariants for reuse.
+
 - A running turn can be stopped from another process: `session {sessionId,
   stop: true}` publishes the same `__cancel` control a UI sends on the runner's
   steer subject, so a remotely stopped turn behaves exactly like a locally
