@@ -176,6 +176,34 @@ of a named profile per assignment, with tools and budgets optional.
   true` trusts reachability of that private bus/SSH route. Old `taskProfile`
   jobs keep their recorded policy verbatim and are never reinterpreted.
 
+## Continuation (`fleet_task_continue`)
+
+A settled DELEGATED goal can be continued in the same worker conversation:
+`fleet_task_continue {jobId, requestId, content, close?}`.
+
+- The new job carries the **parent's** `sessionId` and pins the parent's
+  receipt, so every remote read and the turn itself address the conversation
+  that already holds the context. A first activation has `sessionId == id`,
+  which is why this distinction is easy to miss and is now explicit throughout
+  `reconcileJob`.
+- Only `content` (and `close`) may change. `cwd`, `instance`/`profile`,
+  `tools` and the three budgets refuse if named: authority was frozen in the
+  conversation header at birth, and re-stating it would be a second negotiation.
+- The activation carries its own admission key (`<jobId>`), so a retry replays a
+  receipt and can never run the follow-up twice. Its result is attributed to
+  that activation; the parent's cached report is never overwritten.
+- Sending a `task` grant to a delegated conversation is refused
+  (`task-policy-immutable`); a content-only turn onto a delegated conversation
+  is accepted **only with an admission key**, and without one refuses
+  (`admission-invalid`) rather than running an activation nobody can prove. A
+  profile-based `unattended` task keeps refusing content-only turns
+  (`task-policy-continuation-required`) — that is the stale-authority guard.
+- `close: true` marks the goal closed after a **successful** continuation; a
+  failed or cancelled one leaves it open so the human can retry.
+- An explicit `error` from the peer is recorded as the job's `diagnostic`
+  instead of vanishing; a transport timeout stays silent, because that is the
+  genuinely-unknown case durable admission exists for.
+
 ## Task policy (unattended authority)
 
 An unattended task runs ordinary coding tools **without approval prompts**,

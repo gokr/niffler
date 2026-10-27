@@ -504,7 +504,8 @@ proc main() =
                     "task_profile_set", "task_profile_list", "task_profile_remove",
                     "fleet_instances", "fleet_instance_import",
                     "fleet_remove", "fleet_vm_start", "fleet_task_inbox",
-                    "fleet_delegation_set", "fleet_delegation_get"]
+                    "fleet_delegation_set", "fleet_delegation_get",
+                    "fleet_task_continue"]
     var seen: seq[string]
     if data{"tools"} != nil:
       for tool in data["tools"]: seen.add(tool["name"].getStr())

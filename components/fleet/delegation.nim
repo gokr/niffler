@@ -261,6 +261,23 @@ proc authorized*(c: Component, args: JsonNode): StoreItem =
   result = c.storeGet("fleetjob", args{"jobId"}.getStr(""))
   if humanReadable(args): return
   if result.value{"owner"}.getStr("") != owner(args): refuse("foreign fleet job")
+proc sameDelegatedWork(before, now: JsonNode): bool =
+  ## A follow-up may change only the INSTRUCTION. Everything that decides what
+  ## the worker is allowed to do is frozen at birth, so a "continuation" that
+  ## also retargeted the machine, workspace or tool list would be a different
+  ## grant wearing an old conversation id — exactly the escalation this refuses.
+  if now{"mode"}.getStr("") != "delegate" or before{"mode"}.getStr("") != "delegate":
+    return false
+  for key in ["cwd", "instance", "profile", "taskProfile", "tools",
+              "maxRounds", "maxCalls", "maxTokens"]:
+    let a = before{key}
+    let b = now{key}
+    let aNil = a == nil or a.kind == JNull
+    let bNil = b == nil or b.kind == JNull
+    if aNil != bNil: return false
+    if not aNil and a != b: return false
+  true
+
 proc createJob*(c: Component, args: JsonNode): JsonNode =
   let session = owner(args)
   validateTask(args)
@@ -321,6 +338,68 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
   discard c.requestOk("store", "put", %*{"kind": "fleetjob", "id": id, "value": j, "expectRev": -1})
   publicJob(j)
 
+proc validateContinuation*(parent, args: JsonNode)
+
+proc continueJob*(c: Component, args: JsonNode): JsonNode =
+  ## Append another activation to a DELEGATED conversation: "now address the
+  ## review comments". The parent goal keeps its identity and its frozen
+  ## authority; this creates a NEW job (so the activation gets its own durable
+  ## admission key and its own receipt) that points at the SAME remote session.
+  ##
+  ## Deliberately narrow: only content may change. Retargeting the machine,
+  ## workspace or tools here would be a fresh grant wearing an old conversation
+  ## id, so that refuses and the caller must start a new conversation.
+  let parentId = args{"jobId"}.getStr("")
+  if parentId.len == 0: refuse("jobId is required")
+  let parent = authorized(c, %*{"jobId": parentId, "__session": args{"__session"}})
+  validateContinuation(parent.value, args)
+  let session = owner(args)
+  let id = jobId(session, args{"requestId"}.getStr(""))
+  let remote = parent.value{"sessionId"}.getStr("")
+  if remote.len == 0: refuse("parent job has no remote session")
+  let closed = parent.value{"closed"}.getBool(false)
+  if closed: refuse("this goal is closed; start a new conversation")
+  var task = %*{"content": args{"content"}.getStr(""), "mode": "delegate",
+                "delegate": true, "continue": true,
+                "parentJob": parentId,
+                "cwd": parent.value{"task", "cwd"}.getStr("")}
+  # `close` finishes the goal AFTER this turn: recorded here, honored at
+  # settlement, so a continuation that fails still leaves the goal open.
+  if args{"close"}.getBool(false): task["close"] = %true
+  try:
+    let previous = c.storeGet("fleetjob", id).value
+    if previous["task"] != task or previous{"profile"}.getStr("") !=
+        parent.value{"profile"}.getStr(""):
+      refuse("requestId already used for different task")
+    return publicJob(previous)
+  except StoreNotFoundError: discard
+  let j = %*{"id": id, "sessionId": remote, "owner": session,
+    "profile": parent.value{"profile"}.getStr(""),
+    "receipt": parent.value["receipt"].copy(), "task": task,
+    "state": "queued", "createdAt": epochTime(), "checkedAt": 0,
+    "parentJob": parentId,
+    "admission": {"key": admissionKey(id),
+      "policyVersion": admissionPolicyVersion}}
+  discard c.requestOk("store", "put",
+    %*{"kind": "fleetjob", "id": id, "value": j, "expectRev": -1})
+  publicJob(j)
+
+proc validateContinuation*(parent, args: JsonNode) =
+  ## What a follow-up may NOT do. Kept separate so the refusal reasons are
+  ## testable without a store, and so the rule reads in one place.
+  if parent{"state"}.getStr("") != "settled":
+    refuse("the goal has not settled yet; wait for its report before continuing")
+  if parent{"task", "mode"}.getStr("") != "delegate":
+    refuse("only a delegated goal can be continued; a profile-based task" &
+           " needs a new conversation for another grant")
+  let content = args{"content"}.getStr("")
+  if content.len notin 1..65536: refuse("content must be 1..65536 bytes")
+  for key in ["cwd", "instance", "profile", "taskProfile", "tools",
+              "maxRounds", "maxCalls", "maxTokens"]:
+    if args{key} != nil and args{key}.kind != JNull:
+      refuse("a follow-up may only change the instruction; " & key &
+             " was fixed when the goal was admitted")
+
 proc summary*(text: string): string =
   ## Bounded UTF-8 prefix, not an assertion that the task succeeded factually.
   var n = min(text.len, 2048)
@@ -338,21 +417,28 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
   let p = j["receipt"]
   try:
     if j{"state"}.getStr("") == "queued":
-      let catalog = remoteCall(run, p, "catalog", %*{"op": "components"})
-      # A delegated goal may name no tools at all (the worker's setting decides),
-      # and `%*{"tools": nil}` would embed nil and crash `encode` — the
-      # documented json.nim gotcha. Ask for schemas only when there is a list.
-      let named = j["task"]{"tools"}
-      let schemas = if named != nil and named.kind == JArray and named.len > 0:
-                      remoteCall(run, p, "catalog", %*{"op": "schemas", "tools": named})
-                    else: %*{"tools": newJArray()}
-      validateCapabilities(catalog, schemas, j["task"])
-      # Preparing creates an empty header, not a turn. Refuse an occupied id.
-      let existing = remoteCall(run, p, "list", %*{"kind": "conversation", "idPrefix": id, "limit": 2})
-      if existing{"items"} == nil or existing["items"].kind != JArray:
-        refuse("invalid peer conversation listing")
-      for entry in existing["items"]:
-        if entry{"id"}.getStr("") == id: refuse("remote session id already exists")
+      let continuation = j{"task", "continue"}.getBool(false)
+      var task = j["task"].copy()
+      if not continuation:
+        # A FIRST activation: verify the peer can enforce this at all, and that
+        # the remote conversation id is free before claiming it. A continuation
+        # skips both: the peer already enforced the policy on this conversation,
+        # and the id is deliberately the parent's.
+        let catalog = remoteCall(run, p, "catalog", %*{"op": "components"})
+        # A delegated goal may name no tools at all (the worker's setting
+        # decides), and `%*{"tools": nil}` would embed nil and crash `encode` —
+        # the documented json.nim gotcha. Ask for schemas only with a list.
+        let named = j["task"]{"tools"}
+        let schemas = if named != nil and named.kind == JArray and named.len > 0:
+                        remoteCall(run, p, "catalog", %*{"op": "schemas", "tools": named})
+                      else: %*{"tools": newJArray()}
+        validateCapabilities(catalog, schemas, j["task"])
+        # Preparing creates an empty header, not a turn. Refuse an occupied id.
+        let existing = remoteCall(run, p, "list", %*{"kind": "conversation", "idPrefix": id, "limit": 2})
+        if existing{"items"} == nil or existing["items"].kind != JArray:
+          refuse("invalid peer conversation listing")
+        for entry in existing["items"]:
+          if entry{"id"}.getStr("") == id: refuse("remote session id already exists")
       let submitting = j.copy()
       submitting["state"] = %"submitting"
       try:
@@ -362,10 +448,21 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         # over it. Next read observes the durable truth, never dispatch now.
         raise newException(IOError, "fleet submitting commit not confirmed; no remote turn dispatched")
       j = submitting
-      discard remoteCall(run, p, "session_prepare", %*{"sessionId": id})
-      var task = j["task"].copy()
-      task["sessionId"] = %id
-      if taskMode(j["task"]) == "delegate":
+      if not continuation:
+        discard remoteCall(run, p, "session_prepare", %*{"sessionId": id})
+      # A continuation appends to the SAME conversation, so it carries the
+      # parent's session id, never its own job id (which would look like a
+      # stranger claiming a new conversation and lose the whole point of a
+      # follow-up: the context built by the first activation).
+      task["sessionId"] = %j{"sessionId"}.getStr("")
+      if continuation:
+        # Content only. Authority is already frozen in the conversation header
+        # by the first activation; sending a grant here would either be a
+        # no-op or a second negotiation, and core refuses the latter.
+        for key in ["mode", "delegate", "continue", "parentJob",
+                    "cwd", "approvals"]:
+          if task.hasKey(key): task.delete(key)
+      elif taskMode(j["task"]) == "delegate":
         # Trusted goal delegation: send the goal and only the restrictions the
         # caller actually named. `delegate: true` selects the worker's single
         # operator trust setting; omitted tools/budgets take its ceiling.
@@ -415,7 +512,17 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       # submission before it is even admitted. A lost reply is recoverable
       # (durable admission + activity receipt); a too-short wait just makes it
       # the common case.
-      try: discard remoteCall(run, p, "session", task, 15)
+      #
+      # A REFUSAL is not a lost reply, and it must not vanish: an explicit
+      # `error` from the peer (a policy refusal, a busy conversation) is kept as
+      # the job's diagnostic so the human reads why instead of watching a job
+      # sit in `unknown` forever. A transport timeout stays silent — that is the
+      # case durable admission exists for, and it is genuinely unknown.
+      try:
+        let reply = remoteCall(run, p, "session", task, 15)
+        if reply{"error"} != nil and reply{"error"}.getStr("").len > 0:
+          j["diagnostic"] = %summary("peer refused the turn: " &
+                                     reply{"error"}.getStr(""))
       except CatchableError: discard
     # The worker's durable receipt is read on EVERY reconcile, not only right
     # after a submission: the case it exists for is exactly the one where the
@@ -424,20 +531,24 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     # and it turns an unknown activation into an authoritative answer whenever
     # the worker knows one.
     try:
+      # The admission lives under the REMOTE conversation, which for a
+      # continuation is the parent's session, not this job's id. Asking with
+      # the job id would look up a session that does not exist and report
+      # "unknown" about work that actually ran.
       let admissionDoc = remoteCall(run, p, "admission_get",
-        %*{"session": id, "key": admissionKey(id)})
+        %*{"session": j{"sessionId"}.getStr(""), "key": admissionKey(id)})
       if admissionDoc{"known"}.getBool(false):
         j["admissionReceipt"] = admissionDoc
       elif j.hasKey("admissionReceipt"):
         j.delete("admissionReceipt")
     except CatchableError:
       discard # the receipt stays an honest unknown; activity may still settle
-    let completion = remoteCall(run, p, "list", %*{"kind": "activity", "idPrefix": id, "limit": 2})
+    let completion = remoteCall(run, p, "list", %*{"kind": "activity", "idPrefix": j{"sessionId"}.getStr(""), "limit": 2})
     var receipt: JsonNode
     let completions = completion{"items"}
     if completions == nil or completions.kind != JArray: refuse("invalid completion listing")
     for entry in completions:
-      if entry{"id"}.getStr("") == id: receipt = entry{"value"}
+      if entry{"id"}.getStr("") == j{"sessionId"}.getStr(""): receipt = entry{"value"}
     # The task owns one activation only. A later human turn can replace the
     # latest-per-session activity receipt; never attribute that to our task.
     # The worker's admission receipt is preferred where it exists: it is bound
@@ -445,18 +556,42 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     # of a session, and it states whether the transcript is durable.
     let admissionState = j{"admissionReceipt", "admission", "state"}.getStr("")
     if admissionState == "settled":
+      # A continuation's report belongs to ITS activation: the parent's report is
+      # already recorded and must not be overwritten by the follow-up's answer.
+      if j{"task", "continue"}.getBool(false):
+        j["state"] = %"settled"
+        j["completion"] = %*{"sessionId": j{"sessionId"}.getStr(""),
+          "turnId": j{"admissionReceipt", "admission", "turnId"}.getStr(""),
+          "seq": j{"admissionReceipt", "admission", "activation"}.getInt(1),
+          "outcome": j{"admissionReceipt", "admission", "outcome"}.getStr("unknown"),
+          "source": "worker-admission"}
+        # `close` marks the whole goal finished AFTER this turn succeeded; a
+        # failed or cancelled continuation leaves it open so the human can retry.
+        if j{"task", "close"}.getBool(false) and
+            j{"admissionReceipt", "admission", "outcome"}.getStr("") == "done":
+          j["closed"] = %true
+        j["delivered"] = %false
+        j["reachable"] = %true
+        j["checkedAt"] = %epochTime()
+        discard c.storePut("fleetjob", id, j, item.rev)
+        return
       let admissionDoc = j{"admissionReceipt", "admission"}
+      # Everything below reads the REMOTE conversation's records, and for a
+      # continuation that conversation is the parent's (see sessionId above).
+      # A first activation has sessionId == id, which is why using the job id
+      # here looked right until a follow-up had a different one.
+      let remoteSession = j{"sessionId"}.getStr("")
       var after = ""
       var reply = ""
       var transcriptComplete = false
       var userMessages = 0
       var ambiguous = false
       for pageNo in 0..<32:
-        let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
+        let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": remoteSession & ":", "after": after, "limit": 100})
         let entries = page{"items"}
         if entries == nil or entries.kind != JArray: refuse("invalid transcript")
         for entry in entries:
-          if not entry{"id"}.getStr("").startsWith(id & ":"): refuse("foreign transcript")
+          if not entry{"id"}.getStr("").startsWith(remoteSession & ":"): refuse("foreign transcript")
           let role = entry{"value", "role"}.getStr("")
           if role == "user" and entry{"value", "notice"} == nil and
               entry{"value", "mail"} == nil:
@@ -561,7 +696,12 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     else:
       j["state"] = %"unknown"
     j["reachable"] = %true
-    if j.hasKey("diagnostic"): j.delete("diagnostic")
+    # A refusal we just recorded is the reason this job is not settling, so keep
+    # it: clearing every diagnostic here would erase exactly the explanation the
+    # human needs. Only the not-settled states keep it, since a settled job's
+    # report is the answer.
+    if j{"state"}.getStr("") == "settled" and j.hasKey("diagnostic"):
+      j.delete("diagnostic")
   except CatchableError as e:
     if e.msg.startsWith("fleet submitting commit not confirmed"):
       raise # no diagnostic write may overwrite an uncertain commit

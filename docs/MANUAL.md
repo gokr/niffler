@@ -3149,6 +3149,23 @@ delegate; the (F2) profile machinery below is the older, narrower form.
 //  — anything you name can only NARROW the worker's configured ceiling.
 ```
 
+A follow-up continues the SAME worker conversation, so the context the first
+turn built is still there — this is the normal way to ask for review changes:
+
+```jsonc
+// fleet_task_continue (approval-gated), against a SETTLED goal:
+{"jobId": "fleet-…", "requestId": "fix-123-review",
+ "content": "Address the review comments on that PR, then run the suite again.",
+ "close": true}   // optional: no further continuation after this turn
+```
+
+Only the instruction may change. Naming a workspace, tools, budgets or another
+machine refuses, because those were fixed when the goal was admitted — a
+follow-up that retargeted them would be a different grant wearing an old
+conversation id. Each continuation is its own activation with its own admission
+key, so a retried request can never run the work twice, and the parent's report
+stays exactly as it was: the follow-up's answer is recorded against the new job.
+
 Three honest limits worth knowing before relying on it:
 
 - **Trust is per machine, and the bus caller is self-declared.** `enabled:

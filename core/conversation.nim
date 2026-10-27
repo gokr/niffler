@@ -4474,13 +4474,42 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                    "code": "task-policy-unconfirmed"}
     if incumbent != nil:
       if args{"task"} == nil:
-        return %*{"error": "task continuation requires a fresh activation grant; " &
-                            "content-only turns and wakes cannot reuse task authority",
-                   "code": "task-policy-continuation-required"}
-      return %*{"error": "this conversation is already an unattended task" &
-                          " (policy " & incumbent{"profile"}.getStr("") &
-                          "); a different grant needs a new conversation",
-                 "code": "task-policy-immutable"}
+        # A DELEGATED goal may be continued content-only: the authority is
+        # already frozen in this conversation's header (the worker resolved it
+        # at birth and the gate enforces it), so appending another instruction
+        # cannot widen anything. "Now address the review comments on that PR"
+        # is the whole point of delegating to a machine you trust. Every such
+        # turn still needs its OWN admission key, so each activation gets a
+        # durable receipt and a lost reply stays reconcilable — never an
+        # unadmitted turn whose outcome nobody can prove.
+        #
+        # A profile-based `unattended` task keeps refusing (docs/FLEET.md
+        # "stale authority on continuation"): there the grant was negotiated
+        # per activation, and reusing it silently is exactly what the refusal
+        # exists to prevent.
+        if incumbent{"profile"}.getStr("") == delegationProfileName:
+          if admissionKey.len == 0:
+            return %*{"error": "a continued goal needs an admission key so this" &
+                                " activation has its own durable receipt",
+                       "code": "admission-invalid"}
+          # fall through: the frozen policy below is the authority, and no new
+          # grant is resolved or written.
+        else:
+          return %*{"error": "task continuation requires a fresh activation grant; " &
+                              "content-only turns and wakes cannot reuse task authority",
+                     "code": "task-policy-continuation-required"}
+      elif incumbent{"profile"}.getStr("") == delegationProfileName:
+        # Re-granting on a delegated conversation would be a second negotiation
+        # of authority the header already froze; the caller only appends.
+        return %*{"error": "a delegated conversation is continued with content only" &
+                            " (its authority is frozen at birth); start a new" &
+                            " conversation for a different grant",
+                   "code": "task-policy-immutable"}
+      else:
+        return %*{"error": "this conversation is already an unattended task" &
+                            " (policy " & incumbent{"profile"}.getStr("") &
+                            "); a different grant needs a new conversation",
+                   "code": "task-policy-immutable"}
 
   # Autonomous wake (components/agent settle path): a session call with
   # `wake: true` runs a turn whose only purpose is folding pending

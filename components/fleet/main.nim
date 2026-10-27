@@ -100,6 +100,15 @@ discard comp.tool("fleet_task_submit", schema(taskProps,
   proc(c: Component, args: JsonNode): JsonNode = createJob(c, args),
   %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true,
     "workspace": {"pathFields": ["profile"]}})
+discard comp.tool("fleet_task_continue", schema(%*{
+  "jobId": {"type": "string", "description": "The settled delegated goal to continue"},
+  "requestId": {"type": "string", "description": "Idempotency key for THIS activation; a retry replays its receipt"},
+  "content": {"type": "string", "description": "The follow-up instruction, e.g. 'address the review comments on that PR'"},
+  "close": {"type": "boolean", "description": "Mark the goal finished after this turn: no further continuation is accepted (nothing is deleted)"}},
+  @["jobId", "requestId", "content"],
+  "Continue a settled delegated goal in the SAME worker conversation, so the worker keeps the context its first turn built — 'now address the review comments', 'also run the full suite'. Only the instruction may change: the machine, workspace, tools and budgets were fixed when the goal was admitted, and naming any of them refuses (that needs a new conversation). Each continuation is a fresh activation with its own admission key, so a lost reply stays reconcilable and can never run the work twice. Replayable with the same requestId; completion notifies this conversation like the first turn."),
+  proc(c: Component, args: JsonNode): JsonNode = continueJob(c, args),
+  %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true})
 # --- trusted delegation setting (the simplification) -----------------------
 # ONE operator decision, instead of a profile per assignment
 # (docs/FLEET-SIMPLIFICATION.md). Same document shape as a task profile, so the

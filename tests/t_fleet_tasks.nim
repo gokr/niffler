@@ -661,9 +661,55 @@ proc main() =
     let page = reportPage(c.storeGet("fleetjob", openId).value, newJObject())
     check("the completed goal's report is pageable without the peer",
           page["report"].getStr("").len > 0, $page)
+    # --- slice 3: continue the SAME worker conversation -------------------
+    # The point of delegating to a machine you trust: "now address the review
+    # comments". The follow-up keeps the parent's remote session (so the worker
+    # still has the context it built), gets its OWN admission key, and may
+    # change only the instruction.
+    let settledParent = c.storeGet("fleetjob", openId).value
+    # Rules first, so a bad continuation never reaches the peer.
+    let widened = %*{"content": "do more", "cwd": "/elsewhere"}
+    check("a follow-up may not retarget the workspace", rejected(proc() =
+      validateContinuation(settledParent, widened)))
+    let tooled = %*{"content": "do more", "tools": ["bash"]}
+    check("a follow-up may not widen the tool set", rejected(proc() =
+      validateContinuation(settledParent, tooled)))
+    check("a follow-up needs an instruction", rejected(proc() =
+      validateContinuation(settledParent, %*{"content": ""})))
+    var unrunnable = settledParent.copy()
+    unrunnable["state"] = %"running"
+    check("an unfinished goal cannot be continued", rejected(proc() =
+      validateContinuation(unrunnable, %*{"content": "do more"})))
+    let contArgs = %*{"__session": {"session": "goal-owner"},
+      "jobId": openId, "requestId": "goal-followup",
+      "content": "Now address the review comments"}
+    let contId = continueJob(c, contArgs)["id"].getStr()
+    let contJob = c.storeGet("fleetjob", contId).value
+    check("the follow-up targets the parent's remote conversation",
+          contJob["sessionId"].getStr("") == openId and
+          contJob{"parentJob"}.getStr("") == openId, $contJob)
+    check("the follow-up reuses the parent's pinned route",
+          contJob["receipt"] == settledParent["receipt"])
+    check("the follow-up is its own activation key",
+          contJob{"admission", "key"}.getStr("") != openId)
+    check("a follow-up retry is idempotent",
+          continueJob(c, contArgs)["id"].getStr("") == contId)
+    for _ in 0..<24:
+      reconcileJob(c, contId, run)
+      if c.storeGet("fleetjob", contId).value["state"].getStr() == "settled": break
+      sleep(200)
+    let cont = c.storeGet("fleetjob", contId).value
+    check("the continued goal settles",
+          cont["state"].getStr() == "settled", $cont)
+    check("its result is attributed to the follow-up activation",
+          cont{"completion", "source"}.getStr("") == "worker-admission", $cont)
+    check("the parent's own report is untouched",
+          c.storeGet("fleetjob", openId).value{"report"}.getStr("") ==
+            settledParent{"report"}.getStr(""))
+    discard c.requestOk("store", "del", %*{"kind": "fleetjob", "id": contId})
     discard c.requestOk("store", "del",
       %*{"kind": "fleetinstance", "id": identity["instanceId"].getStr()})
-    # These two jobs are fixtures of THIS block, and a settled-undelivered job
+    # These jobs are fixtures of THIS block, and a settled-undelivered job
     # keeps waking its owner. Left in place they would add wake traffic the
     # later notice tests do not account for (observed as a spurious "conversation
     # is mid-turn" on the origin turn). Remove them; the assertions above already
