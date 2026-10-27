@@ -52,8 +52,10 @@ before remote preparation/submission; uncertain outcomes remain unknown, never
 replayed or inferred successful/interrupted from disconnection. A durable remote
 activity receipt establishes turn settlement, not factual task success. Remote
 budgets use supported maxRounds/maxCalls/maxTokens, not a transport timeout as a
-wall-clock deadline. Cancel is local queued-only; later cancellation is explicit
-on the peer. The result tool reads a cached bounded summary, not a blocking relay.
+wall-clock deadline. A queued task is cancelled locally; a dispatched task is
+stopped through the peer's `session {stop: true}` (see "Session stop"), and the
+record follows what the peer answered. The result tool reads a cached bounded
+summary, not a blocking relay.
 
 Terminal job and `notice:{kind:"fleet-settled",jobId,status,summary}` commit in
 one revision before notification. A real transition into `settled` also
@@ -463,8 +465,8 @@ svc.<component>.call   # queue-grouped request/reply (one replica handles each c
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, provider?, model?,
                        #   thinking?, title?, cwd?, profile?, discovery?, tools?,
-                       #   maxRounds?, maxCalls?, maxTokens?, approvals?, limits?,
-                       #   compact?, export?, wake?};
+                       #   maxRounds?, maxCalls?, maxTokens?, stop?, approvals?,
+                       #   limits?, compact?, export?, wake?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
                        #   the conversation override. provider pins the conversation

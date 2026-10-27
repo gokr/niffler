@@ -1209,7 +1209,7 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Both fields are absent when nothing determined it, and absence is never read
   as "text-only".
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?, stop?}` accepts a
   conversation-scoped provider and model override. `provider` names a stored
   provider nickname (empty clears it back to the harness-global default); a
   model-only call resolves and pins the provider it belongs to in the same
@@ -1237,6 +1237,9 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   `discovery {…}` is an explicit client discovery: it runs `discover`,
   records the schemas in the durable discovery summary and appends them as
   a user message — no LLM turn, no promotion into the direct toolset.
+  `stop: true` cancels a running turn from another process by publishing the
+  same `__cancel` control a UI sends; it reports `stopped: "requested"`, never
+  that the turn ended (see WIRE.md "Session stop").
   Core stores the choice in the conversation header and pins the resolved
   model across all tool rounds in a turn.
 - The per-session controls freeze on the first call and persist in the

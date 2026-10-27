@@ -244,9 +244,11 @@ still produce useful artifacts; missing bytes or evidence are never fabricated.
 
 - **Steer:** task-owned, activation-bound mail, persisted before delivery;
   distinguish accepted/queued/delivered. A message never grants new capabilities.
-- **Cancel:** request on the worker's existing cancellation path; `cancel-requested`
-  is not `cancelled`. Only worker acknowledgement/terminal evidence confirms it.
-  Disconnect leaves cancellation pending/unknown, not falsely successful.
+- **Cancel:** request on the worker through `session {stop: true}` — the same
+  `__cancel` control a UI sends; `cancel-requested` is not `cancelled`. Only
+  worker acknowledgement/terminal evidence confirms it (`cancelled-on-peer`).
+  Disconnect leaves cancellation pending/unknown, not falsely successful. An
+  in-flight tool finishes before the turn ends.
 - **Continue:** append a new turn with durable admission identity; content-only
   controls keep the worker's cached prefix stable. Failed/cancelled tasks may be
   continued explicitly; closed tasks refuse. No duplicate activation after retry.
@@ -423,8 +425,9 @@ commit the worker made).
 
 ### F3 — Task control and actionable notices
 
-Add steer/confirmed cancel/continuation and sequenced blocked/resumed/settled
-notices. Reuse existing outbox/drain/wake and add activation/event dedup; test
+Add steer/continuation and sequenced blocked/resumed/settled notices; confirmed
+cancel is implemented (see §7). Reuse existing outbox/drain/wake and add
+activation/event dedup; test
 append failure, lost ack, compacted projection, busy/idle/retired parent,
 exhausted wake budget, cancellation races and restart during delivery.
 
