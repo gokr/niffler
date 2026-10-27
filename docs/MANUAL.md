@@ -87,7 +87,7 @@ A one-file index of every shipped capability (not a reference) is
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fleet` | Nim | **not in the manifest** | Opt-in SSH/Lima provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Lima provisioning](#ssh-and-lima-provisioning) |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
-| `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
+| `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. `lock_acquire`/`lock_release` are `hidden`: core's dispatch gate is their only caller and a model cannot invoke them — taking a lease is not a capability, it is what the gate does before a write. `lock_status` is on-demand, for diagnosing a refusal or an orphaned claim. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
 | `edit` | Nim | optional | the file tools: `read` (an image path — png/jpeg/gif/webp/bmp, recognized by its bytes rather than its extension — returns the image itself for the model to look at instead of the `E_NOT_TEXT` binary refusal, with a caption naming file, format, byte size and dimensions; over `READ_IMAGE_MAX_BYTES` (3.5 MB) the file is *reported*, never silently downscaled, and `capture`/`save_as` calls skip the image path entirely, so a var-capable call cannot smuggle pixels into a variable; see [Images](#images-dropped-and-tool-produced)); `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump; a *select* item ({glob|path, pattern?, word?, context?, max?}) locates-then-fetches in one call — with no pattern it lists the matched paths like find/ls, while a literal pattern returns verbatim hit regions ±context lines (grep semantics) ready to copy into `edit`'s `old_string`), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `replace_across` (sed-style literal s///g across a bounded file set in one call — `paths` and/or `glob` (`f*.go` in one directory, `**/*.go` recursively), rules applied in order like a sed pipeline with an optional `word` (\b) span, every occurrence per file and zero-match files passing like sed; a zero *total* match is refused with `E_NO_MATCH` so a mistyped needle cannot silently succeed, per-file counts come back, and each changed file gets its own undo entry that `undo_last_edit` reverts individually; bounded by a 512-file glob-accident circuit breaker and a 32 MB per-call undo pre-image budget (`E_TOO_LARGE`) — the counting pass writes nothing until every refusal has passed), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); `read`, `edit`, `replace_across` and `write` additionally carry the session-variable pipeline controls (`save_as` captures a response field, `resolve_vars: true` substitutes `$name` in that call's arguments — every other `$` stays literal; see [WIRE.md](WIRE.md) `x-harness.variables`); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover`, `warmup` — plus `lsp_servers` (list the merged registry) and `lsp_registry` (`add`/`remove` an entry, approval-gated) — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
@@ -142,6 +142,68 @@ behavior is unchanged. Select items retain their existing limits and must not
 be mixed with content items. The first successful `edit` or `replace_across`
 mutation per conversation during the edit component's lifetime appends an
 `undo_last_edit` discovery hint; it is not repeated after every mutation.
+
+### Bulk literal replacement (`replace_across`)
+
+Use `replace_across` for identical literal substitutions across a known file
+set, without pre-reading every file. Use `edit` for changes requiring unique
+surrounding context, and a script in `bash` for computed, regex-based or
+syntax-aware transformations.
+
+```json
+{
+  "glob": "src/**/*.nim",
+  "replace": [
+    {"old": "relayBaseUrl", "new": "apiBaseUrl", "word": true},
+    {"old": "old.example.org", "new": "api.example.org"}
+  ],
+  "min_matches": 1
+}
+```
+
+**Selection and matching.** `paths` supplies explicit files; `glob` adds
+files to that set (deduplicated union, not intersection). Relative selectors
+resolve against the conversation workspace. Globs support `*`, `?` and
+recursive `**/`, not a full shell pattern language. At most 512 files may be
+selected. Each rule replaces every non-overlapping occurrence of its literal
+`old` string; `new: ""` deletes it. Multiline strings work. `word: true`
+requires boundaries on both sides, treating alphanumeric characters and
+underscore as word characters; this is textual matching, not semantic symbol
+renaming. Rules run in order: `A` → `B` followed by `B` → `C` also turns
+original `A` occurrences into `C`. Without `resolve_vars: true`, `$` stays
+literal, as do regex metacharacters, slashes and ampersands.
+
+**Plan before writing.** The tool loads text files and computes replacement
+counts and proposed contents before modifying anything. Unmatched files pass;
+missing explicit files are reported. A total below `min_matches` (default 1)
+refuses with `E_NO_MATCH` and leaves everything unchanged; set it to 0 only
+when a no-op is intentional. The threshold is aggregate, not per rule or per
+file. Changed files' undo pre-images must fit a 32 MiB per-call budget;
+otherwise the plan is refused. Binary files are refused rather than rewritten.
+All undo records must be persisted before the first write.
+
+**Writes and recovery.** Each changed file is written atomically, preserving
+its BOM and line-ending style. The batch is **not a multi-file transaction**:
+an I/O error during writing can leave earlier files changed. Each successful
+file has its own single-level, persisted undo entry; `undo_last_edit {path}`
+restores previous bytes, but refuses stale undo if the file has since changed.
+There is no automatic whole-batch rollback. Results report total occurrences,
+per-file/per-rule counts, complete structured `files`, `unmatched` and
+`missing` lists, and a bounded first-file diff preview. The current
+implementation queues LSP diagnostics for the first changed file, not every
+changed file; validate the complete change with appropriate tests.
+
+**Why prefer it to a shell replacement?** It avoids shell/sed escaping and
+GNU/BSD `sed -i` differences, refuses a mistyped needle instead of silently
+succeeding on zero matches, preserves formatting, supplies undo and structured
+counts, and bounds accidental broad edits. A shell script would need to
+implement these safeguards explicitly. Both tools remain approval-gated and
+participate in cooperative write arbitration: `replace_across` declares its
+selected paths (glob claims cover the base directory before the wildcard),
+whereas opaque `bash` takes a lease over the whole conversation workspace.
+Neither is an OS-level fence against external writers. Literal replacements
+are not a substitute for regex engines, parsers or build validation; selected
+files are read into memory rather than streamed.
 
 ### File pipelines
 
@@ -2738,7 +2800,9 @@ per-property `x-config` metadata (`title`, `description`, `secret`, `readOnly`,
 | `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only fields), then forward it to the owner, which performs the compare-and-set write |
 | `config_reset {domain, properties?, expectRev?}` | drop explicit values so declared defaults apply again |
 
-Patches and resets carry `x-harness.approval: "always"`. `config` never writes
+All four are on-demand (`discover` then `invoke`): changing configuration is a
+deliberate detour, not a tool every conversation should carry in its frozen
+prompt prefix. Patches and resets carry `x-harness.approval: "always"`. `config` never writes
 another component's record — an owner's invariants (credential handling, derived
 caches, migrations) stay enforced. A declaration using a schema keyword this
 surface cannot enforce is **refused at declare time**: silently ignoring a
@@ -4764,6 +4828,7 @@ only a subset — this table is the complete list):
 | `approval` | `<sessionId>:<key>` | a client's "don't ask again" grant (keyed by tool, or `tool:<digest>` for program-shaped calls); core reads it to skip the approval gate |
 | `contextreceipt` | `<convId>:<requestId>` | the request-scoped receipt of an overflow-recovery attempt, written before it is spent and updated with the outcome |
 | `compaction_input` | `<convId>:<attemptId>` | the paged pre-compaction snapshot the compaction component verifies and the runner commits from (pages are `<id>:p<idx>`). Transient: deleted as soon as the attempt settles, and pages orphaned by a crashed or timed-out attempt are swept after 600 s — nothing may treat it as durable (only `context_projection` is) |
+| `toolpairrepair` | `<convId>` | the durable record of tool-call pairing repairs: `{appliedThrough, count, firstAt, at, repaired: [{action: "synthesized"|"dropped"|"lost", callId?, id?, toolCallId?, name?, assistant?, at}]}`. Written when a load had to repair the projection (a tool result that never reached the store, or one answering a call that is gone) and when a turn's own write failed (`action: "lost"`, with the id the write consumed). Merged by call id / message id, so re-deriving the repair adds nothing; canonical history is never rewritten. Reported by `context_status` as `toolPairRepair` (see [WIRE.md](WIRE.md#tool-call-pairing-repaired-projections)) |
 | `context_projection` | `<convId>` | one document per conversation — the committed context projection (`version`, `generation`, `canonicalHigh`, `renderer`, the normalized `checkpoint`, the durable `covered` canonical range, the `retained` ids, `prunes`, `measurements`, `provenance`) a runner reuses after compaction. Written once with `expectRev` on the previous generation; it is the source of truth a restart rebuilds the provider view from, and the recall resolver reads its `checkpoint`/`generation` when a notice names a `checkpoint` ref |
 | `spill` | `<convId>:<n>` | an oversized tool result promoted out of the context window, addressable with `context_recall {"ref": {"source": "spill", "id": "…"}}`. Promotion is best-effort at append time (a failure keeps the temp-file pointer and adds no ref); a missing, empty or malformed spill document is refused loudly instead of answered as an empty success, and the prune gate re-verifies the document before pruning, so a broken spill can never cost the last copy |
 | `attachment` | `<messageId>:a<i>` | one image's METADATA (message id, MIME, dimensions, original name) — deliberately pixel-free, because a `list` page of this kind is how attachments are enumerated and a page carrying pixels exceeds the bus payload limit after two images. Written before the message that refs it; the message id is a user turn's when a human dropped the image and a TOOL message's when a tool returned it (see [Images](#images-dropped-and-tool-produced)). Swept by `conversation_delete` |

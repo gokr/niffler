@@ -215,6 +215,11 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
 # depth guard). Semantics: not-found reads as nil/empty; refusals and an
 # unreachable store raise.
 
+const toolPairRepairKind* = "toolpairrepair"
+  ## Durable ledger of tool-pairing repairs and of writes that were lost
+  ## (core/conversation.nim: recordToolPairRepair). One doc per conversation,
+  ## id = the conversation id. Read-only surface: `context_status`.
+
 proc storeGetItem*(ct: CoreTools, kind, id: string,
                    timeoutMs = 5000): tuple[value: JsonNode, rev: int] =
   ## Fetch a document from the store; (nil, 0) when not-found. An
@@ -376,6 +381,16 @@ proc contextStatus*(ct: CoreTools, sessionId: string): JsonNode =
   except CatchableError as e:
     doc["snapshotError"] = %e.msg
   doc["retainedSnapshots"] = snapshots
+  # Tool-pair repairs: a tool result that never reached the store (an outage, a
+  # runner killed mid-persist) is repaired when the projection loads, and this
+  # ledger is the durable record of what was lost — the transcript itself keeps
+  # its gap, because canonical history is never rewritten.
+  try:
+    let repaired = ct.storeGetItem(toolPairRepairKind, sessionId).value
+    doc["toolPairRepair"] =
+      if repaired != nil and repaired.kind == JObject: repaired else: newJNull()
+  except CatchableError as e:
+    doc["toolPairRepairError"] = %e.msg
   # Omission notices are synthetic projection nodes, NOT canonical messages.
   # Report durable loss attribution instead of scanning the entire transcript
   # (which cannot find the runner's notices). This is not their rendered text.

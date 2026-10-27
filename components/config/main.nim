@@ -264,7 +264,7 @@ comp.tool(%*{"onDemand": true}):
        "defaults": defaults, "schema": declaration{"schema"},
        "application": declaration{"application"}}
 
-comp.tool(%*{"approval": "always", "effect": "write"}):
+comp.tool(%*{"onDemand": true, "approval": "always", "effect": "write"}):
   proc config_patch(domain: string, patch: JsonNode,
                     expectRev: int = -2): JsonNode =
     ## Change settings in one domain. The patch is validated before anything
@@ -303,7 +303,7 @@ comp.tool(%*{"approval": "always", "effect": "write"}):
     except CatchableError as e:
       return errResult(owner & " refused the change: " & e.msg, "owner-refused")
 
-comp.tool(%*{"approval": "always", "effect": "write"}):
+comp.tool(%*{"onDemand": true, "approval": "always", "effect": "write"}):
   proc config_reset(domain: string, properties: seq[string] = @[],
                     expectRev: int = -2): JsonNode =
     ## Drop explicit values so the declared defaults apply again.

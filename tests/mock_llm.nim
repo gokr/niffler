@@ -55,6 +55,13 @@ import niffler/sdk
 #   independent of the window llm_resolve reports — models the real-world
 #   gap where a host's effective input limit sits below its catalog window
 #   (thinking/output reserves count against it).
+# - NIF_MOCK_ENFORCE_PAIRING: 1 makes the fake provider validate tool-call
+#   pairing exactly as a strict backend does (an assistant `tool_calls` batch
+#   must be followed by one `tool` message per id, and a `tool` message must
+#   answer a pending call) and refuse the request with the provider's own 400
+#   text. It turns "the request core built is provider-VALID" into an observed
+#   fact instead of an inspection of core's internals — the guard for the
+#   tool-pair repair (core/conversation.nim:healToolPairing).
 # - NIF_MOCK_RAW_OVERFLOW: 1 rejects with the RAW provider phrasing (no
 #   context-overflow prefix, no window suffix) — the classifier must catch
 #   the provider's own words ("Context limit exceeded").
@@ -71,6 +78,7 @@ let mockEnforceCtx = block:
   try: parseInt(v)
   except CatchableError: 0
 let mockRawOverflow = getEnv("NIF_MOCK_RAW_OVERFLOW", "").len > 0
+let mockEnforcePairing = getEnv("NIF_MOCK_ENFORCE_PAIRING", "") == "1"
 let mockVision = getEnv("NIF_MOCK_VISION", "")
 let mockTextOnly = getEnv("NIF_MOCK_TEXT_ONLY", "") == "1"
 let mockHideCtx = getEnv("NIF_MOCK_HIDE_CTX", "").len > 0
@@ -169,13 +177,48 @@ proc countText(messages: JsonNode, needle: string): int =
   for m in messages:
     result += m{"content"}.getStr("").count(needle)
 
+proc pairingProblem(messages: JsonNode): string =
+  ## "" when every tool call is answered and every tool message answers a
+  ## pending call — the property a strict backend demands of every request.
+  if messages == nil or messages.kind != JArray: return ""
+  var pending: seq[string] = @[]
+  for m in messages:
+    let role = m{"role"}.getStr("")
+    if role == "assistant":
+      let calls = m{"tool_calls"}
+      var ids: seq[string] = @[]
+      if calls != nil and calls.kind == JArray:
+        for tc in calls:
+          let id = tc{"id"}.getStr("")
+          if id.len > 0: ids.add(id)
+      if ids.len > 0:
+        if pending.len > 0:
+          return $pending.len & " tool_call(s) unanswered before a new batch"
+        pending = ids
+    elif role == "tool":
+      let tid = m{"tool_call_id"}.getStr("")
+      var at = -1
+      for k, id in pending:
+        if id == tid: at = k; break
+      if at < 0:
+        return "tool message answers no pending tool_call_id"
+      pending.delete(at)
+    elif pending.len > 0:
+      return $pending.len & " tool_call(s) unanswered before a " & role & " message"
+  if pending.len > 0: return $pending.len & " tool_call(s) unanswered at the end"
+  ""
+
 proc logRequest(estimate: int, rejected: bool, note: string,
                 messages, tools: JsonNode) =
   if mockLog.len == 0: return
   try:
     let f = open(mockLog, fmAppend)
     defer: f.close()
-    let line = %*{"tools": tools, "estimate": estimate, "rejected": rejected,
+    # A caller that sends no tool schemas (a direct probe) must not make the
+    # log line nil: toUgly on a nil JsonNode is a SIGSEGV, and that would crash
+    # the fixture instead of logging the request.
+    let line = %*{"tools": (if tools != nil: tools else: newJArray()),
+                  "estimate": estimate, "rejected": rejected,
                   "note": note,
                   "imageParts": countImageParts(messages),
                   "omittedImages": countMarker(messages,
@@ -189,7 +232,8 @@ proc logRequest(estimate: int, rejected: bool, note: string,
                   "sessionId": currentSessionId,
                   "cancelId": currentCancelId,
                   "emitTokens": currentEmitTokens,
-                  "purpose": currentPurpose}
+                  "purpose": currentPurpose,
+                  "pairViolation": pairingProblem(messages)}
     f.writeLine($line)
   except CatchableError:
     discard
@@ -236,6 +280,16 @@ proc(c: Component, args: JsonNode): JsonNode =
       "llm error: error, status code: 400, status: 400 Bad Request, " &
       "message: Invalid content type. image_url is only supported by " &
       "certain models.")
+  if mockEnforcePairing:
+    let problem = pairingProblem(messages)
+    if problem.len > 0:
+      logRequest(providerCount, true, "unpaired-tool-calls: " & problem,
+                 messages, args{"tools"})
+      raise newException(ValueError,
+        "llm error: error, status code: 400, status: 400 Bad Request, " &
+        "message: An assistant message with 'tool_calls' must be followed by " &
+        "tool messages responding to each 'tool_call_id'. (insufficient tool " &
+        "messages following tool_calls message)")
   let rejectAt = if mockEnforceCtx > 0: mockEnforceCtx else: mockCtx
   if rejectAt > 0 and providerCount > rejectAt:
     logRequest(providerCount, true, "over-window", messages, args{"tools"})

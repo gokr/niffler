@@ -374,6 +374,14 @@ These entries describe durable loss, not the runner's exact rendered synthetic
 notice text. Positive failure counts also add top-level `compactFailures` and
 `compactReason`.
 
+`toolPairRepair` is null or the conversation's durable tool-pairing ledger
+`{appliedThrough,count,firstAt,at,repaired:[{action:"synthesized"|"dropped"|
+"lost",callId?,id?,toolCallId?,name?,assistant?,at}]}` (store kind
+`toolpairrepair`, id = the conversation id). It records what a load-time repair
+had to do because stored history lost a record — see "Tool-call pairing
+(repaired projections)" below. `count` is the ledger length; `appliedThrough` is the highest
+canonical sequence the repair had verified when it was last written.
+
 `retainedSnapshots` lists compaction-input metadata
 `{id,trigger,createdAt,canonicalHigh,bytes}` without page contents. Inputs may
 be stale, failed or still in flight: existence does not certify retryability.
@@ -1792,3 +1800,33 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
   Core also checks the connected bus's cap at boot and warns when it is
   below the harness's 8MiB. A publish over the cap fails and reports the
   size against the server's `max_payload`.
+
+## Tool-call pairing (repaired projections)
+
+Strict providers re-validate tool-call pairing on **every** request: each entry
+of an assistant message's `tool_calls` must be answered by a `tool` message
+carrying that `tool_call_id`, and every `tool` message must answer a call that
+is pending. A transcript can lose that shape with nobody editing it — a
+message write is best-effort (an outage consumes the id and drops the record),
+a runner can be killed mid-batch, a fork copies whatever the store holds — and
+the damage is then **permanent**: every later request re-sends the same prefix
+and is refused identically, so the conversation can never run again.
+
+Because of that the runner repairs the **projection** when it loads one
+(`healToolPairing`, once per load, not per round):
+
+- a call with no result gets one synthesized `tool` message — an honest
+  "[no result was recorded ... re-run it if you still need the result]", never
+  a fabricated success — placed after the batch's real results;
+- a `tool` message answering no pending call, or a duplicate of one already
+  answered, is dropped from the request.
+
+Canonical history is **never** rewritten to do this: the store keeps its gap,
+`context_recall` still reaches the surviving bytes, and the repair is a pure
+function of stored history, so a resumed turn's prefix is byte-identical to the
+live one (prompt caching survives; one rebuild on the first affected load).
+The repaired entries are recorded durably in kind `toolpairrepair` (id = the
+conversation id, merged by call id / message id so re-deriving adds nothing),
+and writes that failed during a turn are recorded there as `action:"lost"` with
+the id the write consumed — the fact of a loss, not a copy of it. `context_status`
+reports the ledger as `toolPairRepair`.
