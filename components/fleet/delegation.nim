@@ -568,7 +568,11 @@ proc idleJobs*(c: Component) =
   for entry in page["items"]:
     scanAfter = entry["id"].getStr()
     if entry["value"]{"state"}.getStr("") != "settled" and epochTime() - entry["value"]{"checkedAt"}.getFloat(0) > 15:
-      worker = startProcess(getAppFilename(), args = ["--fleet-worker", scanAfter], options = {poParentStreams})
+      # selfBinaryPath, not getAppFilename: a rebuild replaces this binary
+      # while we run, and the stale name makes every worker spawn fail with
+      # ENOENT — silently, so jobs stop being reconciled entirely.
+      worker = startProcess(selfBinaryPath(), args = ["--fleet-worker", scanAfter],
+                            options = {poParentStreams})
       workerStarted = epochTime()
       return
   if not page{"hasMore"}.getBool(false): scanAfter = ""
