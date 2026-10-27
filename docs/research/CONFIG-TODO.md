@@ -144,7 +144,13 @@ pass. Repository status is not a claim that installed binaries were updated.
   call are not, an unreadable lineage record fails closed); per-property timing
   reaches callers as `config_get.timings` and `config_patch.applies`. Contract:
   [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md).
-- [ ] Add schema-driven TUI editor in the TUI repository; no per-owner forms.
+- [x] Add schema-driven TUI editor in the TUI repository; no per-owner forms.
+  `/config` renders domains and fields from declarations (tui/config_command.go,
+  config_editor.go), covering secret/readOnly/application. Now also surfaces
+  `x-config.humanOnly` (list marker + form note; still editable by the human,
+  since the restriction is on a model) and reports per-property application
+  timing after a save ("saved · takes effect: component restart"), verified
+  against a live harness. niffler-tui commit 29ce9d5.
   **Already built; only the new fields are missing.** `/config`
   (tui/config_command.go + config_editor.go) renders domains and fields from
   declarations with no per-owner forms, including secret/readOnly/application.
