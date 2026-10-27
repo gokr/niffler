@@ -38,6 +38,47 @@ Buddydrive PR #24 is already assigned independently. Do not dispatch it again.
 Each slice gets narrow tests, then the full build/server gate before merging.
 No remote trust/service/credential changes are implied by implementing this plan.
 
+## Slice status
+
+- Slice 1 (report paging) — **implemented**: `report`, `offset`, `nextOffset`,
+  `hasMore`, `reportBytes`, `reportComplete`; TUI renders paged prose.
+- Slice 2 (named worker, pinned route) — **partially implemented**:
+  `fleet_task_submit {instance}` resolves through the registry and pins the
+  verified receipt into the job. Trust configuration and optional limits are
+  **not** implemented yet.
+- Slices 3–4 — not started.
+
+## Trust model to implement (slice 2b)
+
+Unattended authority must be decided on the WORKER, before any turn runs, and
+must never become implicit. The pieces:
+
+- A worker settings record (owner-pattern store document, so `config` can show
+  and edit it) holding an explicit allow list: `unattended: bool`, permitted
+  `tools`, `roots`, optional budgets, and an operator note. Default absent =
+  no unattended delegation. Revoking it affects only future admissions;
+running tasks keep the policy they were admitted under.
+- A new capability version advertised in catalog `components`/`snapshot`.
+  Requesters must refuse an older peer instead of silently falling back to
+  `ask`, and the worker must refuse an admission whose requested policy shape
+  it does not understand.
+- The admission digest keeps binding the authority actually used, so an exact
+  retry replays a receipt and a widened retry refuses.
+- Remaining honest gap: the bus envelope's `caller` is self-declared. Until a
+  requester identity is bound to the receipt (operator-configured shared
+  secret or a provisioned key), unattended trust means "trusted bus/SSH
+  access", exactly like today's `taskProfile`. Do not describe it as
+  per-requester authentication.
+
+Optional limits: when a caller omits `maxRounds`/`maxCalls`/`maxTokens`, the
+worker's configured defaults apply, falling back to the runner's normal turn
+defaults (`NIF_MAX_TURN_ROUNDS`). Omitted limits must never mean unbounded,
+and a limit that stops work must report `needs-attention` with the reason.
+
+Compatibility: an existing `taskProfile`-based job keeps its recorded policy
+verbatim; the new path never reinterprets or widens it. Old requesters that
+still send `taskProfile` keep working while the capability is advertised.
+
 ## Report paging (slice 1)
 
 fleet_task_result accepts offset (UTF-8 byte cursor, default 0) and limit
