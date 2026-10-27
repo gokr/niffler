@@ -19,6 +19,19 @@
 
 const STAGE_W = 1600;
 const STAGE_H = 900;
+/** Portrait uses a TALL logical stage (9:16), not the 16:9 one letterboxed into
+ *  a phone. A 16:9 stage on a 390x844 screen scales to 382x215 — captions at
+ *  5px, a Play button 11px tall: it loads and is unusable. The CSS in the
+ *  portrait media query reflows the scenes for this box. */
+function stageBox() {
+  const portrait = window.innerHeight > window.innerWidth;
+  if (!portrait) return { w: STAGE_W, h: STAGE_H };
+  /* Match the screen's own aspect rather than a fixed 9:16: on a 390x844 phone
+   * that removes the letterbox bands top and bottom (measured: the film sat in
+   * 693px of an 844px screen). Width is the constant; height follows. */
+  const w = 900;
+  return { w, h: Math.round(w * (window.innerHeight / window.innerWidth)) };
+}
 const params = new URLSearchParams(location.search);
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -47,14 +60,35 @@ const el = (tag, cls, text) => {
  * stage sizing
  * ------------------------------------------------------------------ */
 
+/* Scale the 1600x900 stage to fit, and CENTRE it exactly.
+ *
+ * This used to scale only, leaving centreing to the parent grid. That works
+ * while the scaled box still fits its container, and fails on a phone
+ * (measured, iPhone 12 emulation): the *unscaled* 1600px stage overflows a
+ * 390px viewport, so the grid centred the overflow — the visible half of the
+ * film, and the whole start overlay with the Play button, ended up off-screen
+ * left. Two phones reported "it does not load"; nothing was wrong with the
+ * load, there was simply nothing on screen to tap.
+ *
+ * With an explicit translate the transform is the whole story: the box is
+ * centred whatever its size, no dependence on the parent's alignment. */
 function fitStage() {
   const stage = $('#stage');
-  const pad = 24;
-  const scale = Math.min(
-    (window.innerWidth - pad) / STAGE_W,
-    (window.innerHeight - pad) / STAGE_H
-  );
-  stage.style.transform = `scale(${Math.max(scale, 0.2)})`;
+  const box = stageBox();
+  const portrait = box.h > box.w;
+  // In portrait, fill the width: the content is reflowed for a tall box, so
+  // leaving a letterbox margin would only shrink the type further.
+  const margin = portrait ? 0 : (window.innerWidth < 640 ? 8 : 24);
+  const scale = Math.max(0.05, Math.min(
+    (window.innerWidth - margin) / box.w,
+    (window.innerHeight - margin) / box.h
+  ));
+  stage.style.width = box.w + 'px';
+  stage.style.height = box.h + 'px';
+  stage.style.transformOrigin = 'top left';
+  stage.style.transform =
+    `translate(${(window.innerWidth - box.w * scale) / 2}px, ` +
+    `${(window.innerHeight - box.h * scale) / 2}px) scale(${scale})`;
 }
 
 /* ------------------------------------------------------------------ *
