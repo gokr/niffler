@@ -42,13 +42,36 @@ No remote trust/service/credential changes are implied by implementing this plan
 
 - Slice 1 (report paging) — **implemented**: `report`, `offset`, `nextOffset`,
   `hasMore`, `reportBytes`, `reportComplete`; TUI renders paged prose.
-- Slice 2 (named worker, pinned route) — **partially implemented**:
-  `fleet_task_submit {instance}` resolves through the registry and pins the
-  verified receipt into the job. Trust configuration and optional limits are
-  **not** implemented yet.
-- Slices 3–4 — not started.
+- Slice 2 (named worker, pinned route) — **implemented**: `fleet_task_submit
+  {instance}` resolves through the registry (name or identity, XOR the legacy
+  `profile`) and pins the verified receipt into the job.
+- Slice 2b (trusted-worker admission) — **implemented**: one `delegation/settings`
+  document per worker (`fleet_delegation_set`/`_get`, approval-gated and on the
+  control-plane deny list), off when absent and refused before any turn runs;
+  `delegationPolicyVersion: 1` advertised so a requester refuses an older peer
+  instead of downgrading to `ask`; tools and budgets optional, explicit values
+  may only narrow. Profile-based `unattended` tasks and every stored
+  `taskProfile` job keep their recorded policy verbatim.
+- Slice 3 (follow-up) — **implemented**: `fleet_task_continue` appends an
+  activation to a settled delegated goal on the SAME worker conversation, with
+  a fresh admission key and instruction-only changes; the parent's report is
+  never overwritten. Active *cancellation* of a continuation is still unproven
+  against a real peer (see below).
+- Slice 4 (Fleet-only acceptance) — **blocked on a deployment step, not on
+  code**: acceptance needs a worker whose build actually carries this branch.
+  The registered `worker` instance is pinned at `2890aff`, which has **no**
+  `delegationPolicyVersion`, so a delegated goal is (correctly) refused by the
+  requester before dispatch. Reaching a real acceptance run means publishing
+  this branch, updating the worker with `fleet_update`, and the worker's
+  operator enabling trust via `fleet_delegation_set` — all deliberate,
+  approval-gated acts.
 
-## Trust model to implement (slice 2b)
+The requester-side half of that contract is covered by tests
+(`t_fleet_tasks`: an older peer refuses a goal; the same peer still serves an
+`ask` task), so the compatibility promise is verified even while the live
+acceptance run waits on the deployment step.
+
+## Trust model (slice 2b, as implemented)
 
 Unattended authority must be decided on the WORKER, before any turn runs, and
 must never become implicit. The pieces:

@@ -98,6 +98,35 @@ proc main() =
     check("requires finite " & key, rejected(proc() = validateTask(bad)))
   check("malformed capabilities refuse safely", rejected(proc() = validateCapabilities(%*{}, %*{}, args)))
   block:
+    # Capability NEGOTIATION for goal delegation: a peer that predates the trust
+    # setting must be refused up front, never silently downgraded to `ask` (its
+    # authority would be a human approval prompt nobody is there to answer).
+    # The same old peer must still serve the older modes — that compatibility
+    # half is what keeps this change from cutting an old worker off.
+    let oldPeer = %*{"taskScopeVersion": 1, "admissionPolicyVersion": 1,
+      "components": {"core": ["session", "session_prepare", "admission_get",
+                              "get", "list", "catalog"],
+                     "read": ["read"]}}
+    let goalSchemas = %*{"tools": [{"name": "read", "schema": {
+      "x-harness": {"effect": "read"}}}]}
+    let delegateGoal = %*{"content": "goal", "cwd": peer.root, "mode": "delegate"}
+    check("a peer without the trust epoch refuses a goal", rejected(proc() =
+      validateCapabilities(oldPeer, goalSchemas, delegateGoal)))
+    var newPeer = oldPeer.copy()
+    newPeer["delegationPolicyVersion"] = %1
+    check("a peer advertising the trust epoch accepts the same goal",
+      not rejected(proc() = validateCapabilities(newPeer, goalSchemas, delegateGoal)))
+    let postV1Peer = %*{"taskScopeVersion": 1, "admissionPolicyVersion": 1,
+      "taskPolicyVersion": 1,
+      "components": {"core": ["session", "session_prepare", "admission_get",
+                              "get", "list", "catalog"],
+                     "read": ["read"]}}
+    let askTask = %*{"content": "look", "cwd": peer.root, "mode": "ask",
+                     "tools": ["read"], "maxRounds": 2, "maxCalls": 2,
+                     "maxTokens": 1000}
+    check("an older peer still serves an ask task", not rejected(proc() =
+      validateCapabilities(postV1Peer, goalSchemas, askTask)))
+  block:
     # Trusted goal delegation: a goal alone validates; anything that would
     # widen authority or smuggle orchestration still refuses.
     let named = %*{"content": "goal", "cwd": peer.root, "mode": "delegate",
