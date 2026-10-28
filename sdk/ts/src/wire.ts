@@ -35,11 +35,28 @@ export function sessionAdviseSubject(sessionId: string): string {
   return "svc.session." + sanitizeSessionId(sessionId) + ".advise";
 }
 
+/** The home root for local discovery: NIF_ROOT when set, else this binary's
+ *  own clone (var/bin/<bin> → clone root) — never the cwd, so an installed
+ *  symlink resolves to the clone the binary was built into. Mirrors
+ *  harnessRoot() in sdk/subjects.nim. It is a discovery answer, not a trust
+ *  decision: trustedRoot (dotenv.ts) additionally requires the directory to
+ *  look like a clone. */
+export function harnessRoot(): string {
+  if (process.env.NIF_ROOT) return process.env.NIF_ROOT;
+  const entry = process.argv[1];
+  if (!entry) return "";
+  // Lazy require: keeps this module importable in browser bundles.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const path = require("path");
+  // argv[1] is the file (<root>/var/bin/<bin>): three dirnames reach the clone.
+  return path.dirname(path.dirname(path.dirname(path.resolve(entry))));
+}
+
 /** Bus address: NIF_NATS_URL env → <root>/var/nats-url discovery file →
  *  the well-known local default. */
 export function resolveNatsUrl(root = ""): string {
   if (process.env.NIF_NATS_URL) return process.env.NIF_NATS_URL;
-  const r = root || process.env.NIF_ROOT || ".";
+  const r = root || harnessRoot() || ".";
   try {
     // Lazy require: keeps this module importable in browser bundles.
     // eslint-disable-next-line @typescript-eslint/no-var-requires

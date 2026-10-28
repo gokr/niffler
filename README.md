@@ -124,7 +124,7 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 | `make install-lsp` | install the default language servers for the `lsp` component |
 | `make install-tools` | the agent CLI toolkit for bash: jq, yq, ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip, sqlite3, gh |
 | `make install-tools-rg` | just ripgrep (from the same table); `make setup` runs this one |
-| `make test` | the complete gate: the bus-contract suite (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
+| `make test` | the complete gate: the bus-contract suite plus the bench adapter tests (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
 | `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
 | `make test-<name>` | one component's contract test, e.g. `make test-fetch` |
 | `make gotest` | Go unit tests and vet (`-race` where it matters) |
@@ -188,7 +188,9 @@ current feature status or historical design notes without mixing their roles.
   subagents.
 - [Model source plugins](docs/MODEL_SOURCES.md) — worked example of a
   catalog-correcting component.
-- [Settings design](docs/research/SETTINGS.md) — settings work that is not yet shipped.
+- [Settings design](docs/research/SETTINGS.md) — historical design, superseded by
+  the shipped [declared configuration](docs/MANUAL.md#declared-configuration-the-config-component)
+  surface.
 
 ## Developing components
 

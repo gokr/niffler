@@ -50,7 +50,7 @@ Example target interaction:
 | Result | `fleet_task_status`, cached bounded `fleet_task_result`, local `fleet_task_inbox` listing, remote-session pointer | Paged task-specific detail and artifact retrieval |
 | Notification | Durable `fleet-settled` notice; `ev.fleet.settled` for connected clients; runner append before ack; canonical-history dedup; bounded idle wake and busy-turn drain | Blocked/approval-needed notices; artifact retrieval |
 | Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption; durable worker admission with an activation-bound terminal receipt ([WIRE.md](WIRE.md) "Durable task admission") | Multi-activation/continuation records and a receipt retention policy |
-| Cancellation | `fleet_task_cancel` cancels only queued, undispatched tasks | Confirmed cancellation of active remote work |
+| Cancellation | `fleet_task_cancel` settles queued work locally and requests a peer-side stop (`session {stop: true}`) for dispatched work; the reply follows the peer's status | Live acceptance of a remote stop's success path |
 | Approval | Submission approval locally; worker explicitly receives `approvals: ask`; read-only tasks by default; operator task profiles ∩ an exact human grant ([WIRE.md](WIRE.md) "Task policy"), enforced at birth with the honest `unconfined` verdict | No default unattended mode (by design); no human UI for profiles/grants |
 | Scheduling | Optional heartbeat, durable admission marks, daily attempt cap | Cron, daily token/cost budgets, retention and completion integration |
 
@@ -249,9 +249,11 @@ still produce useful artifacts; missing bytes or evidence are never fabricated.
 
 - **Steer:** task-owned, activation-bound mail, persisted before delivery;
   distinguish accepted/queued/delivered. A message never grants new capabilities.
-- **Cancel:** request on the worker's existing cancellation path; `cancel-requested`
-  is not `cancelled`. Only worker acknowledgement/terminal evidence confirms it.
-  Disconnect leaves cancellation pending/unknown, not falsely successful.
+- **Cancel:** request on the worker through `session {stop: true}` — the same
+  `__cancel` control a UI sends; `cancel-requested` is not `cancelled`. Only
+  worker acknowledgement/terminal evidence confirms it (`cancelled-on-peer`).
+  Disconnect leaves cancellation pending/unknown, not falsely successful. An
+  in-flight tool finishes before the turn ends.
 - **Continue:** append a new turn with durable admission identity; content-only
   controls keep the worker's cached prefix stable. Failed/cancelled tasks may be
   continued explicitly; closed tasks refuse. No duplicate activation after retry.
@@ -428,8 +430,9 @@ commit the worker made).
 
 ### F3 — Task control and actionable notices
 
-Add steer/confirmed cancel/continuation and sequenced blocked/resumed/settled
-notices. Reuse existing outbox/drain/wake and add activation/event dedup; test
+Add steer/continuation and sequenced blocked/resumed/settled notices; confirmed
+cancel is implemented (see §7). Reuse existing outbox/drain/wake and add
+activation/event dedup; test
 append failure, lost ack, compacted projection, busy/idle/retired parent,
 exhausted wake budget, cancellation races and restart during delivery.
 

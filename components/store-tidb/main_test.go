@@ -30,6 +30,18 @@ func newTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("openStore: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	// Start from a known state. The live tests share one database across runs
+	// (and across engines), and a leftover document makes a first-put
+	// revision assertion fail on the SECOND run of a passing suite — which
+	// reads as a regression and is not one. Rows under the owned instance id
+	// are removed too, since a run may have bound one.
+	for _, kind := range []string{"tidbtest", "tidblist", "tidbdel", "tidbraw",
+		"tidbsess", "tidbsearch", "tidblike", "tidbdirect", "tidbnope",
+		"tidbodd"} {
+		if _, err := db.Exec(`DELETE FROM docs WHERE kind = ?`, kind); err != nil {
+			t.Fatalf("clean %s: %v", kind, err)
+		}
+	}
 	return db
 }
 

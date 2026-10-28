@@ -254,7 +254,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 
 ## Environment variables
 
-所有元件都會載入 `.env`（從 harness root 與 cwd，既有的 shell 環境永遠優先——見下文）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——樹內 bash 示範 `examples/dialog/dialog.sh` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
+所有元件都會載入 harness root 的 `.env`（絕不載入工作目錄的——見[`.env` 檔案](#the-env-file)）並繼承 core 的環境。`NIF_BIN_DIR`、`NIF_BUILD_LOCK`、`NIF_STORE_BIN`、`NIF_REPO_ROOT` 與 `NIF_LSP_BIN` 是僅供建置與腳本使用的旋鈕（`NIF_NATS_CLI` 是例外——樹內 bash 示範 `examples/dialog/dialog.sh` 將它讀作最後手段的 nats CLI）：它們引導 `make` 與 `scripts/`，且絕不會被隨附的元件查詢——僅供測試的 `ctxtest` fixture 會讀取 `NIF_REPO_ROOT` 以載入 fabric 範例——因此它們不屬於下表的執行時部分。`NIF_LSP_BIN` 在那裡仍有一列：它是 `make install-lsp` 的目標目錄，其預設值（`~/.local/bin`）也是 `lsp` 元件會搜尋的。完整集合：
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -375,7 +375,11 @@ NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1
 NIF_OPENAI_MODEL=deepseek-chat
 ```
 
-載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`；SDK 先載入當前目錄的 `.env`，其次載入 harness root 的，鍵的第一次定義優先。以 Wails 為基礎的用戶端以相反順序載入它們（harness root，然後 cwd），因此在那裡 root 檔案優先。所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
+載入規則（Nim、Go 與 TypeScript SDK 皆同）：既有的 shell 環境**永遠優先**於 `.env`，且唯一讀取的檔案是 harness root 自己的——`<root>/.env`，其中 root 在操作者設定了 `NIF_ROOT` 時即為該值，否則為二進位檔所在的複製。
+
+**工作目錄不是信任邊界。** harness 經常從它正在處理的儲存庫內部啟動，因此 cwd 中的 `.env`——或會話工作區、外掛檢出目錄中的 `.env`（這兩者也都位於 harness root **內部**）——絕不能被採納：那裡的提交檔案會讓該儲存庫取得 `NIF_AUTO_APPROVE=1`（審批繞過），或取得指向它自己控制的 bus 的 `NIF_NATS_URL`。較早的版本確實會讀取 cwd 的 `.env`；本規則移除的正是這一點。被拒絕的檔案會在 stderr 上報告（`dotenv: IGNORING .env — only <root>/.env is trusted: …`）而非默默略過，因此真實的設定錯誤仍然可診斷；若完全沒有可信根（二進位檔不在複製佈局中且未設 `NIF_ROOT`），則完全不載入 `.env`，環境變數是唯一來源。
+
+所以 `NIF_OPENAI_API_KEY=other ./var/bin/niffler` 會覆寫檔案，而若你想要檔案的值，請在啟動前 `unset NIF_OPENAI_API_KEY`。`.env` 必須是純一般檔案：符號連結或硬連結的副本會被拒絕，檔案上限為 1 MiB，且值絕不進行 `$VAR` 展開。
 
 repo root 的 `.env.example` 是參考副本——每個變數都被註解掉，其預設值作為註解值——但它在兩個方向上都不完整（上表有少數項目不在其中，而它帶有 harness 在正常運作中不會讀取的測試/工具變數）；表格才是權威。
 
@@ -736,7 +740,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
 
 - **output** window 會與 context window 一併解析，並以 `output`/`outputSource` 回傳：catalog 的 `model.limit.output`，否則為刻意設定的 32768 預設值——若無明確上限，provider 會套用其自身的伺服器端上限，並在串流中途截斷冗長的回答。每次呼叫的 `maxTokens` 只會調降已解析的值（expert judge 的微小裁決），而 Codex 通道則完全忽略它。
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受一個會話範圍的 provider 與模型覆寫。`provider` 指名一個已儲存的 provider 暱稱（空值會清除它，回到 harness 全域預設）；僅指定 model 的呼叫會在同一次標頭寫入中解析並釘住其所屬的 provider，因此 provider 與 model 總是一起出現——model 不會在事後因為另一個 UI 切換了全域預設而被送往不支援它的 provider。無法解析的明確 `provider` 是一個指名它的錯誤，而不是靜默回退（見 WIRE.md「Provider/model pins are one selection」）。僅指定 model 的呼叫會在不進行推論的情況下持續保存並解析該選取；帶有空值的存在則會清除它。`profile` 指名一個已儲存的工具 profile，僅在會話的第一次呼叫時解析進直接工具集（`NIF_PROFILE` 提供預設值）；未知的 profile 會使該呼叫失敗，而續接會忽略該引數。`thinking` 是推理強度，為 `""`、`low`、`medium`、`high`、`max` 之一；`""` 是 provider 預設值（UI 顯示為「auto」），且是唯一能清除先前選擇的值。它會以 `reasoning_effort` 轉送給 provider——且僅在非空時，因此不支援該欄位的 provider 永遠不會看到它；`llm` 轉接器會將該值對應到各協定自身的形式（Codex `reasoning {effort, summary}`、Anthropic `thinking` 加上 `output_config.effort`）——並攜帶於會話標頭上。
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受一個會話範圍的 provider 與模型覆寫。`provider` 指名一個已儲存的 provider 暱稱（空值會清除它，回到 harness 全域預設）；僅指定 model 的呼叫會在同一次標頭寫入中解析並釘住其所屬的 provider，因此 provider 與 model 總是一起出現——model 不會在事後因為另一個 UI 切換了全域預設而被送往不支援它的 provider。無法解析的明確 `provider` 是一個指名它的錯誤，而不是靜默回退（見 WIRE.md「Provider/model pins are one selection」）。僅指定 model 的呼叫會在不進行推論的情況下持續保存並解析該選取；帶有空值的存在則會清除它。`profile` 指名一個已儲存的工具 profile，僅在會話的第一次呼叫時解析進直接工具集（`NIF_PROFILE` 提供預設值）；未知的 profile 會使該呼叫失敗，而續接會忽略該引數。`thinking` 是推理強度，為 `""`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 之一；`""` 是 provider 預設值（UI 顯示為「auto」），且是唯一能清除先前選擇的值；`none` 明確要求不進行推理，與 provider 預設值不同。它會以 `reasoning_effort` 轉送給 provider——且僅在非空時，因此不支援該欄位的 provider 永遠不會看到它；`llm` 轉接器會將該值對應到各協定自身的形式（Codex `reasoning {effort, summary}`、Anthropic `thinking` 加上 `output_config.effort`）——並攜帶於會話標頭上。當 provider 拒絕該**值**時，`llm` 會記錄 `status=effort-rejected`，並在不帶該欄位的情況下重試一次，而不是讓該回合失敗。
   `discovery {…}` 是明確的用戶端探索：它執行 `discover`，將 schemas 記錄於持久 discovery summary 中，並將它們附加為一則使用者訊息——不進行 LLM 回合，也不晉升進直接工具集。
   Core 會將該選擇儲存於會話標頭，並在一個回合中的所有工具回合間釘住已解析的模型。
 - 各會話的控制項會在第一次呼叫時凍結並持續保存於標頭中：`tools`（子項可分派的工具允許清單；最多接受 32 個名稱，且可接受的引數不會宣告於 `session` 工具 schema 中）、`maxRounds`
@@ -2766,9 +2770,10 @@ core 中所有必須看見整個種類的東西都走 `storeListAll`——
 基準適配器在私有匯流排上等待全部八個直接工具、`systemprompt.systemprompt` 和 manifest 中每個 required autostart 元件，並在建立會話前檢查目錄 root 與物件 schema。上下文排除項不變，包括 `AGENTS.md` 與 `AGENTS.local.md`；就緒檢查不允許將 harness 貢獻者上下文注入基準任務。
 
 ```bash
-make test           # the full gate: the bus-contract suite
-make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test           # the full gate: the bus-contract suite + bench adapters
+make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
 make test-bench     # ... Node adapter readiness and telemetry tests only
+                    #     (skips cleanly when Node is absent)
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

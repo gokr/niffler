@@ -1754,13 +1754,16 @@ let declaration* = %*{
 # The wait a synchronous edit used to pay happens here instead: in the SDK's
 # idle seam, on the main thread, serialized like a handler — which is why this
 # needs no thread and no lock. One job per tick keeps the pump responsive.
+# Values follow config's change event: the idle seam must stay free of store
+# reads (it runs on the pump thread).
+comp.watchConfig(settings, "lsp.warm")
+
 # NOTE: this is the component's ONLY idle handler (the SDK replaces a second
 # registration), so the settings refresh and the config declaration ride here
 # too. That is also why the refresh interval is DIAG_IDLE_MS rather than a
 # separate faster tick: one seam, no stacking.
 var configDeclared = false
 discard comp.onIdle(DIAG_IDLE_MS) do (c: Component):
-  settings.refresh(c)
   if not configDeclared:
     configDeclared = c.declareConfig(declaration) or configDeclared
   if gDiagJobs.len == 0: return

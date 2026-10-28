@@ -87,7 +87,7 @@ A one-file index of every shipped capability (not a reference) is
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fleet` | Nim | **not in the manifest** | Opt-in SSH/Lima provisioning and scoped lifecycle, approval-gated mutations, pinned private receipts; no Python runtime. See [SSH and Lima provisioning](#ssh-and-lima-provisioning) |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
-| `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
+| `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. `lock_acquire`/`lock_release` are `hidden`: core's dispatch gate is their only caller and a model cannot invoke them — taking a lease is not a capability, it is what the gate does before a write. `lock_status` is on-demand, for diagnosing a refusal or an orphaned claim. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
 | `edit` | Nim | optional | the file tools: `read` (an image path — png/jpeg/gif/webp/bmp, recognized by its bytes rather than its extension — returns the image itself for the model to look at instead of the `E_NOT_TEXT` binary refusal, with a caption naming file, format, byte size and dimensions; over `READ_IMAGE_MAX_BYTES` (3.5 MB) the file is *reported*, never silently downscaled, and `capture`/`save_as` calls skip the image path entirely, so a var-capable call cannot smuggle pixels into a variable; see [Images](#images-dropped-and-tool-produced)); `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump; a *select* item ({glob|path, pattern?, word?, context?, max?}) locates-then-fetches in one call — with no pattern it lists the matched paths like find/ls, while a literal pattern returns verbatim hit regions ±context lines (grep semantics) ready to copy into `edit`'s `old_string`), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `replace_across` (sed-style literal s///g across a bounded file set in one call — `paths` and/or `glob` (`f*.go` in one directory, `**/*.go` recursively), rules applied in order like a sed pipeline with an optional `word` (\b) span, every occurrence per file and zero-match files passing like sed; a zero *total* match is refused with `E_NO_MATCH` so a mistyped needle cannot silently succeed, per-file counts come back, and each changed file gets its own undo entry that `undo_last_edit` reverts individually; bounded by a 512-file glob-accident circuit breaker and a 32 MB per-call undo pre-image budget (`E_TOO_LARGE`) — the counting pass writes nothing until every refusal has passed), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); `read`, `edit`, `replace_across` and `write` additionally carry the session-variable pipeline controls (`save_as` captures a response field, `resolve_vars: true` substitutes `$name` in that call's arguments — every other `$` stays literal; see [WIRE.md](WIRE.md) `x-harness.variables`); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover`, `warmup` — plus `lsp_servers` (list the merged registry) and `lsp_registry` (`add`/`remove` an entry, approval-gated) — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
@@ -102,8 +102,8 @@ A one-file index of every shipped capability (not a reference) is
 | `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a ranked search over the conversation's whole canonical history (trimmed/compacted-away messages included) through the store's search index, with a substring-grep fallback when the store cannot search; `scope: "all"` widens to every conversation but is refused for session calls (a cross-conversation disclosure — direct bus callers only, issue #51) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) and the headless turn driver (`run` — attach to a home or `--own` one, stream or `--quiet`, optional `--export` transcript) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
-| `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) — all twelve tools are on demand and none declares `x-harness.effect`, so the fabric batch host schedules even `observe_events`/`observe_logs` as writes |
-| `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) — both tools are on demand and neither declares `x-harness.effect`, so the fabric batch host schedules even `logfile_search` as a write |
+| `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) — its twelve model-facing tools are on demand (plus the hidden `observe_config` owner tool) and none declares `x-harness.effect`, so the fabric batch host schedules even `observe_events`/`observe_logs` as writes |
+| `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) — both model-facing tools are on demand (plus the hidden `logfile_config` owner tool) and neither declares `x-harness.effect`, so the fabric batch host schedules even `logfile_search` as a write |
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server (the child is the separate `mcp-bridge` binary — `var/bin/mcp-bridge`, built by `make build`, path overridable with `NIF_MCP_BRIDGE_BIN`; it has no manifest entry and is never started by hand); tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
 | `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and the **only** bus Niffler ever uses — core and the test suite both resolve it from `var/bin`, and there is deliberately no fallback to a `nats-server` on `PATH` (a development clone that rode an external binary would be testing a bus no user runs). Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it: `make doctor` reports `nats-server: OK (bundled, var/bin)` or says that `make build` builds it |
@@ -142,6 +142,68 @@ behavior is unchanged. Select items retain their existing limits and must not
 be mixed with content items. The first successful `edit` or `replace_across`
 mutation per conversation during the edit component's lifetime appends an
 `undo_last_edit` discovery hint; it is not repeated after every mutation.
+
+### Bulk literal replacement (`replace_across`)
+
+Use `replace_across` for identical literal substitutions across a known file
+set, without pre-reading every file. Use `edit` for changes requiring unique
+surrounding context, and a script in `bash` for computed, regex-based or
+syntax-aware transformations.
+
+```json
+{
+  "glob": "src/**/*.nim",
+  "replace": [
+    {"old": "relayBaseUrl", "new": "apiBaseUrl", "word": true},
+    {"old": "old.example.org", "new": "api.example.org"}
+  ],
+  "min_matches": 1
+}
+```
+
+**Selection and matching.** `paths` supplies explicit files; `glob` adds
+files to that set (deduplicated union, not intersection). Relative selectors
+resolve against the conversation workspace. Globs support `*`, `?` and
+recursive `**/`, not a full shell pattern language. At most 512 files may be
+selected. Each rule replaces every non-overlapping occurrence of its literal
+`old` string; `new: ""` deletes it. Multiline strings work. `word: true`
+requires boundaries on both sides, treating alphanumeric characters and
+underscore as word characters; this is textual matching, not semantic symbol
+renaming. Rules run in order: `A` → `B` followed by `B` → `C` also turns
+original `A` occurrences into `C`. Without `resolve_vars: true`, `$` stays
+literal, as do regex metacharacters, slashes and ampersands.
+
+**Plan before writing.** The tool loads text files and computes replacement
+counts and proposed contents before modifying anything. Unmatched files pass;
+missing explicit files are reported. A total below `min_matches` (default 1)
+refuses with `E_NO_MATCH` and leaves everything unchanged; set it to 0 only
+when a no-op is intentional. The threshold is aggregate, not per rule or per
+file. Changed files' undo pre-images must fit a 32 MiB per-call budget;
+otherwise the plan is refused. Binary files are refused rather than rewritten.
+All undo records must be persisted before the first write.
+
+**Writes and recovery.** Each changed file is written atomically, preserving
+its BOM and line-ending style. The batch is **not a multi-file transaction**:
+an I/O error during writing can leave earlier files changed. Each successful
+file has its own single-level, persisted undo entry; `undo_last_edit {path}`
+restores previous bytes, but refuses stale undo if the file has since changed.
+There is no automatic whole-batch rollback. Results report total occurrences,
+per-file/per-rule counts, complete structured `files`, `unmatched` and
+`missing` lists, and a bounded first-file diff preview. The current
+implementation queues LSP diagnostics for the first changed file, not every
+changed file; validate the complete change with appropriate tests.
+
+**Why prefer it to a shell replacement?** It avoids shell/sed escaping and
+GNU/BSD `sed -i` differences, refuses a mistyped needle instead of silently
+succeeding on zero matches, preserves formatting, supplies undo and structured
+counts, and bounds accidental broad edits. A shell script would need to
+implement these safeguards explicitly. Both tools remain approval-gated and
+participate in cooperative write arbitration: `replace_across` declares its
+selected paths (glob claims cover the base directory before the wildcard),
+whereas opaque `bash` takes a lease over the whole conversation workspace.
+Neither is an OS-level fence against external writers. Literal replacements
+are not a substitute for regex engines, parsers or build validation; selected
+files are read into memory rather than streamed.
 
 ### File pipelines
 
@@ -443,6 +505,25 @@ startup on disagreement, safe to drop. Only the sqlite engine implements it
 so far; tidb answers `code: "unsupported"` rather than running a text
 search and calling it a success (docs/WIRE.md "Store contract").
 
+**TiDB schema changes must avoid `DROP PRIMARY KEY`.** Since v5.0 every TiDB
+table has a *clustered* index, and v8.5 refuses
+`ALTER TABLE ... DROP PRIMARY KEY` with Error 8200 ("Unsupported drop primary
+key when the table is using clustered index"). A migration that needs a
+different primary key is a table rebuild: create the new shape, `INSERT ...
+SELECT`, then one atomic `RENAME TABLE old TO scratch, new TO old`. Because TiDB
+DDL is **not** transactional, write such a migration to converge on a
+partially-applied state (`DROP TABLE IF EXISTS` the scratch, `ADD COLUMN IF NOT
+EXISTS`), or a half-applied file leaves a schema goose cannot retry — which is
+exactly how the tidb engine came to be unbootable while the sqlite suite stayed
+green. The live engine suite only runs with a DSN:
+
+```bash
+docker run -d --rm -p 4000:4000 --name niffler-tidb pingcap/tidb:v8.5.0
+NIF_STORE_TIDB_DSN='root@tcp(127.0.0.1:4000)/test' make test-store-tidb
+```
+
+A SQLite-only green build proves nothing about TiDB DDL.
+
 - **sqlite** (default, `var/bin/store-sqlite`, Go): the same document
   contract on SQLite. Documents live verbatim as JSON TEXT; `put` is one
   atomic statement (doc + rev move together — the KV engine's two-key
@@ -573,8 +654,8 @@ in phase 1, which stay env forever) is `research/SETTINGS.md`.
 
 ## Environment variables
 
-All components load `.env` (from the harness root and cwd, existing shell
-env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
+All components load the harness root's `.env` (never a working directory's —
+see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_DIR`, `NIF_BUILD_LOCK`, `NIF_STORE_BIN`, `NIF_REPO_ROOT` and `NIF_LSP_BIN` are build- and script-only knobs (`NIF_NATS_CLI` is the exception — the bash demo `examples/dialog/dialog.sh` reads it as its last-resort nats CLI): they steer `make` and `scripts/` and are never consulted by a shipped component — the test-only `ctxtest` fixture reads `NIF_REPO_ROOT` to load the fabric examples — so they are not part of the runtime table below. `NIF_LSP_BIN` still has a row there: it is the `make install-lsp` target directory, whose default (`~/.local/bin`) the `lsp` component also searches. The full set:
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -713,11 +794,23 @@ NIF_OPENAI_MODEL=deepseek-chat
 ```
 
 Loading rules (same in the Nim, Go and TypeScript SDKs): existing shell
-environment **always wins** over `.env`; the SDKs load the current
-directory's `.env` first and the harness root's second, first definition of
-a key wins. A Wails-hosted client loads them in the opposite order (harness
-root, then cwd), so there the root file wins. So
-`NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
+environment **always wins** over `.env`, and the only file read is the
+harness root's own — `<root>/.env`, where the root is `NIF_ROOT` when an
+operator set it, else the clone containing the binary.
+
+**A working directory is not a trust boundary.** The harness is routinely
+launched from inside the repositories it works on, so a `.env` in the cwd — or
+in a conversation workspace or plugin checkout, which both also live *inside*
+the harness root — must never be honoured: a committed file there would hand
+that repository `NIF_AUTO_APPROVE=1` (approval bypass) or a `NIF_NATS_URL`
+pointing at a bus it controls. Earlier releases did read the cwd's `.env`;
+this rule removes exactly that. A refused file is reported on stderr
+(`dotenv: IGNORING .env — only <root>/.env is trusted: …`) rather than skipped
+silently, so a genuine misconfiguration stays diagnosable, and with no trusted
+root at all (a binary outside a clone layout, no `NIF_ROOT`) no `.env` is
+loaded and the environment is the only source.
+
+So `NIF_OPENAI_API_KEY=other ./var/bin/niffler` overrides the file, and
 `unset NIF_OPENAI_API_KEY` before starting if you want the file value.
 `.env` must be a plain regular file: a symlinked or hardlinked copy is
 refused, the file is capped at 1 MiB, and values are never `$VAR`-expanded.
@@ -1209,7 +1302,7 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Both fields are absent when nothing determined it, and absence is never read
   as "text-only".
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?, stop?}` accepts a
   conversation-scoped provider and model override. `provider` names a stored
   provider nickname (empty clears it back to the harness-global default); a
   model-only call resolves and pins the provider it belongs to in the same
@@ -1226,17 +1319,24 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Legacy `profile`, `NIF_PROFILE` and store kind `profile` remain compatible.
   `persona` selects prompt text; `agent` selects a technical definition (see
   [Agent definitions](#agent-definitions)), with explicit arguments winning.
-  `thinking` is the reasoning effort, one of `""`, `low`, `medium`, `high`,
-  `max`; `""` is the provider default (UIs show it as "auto") and is the only
-  value that clears an earlier choice. It is forwarded to the provider as
-  `reasoning_effort` — and only when non-empty, so a provider that does not
-  support the field never sees one; the `llm` adapter maps the value onto each
-  protocol's own form (Codex `reasoning {effort, summary}`, Anthropic
-  `thinking` plus `output_config.effort`) — and carried on the conversation
-  header.
+  `thinking` is the reasoning effort, one of `""`, `none`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max`; `""` is the provider default (UIs show it
+  as "auto") and is the only value that clears an earlier choice; `none` asks
+  for no reasoning at all and is distinct from the provider default. It is
+  forwarded to the provider as `reasoning_effort` — and only when non-empty,
+  so a provider that does not support the field never sees one; the `llm`
+  adapter maps the value onto each protocol's own form (Codex
+  `reasoning {effort, summary}`, Anthropic `thinking` plus
+  `output_config.effort`) — and carried on the conversation header. Which
+  levels a model accepts varies; when a provider rejects the *value*, `llm`
+  logs `status=effort-rejected` and retries once without the field rather
+  than failing the turn.
   `discovery {…}` is an explicit client discovery: it runs `discover`,
   records the schemas in the durable discovery summary and appends them as
   a user message — no LLM turn, no promotion into the direct toolset.
+  `stop: true` cancels a running turn from another process by publishing the
+  same `__cancel` control a UI sends; it reports `stopped: "requested"`, never
+  that the turn ended (see WIRE.md "Session stop").
   Core stores the choice in the conversation header and pins the resolved
   model across all tool rounds in a turn.
 - The per-session controls freeze on the first call and persist in the
@@ -1314,7 +1414,25 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   additionally clamps the requested output to the headroom the serialized
   prompt (messages plus tool schemas) leaves, so estimation drift in either
   layer cannot push a fitting prompt over the provider's limit. It never
-  knowingly sends an over-window request.
+  knowingly sends an over-window request. That clamp measures the prompt
+  through an **observed ratio** as well as chars/4: `llm` keeps, per
+  provider+model, the ratio between the `prompt_tokens` a provider reports and
+  its own estimate of the same request, and prices the NEXT request's headroom
+  in that scale. chars/4 alone under-counted code-dense history by ~14%
+  (729,345 provider tokens against a 641k estimate), which left the full
+  393,216-token completion budget in place and made the provider refuse
+  prompt+completion; the ratio converges within one round trip and needs no
+  configuration.
+- A refusal corrects the calibration **before** recovery measures anything.
+  The provider names its own count ("… 1122561 tokens (729345 in the
+  messages, 393216 in the completion)"); recovery parses the prompt figure and
+  raises the offset to match, so the ladder's prune/compact/trim rungs see the
+  provider's scale rather than re-confirming the under-reporting estimate.
+  Without it, recovery concluded the candidate already fit and declined to
+  resend it — reporting `context-recovery-required … could not be reduced
+  below the window` while hundreds of thousands of droppable tokens sat in the
+  projection. The offset is only ever raised by a refusal, and
+  `ev.session.<id>.context {reason: "calib:refusal"}` reports both counts.
 - The trigger measures in the **provider's scale, not the estimate's**: every
   successful response re-measures a calibration offset (reported
   `prompt_tokens` minus the local estimate of the same request) and
@@ -2165,7 +2283,10 @@ conversation's `.diag` lane — and the edit result names that lane, so
 Clean verdicts are display/storage-only (`diagnostic` records), not LLM
 messages; failures and actionable diagnostics still append to model history.
 Late clean checks deliver while the runner is idle without waking the model.
-When the check
+The background job has a 20 s budget; an `E_LSP_TIMEOUT` on a post-edit push
+means that budget expired, not that the harness is wedged (a direct
+`lsp {operation: "diagnostics"}` query has a 60 s budget and answers the same
+file normally). When the check
 cannot be queued (a file outside the conversation workspace, or a failure to
 reach the lsp component) the edit result says so instead, with the reason.
 Silence is reserved for files whose extension no registry entry claims: a
@@ -2726,16 +2847,19 @@ An owner publishes a *declaration* at startup (`config_declare`, hidden —
 infrastructure, not a model tool): a stable domain id, its store kind, the tool
 that answers `get`/`patch`/`reset`, a JSON Schema subset for the values, and
 per-property `x-config` metadata (`title`, `description`, `secret`, `readOnly`,
-`application`). Declarations are durable, so a stopped owner still lists.
+`humanOnly`, `application`). Declarations are durable, so a stopped owner still
+lists.
 
 | Tool | What it does |
 |---|---|
 | `config_list` | every declared domain: title, owner, property count, whether the owner currently answers |
-| `config_get {domain}` | current values, defaults, revision and schema together; **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
-| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only fields), then forward it to the owner, which performs the compare-and-set write |
+| `config_get {domain}` | current values, defaults, revision and schema together, plus `timings` (properties whose application timing differs from the domain's) and `humanOnly` (names only a human may change); **secrets report `{"set": true}`, never their value**; an absent owner is reported as unavailable rather than replaced by defaults |
+| `config_patch {domain, patch, expectRev?}` | validate the merge patch (type, enum, bounds, required, unknown properties, read-only and human-only fields), then forward it to the owner, which performs the compare-and-set write; the reply's `applies` says when each changed property takes effect |
 | `config_reset {domain, properties?, expectRev?}` | drop explicit values so declared defaults apply again |
 
-Patches and resets carry `x-harness.approval: "always"`. `config` never writes
+All four are on-demand (`discover` then `invoke`): changing configuration is a
+deliberate detour, not a tool every conversation should carry in its frozen
+prompt prefix. Patches and resets carry `x-harness.approval: "always"`. `config` never writes
 another component's record — an owner's invariants (credential handling, derived
 caches, migrations) stay enforced. A declaration using a schema keyword this
 surface cannot enforce is **refused at declare time**: silently ignoring a
@@ -2743,6 +2867,26 @@ constraint would report a validation that never happened. `scope` is
 `instance` only; a declaration asking for `shared` is refused until that design
 lands. No value enters a frozen prompt prefix — a change is visible at the
 owner's next call. Contract: [research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md).
+
+A declaration must name a domain `application` timing — `immediate`,
+`next turn`, `next conversation` or `component restart`; there is no default.
+Per-property `x-config.application` overrides it. `config_get` reports the
+domain timing beside the `timings` overrides, and `config_patch` returns
+`applies` naming when each changed property takes effect; the owner, not
+`config`, is what actually honours the timing.
+
+**`humanOnly` — approval is necessary, not sufficient.** For a field whose
+meaning is *a human decided this* (a paid-call gate, an access widening, a
+budget), the approval prompt would reach whoever delegated the task rather than
+the human who owns the setting, so one agent's "yes" could consent on another's
+behalf. Such a property is writable only from a human's own conversation or from
+a direct (sessionless) call — a CLI, a script, an operator. The caller is
+classified from what core owns: the injected `__session.session` plus its
+`sessionmeta.parent` lineage record. A subagent is refused with
+`code: "human-only"`, and so is a session whose lineage record cannot be read
+(unreadable is not root). Ordinary properties stay editable by a subagent, which
+is doing the work. An unrestricted `config_reset` is checked against every
+writable property, so it cannot clear a gate the narrow check protects.
 
 ### Instance identity
 
@@ -2811,7 +2955,7 @@ leaving it to inspection: it checks the installed unit against the checkout that
 should own it, the enable state, the active state, the restart policy and linger,
 and names the fix for each failure. Host boot policy is reported as what it is
 (`boot=container (lxc) - verify on the management host: incus config get <container>
-boot.autostart`) and never claimed as verified from inside the guest. It exits non-zero while anything is unproven.
+boot.autostart`) and never claimed as verified from inside the guest. It exits non-zero while anything is unproven. When this shell cannot reach the systemd user manager at all — `incus shell`, or `su` without a logind session, leaves `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` unset — it reports UNKNOWN and exits 2 instead: the state was not observed, so that is not a verdict.
 
 When a checkout's `server.sh` changes, `install` **refuses** the unit it
 previously wrote (rendered text is compared, never adopted — that is what stops a
@@ -3058,8 +3202,13 @@ identity mismatch and missing completion receipts are not interruption or
 success. Only the first completion sequence is accepted; if human continuation
 has replaced that latest-per-session receipt, the task stays unknown rather
 than attributing the later turn to it. `settled` means a durable remote turn receipt was observed, not that
-the task's claims were verified. Cancellation is supported only before dispatch;
-after dispatch cancel the remote conversation explicitly on the pinned peer.
+the task's claims were verified. `fleet_task_cancel` settles a queued task
+locally without dispatching it; a dispatched task is stopped on the pinned peer
+through its `session {stop: true}` op (docs/WIRE.md "Session stop"). Cancellation
+is cooperative, so an in-flight tool runs to completion before the turn ends.
+The reply reports the peer's own `peerStatus` rather than a bare "cancelled"; an
+unreachable peer or one without the stop op leaves the task uncancelled and says
+so, and cancelling a finished task refuses (`not-active`).
 
 Completion is stored with a UTF-8-safe summary (2048-byte prefix plus ellipsis)
 before any wake. The runner folds notices as append-only machinery, commits the
@@ -3082,7 +3231,9 @@ nothing: seen/unread state is client-local. `fleet_task_status` and
 `fleet_task_result` accept `human: true` to read any job this harness submitted
 without conversation context — the owner check separates conversations, and the
 inbox must be able to open the jobs it lists. It widens who may read, never what
-is returned: the task record, receipt and profile stay withheld. No general
+is returned: the task record, receipt and profile stay withheld.
+`fleet_task_cancel` accepts `human: true` for the same reason, widening who may
+cancel a job this harness submitted. No general
 mailbox, artifact transfer or automatic retry of uncertain work.
 
 #### Durable admission (F1)
@@ -4817,6 +4968,7 @@ only a subset — this table is the complete list):
 | `approval` | `<sessionId>:<key>` | a client's "don't ask again" grant (keyed by tool, or `tool:<digest>` for program-shaped calls); core reads it to skip the approval gate |
 | `contextreceipt` | `<convId>:<requestId>` | the request-scoped receipt of an overflow-recovery attempt, written before it is spent and updated with the outcome |
 | `compaction_input` | `<convId>:<attemptId>` | the paged pre-compaction snapshot the compaction component verifies and the runner commits from (pages are `<id>:p<idx>`). Transient: deleted as soon as the attempt settles, and pages orphaned by a crashed or timed-out attempt are swept after 600 s — nothing may treat it as durable (only `context_projection` is) |
+| `toolpairrepair` | `<convId>` | the durable record of tool-call pairing repairs: `{appliedThrough, count, firstAt, at, repaired: [{action: "synthesized"|"dropped"|"lost", callId?, id?, toolCallId?, name?, assistant?, at}]}`. Written when a load had to repair the projection (a tool result that never reached the store, or one answering a call that is gone) and when a turn's own write failed (`action: "lost"`, with the id the write consumed). Merged by call id / message id, so re-deriving the repair adds nothing; canonical history is never rewritten. Reported by `context_status` as `toolPairRepair` (see [WIRE.md](WIRE.md#tool-call-pairing-repaired-projections)) |
 | `context_projection` | `<convId>` | one document per conversation — the committed context projection (`version`, `generation`, `canonicalHigh`, `renderer`, the normalized `checkpoint`, the durable `covered` canonical range, the `retained` ids, `prunes`, `measurements`, `provenance`) a runner reuses after compaction. Written once with `expectRev` on the previous generation; it is the source of truth a restart rebuilds the provider view from, and the recall resolver reads its `checkpoint`/`generation` when a notice names a `checkpoint` ref |
 | `spill` | `<convId>:<n>` | an oversized tool result promoted out of the context window, addressable with `context_recall {"ref": {"source": "spill", "id": "…"}}`. Promotion is best-effort at append time (a failure keeps the temp-file pointer and adds no ref); a missing, empty or malformed spill document is refused loudly instead of answered as an empty success, and the prune gate re-verifies the document before pruning, so a broken spill can never cost the last copy |
 | `attachment` | `<messageId>:a<i>` | one image's METADATA (message id, MIME, dimensions, original name) — deliberately pixel-free, because a `list` page of this kind is how attachments are enumerated and a page carrying pixels exceeds the bus payload limit after two images. Written before the message that refs it; the message id is a user turn's when a human dropped the image and a TOOL message's when a tool returned it (see [Images](#images-dropped-and-tool-produced)). Swept by `conversation_delete` |
@@ -4853,9 +5005,10 @@ Its context exclusions remain unchanged, including `AGENTS.md` and
 context into benchmark tasks.
 
 ```bash
-make test           # the full gate: the bus-contract suite
-make test-server    # ... bus, Go and bench-adapter tests; no frontend toolchain
+make test           # the full gate: the bus-contract suite + bench adapters
+make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
 make test-bench     # ... Node adapter readiness and telemetry tests only
+                    #     (skips cleanly when Node is absent)
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`
@@ -5021,7 +5174,7 @@ make install-jev    # install the Von runtime for jev (opt-in, ~5.4 GB;
                     # never part of `make setup`)
 make von-up         # enable the supervised Von launcher (persisted spawn
                     # record; `make von-down` removes it again)
-make test           # the full gate: the bus-contract suite
+make test           # the full gate: the bus-contract suite + bench adapters
 make test-server    # the bus-contract suite alone (each test owns a private bus)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)

@@ -26,6 +26,7 @@ import { connect, NatsConnection, Subscription, StringCodec } from "nats";
 import { decode, encode, newId } from "./envelope";
 import type { Envelope, EnvelopeKind } from "./envelope";
 import { loadDotEnv } from "./dotenv";
+import { harnessRoot } from "./wire";
 
 export * from "./envelope";
 
@@ -239,10 +240,7 @@ export class Component {
 
   /** Connect, announce registration and start serving calls. */
   async connect(): Promise<void> {
-    loadDotEnv(
-      ".env",
-      path.join(process.env.NIF_ROOT ?? "", ".env")
-    );
+    loadDotEnv(path.join(harnessRoot(), ".env"));
     const url = process.env.NIF_NATS_URL ?? "nats://127.0.0.1:4222";
     this.nc = await connect({
       servers: url,

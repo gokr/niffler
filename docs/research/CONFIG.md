@@ -1,18 +1,23 @@
 # CONFIG — component-owned, schema-described configuration (decisions)
 
-> **Status: design, not implemented.** This supersedes the surface design in
-> `SETTINGS.md` where the two differ; `SETTINGS.md` still holds the per-key
-> mechanics that survived (merge-patch validation, `expectRev`, application
-> timing classes, the "no settings in the prompt prefix" rule). Nothing of
-> either document exists in code today: `settings:global`, `config_*` and the
-> declared-schema seam appear nowhere outside these docs, and
+> **Status: implemented on `main`** (the `feat/settings` branch merged
+> 2026-10-22; extended 2026-10-27). This supersedes the surface design in
+> `SETTINGS.md` where the two differ; the per-key mechanics that survived
+> (merge-patch validation, `expectRev`, application timing, the "no settings in
+> the prompt prefix" rule) are enforced by the shipped surface. The `config`
+> peer, `config_list`/`config_get`/`config_patch`/`config_reset`, the
+> `config_declare` seam and instance-scoped storage are live. The wire contract
+> is [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md) and operation is
+> [../MANUAL.md](../MANUAL.md#declared-configuration-the-config-component).
+> Shared-scope settings remain a proposal (`config` is `instance`-only);
+> nothing uses a single `settings:global` document, and
 > `core/workspaceconfig.nim` has no production call site.
 >
 > Provenance: reconstructed from the `deepseek-search` conversation (audit at
-> `6a47727`), which ended by creating this worktree (`feat/settings`). This
-> records the agreed direction and proposed mechanics, not an implemented wire
-> contract. §11 distinguishes subsequent instance/fleet requirements from
-> proposals. Delivery and test status: [CONFIG-TODO.md](CONFIG-TODO.md).
+> `6a47727`), which ended by creating the `feat/settings` worktree. The
+> questions in §10 were settled by building it; delivery and remaining work are
+> tracked in [CONFIG-TODO.md](CONFIG-TODO.md), and instance persistence is
+> recorded in [INSTANCE-STORE.md](INSTANCE-STORE.md).
 
 ## 0. Baseline finding (the audit)
 
@@ -258,7 +263,7 @@ plugin-owned config:
   explicit instance dimension when several instances share the dataset.
 - **Prompt-cache discipline**: no settings value is prompt content, so none of
   this may touch the frozen prefix — settings changes are announced as events
-  (`ev.settings.updated` / config-changed), never spliced into a head.
+  (`ev.config.updated`), never spliced into a head.
 
 ## 11. Instance-aware persistence
 
@@ -280,9 +285,26 @@ restore and `--recover` enumerate the same `component` records; heartbeat
 workers enumerate the same schedules; `provider:active` becomes global.
 Scoping must therefore cover persistence operations, not just settings forms.
 
-### Proposed implementation, not yet a settled contract
+### Implementation (settled — see INSTANCE-STORE.md)
 
-Candidate shape:
+> This section was written as a proposal. It has since been **implemented and
+> settled**; the authoritative record of what shipped is
+> [INSTANCE-STORE.md](INSTANCE-STORE.md). Every question below was answered by
+> building it:
+>
+> | question | answer as shipped |
+> |---|---|
+> | instance key/column | `instance_id`: 32-char lowercase hex, reusing `var/instance-id`; a real column on `docs`, not opaque JSON |
+> | shared-record representation | transport/route detail stays document payload, never a SQL column; shared *settings* scope is refused until decided (`config` is `instance`-only) |
+> | SQLite behaviour | identical logical contract in both engines (SQLite `00004`, TiDB `00003`); the same tests run against both |
+> | legacy adoption | SQLite adopts its own legacy rows once; TiDB **never** adopts; both offer an explicit approval-gated `store_claim` |
+> | default query scope | the store resolves its owner once at boot and uses it implicitly — never a tool argument, so a client cannot choose whose history it reads |
+>
+> One detail the implementation changed: TiDB cannot `DROP PRIMARY KEY`
+> (clustered index, Error 8200), so that migration is a convergent table
+> rebuild (docs/MANUAL.md "Store engines").
+
+The original proposal follows, kept for the reasoning:
 
 ```
 instances(instance_id PRIMARY KEY, ...metadata...)

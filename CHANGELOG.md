@@ -6,6 +6,155 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The `llm` component no longer leaves a request over the provider's limit. Its
+  output clamp (`fitOutput`) priced the prompt with chars/4, which under-counts
+  code-dense history by ~14% — 729,345 provider tokens against a 641k estimate
+  on a live 5,246-message conversation with a 1,048,576-token window — so it
+  believed it had 88k more headroom than it did, kept the full 393,216-token
+  completion budget in place, and the provider refused prompt+completion
+  (1,122,561 > 1,048,576). The clamp now measures the prompt through an
+  **observed ratio** as well: per provider+model, the ratio between the
+  `prompt_tokens` a provider reports and `llm`'s own estimate of the same
+  request, applied to the next request's headroom. It converges within one
+  round trip, needs no configuration, never shrinks an estimate below chars/4,
+  and is sanity-bounded so one mismeasured response cannot poison it.
+  Regression: `TestFitOutputUsesObservedProviderRatio`.
+
+- Context recovery now trusts the refusal's own count instead of re-confirming
+  the estimate that let the request out. A provider refusal names exactly what
+  it counted ("… 1122561 tokens (729345 in the messages, 393216 in the
+  completion)"); recovery parses the prompt figure
+  (`retry.promptTokensFromOverflow`) and raises the calibration offset before
+  the ladder measures anything, reporting `calib:refusal`. Previously it
+  re-measured with the same under-reporting proxy, concluded the candidate
+  already fit, and declined to resend — ending the turn with
+  `context-recovery-required … the candidate could not be reduced below the
+  window` while ~200k tokens of droppable history sat in the projection. The
+  offset is only ever raised by a refusal. Regressions: `t_retry_unit`'s
+  `promptTokensFromOverflow` cases and `t_ctxcompact`'s `refusalCalibrates`
+  block, which reproduces the production error against the old behaviour.
+
+- The runner sends a compactor the bounds validation enforces
+  (`budget.maxListItems`/`maxFiles`/`maxFieldChars`), and the shipped
+  `compaction` component restates them in the summarization instruction as hard
+  limits with a merge-and-prioritize rule. A summarizer that was never told the
+  cap answered with what the covered span implied — over 32 completed-work items
+  on a 5,000-message span — and every escalation was rejected as an *invalid*
+  candidate (`checkpoint field "completedWork" must be a bounded list`), so
+  `/compact` and the pressure rung both failed on the longest conversations.
+  Validation remains the authority; a component that ignores the field fails as
+  it did before.
+
+- Configuration properties can now be marked `x-config.humanOnly`: readable and
+  reportable by a model, but writable only from a human's own conversation or
+  from a direct (sessionless) tool call. Approval alone was not enough for a
+  field whose meaning is "a human decided this" — the gate prompt reaches
+  whoever delegated the task, so one agent's yes could consent on another's
+  behalf. The caller is classified from what core owns (the injected
+  `__session.session` and its `sessionmeta.parent` lineage record); a subagent
+  is refused with `code: "human-only"`, and an unreadable lineage record fails
+  closed. An unrestricted `config_reset` is checked against every writable
+  property so it cannot clear a gate the narrow check protects. Ordinary
+  properties stay editable by a subagent.
+
+- `config_get` reports per-property application timing as `timings` (properties
+  whose timing differs from the domain's) and `humanOnly` as a name list, and
+  `config_patch` returns `applies` naming when each changed property takes
+  effect — so a caller is told "this lands next turn" instead of reading a new
+  value back and assuming the behaviour is already live.
+
+- A `.env` is now read only from the harness root — `<root>/.env`, where the
+  root is an explicit `NIF_ROOT` or a binary-derived directory that really
+  looks like a clone. Previously all three SDKs also honoured a `.env` in the
+  current working directory, which is not a trust boundary: the harness is
+  routinely launched from inside the repositories it works on, so a committed
+  `.env` there could set `NIF_AUTO_APPROVE=1` (approval bypass) or a
+  `NIF_NATS_URL` pointing at a bus it controls. Containment alone is not the
+  rule either — a conversation workspace or plugin checkout lives inside the
+  root, and its `.env` is refused the same way. A refused file is reported on
+  stderr instead of being skipped silently, and with no trusted root at all no
+  `.env` is loaded (the environment is then the only source). Regressions in
+  Nim (`tests/t_dotenv.nim`), Go (`sdk/go/dotenv_test.go`) and TypeScript
+  (`sdk/ts/test/dotenv.test.js`), each verified to fail against the old
+  behaviour.
+
+- A configuration declaration must now state its `application` timing
+  (`immediate` | `next turn` | `next conversation` | `component restart`);
+  `config` refuses one that omits it, and both owner helpers take the value as
+  a typed argument. There is no silent "immediate" default — that default let
+  an owner promise more than it delivered.
+- The repository now includes a two-minute animated explainer at
+  `website/movie/`, published at `/movie/` by the existing Pages workflow
+  (which deploys all of `website/`). Ten scenes, self-contained and offline —
+  GSAP is vendored, there is no build step, and the whole film is ~200 KB. The
+  narration is data in `narration.js`, shared by the captions and the voice-over;
+  the player defaults to `?voice=auto`, using the rendered clips when present
+  and falling back to captions when they are not. The published copy commits
+  its rendered narration (ten 24 kHz WAV clips, 4.9 MB, plus the duration
+  manifest and SRT) so the deployed film plays with sound without a build step.
+  The film is not linked from the site index.
+
+- The explainer is usable on a phone. The stage is a fixed 1600x900 box scaled
+  by `transform`; centreing was left to the parent grid, which only works while
+  the scaled box still fits — on a phone the box overflows, so the start overlay
+  (including Play) sat off-screen and the film looked like it had not loaded.
+  Portrait now gets a tall logical stage sized from the screen's own aspect plus
+  a portrait stylesheet (single-column scenes, a larger caption band, real tap
+  targets); landscape and desktop are unchanged.
+
+- The explainer's asset URLs carry a content hash. GitHub Pages answers every
+  file with `cache-control: max-age=600`, so after a deploy a phone kept running
+  the previous `movie.js` against the new stylesheet — a stale-JS/fresh-CSS mix
+  that looks like a broken deploy. `tools/stamp-assets.mjs` rewrites the stamps
+  and `--check` fails when one is stale.
+
+- The film's reusable voice-over pipeline lives beside it:
+  `tools/render-voiceover.mjs` renders one clip per cue with Piper (the
+  default), Kokoro, Coqui XTTS v2 voice cloning, OpenAI, espeak or macOS `say`;
+  measures each clip's duration in-process (MP3 frame walk, WAV header — no
+  ffprobe); writes the duration manifest and SRT; and re-times each scene from
+  the measurement, so re-recording one line shifts only that scene.
+  `tools/fetch-piper.sh` and `tools/fetch-kokoro.sh` install local engines
+  outside the repository, `tools/play.sh` serves the folder on an OS-assigned
+  port and opens it with sound, and `PIPELINE.md` documents the pipeline and
+  its invariants for reuse.
+
+- A running turn can be stopped from another process: `session {sessionId,
+  stop: true}` publishes the same `__cancel` control a UI sends on the runner's
+  steer subject, so a remotely stopped turn behaves exactly like a locally
+  stopped one — the flag is raised between rounds, an in-flight tool finishes
+  first, and bash kills its command group. The reply reports `stopped:
+  "requested"`, never "stopped": publishing to a steer subject succeeds whether
+  or not a turn is running, so the caller confirms the outcome from the record.
+  Requires a `sessionId` and refuses without one.
+
+- Fleet can cancel active remote work: `fleet_task_cancel` still settles a
+  queued task locally without dispatching it, but a dispatched task is now
+  stopped on its pinned peer through the new `session {stop: true}` op — the
+  same cooperative `__cancel` control a local UI emits, so an in-flight tool
+  finishes and the turn ends after it. The reply reports the peer's own
+  `peerStatus` (`cancelRequested` plus that status) rather than a bare
+  "cancelled"; a job with no peer answer stays uncancelled and says so, and a
+  finished task refuses (`not-active`). The human scope reaches this tool too:
+  `human: true` may cancel any job this harness submitted. See docs/WIRE.md
+  "Session stop".
+
+- A conversation can no longer be wedged by a lost tool result. Message writes
+  are best-effort, so a store outage (or a runner killed mid-batch) can leave an
+  assistant `tool_calls` entry with no `tool` answer — and strict providers
+  re-validate that pairing on every request, so the transcript was permanently
+  unusable: the same 400, forever (observed on a 2.6k-message conversation).
+  The runner now repairs the PROJECTION once per load: an unanswered call gets
+  an honest "[no result was recorded … re-run it]" result, a tool message
+  answering no pending call is dropped from the request. Canonical history is
+  never rewritten (the store keeps its gap, recall stays honest) and the rule
+  is a pure function of that history, so the repaired prefix is byte-stable
+  across turns, resumes and forks (prompt cache intact). The repair is recorded
+  durably in a new `toolpairrepair` document per conversation — including writes
+  that failed *during* a turn, with the id they consumed — and `context_status`
+  reports it as `toolPairRepair`. Writes that lose a message are no longer
+  silent: the turn records the loss where the next load and a human can see it.
+
 - Fleet has a human inbox: `fleet_task_inbox {peer?, state?, after?, limit?}`
   lists every task this harness submitted as a local, paged read over the
   `fleetjob` kind, so a settled job's verdict (status, bounded summary,
@@ -32,6 +181,54 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   round trip, and an explicit `--timeout` still wins. A client timeout says so
   plainly and notes that NATS request/reply cannot cancel work already
   dispatched, so "timed out" is not "failed".
+- Agent delegation (`NIF_AGENT_MAX_DEPTH`, `NIF_AGENT_WAKES`) stays in the
+  environment: their authoritative enforcement is in core (the dispatch gate and
+  the session runner), so a component-level settings domain would change a
+  mirror and not the rule.
+- Hooks were evaluated for the config surface and are **deliberately excluded**,
+  not deferred: a hook command is `sh -c`, and a `config_patch`-writable shell
+  command would hand a model arbitrary execution behind an approval prompt that
+  describes it far less legibly than the command itself. Same reasoning that
+  keeps `NIF_AUTO_APPROVE` in the environment.
+- `observe` publishes its capture budgets as the `observe.capture` domain
+  (`ring`, `ringBytes`, `entryBytes`, `probeBytes`, `maxProbes`,
+  `captureBytes`), so retention can be tuned at runtime.
+- Settings changes now propagate by EVENT: `config` publishes
+  `ev.config.updated` after every applied change and snapshot owners reload
+  from that handler. Polling the store from the idle seam was the earlier
+  design and it starved the pump — that seam runs on the main thread, and a
+  blocking store read or declaration stalled every other message the component
+  owed whenever the store or config component was absent (a supported
+  deployment). Declaration is now one short best-effort attempt per tick.
+- Reasoning effort gained `none`, `minimal` and `xhigh` (alongside `""`, `low`,
+  `medium`, `high`, `max`). `none` is the point: with `reasoning_effort` absent
+  a model picks its own default, so "don't think" was previously unreachable;
+  `none` and `minimal` are now distinct from empty, which still means the
+  provider default. The declared ladder is treated as a preference rather than
+  a constraint — measured against Synthetic's own `/models` metadata, one
+  alias declares none/low/medium/high yet rejects `max`, while others accept
+  values they never declare — so when a provider rejects the *value*, `llm`
+  logs `status=effort-rejected` and retries once without the field instead of
+  failing the turn. Anything that is not a value rejection propagates
+  unchanged.
+
+- A base install no longer needs Node to run the bus-contract gate.
+  `make test-server` stopped depending on `test-bench` (the benchmark adapter
+  tests), so a stock harness install no longer aborts with
+  `node: command not found` before running a single test; `make test` still
+  covers both, and CI runs `make test-bench` as its own step. Without Node,
+  `make test-bench` skips with a clear message instead of exit 127, and
+  `make doctor` reports Node as optional. The suite itself was already pure
+  Nim/Go.
+
+- `scripts/server.sh persist <root>` no longer invents a verdict when it cannot
+  reach the systemd user manager. `incus shell` (or `su` without a logind
+  session) leaves `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` unset, so every
+  `systemctl --user` query returned empty and a healthy instance was reported
+  as "NOT persistent yet" with instructions to reinstall it. It now probes the
+  manager first and reports UNKNOWN (exit 2), naming the two variables that
+  fix the shell, and reserves the failure verdict for states it actually
+  observed.
 
 - The store can answer "which documents are close to this vector?": `search`
   gained a vector mode (`{kind: "embedding", model, vector, limit?}` →
@@ -379,7 +576,8 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delegates one bounded investigation to a conversation on a pinned peer,
   with an explicit read-only tool allowlist and round/call/token budgets;
   `fleet_task_status`/`fleet_task_result` read the durable local pointer and a
-  cached bounded report, and `fleet_task_cancel` cancels only before dispatch.
+  cached bounded report, and `fleet_task_cancel` cancels a queued task locally
+  or asks the peer to stop dispatched work (see above).
   An unknown transport outcome is never replayed, and unreachable is never
   reported as failed or successful. Completion is pushed, not polled: a
   `fleet-settled` notice is appended to the requester's history (deduplicated
@@ -461,6 +659,27 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remote write, so the receipt still proves exactly what is installed.
 
 ### Fixed
+
+- **The TiDB store engine can boot again.** Migration 3 used `ALTER TABLE
+  docs DROP PRIMARY KEY, ADD PRIMARY KEY(...)`, which TiDB v5.0 and later
+  refuse for a clustered index (Error 8200), so `store-tidb` failed in
+  `openStore` on every start and could never run its suite. The migration is
+  now an idempotent table rebuild — add `instance_id`, copy, one atomic
+  `RENAME TABLE` — that also converges on a database left half-applied by the
+  old file and preserves any owners already recorded instead of resetting them.
+  Running the live suite against a real TiDB surfaced three test defects, now
+  fixed: a nil-JSON iteration over the engine's explicit "unsupported" vector
+  refusal, a sqlite-only ranked-paging shape asserted on an unranked engine,
+  and a binding test that asserted the opposite of instance isolation.
+
+- **The lock and config write tools are not offered to models.** `lock_acquire`
+  and `lock_release` declared `effect: write` but not `hidden`, so their
+  schemas sat in every conversation's frozen toolset — and a model could take
+  a lease over another conversation's paths with any `sessionId`, denying its
+  writes. Both are hidden now, and `lock_status`, `config_patch` and
+  `config_reset` are `onDemand` rather than prefixed. A conversation frozen
+  before a tool became hidden still advertises it; that call now reports the
+  harness-machinery refusal instead of blaming a session allowlist.
 
 - **`make build` works on a cold Go module cache again.** The sqlite-vec header
   lookup ran `go list -m -f={{.Dir}}` before anything had fetched

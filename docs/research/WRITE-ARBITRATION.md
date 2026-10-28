@@ -165,6 +165,12 @@ precedent — not a core special case, not a store kind core owns).
   pump serializes handlers — **`replicas` must stay unset on this component**,
   or two instances would each hold a partial view and arbitration would
   silently weaken. The design was measured into this shape: see A.2.3.
+- **The surface is machinery, not capability.** `lock_acquire`/`lock_release`
+  are `hidden`: the dispatch gate calls them on the writer's behalf and the model
+  neither sees nor can `invoke` them. `lock_status` is a read tool, so it is
+  `onDemand` — a normal `discover`+`invoke` target, because diagnosing
+  `E_WRITE_BUSY` (who holds what, how stale) is exactly what a human or a model
+  needs when a write is refused.
 - **A denial is a normal tool error that names the holder**:
   `E_WRITE_BUSY: <path> is being modified by conversation <id> (edit, 4s ago)`.
   Naming the holder is the difference between a debuggable outcome and a mystery,

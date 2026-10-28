@@ -51,7 +51,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 `make doctor` 检查先决条件；`make down-here` 仅停止此克隆的进程。
 
-测试：`make test` 运行总线契约套件（每个测试一个私有总线）；`make gotest` 运行 Go 测试、vet 和竞态检查。
+测试：`make test` 是完整门禁（总线契约套件加基准适配器测试，见下方命令表）；`make gotest` 运行 Go 测试、vet 和竞态检查。
 
 ## Commands
 
@@ -69,7 +69,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make install-lsp` | 安装 `lsp` 组件的默认语言服务器 |
 | `make install-tools` | agent 的 CLI 工具箱（经 bash 使用）：jq、yq、ripgrep、fd、fzf、bat、tree、htop、wget、zip、unzip、sqlite3 |
 | `make install-tools-rg` | 仅 ripgrep（来自同一张表）；`make setup` 会运行它 |
-| `make test` | 完整测试门：总线契约测试套件（UI 自身的测试与类型检查在 `gokr/niffler-ui`） |
+| `make test` | 完整测试门：总线契约测试套件加基准适配器测试（UI 自身的测试与类型检查在 `gokr/niffler-ui`） |
 | `make test-server` | 总线契约测试套件（每个测试自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 单个组件的契约测试，例如 `make test-fetch` |
 | `make gotest` | Go 单元测试与 vet（重要模块带 `-race`） |

@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1039,12 +1040,39 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	// window. Clamp the cap to the headroom the estimated prompt leaves so a
 	// full catalog output budget can never push a fitting prompt over the
 	// provider limit.
-	output = fitOutput(output, resolved.Context, args)
+	output = fitOutput(output, resolved.Context, args, promptRatioKey(resolved.ProviderName, model))
 	// Best-effort live model discovery (option B): remember this provider's
 	// endpoint and, when its id cache is stale, probe /models in the
 	// background so the models component can publish served ids catalog-wide.
 	maybeProbeLiveModels(streamCtx, c, resolved)
-	return chatDispatchRetrying(streamCtx, c, resolved, model, args, output)
+	v, err := chatDispatchRetrying(streamCtx, c, resolved, model, args, output)
+	// Learn this model's tokenizer from what it says it billed, so the NEXT
+	// call's fitOutput measures the prompt in the provider's scale instead of
+	// trusting chars/4. `args` is still exactly the request that went out
+	// (sanitizeMessages already ran), which is what makes the pair honest.
+	if err == nil {
+		observePromptUsageFromResult(args, v, promptRatioKey(resolved.ProviderName, model))
+	}
+	return v, err
+}
+
+// observePromptUsageFromResult feeds the provider's reported prompt_tokens from
+// a chat result into the per-model ratio. A result without usage (a provider
+// that omits it, or a non-map return) teaches nothing.
+func observePromptUsageFromResult(args chatArgs, v any, key string) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	u, ok := m["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	prompt, ok := u["prompt_tokens"].(int)
+	if !ok {
+		return
+	}
+	observePromptUsage(args, prompt, key)
 }
 
 // chatDispatchRetrying runs the protocol dispatch and, when the provider
@@ -1262,22 +1290,20 @@ func classifyProviderError(err error, contextSize int) error {
 // absorbs estimation error. A small floor keeps a short-but-possible answer
 // instead of a 0-token cap (the provider's refusal error names the true limit
 // if the estimate is ever badly wrong — core's recovery handles that path).
-func fitOutput(output, contextSize int, args chatArgs) int {
+//
+// The proxy alone is not enough: on code- and JSON-dense history a real
+// tokenizer packs ~14% more than chars/4 (measured on the DeepSeek lane, prod
+// conv-aedf2d00aef8: 729,345 provider tokens against a 641k estimate). That is
+// 88k tokens of headroom the clamp believed it had, so it left the full
+// 393,216-token completion budget in place and the provider refused
+// prompt+completion. estimatePromptTokens therefore scales by the ratio this
+// provider+model has actually been observed to bill (observePromptUsage),
+// which needs no core change and self-corrects per tokenizer.
+func fitOutput(output, contextSize int, args chatArgs, key string) int {
 	if output <= 0 || contextSize <= 0 {
 		return output
 	}
-	// Count the prompt the way a provider bills it. Marshaling the request
-	// would count an attached image's base64 data URL as ~1 token per 4
-	// characters, so one screenshot would read as ~1M prompt tokens against
-	// a 200k window and clamp every image turn's completion to the floor.
-	// Text is still chars/4; each image part costs by pixel area.
-	promptEst := 0
-	for _, message := range args.Messages {
-		promptEst += messagePromptTokens(message)
-	}
-	if serialized, err := json.Marshal(args.Tools); err == nil {
-		promptEst += len(serialized) / 4
-	}
+	promptEst := estimatePromptTokens(args, key)
 	margin := contextSize/128 + 512 // ~0.8% + flat safety, scales with window
 	budget := contextSize - promptEst - margin
 	const floor = 512
@@ -1288,6 +1314,89 @@ func fitOutput(output, contextSize int, args chatArgs) int {
 		return budget
 	}
 	return output
+}
+
+// estimatePromptTokens counts the prompt the way a provider bills it. Counting
+// the marshaled request would price an attached image's base64 data URL at ~1
+// token per 4 characters — one screenshot reads as ~1M prompt tokens against a
+// 200k window and clamps every image turn to the floor — so text is chars/4,
+// each image part costs by pixel area, and tool schemas are chars/4. The total
+// is then scaled by the observed provider ratio for this model (see
+// promptRatio), because the raw proxy under-counts dense content.
+func estimatePromptTokens(args chatArgs, key string) int {
+	promptEst := 0
+	for _, message := range args.Messages {
+		promptEst += messagePromptTokens(message)
+	}
+	if serialized, err := json.Marshal(args.Tools); err == nil {
+		promptEst += len(serialized) / 4
+	}
+	return applyPromptRatio(key, promptEst)
+}
+
+// promptRatio is the per-model observed ratio between the prompt tokens the
+// provider reports and our own chars/4 estimate of the SAME request. 1.0 means
+// the proxy is accurate enough; DeepSeek-class tokenizers on code-dense history
+// land near 1.14. Keyed by provider+model because a tokenizer belongs to a
+// model, not to the harness. Populated only from measured responses, so a
+// fresh model simply starts at the raw proxy (today's behavior) and converges
+// within one round trip.
+var promptRatios sync.Map // string -> float64
+
+func promptRatioKey(providerName, model string) string {
+	return providerName + "\x1f" + model
+}
+
+// applyPromptRatio scales a raw estimate into the provider's token scale,
+// never downward below the proxy (an under-counting ratio would shrink the
+// admission budget for no reason) and never past a sanity bound that a single
+// mismeasured response could otherwise poison.
+func applyPromptRatio(key string, raw int) int {
+	if raw <= 0 {
+		return raw
+	}
+	v, ok := promptRatios.Load(key)
+	if !ok {
+		return raw
+	}
+	ratio, _ := v.(float64)
+	if ratio <= 1.0 {
+		return raw
+	}
+	if ratio > 3.0 {
+		ratio = 3.0
+	}
+	return int(float64(raw)*ratio) + 1
+}
+
+// observePromptUsage records the ratio a provider actually billed for a
+// request, from its own reported prompt_tokens. Ignored when either number is
+// missing or nonsensical, so a provider that omits usage never teaches a bogus
+// ratio. A single outlier is damped by blending with the previous observation.
+func observePromptUsage(args chatArgs, reportedPrompt int, key string) {
+	if reportedPrompt <= 0 || len(args.Messages) == 0 || key == "" {
+		return
+	}
+	raw := 0
+	for _, message := range args.Messages {
+		raw += messagePromptTokens(message)
+	}
+	if serialized, err := json.Marshal(args.Tools); err == nil {
+		raw += len(serialized) / 4
+	}
+	if raw < 256 { // too small to measure anything about a tokenizer
+		return
+	}
+	ratio := float64(reportedPrompt) / float64(raw)
+	if ratio <= 0 || ratio > 3.0 {
+		return
+	}
+	if prev, ok := promptRatios.Load(key); ok {
+		if prevRatio, _ := prev.(float64); prevRatio > 0 {
+			ratio = (prevRatio*3 + ratio) / 4 // damp a single outlier
+		}
+	}
+	promptRatios.Store(key, ratio)
 }
 
 // messagePromptTokens estimates one message's prompt cost the way providers

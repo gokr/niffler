@@ -55,8 +55,10 @@ before remote preparation/submission; uncertain outcomes remain unknown, never
 replayed or inferred successful/interrupted from disconnection. A durable remote
 activity receipt establishes turn settlement, not factual task success. Remote
 budgets use supported maxRounds/maxCalls/maxTokens, not a transport timeout as a
-wall-clock deadline. Cancel is local queued-only; later cancellation is explicit
-on the peer. The result tool reads a locally cached prose report, not a blocking relay.
+wall-clock deadline. A queued task is cancelled locally; a dispatched task is
+stopped through the peer's `session {stop: true}` (see "Session stop"), and the
+record follows what the peer answered. The result tool reads a locally cached
+prose report, not a blocking relay.
 `fleet_task_result {jobId, offset?, limit?}` returns `report`, `nextOffset`,
 `hasMore`, `reportBytes` and `reportComplete`, alongside the short `summary`.
 Offsets are UTF-8 byte boundaries, limit is 4..32768 bytes (default 8192).
@@ -436,6 +438,14 @@ These entries describe durable loss, not the runner's exact rendered synthetic
 notice text. Positive failure counts also add top-level `compactFailures` and
 `compactReason`.
 
+`toolPairRepair` is null or the conversation's durable tool-pairing ledger
+`{appliedThrough,count,firstAt,at,repaired:[{action:"synthesized"|"dropped"|
+"lost",callId?,id?,toolCallId?,name?,assistant?,at}]}` (store kind
+`toolpairrepair`, id = the conversation id). It records what a load-time repair
+had to do because stored history lost a record — see "Tool-call pairing
+(repaired projections)" below. `count` is the ledger length; `appliedThrough` is the highest
+canonical sequence the repair had verified when it was last written.
+
 `retainedSnapshots` lists compaction-input metadata
 `{id,trigger,createdAt,canonicalHigh,bytes}` without page contents. Inputs may
 be stale, failed or still in flight: existence does not certify retryability.
@@ -527,8 +537,8 @@ svc.<component>.call   # queue-grouped request/reply (one replica handles each c
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, provider?, model?,
                        #   thinking?, title?, cwd?, profile?, discovery?, tools?,
-                       #   maxRounds?, maxCalls?, maxTokens?, approvals?, limits?,
-                       #   compact?, export?, wake?};
+                       #   maxRounds?, maxCalls?, maxTokens?, stop?, approvals?,
+                       #   limits?, compact?, export?, wake?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
                        #   the conversation override. provider pins the conversation
@@ -537,10 +547,12 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   resolves under in the same header write — provider and
                        #   model are one selection, never separate halves (see
                        #   "Provider/model pins are one selection"). thinking
-                       #   (low|medium|high|max,
-                       #   empty clears) persists a per-conversation thinking-effort
-                       #   selection forwarded to the LLM as reasoning_effort
-                       #   (provider-dependent; providers without support never see it).
+                       #   (none|minimal|low|medium|high|xhigh|max,
+                       #   empty clears = provider default) persists a
+                       #   per-conversation thinking-effort selection forwarded to
+                       #   the LLM as reasoning_effort (provider-dependent;
+                       #   providers without support never see it; a rejected value
+                       #   is retried once without the field).
                        #   approvals?/limits? are the human's mutable conversation
                        #   controls; compact? runs the compactor now (no turn);
                        #   export? returns the exact provider request (no turn);
@@ -597,6 +609,12 @@ ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, lo
                        # models.updated reports effective model-catalog refreshes
                        # provider.switch selects the global backend; provider.changed
                        # invalidates redacted provider/runtime views
+                       # config.updated {domain, owner, rev} is published by the
+                       #   config component after every APPLIED settings change, so
+                       #   an owner that caches its values refreshes from it instead
+                       #   of polling the store on an idle tick (sdk/niffler/
+                       #   configowner.nim watchConfig). Fire-and-forget: a missed
+                       #   event leaves last-known values, never a failed write
 ev.log.<component>     # {component, level, msg, ctx?, at}; SDK log threshold applies
 ```
 
@@ -1854,3 +1872,33 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
   Core also checks the connected bus's cap at boot and warns when it is
   below the harness's 8MiB. A publish over the cap fails and reports the
   size against the server's `max_payload`.
+
+## Tool-call pairing (repaired projections)
+
+Strict providers re-validate tool-call pairing on **every** request: each entry
+of an assistant message's `tool_calls` must be answered by a `tool` message
+carrying that `tool_call_id`, and every `tool` message must answer a call that
+is pending. A transcript can lose that shape with nobody editing it — a
+message write is best-effort (an outage consumes the id and drops the record),
+a runner can be killed mid-batch, a fork copies whatever the store holds — and
+the damage is then **permanent**: every later request re-sends the same prefix
+and is refused identically, so the conversation can never run again.
+
+Because of that the runner repairs the **projection** when it loads one
+(`healToolPairing`, once per load, not per round):
+
+- a call with no result gets one synthesized `tool` message — an honest
+  "[no result was recorded ... re-run it if you still need the result]", never
+  a fabricated success — placed after the batch's real results;
+- a `tool` message answering no pending call, or a duplicate of one already
+  answered, is dropped from the request.
+
+Canonical history is **never** rewritten to do this: the store keeps its gap,
+`context_recall` still reaches the surviving bytes, and the repair is a pure
+function of stored history, so a resumed turn's prefix is byte-identical to the
+live one (prompt caching survives; one rebuild on the first affected load).
+The repaired entries are recorded durably in kind `toolpairrepair` (id = the
+conversation id, merged by call id / message id so re-deriving adds nothing),
+and writes that failed during a turn are recorded there as `action:"lost"` with
+the id the write consumed — the fact of a loss, not a copy of it. `context_status`
+reports the ledger as `toolPairRepair`.

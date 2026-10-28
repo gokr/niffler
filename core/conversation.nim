@@ -187,6 +187,11 @@ type
     convId*: string
     seqNo*: int
     persistenceFailures*: int ## Monotonic in this runner; completion cannot hide a lost message.
+    lostWrites*: seq[JsonNode]
+      ## Messages whose write FAILED (id, role, tool_call_id, name). The
+      ## id is consumed, so the record is gone for good; remembering it is
+      ## what lets the turn record WHICH tool pair it lost instead of a
+      ## later reader having to infer it from a gap in the id sequence.
     promptTokens*: int   ## model-reported prompt tokens of the last chat request
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
     ctxSize*: int        ## catalog model context window
@@ -405,6 +410,12 @@ proc persistMsg*(p: var Persister, value: JsonNode,
     if not p.failing:
       p.failing = true
       echo "core: WARNING persistence down (messages not saved): " & e.msg
+    var lost = %*{"id": result, "role": stored{"role"}.getStr(""),
+                  "at": epochTime()}
+    if stored{"tool_call_id"} != nil:
+      lost["toolCallId"] = %stored{"tool_call_id"}.getStr("")
+    if stored{"name"} != nil: lost["name"] = %stored{"name"}.getStr("")
+    p.lostWrites.add(lost)
 
 proc ctxAppend*(p: var Persister, messages: var seq[JsonNode],
                 msg: JsonNode, telemetry: JsonNode = nil) =
@@ -924,6 +935,189 @@ proc reindexNodes(p: var Persister) =
   ## messages[i]. Live appends set the index at insert; this is for deletes.
   for i in 0 ..< p.nodes.len:
     p.nodes[i].projectionIndex = i
+
+proc lostToolResultText(name: string): string =
+  ## The body of a synthesized tool result (healToolPairing): it says the
+  ## output is GONE rather than pretending the call returned nothing — the
+  ## model can re-run the call, the harness cannot recover the bytes.
+  "ERROR: no result was recorded for this tool call (" & name &
+    ") — its message never reached the store (a store outage or a runner " &
+    "killed mid-persist). The call produced no recorded output; re-run it " &
+    "if you still need the result."
+
+proc healToolPairing*(convId: string, messages: var seq[JsonNode],
+                      nodes: var seq[CtxNode]):
+    tuple[added, dropped: int, entries: JsonNode] =
+  ## Make the rebuilt projection provider-VALID without rewriting history.
+  ##
+  ## Every strict backend re-validates tool-call pairing on EVERY request: an
+  ## assistant message carrying `tool_calls` must be followed by one tool
+  ## message per `tool_call_id`, and a tool message must answer a call that is
+  ## actually pending. A transcript can lose that shape with nobody editing it
+  ## — `persistMsg` is best-effort (an outage consumes the id and drops the
+  ## record), a runner killed mid-persist loses the rest of a batch, a fork
+  ## copies whatever the store holds. Left alone the damage is PERMANENT:
+  ## every later request re-sends the same broken prefix and the provider
+  ## rejects it identically, so the conversation can never run again.
+  ##
+  ## This is a PROJECTION edit, never a canonical rewrite (COMPACTION.md §4.2
+  ## — the store keeps every byte):
+  ##  * an unanswered call gets one synthesized tool message, honest about the
+  ##    loss, after the batch's real results;
+  ##  * a tool message answering no pending call — or a duplicate of one
+  ##    already answered — is dropped from the request.
+  ## It is a pure function of the stored history, so the repaired prefix is
+  ## byte-stable across turns, resumes and forks: prompt caching holds after
+  ## the single rebuild the first affected load pays. The caller guarantees the
+  ## §4.2 ledger invariant `nodes.len == messages.len`; both seqs move in
+  ## lockstep. `entries` names every repair, for the durable ledger
+  ## (recordToolPairRepair) — the rule stays derivable, the FACT of the loss
+  ## does not have to be re-derived by every reader that wants to show it.
+  result = (added: 0, dropped: 0, entries: newJArray())
+  var outMsgs: seq[JsonNode] = @[]
+  var outNodes: seq[CtxNode] = @[]
+  let n = min(messages.len, nodes.len)
+  var i = 0
+  while i < n:
+    let m = messages[i]
+    let role = m{"role"}.getStr("")
+    let calls = m{"tool_calls"}
+    let isBatch = role == "assistant" and calls != nil and
+                  calls.kind == JArray and calls.len > 0
+    if not isBatch:
+      if role == "tool":
+        # No assistant batch is waiting for this result.
+        result.entries.add(%*{"key": "dropped:" & nodes[i].id,
+          "action": "dropped", "id": nodes[i].id,
+          "toolCallId": m{"tool_call_id"}.getStr(""),
+          "name": m{"name"}.getStr(""), "at": epochTime()})
+        inc result.dropped
+        inc i
+        continue
+      outMsgs.add(m)
+      outNodes.add(nodes[i])
+      inc i
+      continue
+    let assistantId = nodes[i].id
+    outMsgs.add(m)
+    outNodes.add(nodes[i])
+    inc i
+    var pending: seq[tuple[id, name: string]] = @[]
+    for tc in calls:
+      let id = tc{"id"}.getStr("")
+      if id.len > 0:
+        pending.add((id: id, name: tc{"function"}{"name"}.getStr("")))
+    var answered: seq[string] = @[]
+    while i < n and messages[i]{"role"}.getStr("") == "tool":
+      let tid = messages[i]{"tool_call_id"}.getStr("")
+      var known = false
+      for p in pending:
+        if p.id == tid: known = true; break
+      if not known or answered.contains(tid):
+        result.entries.add(%*{"key": "dropped:" & nodes[i].id,
+          "action": "dropped", "id": nodes[i].id, "toolCallId": tid,
+          "name": messages[i]{"name"}.getStr(""), "assistant": assistantId,
+          "at": epochTime()})
+        inc result.dropped
+        inc i
+        continue
+      answered.add(tid)
+      outMsgs.add(messages[i])
+      outNodes.add(nodes[i])
+      inc i
+    for p in pending:
+      if answered.contains(p.id): continue
+      outMsgs.add(%*{"role": "tool", "tool_call_id": p.id, "name": p.name,
+                     "content": lostToolResultText(p.name)})
+      # A notice node: the entry stands for history the projection cannot
+      # show, it is not canonical, and compaction may cover it like any other
+      # synthetic node (§4.2). The id derives from the call id, so a resumed
+      # run rebuilds the same node.
+      let nodeId = convId & "#heal-" & p.id
+      outNodes.add(CtxNode(source: nsNotice, id: nodeId,
+                           projectionIndex: outMsgs.high))
+      result.entries.add(%*{"key": "synthesized:" & p.id,
+        "action": "synthesized", "callId": p.id, "name": p.name,
+        "assistant": assistantId, "node": nodeId, "at": epochTime()})
+      inc result.added
+  if result.added == 0 and result.dropped == 0:
+    result.entries = newJArray()
+    return
+  messages = outMsgs
+  nodes = outNodes
+  for k in 0 ..< nodes.len:
+    nodes[k].projectionIndex = k
+
+proc recordToolPairRepair(ct: CoreTools, convId: string, entries: JsonNode,
+                          appliedThrough: int) =
+  ## Persist the FACT of a tool-pairing repair: one append-only ledger doc per
+  ## conversation (kind toolpairrepair), keyed by call id (a synthesized
+  ## result) and by message id (a dropped one). Re-deriving the deterministic
+  ## rule on the same history merges nothing new, and `appliedThrough` only
+  ## advances — so this is a record of what was lost, not a second source of
+  ## truth the repair has to agree with. It exists because a hole in a
+  ## transcript that only a projection-rule reader can see is invisible to the
+  ## human, the UI, `context_status`, and the next reader that has not learned
+  ## the rule yet.
+  ##
+  ## Best-effort like every other metadata write: a repair that cannot be
+  ## recorded still repaired the request, and the next load derives it again.
+  if entries == nil or entries.kind != JArray or entries.len == 0: return
+  for attempt in 0 ..< 3:
+    try:
+      let (old, rev) = ct.storeGetItem(toolPairRepairKind, convId)
+      var doc = %*{"repaired": newJArray()}
+      if old != nil and old.kind == JObject:
+        doc = old
+      if doc{"repaired"} == nil or doc{"repaired"}.kind != JArray:
+        doc["repaired"] = newJArray()
+      var seen = initHashSet[string]()
+      for e in doc{"repaired"}:
+        seen.incl(e{"key"}.getStr(""))
+      var fresh = 0
+      for e in entries:
+        let key = e{"key"}.getStr("")
+        if key.len == 0 or key in seen: continue
+        seen.incl(key)
+        doc{"repaired"}.add(e)
+        inc fresh
+      let through = max(appliedThrough, doc{"appliedThrough"}.getInt(0))
+      if fresh == 0 and through == doc{"appliedThrough"}.getInt(0): return
+      doc["appliedThrough"] = %through
+      doc["count"] = %doc{"repaired"}.len
+      if doc{"firstAt"} == nil: doc["firstAt"] = %epochTime()
+      doc["at"] = %epochTime()
+      discard ct.storePutRev(toolPairRepairKind, convId, doc, expectRev = rev)
+      return
+    except CatchableError as e:
+      if attempt == 2:
+        echo "core: WARNING tool-pair repair ledger not written (" & e.msg &
+             ") — the repair still applies; it is re-derived on every load"
+
+proc flushLostWrites*(ct: CoreTools, convId: string, p: var Persister) =
+  ## Record the messages persistMsg could not store. The id is consumed, so the
+  ## record is gone for good and the tool pair it belonged to is damaged — that
+  ## fact belongs in the store while it is still knowable, not inferred later
+  ## from a gap in the id sequence. Called at both ends of a turn: before it
+  ## (an outage of the previous turn may have recovered) and after it (so this
+  ## turn's own loss is recorded in the same turn).
+  ##
+  ## A runner can still be killed between the loss and the next flush; the
+  ## load-time repair re-derives from the transcript in that case, which is
+  ## why this is a recording, never the repair's source of truth.
+  if p.lostWrites.len == 0: return
+  var entries = newJArray()
+  for lost in p.lostWrites:
+    var e = %*{"key": "lost:" & lost{"id"}.getStr(""), "action": "lost",
+               "id": lost{"id"}, "role": lost{"role"}, "at": lost{"at"}}
+    if lost{"toolCallId"} != nil: e["toolCallId"] = lost{"toolCallId"}
+    if lost{"name"} != nil: e["name"] = lost{"name"}
+    entries.add(e)
+  let n = entries.len
+  p.lostWrites = @[]
+  recordToolPairRepair(ct, convId, entries, p.seqNo)
+  echo "core: WARNING " & $n & " message(s) of " & convId &
+       " were not persisted; recorded as lost for tool-pair repair"
 
 proc toolBodyText*(m: JsonNode): string =
   ## One tool message's TEXT, whatever shape its content has: the plain string
@@ -2964,7 +3158,19 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
       "maxTotalInputTokens": (if target > 0: %(target * cfg.maxLlmCalls)
                                else: newJNull()),
       "maxTotalOutputTokens": cfg.maxSummaryTokens * cfg.maxLlmCalls,
-      "timeoutMs": cfg.timeoutMs
+      "timeoutMs": cfg.timeoutMs,
+      # The bounds validateCandidate ENFORCES on the returned checkpoint. The
+      # component cannot see this module's constants, and a summarizer never
+      # told the list cap answers with whatever the covered span implies — a
+      # 5k-message conversation naturally yields more than 32 completed-work
+      # items, so the escalation was rejected as an INVALID candidate
+      # ("checkpoint field \"completedWork\" must be a bounded list") and the
+      # turn died terminal while a replayable snapshot sat on disk. Advisory
+      # only: the validator remains the authority, and a component that
+      # ignores this field fails exactly as it did before.
+      "maxListItems": ckMaxListLen,
+      "maxFiles": ckMaxFiles,
+      "maxFieldChars": ckMaxFieldLen
     }
   }
   if provider.len > 0: request["provider"] = %provider
@@ -3637,6 +3843,34 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
             if window > 0:
               p.ctxSize = window
               p.ctxWarned = false
+          # Correct the calibration offset from the refusal's OWN count before
+          # measuring anything. The provider just told us what this exact
+          # projection cost in its tokenizer ("729345 in the messages"); the
+          # local chars/4 proxy is what under-reported and let the request go
+          # out. Re-measuring with the same estimator produced a false "the
+          # candidate fits" verdict and then a false "cannot be reduced":
+          # the ladder never ran and a 5k-message conversation ended terminal
+          # twice with ~200k tokens of droppable history in the projection.
+          # calib is the additive offset checkContext/runTrimRung/contextTarget
+          # already measure in (provider scale − local estimate), so setting it
+          # here makes every rung below see the provider's number. Only ever
+          # RAISES the offset: a refusal under-counting us would be a different
+          # bug, and lowering calib here could un-trigger a legitimate trim.
+          block:
+            let providerCount = promptTokensFromOverflow(e.msg)
+            if providerCount > 0:
+              let localCount = estimateTokens(messages) + toolTokens
+              let offset = providerCount - localCount
+              if offset > p.calib:
+                p.calib = min(offset, max(p.ctxSize, providerCount))
+                if onEvent != nil:
+                  onEvent("context", %*{
+                    "sessionId": p.convId, "turnId": turnId,
+                    "reason": "calib:refusal",
+                    "providerTokens": providerCount,
+                    "estimatedTokens": localCount,
+                    "calib": p.calib,
+                    "note": "provider-counted prompt tokens from the refusal correct the local estimate before recovery measures the candidate"})
           # Unknown capacity and a refusal that carries no parseable window:
           # admission stands down, so checkContext below would pass the
           # candidate unchanged and the retry would be byte-identical — a
@@ -4006,11 +4240,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       # In particular, model-originated store writes must not rewrite a frozen
       # allowlist and evade single-hop delegation. Apply before both waves and
       # serial dispatch; internal persistence still uses the ordinary gate.
-      if ct.cat.toolSchema(name).isHidden() or
+      let schemaForGate = ct.cat.toolSchema(name)
+      if schemaForGate.isHidden() or
           (ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
            name notin ct.sessionAllowlist[]):
         parseFailed = true
-        args = %*{"__scopeDenied": true}
+        # Two different refusals, so the model learns the truth: a hidden tool
+        # is harness machinery nobody may call (the dispatch gate itself uses
+        # lock_acquire), while an allowlist miss is scoping. A conversation
+        # frozen BEFORE a tool became hidden still advertises it in its
+        # prefix — its refusal has to say why, not blame an allowlist it never
+        # had.
+        args = %*{"__scopeDenied": true,
+                  "__deniedHidden": schemaForGate.isHidden()}
       items.add((id: id, name: name, args: args,
                  parseFailed: parseFailed, rawArgs: rawArgs))
       if onEvent != nil:
@@ -4100,7 +4342,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       var oc: ToolCallOutcome
       if it.parseFailed:
         oc = ToolCallOutcome(error:
-          if it.args{"__scopeDenied"}.getBool(false):
+          if it.args{"__deniedHidden"}.getBool(false):
+            "tool '" & it.name & "' is harness machinery, not a model tool — " &
+            "the harness calls it internally and a model may not"
+          elif it.args{"__scopeDenied"}.getBool(false):
             "tool '" & it.name & "' is not in this session's tool allowlist"
           else:
             "tool call arguments were not valid JSON (truncated or garbled stream): " &
@@ -5072,6 +5317,31 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                                projectionIndex: 0), 0)
           stored = keptM
           storedNodes = keptN
+    # Provider validity of the REBUILT projection, once per load: this is the
+    # only moment a runner sees the stored history it is about to send, and a
+    # damaged pair (a lost tool result, an orphaned one) makes EVERY later
+    # request fail with the same 400 — the conversation would be permanently
+    # dead. Running the rule here, not per round, keeps the repair off the
+    # request path; being a pure function of the store is what keeps a resumed
+    # turn's prefix byte-identical to the live one (prompt cache intact).
+    # `stored`/`storedNodes` are 1:1 and canonical-only at this point (the
+    # system and checkpoint nodes are added to the ledger below), which is why
+    # the repair happens BEFORE the ledger is assembled.
+    let healed = healToolPairing(sessionId, stored, storedNodes)
+    # Canonical ids the repair removed from the projection. A committed
+    # projection's `prunes` may still name one of them (§6.3 prune replay):
+    # that is dead weight like a trim-dropped ref, not drift, and refusing it
+    # would replace a repairable conversation with "context-recovery-required".
+    var healedAway: seq[string] = @[]
+    for e in healed.entries:
+      if e{"action"}.getStr("") == "dropped":
+        healedAway.add(e{"id"}.getStr(""))
+    if healed.added > 0 or healed.dropped > 0:
+      recordToolPairRepair(ct, sessionId, healed.entries,
+        max(lastSeqNo, (if projection != nil: projectedHigh else: 0)))
+      echo "core: tool-pair repair for " & sessionId & ": " &
+           $healed.added & " synthesized result(s), " & $healed.dropped &
+           " unpaired tool message(s) dropped from the request"
     for m in stored: entry.messages.add(m)
     # Image attachments: rebuild the provider projection from the refs. The
     # rule is greedy-newest within the budget and a pure function of the
@@ -5148,6 +5418,22 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           if trimThrough > 0 and canonicalSeqOf(rec.id) > 0 and
               canonicalSeqOf(rec.id) <= trimThrough:
             discard  # the trim removed it from the projection — not drift
+          elif healedAway.contains(rec.id):
+            # The tool-pair repair removed it from the REQUEST (an unpaired
+            # result a strict provider would refuse), so the ref is dead weight
+            # — but the bytes are still canonical, so the recorded edit must
+            # still reproduce against them. Wrong bounds stay drift: the ref
+            # being unreplayable is what proves the projection cannot be
+            # rebuilt, and "the repair happened to drop it" does not excuse it.
+            let storedMsg = ct.storeGetItem("message", rec.id).value
+            if storedMsg == nil:
+              return %*{"error": "context-recovery-required: projection prune ref is not in the rebuilt projection: " & rec.id}
+            let body = toolBody(providerMessage(storedMsg))
+            if body.bytes != rec.bytesBefore or
+                stubBody(rec.id, storedMsg{"name"}.getStr("")).len !=
+                  rec.bytesAfter:
+              return %*{"error": "context-recovery-required: projection prune ref cannot be reproduced: " & rec.id}
+            discard
           else:
             for n in p.nodes:
               if n.id == rec.id: inProjection = true; break
@@ -5760,6 +6046,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       ct.approval.approvalMode = ""
       ct.approval.taskPolicy = nil
 
+  # A previous turn's lost writes (the store may be reachable again now).
+  flushLostWrites(ct, sessionId, entry.persister)
   var turnError = ""
   var turnAcct: TurnAccounting
   let reply = runTurn(ct, entry.persister, entry.messages, turnAcct,
@@ -5768,6 +6056,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
                       entry.limitRounds, entry.limitTokens, entry.limitSeconds,
                       entry.allowlist, turnError)
+  # This turn's own lost writes: recorded while the turn's accounting is still
+  # in hand, so the ledger names what the transcript cannot.
+  flushLostWrites(ct, sessionId, entry.persister)
   # Terminal admission receipt (docs/FLEET.md §4): the activation's outcome,
   # turnId and usage for exactly this turn, committed before the human
   # activity receipt so a requester that lost the reply can reconcile this

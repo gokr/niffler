@@ -220,6 +220,54 @@ proc windowFromOverflow*(msg: string): int =
     i = msg[0 ..< i].rfind(key)
   0
 
+proc numberEndingAt(msg: string, stop: int): int =
+  ## Read the integer that ends just before `stop`, 0 otherwise. Tolerates
+  ## the thousands separators providers use in prose counts ("729,345").
+  var j = stop - 1
+  while j >= 0 and msg[j] in {' ', ':', '=', '~', '('}:
+    dec j
+  var digits = ""
+  var i = j
+  while i >= 0:
+    let ch = msg[i]
+    if ch in {'0' .. '9'}:
+      digits.add(ch)
+    elif ch in {',', '_'} and digits.len > 0 and i > 0 and
+        msg[i - 1] in {'0' .. '9'}:
+      discard  # separator between digit groups, keep reading
+    else:
+      break
+    dec i
+  if digits.len == 0: return 0
+  var reversed = newStringOfCap(digits.len)
+  for k in countdown(digits.high, 0): reversed.add(digits[k])
+  try: parseInt(reversed)
+  except ValueError: 0
+
+proc promptTokensFromOverflow*(msg: string): int =
+  ## How many prompt tokens the PROVIDER counted for the refused request,
+  ## parsed from the refusal itself: "... you requested 1122561 tokens
+  ## (729345 in the messages, 393216 in the completion)". 0 when absent.
+  ##
+  ## This is the one measurement a refusal hands over for free, and it is the
+  ## provider's own scale — not the chars/4 proxy. Recovery uses it to correct
+  ## the calibration offset BEFORE the ladder decides whether the candidate
+  ## fits: without it the runner re-measured with the same estimator that
+  ## under-reported and concluded "cannot be reduced" while ~200k tokens of
+  ## droppable history sat in the projection (prod: conv-aedf2d00aef8, ~14%
+  ## low on code-dense history, two terminal context-overflow receipts).
+  ##
+  ## The completion figure is deliberately ignored: what must fit the window is
+  ## the prompt, and the harness reserves the output cap separately.
+  for marker in [" in the messages", " in messages"]:
+    var i = msg.rfind(marker)
+    while i >= 0:
+      let n = numberEndingAt(msg, i)
+      if n > 0: return n
+      if i == 0: break
+      i = msg[0 ..< i].rfind(marker)
+  0
+
 proc retryDelayMs*(policy: RetryPolicy, attempt: int,
                    requestedMs = 0): int =
   ## Exponential backoff with jitter for attempt 0, 1, 2... A positive

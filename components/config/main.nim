@@ -29,6 +29,7 @@
 ## Contract: docs/research/CONFIG-CONTRACT.md.
 
 import std/[json, strutils, times]
+import natsnim
 import niffler/sdk
 
 let comp = newComponent("config", "0.1.0")
@@ -87,13 +88,14 @@ proc checkSchemaShape(schema: JsonNode, where: string) =
         let x = prop{"x-config"}
         if x.kind != JObject: fail(where & "." & name & ": x-config must be an object")
         for key, _ in x.pairs:
-          if key notin ["title", "description", "secret", "readOnly", "application"]:
+          if key notin ["title", "description", "secret", "readOnly",
+                        "application", "humanOnly"]:
             fail(where & "." & name & ": unknown x-config key '" & key & "'")
         if x{"application"} != nil and
             x{"application"}.getStr("") notin
               ["immediate", "next turn", "next conversation", "component restart"]:
           fail(where & "." & name & ": invalid application timing")
-        for flag in ["secret", "readOnly"]:
+        for flag in ["secret", "readOnly", "humanOnly"]:
           if x{flag} != nil and x{flag}.kind != JBool:
             fail(where & "." & name & ": " & flag & " must be boolean")
   if schema{"required"} != nil and schema{"required"}.kind != JArray:
@@ -144,6 +146,18 @@ proc validateValue(schema, value: JsonNode, where: string) =
         if schema{"properties"}{name} == nil:
           fail(where & ": unknown property '" & name & "'")
 
+proc announceChange(c: Component, domain, owner: string, rev: int) =
+  ## Tell snapshot owners a domain changed. Fire-and-forget by design: a
+  ## component that misses it keeps its last values until its next real read,
+  ## and no subscriber can fail the mutation that already succeeded.
+  try:
+    c.nc.publish("ev.config.updated",
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+               payload: %*{"domain": domain, "owner": owner,
+                           "rev": rev}).encode())
+  except CatchableError:
+    discard
+
 proc propMeta(declaration: JsonNode, name: string): JsonNode =
   ## x-config of one declared property (nil when absent).
   declaration{"schema", "properties", name, "x-config"}
@@ -155,6 +169,80 @@ proc isSecret(declaration: JsonNode, name: string): bool =
 proc isReadOnly(declaration: JsonNode, name: string): bool =
   let m = propMeta(declaration, name)
   m != nil and m{"readOnly"} != nil and m{"readOnly"}.getBool(false)
+
+proc isHumanOnly(declaration: JsonNode, name: string): bool =
+  ## A property a MODEL may not turn on or off, only report. Approval alone is
+  ## not enough for a field whose whole meaning is "a human decided this":
+  ## approval answers "may I run this?", while a subagent asked to widen its
+  ## own reach would be asking the person who delegated the task, not the
+  ## person who owns the setting.
+  let m = propMeta(declaration, name)
+  m != nil and m{"humanOnly"} != nil and m{"humanOnly"}.getBool(false)
+
+proc effectiveTiming(declaration: JsonNode, name: string): string =
+  ## When a change to `name` takes effect: the property's own claim, else the
+  ## domain's fallback. Never invented — config_declare refuses a declaration
+  ## that omits the domain timing, so this always has an honest answer.
+  let m = propMeta(declaration, name)
+  if m != nil and m{"application"} != nil and m{"application"}.getStr("").len > 0:
+    return m{"application"}.getStr("")
+  declaration{"application"}.getStr("")
+
+# ---------------------------------------------------------------------------
+# who is calling
+#
+type CallerKind = enum
+  ckDirect,     ## no live session: a human's CLI, a script, another component
+  ckRoot,       ## a conversation a human is driving
+  ckSubagent,   ## a conversation spawned as a child by agent_spawn/agent_run
+  ckUnknown     ## a session whose lineage record could not be read
+
+proc callerKind(c: Component): CallerKind =
+  ## Classify the caller from a fact core OWNS, not from a claim the caller
+  ## makes: the session id is the runner's private context (x-harness
+  ## sessionId, injected and overwritten by core at dispatch) and "is this a
+  ## subagent" is the durable `sessionmeta.parent` lineage relation — the same
+  ## one agent_run authorizes against.
+  ##
+  ## Deliberately NOT done: inferring a subagent from a prompt hint or a tool
+  ## argument. Both are supplied by the caller, which is the thing being
+  ## classified.
+  if c.sessionContext.len == 0: return ckDirect
+  try:
+    let meta = c.storeGet("sessionmeta", c.sessionContext, 5_000)
+    if meta.value == nil: return ckRoot
+    if meta.value{"parent"}.getStr("").len > 0: return ckSubagent
+    return ckRoot
+  except StoreNotFoundError:
+    # No lineage record. A subagent always has one (agent_spawn writes it
+    # before the child's first turn), so this is a root conversation —
+    # possibly one created before sessionmeta existed.
+    return ckRoot
+  except CatchableError:
+    # Unreadable is not root. This only matters for humanOnly properties, and
+    # there failing closed is the point.
+    return ckUnknown
+
+proc humanOnlyRefusal(c: Component, declaration: JsonNode,
+                      names: seq[string]): string =
+  ## "" when this caller may touch `names`, else why it may not. Only
+  ## humanOnly properties are consulted, so an ordinary tuning field stays
+  ## editable by an autonomous subagent.
+  var guarded: seq[string]
+  for name in names:
+    if isHumanOnly(declaration, name): guarded.add(name)
+  if guarded.len == 0: return ""
+  case c.callerKind()
+  of ckDirect, ckRoot: ""
+  of ckSubagent:
+    "property '" & guarded.join("', '") & "' is human-only: it cannot be " &
+    "changed from a subagent session, because the approval would be answered " &
+    "by whoever delegated this task rather than by the human who owns the " &
+    "setting. Report the change you need instead of making it."
+  of ckUnknown:
+    "property '" & guarded.join("', '") & "' is human-only and this " &
+    "session's lineage record is unreadable, so the caller cannot be shown " &
+    "to be a human's own conversation"
 
 # ---------------------------------------------------------------------------
 # declaration access
@@ -251,6 +339,16 @@ comp.tool(%*{"onDemand": true}):
     for name, prop in declaration{"schema", "properties"}.pairs:
       if prop{"default"} != nil and not isSecret(declaration, name):
         defaults[name] = prop{"default"}
+    # Per-property timing, reported so an agent or a generated form can promise
+    # the right thing. Only properties that override the domain fallback are
+    # listed; the rest inherit `application` below, which is always present.
+    var timings = newJObject()
+    var humanOnly: seq[string]
+    for name, _ in declaration{"schema", "properties"}.pairs:
+      let m = propMeta(declaration, name)
+      if m != nil and m{"application"} != nil:
+        timings[name] = %effectiveTiming(declaration, name)
+      if isHumanOnly(declaration, name): humanOnly.add(name)
     var redacted = newJObject()
     for name, _ in declaration{"schema", "properties"}.pairs:
       if values.hasKey(name):
@@ -262,9 +360,16 @@ comp.tool(%*{"onDemand": true}):
        "description": declaration{"description"}, "owner": owner,
        "ownerAvailable": ownerAvailable, "rev": rev, "values": redacted,
        "defaults": defaults, "schema": declaration{"schema"},
-       "application": declaration{"application"}}
+       "application": declaration{"application"}, "timings": timings,
+       "humanOnly": %humanOnly}
 
-comp.tool(%*{"approval": "always", "effect": "write"}):
+# `sessionId: true` is how this tool learns WHICH conversation is asking: core
+# injects the runner's private `__session.session` at dispatch, so a humanOnly
+# property can be told apart from a subagent's attempt. It carries no lease and
+# does not fail closed, so a direct (sessionless) caller is still served — it
+# simply reads as "".
+comp.tool(%*{"onDemand": true, "approval": "always", "effect": "write",
+             "sessionId": true}):
   proc config_patch(domain: string, patch: JsonNode,
                     expectRev: int = -2): JsonNode =
     ## Change settings in one domain. The patch is validated before anything
@@ -286,9 +391,16 @@ comp.tool(%*{"approval": "always", "effect": "write"}):
       return errResult("domain '" & domain & "' has no mutable state", "not-writable")
     # Refuse read-only properties by name before the schema check so the error
     # says which property and why.
-    for name, _ in patch.pairs:
+    var touched: seq[string]
+    for name, _ in patch.pairs: touched.add(name)
+    for name in touched:
       if isReadOnly(declaration, name):
         return errResult("property '" & name & "' is read-only", "bad-request")
+    # Approval is necessary but not sufficient (CONFIG.md C10): a property the
+    # owner marked human-only may only be changed from a human's own
+    # conversation or from a direct, sessionless call.
+    let refusal = comp.humanOnlyRefusal(declaration, touched)
+    if refusal.len > 0: return errResult(refusal, "human-only")
     try:
       validateValue(declaration{"schema"}, patch, "patch")
     except SchemaError as e:
@@ -300,10 +412,20 @@ comp.tool(%*{"approval": "always", "effect": "write"}):
       result = applied
       result["ok"] = %true
       result["domain"] = %domain
+      # Say when the change lands, so a caller does not read the new value back
+      # and conclude the new BEHAVIOR is already live. This is the timing the
+      # owner promised in its declaration; config reports it, the owner honors
+      # it.
+      var applies = newJObject()
+      for name in touched:
+        applies[name] = %effectiveTiming(declaration, name)
+      result["applies"] = applies
+      comp.announceChange(domain, owner, applied{"rev"}.getInt(0))
     except CatchableError as e:
       return errResult(owner & " refused the change: " & e.msg, "owner-refused")
 
-comp.tool(%*{"approval": "always", "effect": "write"}):
+comp.tool(%*{"onDemand": true, "approval": "always", "effect": "write",
+             "sessionId": true}):
   proc config_reset(domain: string, properties: seq[string] = @[],
                     expectRev: int = -2): JsonNode =
     ## Drop explicit values so the declared defaults apply again.
@@ -321,6 +443,15 @@ comp.tool(%*{"approval": "always", "effect": "write"}):
         return errResult("unknown property '" & name & "'", "bad-request")
       if isReadOnly(declaration, name):
         return errResult("property '" & name & "' is read-only", "bad-request")
+    # An empty list means "every mutable property", so it would clear
+    # human-only values too. Guard the broad form explicitly instead of letting
+    # it slip past a check written for the narrow one.
+    var guarded = properties
+    if guarded.len == 0:
+      for name, _ in declaration{"schema", "properties"}.pairs:
+        if not isReadOnly(declaration, name): guarded.add(name)
+    let refusal = comp.humanOnlyRefusal(declaration, guarded)
+    if refusal.len > 0: return errResult(refusal, "human-only")
     var args = %*{"op": "reset", "domain": domain, "properties": properties}
     if expectRev != -2: args["expectRev"] = %expectRev
     try:
@@ -328,6 +459,8 @@ comp.tool(%*{"approval": "always", "effect": "write"}):
       result = applied
       result["ok"] = %true
       result["domain"] = %domain
+      comp.announceChange(domain, declaration{"owner"}.getStr(""),
+                          applied{"rev"}.getInt(0))
     except CatchableError as e:
       return errResult(declaration{"owner"}.getStr("") &
                        " refused the reset: " & e.msg, "owner-refused")
@@ -354,7 +487,15 @@ comp.tool(%*{"hidden": true, "effect": "write"}):
     if scope != "instance":
       return errResult("scope '" & scope & "' is not implemented; only 'instance' is",
                        "bad-request")
-    let application = declaration{"application"}.getStr("immediate")
+    # REQUIRED, with no default. "When does this take effect" is a claim the
+    # owner must make deliberately: a silent "immediate" default let a
+    # component promise more than it delivers (observe captured its caps at
+    # creation but would have declared "immediate").
+    let application = declaration{"application"}.getStr("")
+    if application.len == 0:
+      return errResult("application is required (immediate | next turn | " &
+                       "next conversation | component restart) — state when a " &
+                       "change takes effect", "bad-request")
     if application notin ["immediate", "next turn", "next conversation", "component restart"]:
       return errResult("invalid application timing", "bad-request")
     if declaration{"schema"} == nil:

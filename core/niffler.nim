@@ -334,8 +334,9 @@ proc main() =
   # An empty value counts as unset (the install dance passes NIF_NATS_URL=).
   let natsUrlFromEnv = existsEnv("NIF_NATS_URL") and
                        getEnv("NIF_NATS_URL").len > 0
-  # .env from cwd and the harness root (existing env always wins)
-  loadDotEnv(".env", root / ".env")
+  # .env from the harness root only — never the cwd (existing env always wins;
+  # see sdk/dotenv.nim for why a working directory is not a trust boundary).
+  loadDotEnv(root / ".env")
   let instance = loadInstanceIdentity(root)
   openNatsLib()
   echo "core: Niffler " & harnessGitHash(root) & " — root " & root

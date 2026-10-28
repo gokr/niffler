@@ -20,6 +20,22 @@ import (
 
 const defaultNatsUrl = "nats://127.0.0.1:4222"
 
+// HarnessRoot is the home root for local discovery: NIF_ROOT when set, else
+// this binary's own clone (var/bin/<bin> → clone root) — never the cwd, so an
+// installed symlink resolves to the clone the binary was built into. Mirrors
+// harnessRoot() in sdk/subjects.nim. It is a discovery answer, not a trust
+// decision: trustedRoot (dotenv.go) additionally requires the directory to
+// look like a clone.
+func HarnessRoot() string {
+	if root := os.Getenv("NIF_ROOT"); root != "" {
+		return root
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Dir(filepath.Dir(filepath.Dir(exe)))
+	}
+	return ""
+}
+
 // ResolveNatsUrl returns the bus address: NIF_NATS_URL env →
 // <home root>/var/nats-url discovery file → the well-known local default.
 // The home root is NIF_ROOT or this binary's own clone (var/bin/<bin> →

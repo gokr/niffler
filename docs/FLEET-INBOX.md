@@ -110,7 +110,7 @@ fuller page.
 
 | Situation | What you see | What you can do |
 |---|---|---|
-| Worker unreachable mid-job | `state` stays `running`; the row goes stale | wait, or `fleet_task_cancel` |
+| Worker unreachable mid-job | `state` stays `running`; the row goes stale | wait for the peer; `fleet_task_cancel` needs its answer to confirm a stop |
 | Outcome unprovable | `uncertain` — never invented success | inspect the worker by hand |
 | Worker rebuilt/removed after settling | verdict intact, detail unavailable | read the summary/artifact, ask again |
 | Job refused by the worker | `failed` with the worker's reason | fix the grant/task and resubmit |
