@@ -301,16 +301,16 @@ pass. Repository status is not a claim that installed binaries were updated.
   (`make test-store-tidb`, `go test ./...` in components/store-tidb), and two
   owners on one dataset are isolated there. What remains is the **harness**
   layer — two live harnesses, one dataset — which §2 tracks separately.
-- [ ] Update manual translations, migration docs, PLAN and changelog.
-  Changelog is current for every slice shipped so far. Still open: the
-  translations (below) and `docs/PLAN.md`, whose last entry predates this
-  branch's configuration/instance work.
-  Known gap: `MANUAL.zh.md`/`MANUAL.zh-TW.md` have 56 `###` sections against 58
-  in English — they are missing "Declared configuration (the `config`
-  component)", "Pinned providers never reroute" and "GitHub CLI and a token".
-  So the whole config surface (including `humanOnly`) has no localized
-  documentation. A section-level refresh, not a line edit: translate those
-  three, then re-sync the rest.
+- [x] Update manual translations, migration docs, PLAN and changelog.
+  Changelog is current for every slice shipped so far. The translations were
+  the real gap: `MANUAL.zh.md`/`MANUAL.zh-TW.md` were missing **four** sections
+  against English — "Declared configuration (the `config` component)", "Bulk
+  literal replacement (`replace_across`)", "Pinned providers never reroute" and
+  "GitHub CLI and a token" — so the whole config surface (including
+  `humanOnly`) had no localized documentation. All four are now translated in
+  both locales and interleaved at the same positions English uses (verified by
+  heading position, not just by presence). §PLAN still lags this branch's
+  configuration/instance work and is tracked separately.
 - [ ] Separate plugin/TUI commits, tests and release tracking. No implied
   production restart, migration or plugin release from source edits alone.
 
