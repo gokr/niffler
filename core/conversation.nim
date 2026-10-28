@@ -3158,7 +3158,19 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
       "maxTotalInputTokens": (if target > 0: %(target * cfg.maxLlmCalls)
                                else: newJNull()),
       "maxTotalOutputTokens": cfg.maxSummaryTokens * cfg.maxLlmCalls,
-      "timeoutMs": cfg.timeoutMs
+      "timeoutMs": cfg.timeoutMs,
+      # The bounds validateCandidate ENFORCES on the returned checkpoint. The
+      # component cannot see this module's constants, and a summarizer never
+      # told the list cap answers with whatever the covered span implies — a
+      # 5k-message conversation naturally yields more than 32 completed-work
+      # items, so the escalation was rejected as an INVALID candidate
+      # ("checkpoint field \"completedWork\" must be a bounded list") and the
+      # turn died terminal while a replayable snapshot sat on disk. Advisory
+      # only: the validator remains the authority, and a component that
+      # ignores this field fails exactly as it did before.
+      "maxListItems": ckMaxListLen,
+      "maxFiles": ckMaxFiles,
+      "maxFieldChars": ckMaxFieldLen
     }
   }
   if provider.len > 0: request["provider"] = %provider

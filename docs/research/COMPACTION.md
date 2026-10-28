@@ -339,7 +339,17 @@ Rules:
 
 - All six checkpoint fields required; lists may be empty; `currentBlocker` may
   be `null`. Bound field lengths, array counts, total encoded size, nesting.
-  Reject unknown semantic fields in v1 rather than render them.
+  Reject unknown semantic fields in v1 rather than render them. **The bounds are
+  part of the request**: `budget.maxListItems`, `budget.maxFiles` and
+  `budget.maxFieldChars` carry the numbers validation enforces, so a summarizer
+  never has to guess a cap it cannot see. A component that was not told the cap
+  answers with what the covered span implies — a 5,000-message span naturally
+  yields more than 32 completed-work items — and every such candidate is
+  rejected as *invalid* (not declined), which routes to the lossy rung and, at
+  pressure with no room left, to a terminal `context-recovery-required` while a
+  perfectly replayable snapshot sits on disk. The defaults
+  (`ckMaxListLen = 32`, `ckMaxFiles = 64`, `ckMaxFieldLen = 4000`) apply to a
+  caller that omits them; validation remains the authority.
 - `provenance`/diagnostics never enter model context. Unknown usage is
   `unknown`, never zero. Claimed savings are advisory; the runner re-measures.
 - `cutBefore` must be one of the runner's permitted boundaries, and `covered`
@@ -378,7 +388,11 @@ Rules:
 4. Otherwise serialize the covered span as attributed data for a dedicated
    summarization request, bounded per-message (large tool bodies replaced with
    explicit omission markers + canonical ids — the summarizer is told what was
-   omitted, so it can say "content omitted" rather than invent it).
+   omitted, so it can say "content omitted" rather than invent it). The
+   instruction also restates the runner's validation bounds
+   (`budget.maxListItems`/`maxFiles`/`maxFieldChars`) as hard limits with the
+   merge-and-prioritize rule: the lists summarize the span, they are not a
+   transcript, and an over-long answer is rejected outright.
 5. If it still exceeds input capacity, consolidate in bounded sequential chunks
    at whole-message/tool-group boundaries: each call takes the previous
    structured checkpoint plus the next chunk. All calls share

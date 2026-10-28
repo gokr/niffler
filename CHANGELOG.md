@@ -6,6 +6,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The runner sends a compactor the bounds validation enforces
+  (`budget.maxListItems`/`maxFiles`/`maxFieldChars`), and the shipped
+  `compaction` component restates them in the summarization instruction as hard
+  limits with a merge-and-prioritize rule. A summarizer that was never told the
+  cap answered with what the covered span implied — over 32 completed-work items
+  on a 5,000-message span — and every escalation was rejected as an *invalid*
+  candidate (`checkpoint field "completedWork" must be a bounded list`), so
+  `/compact` and the pressure rung both failed on the longest conversations.
+  Validation remains the authority; a component that ignores the field fails as
+  it did before.
+
 - Configuration properties can now be marked `x-config.humanOnly`: readable and
   reportable by a model, but writable only from a human's own conversation or
   from a direct (sessionless) tool call. Approval alone was not enough for a
