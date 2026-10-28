@@ -12,6 +12,17 @@ test("kill-run rejects directory traversal", { skip: process.platform !== "linux
     (error) => error.status === 2);
 });
 
+// A typo must not look like a successful kill. Before this check the script
+// matched nothing and printed "sent SIGKILL to 0 process(es)", which reads as
+// a clean stop of a run that never existed.
+test("kill-run refuses a run id that does not exist", {
+  skip: process.platform !== "linux",
+}, () => {
+  assert.throws(() => execFileSync("bash", [script, "no-such-run-abc123"],
+    { stdio: "pipe", encoding: "utf8" }),
+    (error) => error.status === 2 && /no such run directory/.test(error.stderr));
+});
+
 test("kill-run kills only the exact run and counts processes", {
   skip: process.platform !== "linux",
 }, async () => {
