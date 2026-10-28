@@ -1,18 +1,23 @@
 # CONFIG — component-owned, schema-described configuration (decisions)
 
-> **Status: design, not implemented.** This supersedes the surface design in
-> `SETTINGS.md` where the two differ; `SETTINGS.md` still holds the per-key
-> mechanics that survived (merge-patch validation, `expectRev`, application
-> timing classes, the "no settings in the prompt prefix" rule). Nothing of
-> either document exists in code today: `settings:global`, `config_*` and the
-> declared-schema seam appear nowhere outside these docs, and
+> **Status: implemented on `main`** (the `feat/settings` branch merged
+> 2026-10-22; extended 2026-10-27). This supersedes the surface design in
+> `SETTINGS.md` where the two differ; the per-key mechanics that survived
+> (merge-patch validation, `expectRev`, application timing, the "no settings in
+> the prompt prefix" rule) are enforced by the shipped surface. The `config`
+> peer, `config_list`/`config_get`/`config_patch`/`config_reset`, the
+> `config_declare` seam and instance-scoped storage are live. The wire contract
+> is [CONFIG-CONTRACT.md](CONFIG-CONTRACT.md) and operation is
+> [../MANUAL.md](../MANUAL.md#declared-configuration-the-config-component).
+> Shared-scope settings remain a proposal (`config` is `instance`-only);
+> nothing uses a single `settings:global` document, and
 > `core/workspaceconfig.nim` has no production call site.
 >
 > Provenance: reconstructed from the `deepseek-search` conversation (audit at
-> `6a47727`), which ended by creating this worktree (`feat/settings`). This
-> records the agreed direction and proposed mechanics, not an implemented wire
-> contract. §11 distinguishes subsequent instance/fleet requirements from
-> proposals. Delivery and test status: [CONFIG-TODO.md](CONFIG-TODO.md).
+> `6a47727`), which ended by creating the `feat/settings` worktree. The
+> questions in §10 were settled by building it; delivery and remaining work are
+> tracked in [CONFIG-TODO.md](CONFIG-TODO.md), and instance persistence is
+> recorded in [INSTANCE-STORE.md](INSTANCE-STORE.md).
 
 ## 0. Baseline finding (the audit)
 
@@ -258,7 +263,7 @@ plugin-owned config:
   explicit instance dimension when several instances share the dataset.
 - **Prompt-cache discipline**: no settings value is prompt content, so none of
   this may touch the frozen prefix — settings changes are announced as events
-  (`ev.settings.updated` / config-changed), never spliced into a head.
+  (`ev.config.updated`), never spliced into a head.
 
 ## 11. Instance-aware persistence
 

@@ -51,7 +51,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 `make doctor` 會檢查先決條件；`make down-here` 只會停止此複本的行程。
 
-測試：`make test` 執行匯流排合約測試套件（每個測試一個私有匯流排）；`make gotest` 執行 Go 測試、vet 與競態檢查。
+測試：`make test` 是完整閘門（匯流排契約測試套件加基準適配器測試，見下方命令表）；`make gotest` 執行 Go 測試、vet 與競態檢查。
 
 ## Commands
 
@@ -69,7 +69,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make install-lsp` | 安裝 `lsp` 元件的預設語言伺服器 |
 | `make install-tools` | agent 的 CLI 工具箱（經 bash 使用）：jq、yq、ripgrep、fd、fzf、bat、tree、htop、wget、zip、unzip、sqlite3 |
 | `make install-tools-rg` | 僅 ripgrep（來自同一張表）；`make setup` 會執行它 |
-| `make test` | 完整測試門：匯流排契約測試套件（UI 自身的測試與型別檢查在 `gokr/niffler-ui`） |
+| `make test` | 完整測試門：匯流排契約測試套件加基準適配器測試（UI 自身的測試與型別檢查在 `gokr/niffler-ui`） |
 | `make test-server` | 匯流排契約測試套件（每個測試自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 單一元件的契約測試，例如 `make test-fetch` |
 | `make gotest` | Go 單元測試與 vet（重要模組帶 `-race`） |
