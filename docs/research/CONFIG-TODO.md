@@ -180,6 +180,17 @@ pass. Repository status is not a claim that installed binaries were updated.
   registry is still `servers.json` (by design — it is language data, and
   `lsp_registry add` is the single-path mutation), and `NIF_LSP_BIN_DIRS` stays
   env (an executable search path is a deployment fact, same category as above).
+- [x] MCP connection limits (`mcp.limits`): `probeTimeoutMs`, with
+  `NIF_MCP_PROBE_TIMEOUT_MS` retained as the migration path. Two things the
+  authoritative-reader rule decided here:
+  - `NIF_MCP_DIRECT_THRESHOLD` is **NOT** in the domain: `mcp-bridge` reads it
+    in its own process, so a value stored in `mcp`'s record would change a
+    mirror and not the rule. `NIF_MCP_REGISTRY_URL`/`BRIDGE_BIN` stay env by
+    category (egress/path).
+  - The timeout has to CROSS the process boundary: the bridge cannot read the
+    owner's record and its own env lookup would silently win, so it now takes
+    `--probe-timeout-ms`, with the caller's resolved value beating the bridge's
+    env. A unit test pins that precedence (and fails if env wins).
 - [x] Background process limits (`processes.limits`): `spoolCap`, `pollChunk`,
   with `NIF_PROCESSES_*` retained as the migration path and bench seam. The test
   proves a STORED value changes what a poll actually returns (1024 bytes instead
