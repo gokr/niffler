@@ -38,6 +38,43 @@ proc readCapture(tmpPath: string): string =
       try: removeFile(tmpPath)
       except CatchableError: discard
 
+proc selfBinaryReplaced*(): bool =
+  ## True when the file this process was exec'd from is gone — i.e. a rebuild
+  ## (`make build`) replaced the binary in place. Linux resolves
+  ## `/proc/self/exe` to `<path> (deleted)` in that case, and
+  ## `getAppFilename()` returns that string verbatim.
+  when defined(linux):
+    result = getAppFilename().endsWith(" (deleted)")
+  else:
+    result = false
+
+proc selfBinaryPath*(): string =
+  ## Path to THIS executable that is still runnable after `make build`
+  ## replaced it on disk.
+  ##
+  ## A long-lived component is rebuilt in place while it runs. Linux then
+  ## resolves `/proc/self/exe` to `<path> (deleted)`, `getAppFilename()`
+  ## returns that string verbatim, and every re-exec fails with ENOENT naming
+  ## a path that never existed:
+  ##
+  ##   fleet idle: No such file or directory
+  ##   Additional info: /…/var/bin/fleet (deleted)
+  ##
+  ## Silent in the worst way: the supervisor's child looks healthy while its
+  ## subprocesses never start, so `fleet` stopped reconciling and every task
+  ## sat at `queued` with `checkedAt: 0` — which reads like an unreachable peer.
+  ##
+  ## `/proc/self/exe` itself IS executable and still reaches the original
+  ## inode (verified: a child exec'd through it runs the pre-replacement
+  ## binary). Stripping the " (deleted)" suffix would NOT work — that path now
+  ## names the replacement, or nothing at all. So return the procfs path
+  ## whenever the on-disk name is stale.
+  let raw = getAppFilename()
+  when defined(linux):
+    if raw.endsWith(" (deleted)"):
+      return "/proc/self/exe"
+  raw
+
 proc cloexecInheritedFds*() =
   ## Mark every open fd above stderr close-on-exec, right before spawning a
   ## child. Pipes/sockets created by the spawn itself come later and stay

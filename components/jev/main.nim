@@ -336,7 +336,8 @@ proc startShadow(job: ShadowJob) =
   task.resultPath = dir / (key & ".result.json")
   try:
     writeFile(task.inputPath, $(%*{"task": task.task, "candidates": task.candidates}))
-    task.process = startProcess(getAppFilename(), args = ["--judge", task.inputPath,
+    # selfBinaryPath: a rebuild replaces this binary while the component runs.
+    task.process = startProcess(selfBinaryPath(), args = ["--judge", task.inputPath,
       task.resultPath], options = {poParentStreams})
     running = task
   except CatchableError as e:

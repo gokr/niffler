@@ -83,7 +83,9 @@ proc resolveGit() =
   ## would recurse into the component. Resolve once: first PATH hit that
   ## is not our own binary; fall back to the plain findExe result (which
   ## runGit rejects when it is still ourselves).
-  let self = getAppFilename()
+  # selfBinaryPath: after a rebuild this binary's own name is "<path>
+  # (deleted)", and comparing against that would never match the real git.
+  let self = selfBinaryPath()
   let found = findExe("git")
   if found.len > 0 and not sameFile(found, self):
     gGitPath = found
@@ -108,7 +110,7 @@ proc runGit(args: seq[string], timeoutMs: int): tuple[code: int, output: string]
   ## travel byte-for-byte (every argument quoteShell'd; the shell only
   ## joins words) and combined output is captured to a temp file — osproc
   ## pipes deadlock chatty children (sdk/procutil).
-  if gGitPath.len == 0 or sameFile(gGitPath, getAppFilename()):
+  if gGitPath.len == 0 or sameFile(gGitPath, selfBinaryPath()):
     result.code = 127
     result.output = "git is not installed on this machine (or cannot be " &
       "resolved past the git component's own binary) — install it " &
