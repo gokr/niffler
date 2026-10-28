@@ -621,6 +621,27 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The TiDB store engine can boot again.** Migration 3 used `ALTER TABLE
+  docs DROP PRIMARY KEY, ADD PRIMARY KEY(...)`, which TiDB v5.0 and later
+  refuse for a clustered index (Error 8200), so `store-tidb` failed in
+  `openStore` on every start and could never run its suite. The migration is
+  now an idempotent table rebuild — add `instance_id`, copy, one atomic
+  `RENAME TABLE` — that also converges on a database left half-applied by the
+  old file and preserves any owners already recorded instead of resetting them.
+  Running the live suite against a real TiDB surfaced three test defects, now
+  fixed: a nil-JSON iteration over the engine's explicit "unsupported" vector
+  refusal, a sqlite-only ranked-paging shape asserted on an unranked engine,
+  and a binding test that asserted the opposite of instance isolation.
+
+- **The lock and config write tools are not offered to models.** `lock_acquire`
+  and `lock_release` declared `effect: write` but not `hidden`, so their
+  schemas sat in every conversation's frozen toolset — and a model could take
+  a lease over another conversation's paths with any `sessionId`, denying its
+  writes. Both are hidden now, and `lock_status`, `config_patch` and
+  `config_reset` are `onDemand` rather than prefixed. A conversation frozen
+  before a tool became hidden still advertises it; that call now reports the
+  harness-machinery refusal instead of blaming a session allowlist.
+
 - **`make build` works on a cold Go module cache again.** The sqlite-vec header
   lookup ran `go list -m -f={{.Dir}}` before anything had fetched
   `mattn/go-sqlite3`; for a module that `go.mod` names but nobody has
