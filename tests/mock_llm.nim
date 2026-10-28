@@ -65,6 +65,14 @@ import niffler/sdk
 # - NIF_MOCK_RAW_OVERFLOW: 1 rejects with the RAW provider phrasing (no
 #   context-overflow prefix, no window suffix) — the classifier must catch
 #   the provider's own words ("Context limit exceeded").
+# - NIF_MOCK_OUTPUT_CAP: the completion budget this fake provider reserves
+#   against its window, the way every OpenAI-compatible host does. With it set,
+#   the refusal depends on prompt + cap, so a prompt that fits on its own is
+#   still refused — the prod shape admission's prompt-only estimate cannot see.
+# - NIF_MOCK_OVERFLOW_DETAIL: 1 words the refusal like the real provider ("you
+#   requested N tokens (M in the messages, K in the completion)"), which is the
+#   only measurement of the true tokenizer a failed request hands back —
+#   recovery calibrates from it (core/retry.nim:promptTokensFromOverflow).
 let mockCtx = block:
   let v = getEnv("NIF_MOCK_CTX", "0")
   try: parseInt(v)
@@ -78,6 +86,11 @@ let mockEnforceCtx = block:
   try: parseInt(v)
   except CatchableError: 0
 let mockRawOverflow = getEnv("NIF_MOCK_RAW_OVERFLOW", "").len > 0
+let mockOverflowDetail = getEnv("NIF_MOCK_OVERFLOW_DETAIL", "") == "1"
+let mockOutputCap = block:
+  let v = getEnv("NIF_MOCK_OUTPUT_CAP", "0")
+  try: parseInt(v)
+  except CatchableError: 0
 let mockEnforcePairing = getEnv("NIF_MOCK_ENFORCE_PAIRING", "") == "1"
 let mockVision = getEnv("NIF_MOCK_VISION", "")
 let mockTextOnly = getEnv("NIF_MOCK_TEXT_ONLY", "") == "1"
@@ -291,7 +304,16 @@ proc(c: Component, args: JsonNode): JsonNode =
         "tool messages responding to each 'tool_call_id'. (insufficient tool " &
         "messages following tool_calls message)")
   let rejectAt = if mockEnforceCtx > 0: mockEnforceCtx else: mockCtx
-  if rejectAt > 0 and providerCount > rejectAt:
+  # NIF_MOCK_OUTPUT_CAP models a provider that reserves the requested output
+  # budget against its window (every OpenAI-compatible one does): the prompt
+  # ALONE must fit, but the request is refused when prompt + completion budget
+  # exceeds the window. That is the shape of the prod failure — 729,345 prompt
+  # tokens against a 1,048,576 window, refused only because the declared
+  # 393,216-token completion was counted too — and it is the case admission's
+  # prompt-only estimate cannot detect.
+  let effective = if mockOutputCap > 0: providerCount + mockOutputCap
+                  else: providerCount
+  if rejectAt > 0 and effective > rejectAt:
     logRequest(providerCount, true, "over-window", messages, args{"tools"})
     if mockRawOverflow:
       # The raw phrasing a real host returns — no stable prefix, no window
@@ -300,6 +322,17 @@ proc(c: Component, args: JsonNode): JsonNode =
       raise newException(ValueError,
         "llm error: error, status code: 400, status: 400 Bad Request, " &
         "message: , body: {\"error\":\"Context limit exceeded\"}")
+    if mockOverflowDetail:
+      # The real provider's own wording, verbatim in shape: it names the total,
+      # the prompt count and the completion count. core/retry.nim's
+      # promptTokensFromOverflow reads the prompt figure and corrects its own
+      # estimate from it before the recovery ladder measures anything.
+      raise newException(ValueError,
+        "context-overflow: This model's maximum context length is " &
+        $rejectAt & " tokens. However, you requested " & $effective &
+        " tokens (" & $providerCount & " in the messages, " &
+        $mockOutputCap & " in the completion). Please reduce the length of " &
+        "the messages or completion.; window " & $rejectAt & " tokens")
     # The enforcing fake provider: same stable text the real adapter emits
     # (core/retry.nim classifies on the prefix, recovery parses the window).
     raise newException(ValueError,

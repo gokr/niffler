@@ -3843,6 +3843,34 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
             if window > 0:
               p.ctxSize = window
               p.ctxWarned = false
+          # Correct the calibration offset from the refusal's OWN count before
+          # measuring anything. The provider just told us what this exact
+          # projection cost in its tokenizer ("729345 in the messages"); the
+          # local chars/4 proxy is what under-reported and let the request go
+          # out. Re-measuring with the same estimator produced a false "the
+          # candidate fits" verdict and then a false "cannot be reduced":
+          # the ladder never ran and a 5k-message conversation ended terminal
+          # twice with ~200k tokens of droppable history in the projection.
+          # calib is the additive offset checkContext/runTrimRung/contextTarget
+          # already measure in (provider scale − local estimate), so setting it
+          # here makes every rung below see the provider's number. Only ever
+          # RAISES the offset: a refusal under-counting us would be a different
+          # bug, and lowering calib here could un-trigger a legitimate trim.
+          block:
+            let providerCount = promptTokensFromOverflow(e.msg)
+            if providerCount > 0:
+              let localCount = estimateTokens(messages) + toolTokens
+              let offset = providerCount - localCount
+              if offset > p.calib:
+                p.calib = min(offset, max(p.ctxSize, providerCount))
+                if onEvent != nil:
+                  onEvent("context", %*{
+                    "sessionId": p.convId, "turnId": turnId,
+                    "reason": "calib:refusal",
+                    "providerTokens": providerCount,
+                    "estimatedTokens": localCount,
+                    "calib": p.calib,
+                    "note": "provider-counted prompt tokens from the refusal correct the local estimate before recovery measures the candidate"})
           # Unknown capacity and a refusal that carries no parseable window:
           # admission stands down, so checkContext below would pass the
           # candidate unchanged and the retry would be byte-identical — a

@@ -6,6 +6,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Context recovery now trusts the refusal's own count instead of re-confirming
+  the estimate that let the request out. A provider refusal names exactly what
+  it counted ("… 1122561 tokens (729345 in the messages, 393216 in the
+  completion)"); recovery parses the prompt figure
+  (`retry.promptTokensFromOverflow`) and raises the calibration offset before
+  the ladder measures anything, reporting `calib:refusal`. Previously it
+  re-measured with the same under-reporting proxy, concluded the candidate
+  already fit, and declined to resend — ending the turn with
+  `context-recovery-required … the candidate could not be reduced below the
+  window` while ~200k tokens of droppable history sat in the projection. The
+  offset is only ever raised by a refusal. Regressions: `t_retry_unit`'s
+  `promptTokensFromOverflow` cases and `t_ctxcompact`'s `refusalCalibrates`
+  block, which reproduces the production error against the old behaviour.
+
 - The runner sends a compactor the bounds validation enforces
   (`budget.maxListItems`/`maxFiles`/`maxFieldChars`), and the shipped
   `compaction` component restates them in the summarization instruction as hard
