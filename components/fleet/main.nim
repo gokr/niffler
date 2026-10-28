@@ -82,22 +82,97 @@ discard comp.tool("fleet_update", schema(%*{
     "effect": "write", "timeoutMs": 4400000,
     "writes": {"paths": ["profile"]}, "workspace": {"pathFields": ["profile"]}})
 let taskProps = %*{
-  "profile": profile, "requestId": {"type": "string"},
-  "mode": {"type": "string", "enum": ["ask", "unattended"],
-           "description": "ask (default): the original read-only slice, where the worker stops for human approvals. unattended: run coding tools under the peer operator's task profile, without approval prompts. Omit for read-only work."},
+  "profile": profile, "instance": {"type": "string", "description": "Registered worker name or identity; use instead of profile"},
+  "requestId": {"type": "string"},
+  "mode": {"type": "string", "enum": ["ask", "unattended", "delegate"],
+           "description": "ask (default): the original read-only slice, where the worker stops for human approvals. unattended: run coding tools under a NAMED worker task profile (taskProfile). delegate: send a goal to a trusted worker whose operator enabled delegation once (fleet_delegation_set on that machine) — no profile name, tools and budgets optional. Omit for read-only work."},
   "taskProfile": {"type": "string",
                   "description": "Unattended mode only: name of the WORKER operator's task profile. Its ceilings (tools, roots, budgets) bound this grant; the intersection is the effective policy and the worker refuses anything wider."},
   "content": {"type": "string"}, "cwd": {"type": "string"},
-  "tools": {"type": "array", "items": {"type": "string"}},
+  "tools": {"type": "array", "items": {"type": "string"},
+            "description": "Optional in mode 'delegate' (omitted = the worker's configured ceiling); required in ask/unattended. Naming fewer tools only narrows authority."},
   "maxRounds": {"type": "integer", "minimum": 1, "maximum": 32},
-  "maxCalls": {"type": "integer", "minimum": 1, "maximum": 100},
-  "maxTokens": {"type": "integer", "minimum": 1, "maximum": 100000}}
+  "maxCalls": {"type": "integer", "minimum": 1, "maximum": 500},
+  "maxTokens": {"type": "integer", "minimum": 1, "maximum": 2000000}}
 discard comp.tool("fleet_task_submit", schema(taskProps,
-  @["profile", "requestId", "content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"],
-  "Delegate a bounded task to another machine using a private verified receipt. Explicit tools and round/call/token budgets required. Same requestId is idempotent; unknown outcomes are never replayed. Completion automatically notifies this conversation; do not poll to wait. Read-only work is the default ('ask': the worker still stops for human approvals). mode 'unattended' runs ordinary coding tools (edit, bash, git, tests) without approval prompts, bounded by the peer operator's task profile and by these budgets — the effective policy is the intersection of the two, the notice says whether the work was confined, and control-plane or indirect-delegation tools are never granted. Results are claims by the worker, not proof of factual success."),
+  @["requestId", "content", "cwd"],
+  "Delegate a goal to another machine: a registered instance (name or identity) or a private verified profile receipt, exactly one. mode 'delegate' sends a goal to a trusted worker (no taskProfile; tools and budgets optional, omitted ones take the worker's configured ceiling, and any value you name can only narrow it) — use it when you want the worker to decide its steps and report back. mode 'ask' is the bounded read-only slice (worker stops for human approvals); mode 'unattended' requires a named taskProfile and explicit tools/budgets. Same requestId is idempotent; unknown outcomes are never replayed. Completion automatically notifies this conversation; do not poll to wait. Control-plane and indirect-delegation tools are never granted, and results are the worker's claims, not independently verified facts."),
   proc(c: Component, args: JsonNode): JsonNode = createJob(c, args),
   %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true,
     "workspace": {"pathFields": ["profile"]}})
+discard comp.tool("fleet_task_continue", schema(%*{
+  "jobId": {"type": "string", "description": "The settled delegated goal to continue"},
+  "requestId": {"type": "string", "description": "Idempotency key for THIS activation; a retry replays its receipt"},
+  "content": {"type": "string", "description": "The follow-up instruction, e.g. 'address the review comments on that PR'"},
+  "close": {"type": "boolean", "description": "Mark the goal finished after this turn: no further continuation is accepted (nothing is deleted)"}},
+  @["jobId", "requestId", "content"],
+  "Continue a settled delegated goal in the SAME worker conversation, so the worker keeps the context its first turn built — 'now address the review comments', 'also run the full suite'. Only the instruction may change: the machine, workspace, tools and budgets were fixed when the goal was admitted, and naming any of them refuses (that needs a new conversation). Each continuation is a fresh activation with its own admission key, so a lost reply stays reconcilable and can never run the work twice. Replayable with the same requestId; completion notifies this conversation like the first turn."),
+  proc(c: Component, args: JsonNode): JsonNode = continueJob(c, args),
+  %*{"onDemand": true, "approval": "always", "sessionContext": true, "noSpawn": true})
+# --- trusted delegation setting (the simplification) -----------------------
+# ONE operator decision, instead of a profile per assignment
+# (docs/FLEET-SIMPLIFICATION.md). Same document shape as a task profile, so the
+# same validation, control-plane denial and confinement honesty apply; what
+# changes is that a requester needs no profile name and may omit tools/budgets.
+# Off unless stored. Human-gated: enabling unattended authority is never a model
+# decision, and it is never reachable from a task (controlPlaneTools).
+discard comp.tool("fleet_delegation_set", schema(%*{
+  "enabled": {"type": "boolean",
+              "description": "true accepts unattended goal delegation from trusted requesters on this machine; false revokes it for FUTURE delegations (a running task keeps the policy it was admitted under)"},
+  "tools": {"type": "array", "items": {"type": "string"},
+            "description": "The ceiling: every tool a delegated goal may ever run here. Omit to keep the current list; control-plane machinery is refused."},
+  "roots": {"type": "array", "items": {"type": "string"},
+            "description": "Workspace roots a delegated goal may run in. Omit to keep the current list; the filesystem root is refused."},
+  "maxRounds": {"type": "integer", "minimum": 0, "maximum": 32,
+               "description": "Optional ceiling; 0/omitted means the runner's normal turn default rather than a new mandatory cap"},
+  "maxCalls": {"type": "integer", "minimum": 0, "maximum": 500},
+  "maxTokens": {"type": "integer", "minimum": 0, "maximum": 2000000},
+  "note": {"type": "string", "description": "Operator note (never sent to a requester)"}},
+  @["enabled"],
+  "Configure this machine's ONE trusted-delegation decision: whether a verified remote Niffler may send a goal here that runs ordinary tools without per-task approval prompts. Enabling is a human decision (approval-gated) and is off by default; a requester can only narrow what is configured here, never widen it, and quoting this setting by name grants nothing. Note the honest limit: the bus caller identity is self-declared, so this trusts bus/SSH access to the machine, not a per-requester credential."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    var doc = newJObject()
+    # Merge: omitted keys keep their current value, so an operator can revoke
+    # without restating (or accidentally narrowing) the tool/root lists.
+    var current: JsonNode = nil
+    try: current = c.storeGet(delegationSettingsKind, delegationSettingsId).value
+    except CatchableError: discard
+    if current != nil and current.kind == JObject:
+      for key, value in current: doc[key] = value.copy()
+    doc["name"] = %delegationProfileName
+    doc["unattended"] = %args{"enabled"}.getBool(false)
+    if args{"confinement"} != nil: doc["confinement"] = args["confinement"]
+    elif doc{"confinement"} == nil: doc["confinement"] = %"unconfined"
+    for key in ["tools", "roots", "maxRounds", "maxCalls", "maxTokens", "note"]:
+      if args{key} != nil: doc[key] = args[key].copy()
+    let problem = taskProfileProblem(doc)
+    if problem.len > 0:
+      return errResult(problem, "task-policy-invalid")
+    for t in profileToolList(doc):
+      if isControlPlane(t):
+        return errResult("tool '" & t & "' is control-plane machinery and cannot" &
+                         " be granted to delegated goals", "task-policy-denied")
+    discard c.storePut(delegationSettingsKind, delegationSettingsId, doc)
+    %*{"ok": true, "settings": publicPolicy(doc),
+      "text": (if doc{"unattended"}.getBool(false):
+                 "this machine accepts unattended goal delegation within these limits"
+               else:
+                 "unattended goal delegation is disabled; future requests refuse")},
+  %*{"onDemand": true, "approval": "always", "effect": "write",
+    "writes": {"none": true}})
+discard comp.tool("fleet_delegation_get", schema(newJObject(), @[],
+  "Read this machine's trusted-delegation setting (docs/FLEET-SIMPLIFICATION.md): whether unattended goal delegation is enabled, the tool/root/budget ceiling, and the honest note that bus caller identity is self-declared. Read-only."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    var doc: JsonNode = nil
+    try: doc = c.storeGet(delegationSettingsKind, delegationSettingsId).value
+    except CatchableError: discard
+    if doc == nil:
+      return %*{"ok": true, "configured": false, "enabled": false,
+        "text": "no trusted-delegation setting: unattended goal delegation is off"}
+    %*{"ok": true, "configured": true,
+      "enabled": doc{"unattended"}.getBool(false),
+      "settings": publicPolicy(doc)},
+  %*{"onDemand": true, "effect": "read"})
 # --- operator-side task profiles (F2) -------------------------------------
 # The worker operator writes a `taskprofile` document; a requester may only
 # name it. Set/remove are separate so a profile can be inspected and revoked
@@ -160,9 +235,7 @@ proc taskReader(verb: string): ToolHandler =
   result = proc(c: Component, args: JsonNode): JsonNode =
     let j = authorized(c, args).value
     if verb == "result":
-      %*{"jobId": j["id"], "state": j["state"], "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
-        "summary": j{"notice", "summary"}.getStr(""), "bounded": true,
-        "remoteSession": j["sessionId"], "detail": "Full transcript remains on the pinned peer; open this remoteSession there."}
+      reportPage(j, args)
     else: publicJob(j)
 for name in ["status", "result"]:
   # `human` is the one way to read a job without a conversation: the owner
@@ -171,8 +244,10 @@ for name in ["status", "result"]:
   # could list every job and then be unable to open any of them.
   discard comp.tool("fleet_task_" & name, schema(%*{
     "jobId": {"type": "string"},
+    "offset": {"type": "integer", "minimum": 0, "description": "Report cursor from nextOffset; result only"},
+    "limit": {"type": "integer", "minimum": 4, "maximum": 32768, "description": "Report page bytes (default 8192); result only"},
     "human": {"type": "boolean", "description": "Human-scope read: a person may read any job this harness submitted, without session context (the inbox needs this to open what it lists)"}}, @["jobId"],
-    "Read an owned remote task's durable status or cached bounded report. Unreachable and unknown do not mean failed or successful; no submission replay. Completion is pushed automatically."),
+    "Read an owned task's status or locally cached final prose report. Use nextOffset as offset while hasMore. Legacy reports explicitly mark summary-only data incomplete. No peer contacted or submission replay."),
     taskReader(name),
     %*{"onDemand": true, "effect": "read", "sessionContext": true})
 discard comp.tool("fleet_task_receipt", schema(%*{

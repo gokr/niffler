@@ -98,6 +98,103 @@ proc main() =
     check("requires finite " & key, rejected(proc() = validateTask(bad)))
   check("malformed capabilities refuse safely", rejected(proc() = validateCapabilities(%*{}, %*{}, args)))
   block:
+    # Capability NEGOTIATION for goal delegation: a peer that predates the trust
+    # setting must be refused up front, never silently downgraded to `ask` (its
+    # authority would be a human approval prompt nobody is there to answer).
+    # The same old peer must still serve the older modes — that compatibility
+    # half is what keeps this change from cutting an old worker off.
+    let oldPeer = %*{"taskScopeVersion": 1, "admissionPolicyVersion": 1,
+      "components": {"core": ["session", "session_prepare", "admission_get",
+                              "get", "list", "catalog"],
+                     "read": ["read"]}}
+    let goalSchemas = %*{"tools": [{"name": "read", "schema": {
+      "x-harness": {"effect": "read"}}}]}
+    let delegateGoal = %*{"content": "goal", "cwd": peer.root, "mode": "delegate"}
+    check("a peer without the trust epoch refuses a goal", rejected(proc() =
+      validateCapabilities(oldPeer, goalSchemas, delegateGoal)))
+    var newPeer = oldPeer.copy()
+    newPeer["delegationPolicyVersion"] = %1
+    check("a peer advertising the trust epoch accepts the same goal",
+      not rejected(proc() = validateCapabilities(newPeer, goalSchemas, delegateGoal)))
+    let postV1Peer = %*{"taskScopeVersion": 1, "admissionPolicyVersion": 1,
+      "taskPolicyVersion": 1,
+      "components": {"core": ["session", "session_prepare", "admission_get",
+                              "get", "list", "catalog"],
+                     "read": ["read"]}}
+    let askTask = %*{"content": "look", "cwd": peer.root, "mode": "ask",
+                     "tools": ["read"], "maxRounds": 2, "maxCalls": 2,
+                     "maxTokens": 1000}
+    check("an older peer still serves an ask task", not rejected(proc() =
+      validateCapabilities(postV1Peer, goalSchemas, askTask)))
+  block:
+    # Trusted goal delegation: a goal alone validates; anything that would
+    # widen authority or smuggle orchestration still refuses.
+    let named = %*{"content": "goal", "cwd": peer.root, "mode": "delegate",
+                   "taskProfile": "coding"}
+    check("delegate refuses a named profile", rejected(proc() = validateTask(named)))
+    let bare = %*{"content": "goal", "cwd": peer.root, "mode": "delegate"}
+    check("delegate needs no tools or budgets", not rejected(proc() = validateTask(bare)))
+    let smuggled = %*{"content": "goal", "cwd": peer.root, "mode": "delegate",
+                      "tools": ["fleet_task_submit"]}
+    check("delegate refuses control-plane tools", rejected(proc() = validateTask(smuggled)))
+  block:
+    # The worker's trust setting is resolved at birth; a machine without one
+    # refuses, and enabling it is a plain store document (never a model call).
+    let stalled = newCoreSandbox("fleet-delegate", ["store", "llm", "edit", "bash"])
+    defer: removeDir(stalled.root)
+    discard fixtureBin(stalled, "llm", repo / "tests/mock_llm.nim", "fixture-mock-llm")
+    let (dbus, durl) = startNats()
+    defer: stopServer(dbus)
+    var dnc = waitConnect(durl)
+    defer: dnc.close()
+    let dp = startComponent(stalled.sandboxBin("niffler"), durl, stalled.root,
+      extra = [("NIF_MOCK_ROUNDS", "0"), ("NIF_MOCK_TOOLJSON", "[]"),
+        ("NIF_FLEET_TASK_WORKERS", "0")], logFile = stalled.root / "var/core.log")
+    defer: stopProcess(dp)
+    doAssert waitComponent(dnc, "edit")
+    let refused = call(dnc, "core", "session", %*{
+      "sessionId": "delegate-nosetting", "content": "do the thing",
+      "task": {"delegate": true, "workspace": stalled.root}})
+    # The refusal arrives as the session error text: no turn was started, which
+    # is the point (never a task that waits for an approval nobody will give).
+    check("a worker without a trust setting refuses a delegated goal",
+      "does not accept unattended delegation" in refused{"error"}.getStr(""),
+      $refused)
+    # Enable it once, with a ceiling, the way an operator would.
+    discard call(dnc, "store", "put", %*{"kind": "delegation",
+      "id": "settings", "value": {"name": "trusted-delegation",
+        "unattended": true, "tools": ["read", "bash"], "roots": [stalled.root],
+        "maxRounds": 2, "maxCalls": 4, "maxTokens": 8000}})
+    let admitted = call(dnc, "core", "session", %*{
+      "sessionId": "delegate-setting", "content": "do the thing",
+      "admission": {"key": "delegate-one"},
+      "task": {"delegate": true, "workspace": stalled.root}})
+    check("an enabled trust setting admits a goal with no tools/budgets",
+      admitted{"admissionReplay"}.getBool(false) == false and
+      admitted{"error"}.getStr("") == "", $(admitted))
+    let header = call(dnc, "store", "get", %*{"kind": "conversation", "id": "delegate-setting"})
+    let policy = header{"value", "taskPolicy"}
+    check("the admitted policy takes the configured ceiling",
+      policy != nil and policy.kind == JObject and
+      policy{"profile"}.getStr("") == "trusted-delegation" and
+      policy{"tools"}.len == 2 and
+      policy{"budget", "maxRounds"}.getInt(0) == 2, $header)
+  block:
+    discard c.storePut("fleetinstance", identity["instanceId"].getStr(), receipt)
+    let named = args.copy()
+    named.delete("profile")
+    named["instance"] = identity["name"]
+    named["requestId"] = %"named-worker"
+    let created = createJob(c, named)
+    let pinned = c.storeGet("fleetjob", created["id"].getStr()).value
+    check("named worker pins the registered receipt", pinned["receipt"] == receipt)
+    discard c.requestOk("store", "del", %*{"kind": "fleetinstance", "id": identity["instanceId"]})
+    check("named retry uses durable job after registry removal",
+      createJob(c, named)["id"] == created["id"])
+    let unknown = named.copy(); unknown["requestId"] = %"unknown-worker"
+    check("unknown named worker refuses", rejected(proc() = discard createJob(c, unknown)))
+    discard c.requestOk("store", "del", %*{"kind": "fleetjob", "id": created["id"]})
+  block:
     let schemas = call(remoteNc, "core", "catalog",
       %*{"op": "schemas", "tools": args["tools"]})
     var coding = args.copy()
@@ -534,6 +631,122 @@ proc main() =
     check("the settle event carries the coding artifact too",
           eventArtifact != nil and eventArtifact{"producedCommit"}.getBool(false),
           $eventArtifact)
+  # --- trusted goal delegation, through the REAL submission seam ----------
+  # The simplification's promise (docs/FLEET-SIMPLIFICATION.md) is a goal, no
+  # profile, no mandatory tools or budgets. The unit tests above prove the
+  # resolver; this proves the seam that actually broke before (fleet_task_submit
+  # → the peer's own birth-policy resolution → a prose report), including the
+  # refusal path when the worker has not enabled delegation.
+  block delegatedGoal:
+    discard c.storePut("fleetinstance", identity["instanceId"].getStr(), receipt)
+    let goalArgs = %*{"__session": {"session": "goal-owner"},
+      "instance": identity["name"].getStr(),
+      "requestId": "goal-1", "mode": "delegate",
+      "content": "Solve the goal and report what you did", "cwd": peer.root}
+    # No `tools`, no `maxRounds`/`maxCalls`/`maxTokens`: validation alone used
+    # to require them, so this is the compatibility promise under test.
+    let goalId = createJob(c, goalArgs)["id"].getStr()
+    check("a goal is creatable with no tools or budgets",
+          c.storeGet("fleetjob", goalId).value{"task", "mode"}.getStr() ==
+            "delegate")
+    # 1. The peer has NOT enabled delegation: the job must not settle as work,
+    #    and no remote turn may have run. `unknown` with a diagnostic is the
+    #    honest outcome; a settled job or a silently dropped refusal is not.
+    reconcileJob(c, goalId, run)
+    let blocked = c.storeGet("fleetjob", goalId).value
+    check("a peer without a trust setting does not run the goal",
+          blocked["state"].getStr() != "settled" and
+          blocked{"admissionReceipt"} == nil, $blocked)
+    # 2. The operator enables it once (a store document on the worker, never a
+    #    model call), then the same goal completes under that ceiling.
+    discard call(remoteNc, "store", "put", %*{"kind": "delegation",
+      "id": "settings", "value": {"name": "trusted-delegation",
+        "unattended": true, "tools": ["read", "bash"],
+        "roots": [peer.root], "maxRounds": 6, "maxCalls": 20,
+        "maxTokens": 60000}})
+    let openId = createJob(c, %*{"__session": {"session": "goal-owner"},
+      "instance": identity["name"].getStr(),
+      "requestId": "goal-2", "mode": "delegate",
+      "content": "Solve the goal and report what you did",
+      "cwd": peer.root})["id"].getStr()
+    for _ in 0..<24:
+      reconcileJob(c, openId, run)
+      if c.storeGet("fleetjob", openId).value["state"].getStr() == "settled": break
+      sleep(200)
+    let goal = c.storeGet("fleetjob", openId).value
+    check("a goal completes under the worker's own trust ceiling",
+          goal["state"].getStr() == "settled", $goal)
+    check("the goal's result is a prose report",
+          goal{"report"}.getStr("").len > 0, $goal)
+    let goalHeader = call(remoteNc, "store", "get",
+      %*{"kind": "conversation", "id": openId})["value"]
+    let resolved = goalHeader{"taskPolicy"}
+    check("the worker resolved the ceiling, not the requester",
+          resolved != nil and
+          resolved{"profile"}.getStr("") == "trusted-delegation" and
+          resolved{"tools"}.len == 2 and
+          resolved{"budget", "maxRounds"}.getInt(0) == 6, $goalHeader)
+    # The goal is now readable as a report through the same tool the TUI uses.
+    let page = reportPage(c.storeGet("fleetjob", openId).value, newJObject())
+    check("the completed goal's report is pageable without the peer",
+          page["report"].getStr("").len > 0, $page)
+    # --- slice 3: continue the SAME worker conversation -------------------
+    # The point of delegating to a machine you trust: "now address the review
+    # comments". The follow-up keeps the parent's remote session (so the worker
+    # still has the context it built), gets its OWN admission key, and may
+    # change only the instruction.
+    let settledParent = c.storeGet("fleetjob", openId).value
+    # Rules first, so a bad continuation never reaches the peer.
+    let widened = %*{"content": "do more", "cwd": "/elsewhere"}
+    check("a follow-up may not retarget the workspace", rejected(proc() =
+      validateContinuation(settledParent, widened)))
+    let tooled = %*{"content": "do more", "tools": ["bash"]}
+    check("a follow-up may not widen the tool set", rejected(proc() =
+      validateContinuation(settledParent, tooled)))
+    check("a follow-up needs an instruction", rejected(proc() =
+      validateContinuation(settledParent, %*{"content": ""})))
+    var unrunnable = settledParent.copy()
+    unrunnable["state"] = %"running"
+    check("an unfinished goal cannot be continued", rejected(proc() =
+      validateContinuation(unrunnable, %*{"content": "do more"})))
+    let contArgs = %*{"__session": {"session": "goal-owner"},
+      "jobId": openId, "requestId": "goal-followup",
+      "content": "Now address the review comments"}
+    let contId = continueJob(c, contArgs)["id"].getStr()
+    let contJob = c.storeGet("fleetjob", contId).value
+    check("the follow-up targets the parent's remote conversation",
+          contJob["sessionId"].getStr("") == openId and
+          contJob{"parentJob"}.getStr("") == openId, $contJob)
+    check("the follow-up reuses the parent's pinned route",
+          contJob["receipt"] == settledParent["receipt"])
+    check("the follow-up is its own activation key",
+          contJob{"admission", "key"}.getStr("") != openId)
+    check("a follow-up retry is idempotent",
+          continueJob(c, contArgs)["id"].getStr("") == contId)
+    for _ in 0..<24:
+      reconcileJob(c, contId, run)
+      if c.storeGet("fleetjob", contId).value["state"].getStr() == "settled": break
+      sleep(200)
+    let cont = c.storeGet("fleetjob", contId).value
+    check("the continued goal settles",
+          cont["state"].getStr() == "settled", $cont)
+    check("its result is attributed to the follow-up activation",
+          cont{"completion", "source"}.getStr("") == "worker-admission", $cont)
+    check("the parent's own report is untouched",
+          c.storeGet("fleetjob", openId).value{"report"}.getStr("") ==
+            settledParent{"report"}.getStr(""))
+    discard c.requestOk("store", "del", %*{"kind": "fleetjob", "id": contId})
+    discard c.requestOk("store", "del",
+      %*{"kind": "fleetinstance", "id": identity["instanceId"].getStr()})
+    # These jobs are fixtures of THIS block, and a settled-undelivered job
+    # keeps waking its owner. Left in place they would add wake traffic the
+    # later notice tests do not account for (observed as a spurious "conversation
+    # is mid-turn" on the origin turn). Remove them; the assertions above already
+    # read what they needed.
+    for fixture in [goalId, openId]:
+      discard c.requestOk("store", "del", %*{"kind": "fleetjob", "id": fixture})
+
+
   report("FLEET TASKS TEST")
 
 main()

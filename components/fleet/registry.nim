@@ -45,6 +45,17 @@ proc loadInstance*(c: Component, id: string): JsonNode =
   validateInstanceDoc(item.value)
   item.value
 
+proc resolveInstance*(c: Component, name: string): JsonNode =
+  ## Resolve a stable identity or unambiguous display name. Routes are pinned
+  ## into jobs at creation; subsequent registry edits never retarget work.
+  if validId(name): return c.loadInstance(name)
+  for entry in c.storeListAll(instancesKind):
+    if entry.value{"expect", "name"}.getStr("") == name:
+      if result != nil: refuse("ambiguous fleet instance " & name)
+      validateInstanceDoc(entry.value)
+      result = entry.value
+  if result == nil: refuse("unknown fleet instance " & name)
+
 proc importReceipt*(c: Component, path: string): JsonNode =
   ## Explicit one-time import of an existing private receipt file into the
   ## registry. Same validation as an install; the file is left untouched.

@@ -818,6 +818,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
                 "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
                 "admissionPolicyVersion": admissionPolicyVersion,
                 "taskPolicyVersion": taskPolicyVersion,
+                "delegationPolicyVersion": delegationPolicyVersion,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "schemas":
       return ct.cat.selectedSchemas(args{"tools"})
@@ -877,6 +878,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
                 "gitHash": harnessGitHash(ct.root), "taskScopeVersion": 1,
                 "admissionPolicyVersion": admissionPolicyVersion,
                 "taskPolicyVersion": taskPolicyVersion,
+                "delegationPolicyVersion": delegationPolicyVersion,
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     return %*{"error":
       "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}

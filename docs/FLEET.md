@@ -1,5 +1,10 @@
 # Fleet — tasks across Niffler instances
 
+> **Superseded design direction:** see [Fleet simplification](FLEET-SIMPLIFICATION.md)
+> for the agreed goal-oriented trusted-worker model and migration slices. The
+> task-profile/artifact ladder below records the earlier design, not new API
+> requirements. WIRE.md remains the implemented contract.
+
 Status: **active design and delivery plan**. Provisioning and bounded read-only
 remote tasks are implemented. Unattended coding delegation exists as an
 experimental F2 slice whose authority boundary is now closed but whose exit is

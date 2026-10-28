@@ -4719,13 +4719,42 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                    "code": "task-policy-unconfirmed"}
     if incumbent != nil:
       if args{"task"} == nil:
-        return %*{"error": "task continuation requires a fresh activation grant; " &
-                            "content-only turns and wakes cannot reuse task authority",
-                   "code": "task-policy-continuation-required"}
-      return %*{"error": "this conversation is already an unattended task" &
-                          " (policy " & incumbent{"profile"}.getStr("") &
-                          "); a different grant needs a new conversation",
-                 "code": "task-policy-immutable"}
+        # A DELEGATED goal may be continued content-only: the authority is
+        # already frozen in this conversation's header (the worker resolved it
+        # at birth and the gate enforces it), so appending another instruction
+        # cannot widen anything. "Now address the review comments on that PR"
+        # is the whole point of delegating to a machine you trust. Every such
+        # turn still needs its OWN admission key, so each activation gets a
+        # durable receipt and a lost reply stays reconcilable — never an
+        # unadmitted turn whose outcome nobody can prove.
+        #
+        # A profile-based `unattended` task keeps refusing (docs/FLEET.md
+        # "stale authority on continuation"): there the grant was negotiated
+        # per activation, and reusing it silently is exactly what the refusal
+        # exists to prevent.
+        if incumbent{"profile"}.getStr("") == delegationProfileName:
+          if admissionKey.len == 0:
+            return %*{"error": "a continued goal needs an admission key so this" &
+                                " activation has its own durable receipt",
+                       "code": "admission-invalid"}
+          # fall through: the frozen policy below is the authority, and no new
+          # grant is resolved or written.
+        else:
+          return %*{"error": "task continuation requires a fresh activation grant; " &
+                              "content-only turns and wakes cannot reuse task authority",
+                     "code": "task-policy-continuation-required"}
+      elif incumbent{"profile"}.getStr("") == delegationProfileName:
+        # Re-granting on a delegated conversation would be a second negotiation
+        # of authority the header already froze; the caller only appends.
+        return %*{"error": "a delegated conversation is continued with content only" &
+                            " (its authority is frozen at birth); start a new" &
+                            " conversation for a different grant",
+                   "code": "task-policy-immutable"}
+      else:
+        return %*{"error": "this conversation is already an unattended task" &
+                            " (policy " & incumbent{"profile"}.getStr("") &
+                            "); a different grant needs a new conversation",
+                   "code": "task-policy-immutable"}
 
   # Autonomous wake (components/agent settle path): a session call with
   # `wake: true` runs a turn whose only purpose is folding pending
@@ -4996,8 +5025,10 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         return %*{"error": "the task grant does not match the authority the" &
                             " requester recorded before dispatch",
                    "code": "task-policy-grant-mismatch"}
-      if not validProfileName(profileName):
-        return %*{"error": "task.profile must name an operator task profile",
+      if not validProfileName(profileName) and
+          not grant{"delegate"}.getBool(false):
+        return %*{"error": "task.profile must name an operator task profile" &
+                            " (or set task.delegate for trusted delegation)",
                    "code": "task-policy-invalid"}
       if grant{"workspace"}.getStr("").len > 0:
         # An unattended task states its workspace explicitly; it never
@@ -5007,12 +5038,26 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           return %*{"error": requested.error, "code": "task-policy-invalid"}
         entry.workspace = requested.path
       var profileDoc: JsonNode
-      try:
-        profileDoc = ct.storeGetItem(taskProfileKind, profileName).value
-      except CatchableError as e:
-        return %*{"error": "task profile is unreadable: " & e.msg,
-                   "code": "task-policy-unavailable"}
-      let resolved = resolveTaskPolicy(profileDoc, grant, entry.workspace)
+      if grant{"delegate"}.getBool(false):
+        # Goal delegation to a trusted worker (docs/FLEET-SIMPLIFICATION.md):
+        # ONE operator setting is the ceiling; tools and budgets are optional.
+        # An absent setting refuses here, before any turn can run.
+        try:
+          profileDoc = ct.storeGetItem(delegationSettingsKind,
+                                       delegationSettingsId).value
+        except CatchableError as e:
+          return %*{"error": "delegation settings are unreadable: " & e.msg,
+                     "code": "task-policy-unavailable"}
+      else:
+        try:
+          profileDoc = ct.storeGetItem(taskProfileKind, profileName).value
+        except CatchableError as e:
+          return %*{"error": "task profile is unreadable: " & e.msg,
+                     "code": "task-policy-unavailable"}
+      let resolved = if grant{"delegate"}.getBool(false):
+                       resolveDelegationPolicy(profileDoc, grant, entry.workspace)
+                     else:
+                       resolveTaskPolicy(profileDoc, grant, entry.workspace)
       if resolved.refusal.code.len > 0:
         return %*{"error": resolved.refusal.reason,
                    "code": resolved.refusal.code}

@@ -5,6 +5,7 @@ import checksums/sha1
 import natsnim
 import niffler/sdk
 import provision
+import registry
 # The admission contract (key shape, policy version, receipt vocabulary) is
 # core's generic seam — importing the pure module keeps the requester and the
 # worker from drifting into two spellings of one protocol.
@@ -41,18 +42,20 @@ proc admissionKey*(id: string): string =
   ## existing acceptance/receipt or refuses a second turn.
   id
 proc taskMode*(args: JsonNode): string =
-  ## "ask" (the original read-only slice) or "unattended" (F2). An absent
-  ## `mode` is the read-only slice, so an existing caller keeps exactly the
-  ## authority it had.
+  ## "ask" (the original read-only slice), "unattended" (an operator task
+  ## profile) or "delegate" (trusted goal delegation: one worker setting is the
+  ## ceiling, tools/budgets optional). An absent `mode` is the read-only slice,
+  ## so an existing caller keeps exactly the authority it had.
   ##
   ## The RECORDED grant answers too: validation runs again on the stored job
   ## during reconciliation, and by then the mode lives beside the grant fields
   ## it describes instead of in the caller's original argument.
   var mode = args{"mode"}.getStr("").strip()
   if mode.len == 0: mode = args{"task", "mode"}.getStr("").strip()
+  if mode.len == 0 and args{"task", "delegate"}.getBool(false): return "delegate"
   if mode.len == 0: return "ask"
-  if mode notin ["ask", "unattended"]:
-    refuse("mode must be 'ask' or 'unattended'")
+  if mode notin ["ask", "unattended", "delegate"]:
+    refuse("mode must be 'ask', 'unattended' or 'delegate'")
   mode
 
 proc profileName*(args: JsonNode): string =
@@ -63,13 +66,48 @@ proc profileName*(args: JsonNode): string =
   result = args{"taskProfile"}.getStr("").strip()
   if result.len == 0: result = args{"task", "profile"}.getStr("").strip()
 
+proc delegationBudgetCeiling*(key: string): int =
+  ## The hard bound a caller-supplied limit may not exceed. Generous on
+  ## purpose (this is the supported maximum, not a policy): the worker's own
+  ## setting decides the real ceiling, and an omitted value takes that.
+  case key
+  of "maxRounds": 32
+  of "maxCalls": 500   # matches local agent_spawn's documented ceiling
+  of "maxTokens": 2_000_000
+  else: 0
+
 proc validateTask*(args: JsonNode) =
   if args{"content"}.getStr("").len notin 1..65536: refuse("content must be 1..65536 bytes")
   validateRoot(args{"cwd"}.getStr(""))
+  let mode = taskMode(args)
+  if mode == "delegate":
+    # Trusted goal delegation (docs/FLEET-SIMPLIFICATION.md): a goal and a
+    # workspace are required; tools and budgets are OPTIONAL, because the
+    # worker's operator configured its ceiling once. Anything named here only
+    # narrows that ceiling, and control-plane machinery is refused outright.
+    if args{"taskProfile"}.getStr("").strip().len > 0 or
+        args{"task", "profile"}.getStr("").strip().len > 0:
+      refuse("mode 'delegate' takes the worker's own trust setting; do not" &
+             " name a taskProfile (use mode 'unattended' for a named profile)")
+    let listed = args{"tools"}
+    if listed != nil and listed.kind == JArray:
+      if listed.len > 16: refuse("tools lists more than 16 entries")
+      for t in listed:
+        let name = t.getStr("")
+        if name.len == 0: refuse("tools entries must be non-empty")
+        if isControlPlane(name):
+          refuse("tool '" & name & "' is control-plane machinery and cannot be requested")
+    elif listed != nil and listed.kind != JNull:
+      refuse("tools must be an array when given")
+    for key in ["maxRounds", "maxCalls", "maxTokens"]:
+      let value = args{key}.getInt(0)
+      if value > 0 and value > delegationBudgetCeiling(key):
+        refuse(key & " exceeds the supported ceiling")
+    return
   let tools = args{"tools"}
   if tools == nil or tools.kind != JArray or tools.len notin 1..16:
     refuse("explicit tools required (1..16)")
-  if taskMode(args) == "ask":
+  if mode == "ask":
     for t in tools:
       let name = t.getStr("")
       if name notin ["read", "grep", "git_status", "git_diff", "git_log", "git_show", "git_blame"]:
@@ -148,7 +186,15 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
   if catalog{"admissionPolicyVersion"}.getInt(0) != admissionPolicyVersion:
     refuse("peer lacks durable task admission (admissionPolicyVersion " &
            $admissionPolicyVersion & ")")
-  if taskMode(task) == "unattended" and
+  if taskMode(task) == "delegate":
+    # Goal delegation needs the worker's trust-setting epoch, and nothing else
+    # about the older task-policy machinery: tools and budgets are optional
+    # here, so there is no grant intersection to negotiate up front. An older
+    # peer is refused rather than silently downgraded to `ask`.
+    if catalog{"delegationPolicyVersion"}.getInt(0) != delegationPolicyVersion:
+      refuse("peer lacks trusted goal delegation (delegationPolicyVersion " &
+             $delegationPolicyVersion & ")")
+  elif taskMode(task) == "unattended" and
       catalog{"taskPolicyVersion"}.getInt(0) != taskPolicyVersion:
     refuse("peer lacks unattended task policy enforcement (taskPolicyVersion " &
            $taskPolicyVersion & ")")
@@ -175,8 +221,10 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
   #   boundary (docs/FLEET.md §3) and it applies in every mode, so `invoke`,
   #   `fabric`, `agent*`, `fleet_*` and friends are refused whatever the
   #   operator's profile says — and the worker re-checks it too.
-  let unattended = taskMode(task) == "unattended"
-  for t in task["tools"]:
+  let unattended = taskMode(task) in ["unattended", "delegate"]
+  # A delegated goal may name no tools (the worker's own setting decides), so
+  # iterate the list that exists rather than a possibly-nil key.
+  for t in listOf(task{"tools"}):
     let name = t.getStr()
     var found = false
     for entry in entries:
@@ -197,7 +245,7 @@ proc validateCapabilities*(catalog, schemas, task: JsonNode) =
 
 proc publicJob*(j: JsonNode): JsonNode =
   result = j.copy()
-  for key in ["task", "receipt", "profile"]:
+  for key in ["task", "receipt", "profile", "report"]:
     if result.hasKey(key): result.delete(key)
 # Human-scope reads: these do NOT require session context, and that is
 # deliberate. The owner check on job tools exists so one CONVERSATION cannot
@@ -213,15 +261,42 @@ proc authorized*(c: Component, args: JsonNode): StoreItem =
   result = c.storeGet("fleetjob", args{"jobId"}.getStr(""))
   if humanReadable(args): return
   if result.value{"owner"}.getStr("") != owner(args): refuse("foreign fleet job")
+proc sameDelegatedWork(before, now: JsonNode): bool =
+  ## A follow-up may change only the INSTRUCTION. Everything that decides what
+  ## the worker is allowed to do is frozen at birth, so a "continuation" that
+  ## also retargeted the machine, workspace or tool list would be a different
+  ## grant wearing an old conversation id — exactly the escalation this refuses.
+  if now{"mode"}.getStr("") != "delegate" or before{"mode"}.getStr("") != "delegate":
+    return false
+  for key in ["cwd", "instance", "profile", "taskProfile", "tools",
+              "maxRounds", "maxCalls", "maxTokens"]:
+    let a = before{key}
+    let b = now{key}
+    let aNil = a == nil or a.kind == JNull
+    let bNil = b == nil or b.kind == JNull
+    if aNil != bNil: return false
+    if not aNil and a != b: return false
+  true
+
 proc createJob*(c: Component, args: JsonNode): JsonNode =
   let session = owner(args)
   validateTask(args)
   let id = jobId(session, args{"requestId"}.getStr(""))
   var task = newJObject()
+  # Copy only keys the caller actually sent: a delegated goal may omit tools and
+  # budgets entirely, and embedding a nil JsonNode crashes `encode` (the
+  # documented json.nim gotcha).
   for key in ["content", "cwd", "tools", "maxRounds", "maxCalls", "maxTokens"]:
-    task[key] = args[key]
+    if args{key} != nil and args[key].kind != JNull: task[key] = args[key].copy()
   let mode = taskMode(args)
-  if mode == "unattended":
+  if mode == "delegate":
+    # A delegated goal carries the goal and whatever restrictions the human
+    # chose; the worker's single trust setting supplies the ceiling as the
+    # worker resolves it. `delegate: true` is what the worker keys the policy
+    # off, and the recorded job keeps no profile name by design.
+    task["mode"] = %"delegate"
+    task["delegate"] = %true
+  elif mode == "unattended":
     # The immutable grant this job carries: which operator profile, and the
     # scope the requesting human approved. Folded into the job record BEFORE
     # dispatch, so the same requestId can never be reused with a wider grant
@@ -240,15 +315,21 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
   else:
     task["mode"] = %"ask"
     task["approvals"] = %"ask"
-  let path = receiptPath(args{"profile"}.getStr(""))
+  let instance = args{"instance"}.getStr("")
+  if instance.len > 0 and args{"profile"}.getStr("").len > 0:
+    refuse("choose instance or profile, not both")
+  let path = if instance.len > 0: "instance:" & instance
+             else: receiptPath(args{"profile"}.getStr(""))
   try:
     let previous = c.storeGet("fleetjob", id).value
     if previous["task"] != task or previous{"profile"}.getStr("") != path:
       refuse("requestId already used for different task")
     return publicJob(previous)
   except StoreNotFoundError: discard
-  let p = loadReceipt(path)
-  if p == nil or getFilePermissions(path) != {fpUserRead, fpUserWrite}:
+  let p = if instance.len > 0: c.resolveInstance(instance)
+          else: loadReceipt(path)
+  if p == nil or (instance.len == 0 and
+      getFilePermissions(path) != {fpUserRead, fpUserWrite}):
     refuse("private verified receipt required (0600)")
   let j = %*{"id": id, "sessionId": id, "owner": session, "profile": path,
     "receipt": p, "task": task, "state": "queued", "createdAt": epochTime(),
@@ -256,6 +337,68 @@ proc createJob*(c: Component, args: JsonNode): JsonNode =
       "policyVersion": admissionPolicyVersion}}
   discard c.requestOk("store", "put", %*{"kind": "fleetjob", "id": id, "value": j, "expectRev": -1})
   publicJob(j)
+
+proc validateContinuation*(parent, args: JsonNode)
+
+proc continueJob*(c: Component, args: JsonNode): JsonNode =
+  ## Append another activation to a DELEGATED conversation: "now address the
+  ## review comments". The parent goal keeps its identity and its frozen
+  ## authority; this creates a NEW job (so the activation gets its own durable
+  ## admission key and its own receipt) that points at the SAME remote session.
+  ##
+  ## Deliberately narrow: only content may change. Retargeting the machine,
+  ## workspace or tools here would be a fresh grant wearing an old conversation
+  ## id, so that refuses and the caller must start a new conversation.
+  let parentId = args{"jobId"}.getStr("")
+  if parentId.len == 0: refuse("jobId is required")
+  let parent = authorized(c, %*{"jobId": parentId, "__session": args{"__session"}})
+  validateContinuation(parent.value, args)
+  let session = owner(args)
+  let id = jobId(session, args{"requestId"}.getStr(""))
+  let remote = parent.value{"sessionId"}.getStr("")
+  if remote.len == 0: refuse("parent job has no remote session")
+  let closed = parent.value{"closed"}.getBool(false)
+  if closed: refuse("this goal is closed; start a new conversation")
+  var task = %*{"content": args{"content"}.getStr(""), "mode": "delegate",
+                "delegate": true, "continue": true,
+                "parentJob": parentId,
+                "cwd": parent.value{"task", "cwd"}.getStr("")}
+  # `close` finishes the goal AFTER this turn: recorded here, honored at
+  # settlement, so a continuation that fails still leaves the goal open.
+  if args{"close"}.getBool(false): task["close"] = %true
+  try:
+    let previous = c.storeGet("fleetjob", id).value
+    if previous["task"] != task or previous{"profile"}.getStr("") !=
+        parent.value{"profile"}.getStr(""):
+      refuse("requestId already used for different task")
+    return publicJob(previous)
+  except StoreNotFoundError: discard
+  let j = %*{"id": id, "sessionId": remote, "owner": session,
+    "profile": parent.value{"profile"}.getStr(""),
+    "receipt": parent.value["receipt"].copy(), "task": task,
+    "state": "queued", "createdAt": epochTime(), "checkedAt": 0,
+    "parentJob": parentId,
+    "admission": {"key": admissionKey(id),
+      "policyVersion": admissionPolicyVersion}}
+  discard c.requestOk("store", "put",
+    %*{"kind": "fleetjob", "id": id, "value": j, "expectRev": -1})
+  publicJob(j)
+
+proc validateContinuation*(parent, args: JsonNode) =
+  ## What a follow-up may NOT do. Kept separate so the refusal reasons are
+  ## testable without a store, and so the rule reads in one place.
+  if parent{"state"}.getStr("") != "settled":
+    refuse("the goal has not settled yet; wait for its report before continuing")
+  if parent{"task", "mode"}.getStr("") != "delegate":
+    refuse("only a delegated goal can be continued; a profile-based task" &
+           " needs a new conversation for another grant")
+  let content = args{"content"}.getStr("")
+  if content.len notin 1..65536: refuse("content must be 1..65536 bytes")
+  for key in ["cwd", "instance", "profile", "taskProfile", "tools",
+              "maxRounds", "maxCalls", "maxTokens"]:
+    if args{key} != nil and args{key}.kind != JNull:
+      refuse("a follow-up may only change the instruction; " & key &
+             " was fixed when the goal was admitted")
 
 proc summary*(text: string): string =
   ## Bounded UTF-8 prefix, not an assertion that the task succeeded factually.
@@ -274,15 +417,28 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
   let p = j["receipt"]
   try:
     if j{"state"}.getStr("") == "queued":
-      let catalog = remoteCall(run, p, "catalog", %*{"op": "components"})
-      let schemas = remoteCall(run, p, "catalog", %*{"op": "schemas", "tools": j["task"]["tools"]})
-      validateCapabilities(catalog, schemas, j["task"])
-      # Preparing creates an empty header, not a turn. Refuse an occupied id.
-      let existing = remoteCall(run, p, "list", %*{"kind": "conversation", "idPrefix": id, "limit": 2})
-      if existing{"items"} == nil or existing["items"].kind != JArray:
-        refuse("invalid peer conversation listing")
-      for entry in existing["items"]:
-        if entry{"id"}.getStr("") == id: refuse("remote session id already exists")
+      let continuation = j{"task", "continue"}.getBool(false)
+      var task = j["task"].copy()
+      if not continuation:
+        # A FIRST activation: verify the peer can enforce this at all, and that
+        # the remote conversation id is free before claiming it. A continuation
+        # skips both: the peer already enforced the policy on this conversation,
+        # and the id is deliberately the parent's.
+        let catalog = remoteCall(run, p, "catalog", %*{"op": "components"})
+        # A delegated goal may name no tools at all (the worker's setting
+        # decides), and `%*{"tools": nil}` would embed nil and crash `encode` —
+        # the documented json.nim gotcha. Ask for schemas only with a list.
+        let named = j["task"]{"tools"}
+        let schemas = if named != nil and named.kind == JArray and named.len > 0:
+                        remoteCall(run, p, "catalog", %*{"op": "schemas", "tools": named})
+                      else: %*{"tools": newJArray()}
+        validateCapabilities(catalog, schemas, j["task"])
+        # Preparing creates an empty header, not a turn. Refuse an occupied id.
+        let existing = remoteCall(run, p, "list", %*{"kind": "conversation", "idPrefix": id, "limit": 2})
+        if existing{"items"} == nil or existing["items"].kind != JArray:
+          refuse("invalid peer conversation listing")
+        for entry in existing["items"]:
+          if entry{"id"}.getStr("") == id: refuse("remote session id already exists")
       let submitting = j.copy()
       submitting["state"] = %"submitting"
       try:
@@ -292,10 +448,35 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         # over it. Next read observes the durable truth, never dispatch now.
         raise newException(IOError, "fleet submitting commit not confirmed; no remote turn dispatched")
       j = submitting
-      discard remoteCall(run, p, "session_prepare", %*{"sessionId": id})
-      var task = j["task"].copy()
-      task["sessionId"] = %id
-      if taskMode(j["task"]) == "unattended":
+      if not continuation:
+        discard remoteCall(run, p, "session_prepare", %*{"sessionId": id})
+      # A continuation appends to the SAME conversation, so it carries the
+      # parent's session id, never its own job id (which would look like a
+      # stranger claiming a new conversation and lose the whole point of a
+      # follow-up: the context built by the first activation).
+      task["sessionId"] = %j{"sessionId"}.getStr("")
+      if continuation:
+        # Content only. Authority is already frozen in the conversation header
+        # by the first activation; sending a grant here would either be a
+        # no-op or a second negotiation, and core refuses the latter.
+        for key in ["mode", "delegate", "continue", "parentJob",
+                    "cwd", "approvals"]:
+          if task.hasKey(key): task.delete(key)
+      elif taskMode(j["task"]) == "delegate":
+        # Trusted goal delegation: send the goal and only the restrictions the
+        # caller actually named. `delegate: true` selects the worker's single
+        # operator trust setting; omitted tools/budgets take its ceiling.
+        var grant = %*{"delegate": true,
+                       "workspace": j["task"]{"cwd"}.getStr("")}
+        for key in ["tools", "maxRounds", "maxCalls", "maxTokens"]:
+          if j["task"]{key} != nil and j["task"][key].kind != JNull:
+            grant[key] = j["task"][key].copy()
+        task["task"] = grant
+        if task.hasKey("approvals"): task.delete("approvals")
+        # The requester hashed this grant before dispatch; the worker recomputes
+        # it, so authority cannot be widened in transit.
+        task["task"]["grantDigest"] = %grantDigest(task["task"])
+      elif taskMode(j["task"]) == "unattended":
         # Unattended: hand the worker the grant (its operator profile ∩ the
         # tools/workspace/budgets this human approved) and let IT resolve the
         # effective policy before any work runs. Deliberately no blanket
@@ -331,7 +512,17 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       # submission before it is even admitted. A lost reply is recoverable
       # (durable admission + activity receipt); a too-short wait just makes it
       # the common case.
-      try: discard remoteCall(run, p, "session", task, 15)
+      #
+      # A REFUSAL is not a lost reply, and it must not vanish: an explicit
+      # `error` from the peer (a policy refusal, a busy conversation) is kept as
+      # the job's diagnostic so the human reads why instead of watching a job
+      # sit in `unknown` forever. A transport timeout stays silent — that is the
+      # case durable admission exists for, and it is genuinely unknown.
+      try:
+        let reply = remoteCall(run, p, "session", task, 15)
+        if reply{"error"} != nil and reply{"error"}.getStr("").len > 0:
+          j["diagnostic"] = %summary("peer refused the turn: " &
+                                     reply{"error"}.getStr(""))
       except CatchableError: discard
     # The worker's durable receipt is read on EVERY reconcile, not only right
     # after a submission: the case it exists for is exactly the one where the
@@ -340,20 +531,24 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     # and it turns an unknown activation into an authoritative answer whenever
     # the worker knows one.
     try:
+      # The admission lives under the REMOTE conversation, which for a
+      # continuation is the parent's session, not this job's id. Asking with
+      # the job id would look up a session that does not exist and report
+      # "unknown" about work that actually ran.
       let admissionDoc = remoteCall(run, p, "admission_get",
-        %*{"session": id, "key": admissionKey(id)})
+        %*{"session": j{"sessionId"}.getStr(""), "key": admissionKey(id)})
       if admissionDoc{"known"}.getBool(false):
         j["admissionReceipt"] = admissionDoc
       elif j.hasKey("admissionReceipt"):
         j.delete("admissionReceipt")
     except CatchableError:
       discard # the receipt stays an honest unknown; activity may still settle
-    let completion = remoteCall(run, p, "list", %*{"kind": "activity", "idPrefix": id, "limit": 2})
+    let completion = remoteCall(run, p, "list", %*{"kind": "activity", "idPrefix": j{"sessionId"}.getStr(""), "limit": 2})
     var receipt: JsonNode
     let completions = completion{"items"}
     if completions == nil or completions.kind != JArray: refuse("invalid completion listing")
     for entry in completions:
-      if entry{"id"}.getStr("") == id: receipt = entry{"value"}
+      if entry{"id"}.getStr("") == j{"sessionId"}.getStr(""): receipt = entry{"value"}
     # The task owns one activation only. A later human turn can replace the
     # latest-per-session activity receipt; never attribute that to our task.
     # The worker's admission receipt is preferred where it exists: it is bound
@@ -361,27 +556,53 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     # of a session, and it states whether the transcript is durable.
     let admissionState = j{"admissionReceipt", "admission", "state"}.getStr("")
     if admissionState == "settled":
+      # A continuation's report belongs to ITS activation: the parent's report is
+      # already recorded and must not be overwritten by the follow-up's answer.
+      if j{"task", "continue"}.getBool(false):
+        j["state"] = %"settled"
+        j["completion"] = %*{"sessionId": j{"sessionId"}.getStr(""),
+          "turnId": j{"admissionReceipt", "admission", "turnId"}.getStr(""),
+          "seq": j{"admissionReceipt", "admission", "activation"}.getInt(1),
+          "outcome": j{"admissionReceipt", "admission", "outcome"}.getStr("unknown"),
+          "source": "worker-admission"}
+        # `close` marks the whole goal finished AFTER this turn succeeded; a
+        # failed or cancelled continuation leaves it open so the human can retry.
+        if j{"task", "close"}.getBool(false) and
+            j{"admissionReceipt", "admission", "outcome"}.getStr("") == "done":
+          j["closed"] = %true
+        j["delivered"] = %false
+        j["reachable"] = %true
+        j["checkedAt"] = %epochTime()
+        discard c.storePut("fleetjob", id, j, item.rev)
+        return
       let admissionDoc = j{"admissionReceipt", "admission"}
+      # Everything below reads the REMOTE conversation's records, and for a
+      # continuation that conversation is the parent's (see sessionId above).
+      # A first activation has sessionId == id, which is why using the job id
+      # here looked right until a follow-up had a different one.
+      let remoteSession = j{"sessionId"}.getStr("")
       var after = ""
       var reply = ""
       var transcriptComplete = false
       var userMessages = 0
+      var ambiguous = false
       for pageNo in 0..<32:
-        let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
+        let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": remoteSession & ":", "after": after, "limit": 100})
         let entries = page{"items"}
         if entries == nil or entries.kind != JArray: refuse("invalid transcript")
         for entry in entries:
-          if not entry{"id"}.getStr("").startsWith(id & ":"): refuse("foreign transcript")
+          if not entry{"id"}.getStr("").startsWith(remoteSession & ":"): refuse("foreign transcript")
           let role = entry{"value", "role"}.getStr("")
           if role == "user" and entry{"value", "notice"} == nil and
               entry{"value", "mail"} == nil:
             inc userMessages
           if userMessages > 1:
+            ambiguous = true
             transcriptComplete = true
             reply = "[summary unavailable: unmarked user/steer boundary; inspect remote transcript]"
             break
           if role == "assistant":
-            reply = summary(entry{"value", "content"}.getStr(""))
+            reply = entry{"value", "content"}.getStr("")
         if transcriptComplete: break
         if not page{"hasMore"}.getBool(false):
           transcriptComplete = true
@@ -389,7 +610,10 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         let next = page{"nextAfter"}.getStr("")
         if next <= after: refuse("invalid transcript cursor")
         after = next
-      if not transcriptComplete: reply = summary("[transcript scan capped; report may be partial] " & reply)
+      j["report"] = %reply
+      j["reportComplete"] = %(transcriptComplete and not ambiguous)
+      if not transcriptComplete: reply = "[transcript scan capped; report may be partial] " & reply
+      reply = summary(reply)
       j["state"] = %"settled"
       j["completion"] = %*{"sessionId": id,
         "turnId": admissionDoc{"turnId"}.getStr(""),
@@ -429,6 +653,7 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
       var reply = ""
       var transcriptComplete = false
       var userMessages = 0
+      var ambiguous = false
       for pageNo in 0..<32:
         let page = remoteCall(run, p, "list", %*{"kind": "message", "idPrefix": id & ":", "after": after, "limit": 100})
         let entries = page{"items"}
@@ -440,11 +665,12 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
               entry{"value", "mail"} == nil:
             inc userMessages
           if userMessages > 1:
+            ambiguous = true
             transcriptComplete = true
             reply = "[summary unavailable: unmarked user/steer boundary; inspect remote transcript]"
             break # unmarked steering and new human turns are indistinguishable
           if role == "assistant":
-            reply = summary(entry{"value", "content"}.getStr(""))
+            reply = entry{"value", "content"}.getStr("")
         if transcriptComplete: break
         if not page{"hasMore"}.getBool(false):
           transcriptComplete = true
@@ -452,7 +678,10 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
         let next = page{"nextAfter"}.getStr("")
         if next <= after: refuse("invalid transcript cursor")
         after = next
-      if not transcriptComplete: reply = summary("[transcript scan capped; report may be partial] " & reply)
+      j["report"] = %reply
+      j["reportComplete"] = %(transcriptComplete and not ambiguous)
+      if not transcriptComplete: reply = "[transcript scan capped; report may be partial] " & reply
+      reply = summary(reply)
       j["state"] = %"settled"
       j["completion"] = receipt
       j["notice"] = %*{"kind": "fleet-settled", "jobId": id,
@@ -467,7 +696,12 @@ proc reconcileJob*(c: Component, id: string, run: CommandRunner) =
     else:
       j["state"] = %"unknown"
     j["reachable"] = %true
-    if j.hasKey("diagnostic"): j.delete("diagnostic")
+    # A refusal we just recorded is the reason this job is not settling, so keep
+    # it: clearing every diagnostic here would erase exactly the explanation the
+    # human needs. Only the not-settled states keep it, since a settled job's
+    # report is the answer.
+    if j{"state"}.getStr("") == "settled" and j.hasKey("diagnostic"):
+      j.delete("diagnostic")
   except CatchableError as e:
     if e.msg.startsWith("fleet submitting commit not confirmed"):
       raise # no diagnostic write may overwrite an uncertain commit
@@ -523,6 +757,28 @@ proc resultPage*(c: Component, args: JsonNode, run: CommandRunner): JsonNode =
     result["items"].add(%*{"id": entry["id"], "role": entry{"value", "role"}.getStr(""),
       "content": summary(entry{"value", "content"}.getStr("")), "bounded": true})
     result["nextAfter"] = entry["id"]
+
+proc reportPage*(j, args: JsonNode): JsonNode =
+  ## Local UTF-8-safe pages; never relay to a worker during report reads.
+  let text = if j{"report"} != nil: j{"report"}.getStr("")
+             else: j{"notice", "summary"}.getStr("")
+  let offset = args{"offset"}.getInt(0)
+  let limit = args{"limit"}.getInt(8192)
+  if offset < 0 or offset > text.len: refuse("report offset out of bounds")
+  if limit notin 4..32768: refuse("report limit must be 4..32768 bytes")
+  if offset < text.len and (ord(text[offset]) and 0xc0) == 0x80:
+    refuse("report offset must be a UTF-8 boundary")
+  var finish = min(text.len, offset + limit)
+  while finish < text.len and finish > offset and
+      (ord(text[finish]) and 0xc0) == 0x80: dec finish
+  result = %*{"jobId": j["id"], "state": j["state"],
+    "completion": (if j{"completion"} == nil: newJNull() else: j["completion"]),
+    "summary": j{"notice", "summary"}.getStr(""), "bounded": true,
+    "remoteSession": j["sessionId"], "report": text[offset..<finish],
+    "offset": offset, "nextOffset": finish, "hasMore": finish < text.len,
+    "reportBytes": text.len, "reportComplete": j{"reportComplete"}.getBool(false)}
+  if j{"report"} == nil:
+    result["detail"] = %"Legacy job: only the short summary was cached; full transcript remains on the worker."
 
 proc taskNotices*(c: Component, args: JsonNode): JsonNode =
   let session = args{"session"}.getStr("")

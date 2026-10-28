@@ -41,7 +41,10 @@ drives remote cancellation through this op.
 Optional fleet uses requester-owned `fleetjob` documents, never shared remote
 stores or core imports. `fleet_task_submit` binds injected `__session.session`,
 requestId, immutable receipt route/instance identity and explicit birth budgets
-before dispatch. Catalog components/snapshot advertise `taskScopeVersion:1`:
+before dispatch. A submission accepts either `instance` (registered name or
+32-hex identity) or legacy private `profile` receipt, never both. Resolution
+happens only for a fresh job: its verified receipt is pinned into the record,
+so removal/renaming of registry entries cannot retarget a retry. Catalog components/snapshot advertise `taskScopeVersion:1`:
 model-originated calls in allowlisted sessions may not use runner/store
 machinery exemptions. Internal runner persistence remains exempt. Fleet refuses
 older peers and restricts its first slice to audited file/search/git read tools;
@@ -54,8 +57,15 @@ activity receipt establishes turn settlement, not factual task success. Remote
 budgets use supported maxRounds/maxCalls/maxTokens, not a transport timeout as a
 wall-clock deadline. A queued task is cancelled locally; a dispatched task is
 stopped through the peer's `session {stop: true}` (see "Session stop"), and the
-record follows what the peer answered. The result tool reads a cached bounded
-summary, not a blocking relay.
+record follows what the peer answered. The result tool reads a locally cached
+prose report, not a blocking relay.
+`fleet_task_result {jobId, offset?, limit?}` returns `report`, `nextOffset`,
+`hasMore`, `reportBytes` and `reportComplete`, alongside the short `summary`.
+Offsets are UTF-8 byte boundaries, limit is 4..32768 bytes (default 8192).
+Continue with `offset: nextOffset` while `hasMore`. Legacy jobs return their
+summary with `reportComplete:false` and explicit detail. Ambiguous or capped
+transcript scans never claim complete reports. Full reports are excluded from
+status/notices; reading them never contacts the peer or replays work.
 
 Terminal job and `notice:{kind:"fleet-settled",jobId,status,summary}` commit in
 one revision before notification. A real transition into `settled` also
@@ -141,6 +151,60 @@ Unreachable, unknown and receipt-less remain neither interruption nor success.
 The admission record does not extend authority: a caller cannot widen a peer's
 ceiling by naming a profile in it, and the record is read from the same store
 its writer owns.
+
+## Trusted goal delegation (`mode: "delegate"`)
+
+The simplified form of the above: **one** operator decision per machine instead
+of a named profile per assignment, with tools and budgets optional.
+
+- Worker setting: store kind `delegation`, id `settings` — the same document
+  shape as a task profile (`unattended`, `tools`, `roots`, optional budgets,
+  `confinement`), written only by `fleet_delegation_set` (approval-gated, and on
+  the control-plane deny list so a task can never write it). Absent = off.
+- `delegationPolicyVersion: 1` is advertised in catalog `components`/`snapshot`.
+  A requester asking for `mode: "delegate"` refuses an older peer rather than
+  downgrading to `ask`; the worker refuses a grant whose shape it cannot honor.
+- Grant: the session call's `task` carries `{delegate: true, workspace, …}`. An
+  omitted `tools`/`maxRounds`/`maxCalls`/`maxTokens` takes the worker's ceiling
+  (and, for rounds, the runner's ordinary turn default when the ceiling is 0);
+  a named value may only narrow, and a wider one refuses with
+  `task-policy-widened`. Control-plane tools are refused in every case
+  (`task-policy-denied`), as is `confinement: "sandbox"` — this harness
+  enforces no sandbox for delegated work and will not claim one.
+- The resolved policy is persisted in the conversation header exactly like a
+  profile-based task (`profile: "trusted-delegation"` when it came from the
+  setting), so an exact retry replays its receipt and a widened retry refuses.
+- **Not authentication.** The envelope's `caller` is self-declared; `enabled:
+  true` trusts reachability of that private bus/SSH route. Old `taskProfile`
+  jobs keep their recorded policy verbatim and are never reinterpreted.
+
+## Continuation (`fleet_task_continue`)
+
+A settled DELEGATED goal can be continued in the same worker conversation:
+`fleet_task_continue {jobId, requestId, content, close?}`.
+
+- The new job carries the **parent's** `sessionId` and pins the parent's
+  receipt, so every remote read and the turn itself address the conversation
+  that already holds the context. A first activation has `sessionId == id`,
+  which is why this distinction is easy to miss and is now explicit throughout
+  `reconcileJob`.
+- Only `content` (and `close`) may change. `cwd`, `instance`/`profile`,
+  `tools` and the three budgets refuse if named: authority was frozen in the
+  conversation header at birth, and re-stating it would be a second negotiation.
+- The activation carries its own admission key (`<jobId>`), so a retry replays a
+  receipt and can never run the follow-up twice. Its result is attributed to
+  that activation; the parent's cached report is never overwritten.
+- Sending a `task` grant to a delegated conversation is refused
+  (`task-policy-immutable`); a content-only turn onto a delegated conversation
+  is accepted **only with an admission key**, and without one refuses
+  (`admission-invalid`) rather than running an activation nobody can prove. A
+  profile-based `unattended` task keeps refusing content-only turns
+  (`task-policy-continuation-required`) — that is the stale-authority guard.
+- `close: true` marks the goal closed after a **successful** continuation; a
+  failed or cancelled one leaves it open so the human can retry.
+- An explicit `error` from the peer is recorded as the job's `diagnostic`
+  instead of vanishing; a transport timeout stays silent, because that is the
+  genuinely-unknown case durable admission exists for.
 
 ## Task policy (unattended authority)
 

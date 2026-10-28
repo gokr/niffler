@@ -70,6 +70,13 @@ read-only remote tasks with durable parent notices are implemented. Local Lima
 bootstrap and SSH-hosted Incus provisioning have live evidence; the original
 long-bootstrap lost-reply mechanism has a tested heartbeat-pump fix.
 
+**Direction update:** [Fleet simplification](FLEET-SIMPLIFICATION.md) supersedes
+this section's old task-profile/artifact ladder. Work proceeds report-first,
+then explicit worker trust and simple named submission with optional limits,
+then persistent follow-ups and confirmed cancellation. Existing restrictive
+policies are not silently widened. PR #24 is already assigned independently.
+Slice 1 adds cached prose report pages and a compatible TUI reader.
+
 Durable worker admission is implemented (F1: versioned capability negotiation,
 immutable birth-policy digest, idempotent admission, activation-bound terminal
 receipts). F2 has an experimental unattended-execution implementation with

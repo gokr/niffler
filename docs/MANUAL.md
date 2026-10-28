@@ -3273,11 +3273,74 @@ records the settings that were accepted, it never widens the peer's ceiling.
 `make test-fleet-admission` covers the record/idempotency contracts,
 `t_fleet_admission_e2e` the real store-plus-runner behavior with the mock model.
 
+#### Delegating a goal to a trusted worker
+
+The simple form: name a registered worker and give it a goal. The worker
+decides its own steps, uses its normal capabilities, and reports back in prose
+— "solved #123, opened draft PR #456, #124 needs clarification". No task
+profile, and no mandatory tool list or budgets. This is the recommended way to
+delegate; the (F2) profile machinery below is the older, narrower form.
+
+```bash
+# ONCE on the WORKER (its operator; approval-gated — never a model decision):
+./var/bin/cli call fleet_delegation_set '{
+  "enabled": true,
+  "tools": ["read", "grep", "edit", "write", "bash", "git_status", "git_diff"],
+  "roots": ["/home/ubuntu/work"]}'
+
+./var/bin/cli call fleet_delegation_get '{}'   # what this machine accepts
+```
+
+```jsonc
+// FROM THE REQUESTING conversation (fleet_task_submit, approval-gated):
+{"instance": "worker", "requestId": "fix-123", "mode": "delegate",
+ "cwd": "/home/ubuntu/work",
+ "content": "Fix the failing test and run the suite. Report what you changed."}
+// optional: "tools": ["read","edit","bash"], "maxTokens": 200000
+//  — anything you name can only NARROW the worker's configured ceiling.
+```
+
+A follow-up continues the SAME worker conversation, so the context the first
+turn built is still there — this is the normal way to ask for review changes:
+
+```jsonc
+// fleet_task_continue (approval-gated), against a SETTLED goal:
+{"jobId": "fleet-…", "requestId": "fix-123-review",
+ "content": "Address the review comments on that PR, then run the suite again.",
+ "close": true}   // optional: no further continuation after this turn
+```
+
+Only the instruction may change. Naming a workspace, tools, budgets or another
+machine refuses, because those were fixed when the goal was admitted — a
+follow-up that retargeted them would be a different grant wearing an old
+conversation id. Each continuation is its own activation with its own admission
+key, so a retried request can never run the work twice, and the parent's report
+stays exactly as it was: the follow-up's answer is recorded against the new job.
+
+Three honest limits worth knowing before relying on it:
+
+- **Trust is per machine, and the bus caller is self-declared.** `enabled:
+true` trusts whoever can reach that private bus/SSH route, not a per-requester
+credential. Disabling it stops *future* delegations; a running task keeps the
+policy it was admitted under.
+- **A worker with `bash` and its own GitHub credentials can push and open PRs.**
+That is ordinary shell authority; there is no separate push permission to
+revoke, and no sandbox is claimed. Grant `bash` only to a machine you would
+trust to do that.
+- **Results are the worker's claims**, not verified facts. The report is prose;
+read it. Optional Git metadata (base, commit, diffstat, verification exit codes)
+appears in the notice when the workspace is a checkout, and is deliberately not
+required for a task to count as finished.
+
+With no setting stored, a delegated goal is refused on the worker **before any
+turn runs** — never a task that silently waits for an approval nobody will give.
+An older worker without `delegationPolicyVersion` is refused by the requester
+for the same reason.
+
 #### Unattended coding tasks (F2)
 
-Read-only tasks are the default. To let a delegated task actually **edit, build
-and test**, the worker's operator has to allow it first, and a human still
-approves each task:
+Read-only tasks are the default. The narrower profile-based form: the worker's
+operator declares a NAMED profile, and a human approves each task against it:
 
 ```bash
 # 1. On the WORKER (its operator, with bus access) — once per profile:
