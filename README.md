@@ -188,7 +188,9 @@ current feature status or historical design notes without mixing their roles.
   subagents.
 - [Model source plugins](docs/MODEL_SOURCES.md) — worked example of a
   catalog-correcting component.
-- [Settings design](docs/research/SETTINGS.md) — settings work that is not yet shipped.
+- [Settings design](docs/research/SETTINGS.md) — historical design, superseded by
+  the shipped [declared configuration](docs/MANUAL.md#declared-configuration-the-config-component)
+  surface.
 
 ## Developing components
 

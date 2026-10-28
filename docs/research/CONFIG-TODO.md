@@ -1,6 +1,7 @@
 # Configuration implementation checklist
 
-Active branch: `feat/settings`. Design: [CONFIG.md](CONFIG.md).
+Status: `feat/settings` merged to `main` (2026-10-22); checked items shipped,
+unchecked items remain. Design: [CONFIG.md](CONFIG.md).
 Use this checklist for progress; check items only after their acceptance tests
 pass. Repository status is not a claim that installed binaries were updated.
 

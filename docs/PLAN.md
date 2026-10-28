@@ -5,14 +5,17 @@ in [MANUAL.md](MANUAL.md), protocol in [WIRE.md](WIRE.md), and unscheduled ideas
 in the [research backlog](research/BACKLOG.md). Design notes are history unless
 explicitly identified as the current target below.
 
-## Active branch: configuration framework
+## Configuration framework
 
-`feat/settings` is implementing component-owned, schema-described settings and
-instance-aware storage, including moving fleet instance records out of JSON
-files and into the store. Track delivery and validation in
-[CONFIG-TODO.md](research/CONFIG-TODO.md); [CONFIG.md](research/CONFIG.md) records
-the design. Shared-scope policy, migration and wire details remain proposals
-until resolved in the checklist; they are not shipped behavior.
+`feat/settings` merged to `main` on 2026-10-22. Shipped: component-owned,
+schema-described settings; the `config_list`/`config_get`/`config_patch`/
+`config_reset` peer with `humanOnly` and per-property application timing; and
+instance-scoped storage on SQLite and TiDB. Fleet instance records have a
+store-backed registry, but importing existing records and migrating lifecycle
+callers remain open. Track the remaining slices in
+[CONFIG-TODO.md](research/CONFIG-TODO.md); [CONFIG.md](research/CONFIG.md)
+records the design. Shared-scope settings remain a proposal, not shipped
+behavior.
 
 ## Baseline
 

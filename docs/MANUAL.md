@@ -102,8 +102,8 @@ A one-file index of every shipped capability (not a reference) is
 | `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a ranked search over the conversation's whole canonical history (trimmed/compacted-away messages included) through the store's search index, with a substring-grep fallback when the store cannot search; `scope: "all"` widens to every conversation but is refused for session calls (a cross-conversation disclosure — direct bus callers only, issue #51) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) and the headless turn driver (`run` — attach to a home or `--own` one, stream or `--quiet`, optional `--export` transcript) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
-| `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) — all twelve tools are on demand and none declares `x-harness.effect`, so the fabric batch host schedules even `observe_events`/`observe_logs` as writes |
-| `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) — both tools are on demand and neither declares `x-harness.effect`, so the fabric batch host schedules even `logfile_search` as a write |
+| `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) — its twelve model-facing tools are on demand (plus the hidden `observe_config` owner tool) and none declares `x-harness.effect`, so the fabric batch host schedules even `observe_events`/`observe_logs` as writes |
+| `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) — both model-facing tools are on demand (plus the hidden `logfile_config` owner tool) and neither declares `x-harness.effect`, so the fabric batch host schedules even `logfile_search` as a write |
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_search`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server (the child is the separate `mcp-bridge` binary — `var/bin/mcp-bridge`, built by `make build`, path overridable with `NIF_MCP_BRIDGE_BIN`; it has no manifest entry and is never started by hand); tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
 | `nats-server` | Go | **not in the manifest** | the bus itself as a first-class component: a faithful rebuild of the official `nats-server` main (pinned in `components/nats/go.mod`), built by `make build` into `var/bin/nats-server` and the **only** bus Niffler ever uses — core and the test suite both resolve it from `var/bin`, and there is deliberately no fallback to a `nats-server` on `PATH` (a development clone that rode an external binary would be testing a bus no user runs). Deliberately *not* a bus component — core starts it before the bus exists, it registers no tools, and `core.spawn` cannot start it. Niffler adds one flag, `--max_payload <bytes>` (core passes 8388608), and on Linux it sets `PR_SET_PDEATHSIG` so no orphaned bus outlives its harness. There is nothing to install for it: `make doctor` reports `nats-server: OK (bundled, var/bin)` or says that `make build` builds it |
@@ -2849,6 +2849,13 @@ constraint would report a validation that never happened. `scope` is
 `instance` only; a declaration asking for `shared` is refused until that design
 lands. No value enters a frozen prompt prefix — a change is visible at the
 owner's next call. Contract: [research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md).
+
+A declaration must name a domain `application` timing — `immediate`,
+`next turn`, `next conversation` or `component restart`; there is no default.
+Per-property `x-config.application` overrides it. `config_get` reports the
+domain timing beside the `timings` overrides, and `config_patch` returns
+`applies` naming when each changed property takes effect; the owner, not
+`config`, is what actually honours the timing.
 
 **`humanOnly` — approval is necessary, not sufficient.** For a field whose
 meaning is *a human decided this* (a paid-call gate, an access widening, a
