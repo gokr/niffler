@@ -778,7 +778,7 @@ func TestFitOutputClampsToWindowHeadroom(t *testing.T) {
 	// leaves prompt+cap inside the 1M window with margin.
 	big := strings.Repeat("x", 664659*4)
 	args := chatArgs{Messages: []chatMessage{{Role: "user", Content: big}}}
-	got := fitOutput(384000, 1000000, args)
+	got := fitOutput(384000, 1000000, args, "")
 	if got <= 0 || got >= 384000 {
 		t.Fatalf("fitOutput = %d, want clamped below 384000", got)
 	}
@@ -787,7 +787,7 @@ func TestFitOutputClampsToWindowHeadroom(t *testing.T) {
 	}
 	// Small prompt: the declared output passes through untouched.
 	small := chatArgs{Messages: []chatMessage{{Role: "user", Content: "hi"}}}
-	if got := fitOutput(384000, 1000000, small); got != 384000 {
+	if got := fitOutput(384000, 1000000, small, ""); got != 384000 {
 		t.Fatalf("small prompt fitOutput = %d, want 384000", got)
 	}
 	// Tool schemas count against the same window: a big frozen toolset must
@@ -798,20 +798,72 @@ func TestFitOutputClampsToWindowHeadroom(t *testing.T) {
 			Name: "bash", Description: strings.Repeat("x", 700000*4),
 		}}},
 	}
-	if got := fitOutput(384000, 1000000, tooled); got >= 384000 {
+	if got := fitOutput(384000, 1000000, tooled, ""); got >= 384000 {
 		t.Fatalf("tool-heavy fitOutput = %d, want clamped below 384000", got)
 	}
 	// Degenerate guards: no output cap, no window, empty messages.
-	if got := fitOutput(0, 1000000, small); got != 0 {
+	if got := fitOutput(0, 1000000, small, ""); got != 0 {
 		t.Fatalf("zero output = %d, want 0", got)
 	}
-	if got := fitOutput(384000, 0, small); got != 384000 {
+	if got := fitOutput(384000, 0, small, ""); got != 384000 {
 		t.Fatalf("zero window = %d, want pass-through", got)
 	}
 	// A prompt that already fills the window still gets the floor, not 0.
 	full := chatArgs{Messages: []chatMessage{{Role: "user", Content: strings.Repeat("x", 1000000*4)}}}
-	if got := fitOutput(384000, 1000000, full); got <= 0 {
+	if got := fitOutput(384000, 1000000, full, ""); got <= 0 {
 		t.Fatalf("full prompt fitOutput = %d, want positive floor", got)
+	}
+}
+
+// TestFitOutputUsesObservedProviderRatio is the prod regression
+// (conv-aedf2d00aef8): the prompt was 729,345 tokens by the provider's count
+// and ~641k by chars/4, so fitOutput believed it had 88k more headroom than it
+// did, left the full 393,216-token completion budget in place, and the provider
+// refused prompt+completion (1,122,561 > 1,048,576) — twice, terminally.
+//
+// A real DeepSeek-class tokenizer packs ~14% more than chars/4 on code-dense
+// history. Once the provider has reported usage for this model, the clamp must
+// measure in THAT scale, which is what keeps prompt+cap under the window.
+func TestFitOutputUsesObservedProviderRatio(t *testing.T) {
+	const key = "deepseek\x1fdeepseek-flash"
+	defer promptRatios.Delete(key)
+
+	// 600k chars/4 tokens of history: the same projection that overflowed.
+	// 641k est + 393,216 cap = 1,034,772 < 1,048,576, so the RAW proxy sees
+	// nothing to clamp — the exact false-negative that shipped the refusal.
+	args := chatArgs{Provider: "deepseek", Model: "deepseek-flash",
+		Messages: []chatMessage{{Role: "user", Content: strings.Repeat("x", 600_000*4)}}}
+	if got := fitOutput(384000, 1048576, args, key); got != 384000 {
+		t.Fatalf("before observation fitOutput = %d, want the raw proxy to pass 384000 through", got)
+	}
+
+	// The provider answers a request with prompt_tokens 14% above the proxy.
+	// observePromptUsage is what a real response does; the ratio persists per
+	// provider+model, so the NEXT turn's clamp measures the provider's scale.
+	observePromptUsage(args, 600_000+600_000*14/100, key)
+
+	got := fitOutput(384000, 1048576, args, key)
+	if got >= 384000 {
+		t.Fatalf("after observation fitOutput = %d, want clamped below 384000", got)
+	}
+	if est := 684_000; est+got >= 1048576 {
+		t.Fatalf("provider-scale prompt %d + cap %d = %d exceeds the window", est, got, est+got)
+	}
+
+	// A ratio learned for one model must not clamp another's requests.
+	other := args
+	other.Model = "some-other-model"
+	if got := fitOutput(384000, 1048576, other, promptRatioKey("deepseek", "some-other-model")); got != 384000 {
+		t.Fatalf("a foreign model was clamped to %d; ratios must be per model", got)
+	}
+
+	// An under-counting provider (ratio < 1) must never SHRINK the estimate:
+	// that would silently take context away from a model whose proxy is
+	// conservative.
+	defer promptRatios.Delete("tiny\x1ftiny-model")
+	observePromptUsage(args, 60_000, promptRatioKey("tiny", "tiny-model"))
+	if got := applyPromptRatio(promptRatioKey("tiny", "tiny-model"), 600_000); got != 600_000 {
+		t.Fatalf("a sub-1.0 ratio changed the estimate to %d, want 600000", got)
 	}
 }
 

@@ -351,7 +351,7 @@ func TestFitOutputDoesNotBillImagesAsBase64Text(t *testing.T) {
 					URL: "data:image/png;base64," + huge}},
 		},
 	})}}
-	got := fitOutput(8192, 128000, args)
+	got := fitOutput(8192, 128000, args, "")
 	if got != 8192 {
 		t.Fatalf("fitOutput clamped an image turn to %d; the base64 was billed as text", got)
 	}
@@ -359,7 +359,7 @@ func TestFitOutputDoesNotBillImagesAsBase64Text(t *testing.T) {
 	textArgs := chatArgs{Messages: []chatMessage{chatMessage(openai.ChatCompletionMessage{
 		Role: openai.ChatMessageRoleUser, Content: strings.Repeat("word ", 600_000),
 	})}}
-	if fitOutput(8192, 128000, textArgs) >= 8192 {
+	if fitOutput(8192, 128000, textArgs, "") >= 8192 {
 		t.Fatal("a huge text prompt did not clamp the output budget")
 	}
 }
