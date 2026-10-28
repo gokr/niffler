@@ -70,12 +70,49 @@ read-only remote tasks with durable parent notices are implemented. Local Lima
 bootstrap and SSH-hosted Incus provisioning have live evidence; the original
 long-bootstrap lost-reply mechanism has a tested heartbeat-pump fix.
 
-**Direction update:** [Fleet simplification](FLEET-SIMPLIFICATION.md) supersedes
-this section's old task-profile/artifact ladder. Work proceeds report-first,
-then explicit worker trust and simple named submission with optional limits,
-then persistent follow-ups and confirmed cancellation. Existing restrictive
-policies are not silently widened. PR #24 is already assigned independently.
-Slice 1 adds cached prose report pages and a compatible TUI reader.
+**Direction update (shipped):** [Fleet simplification](FLEET-SIMPLIFICATION.md)
+supersedes this section's old task-profile/artifact ladder, and slices 1–3 have
+landed on `main`. Delegation is now goal-oriented: name a registered worker, give
+it a goal, read a paged prose report.
+
+- **Slice 1 (report-first results)** — shipped. `fleet_task_result` pages a
+  locally cached prose report (`report`, `offset`, `nextOffset`, `hasMore`,
+  `reportBytes`, `reportComplete`); notices stay short; a legacy summary-only job
+  answers `reportComplete:false`. The TUI reader is released.
+- **Slice 2 (named worker, pinned route)** — shipped. `fleet_task_submit
+  {instance}` takes a registry name or 32-hex identity (XOR the legacy `profile`)
+  and pins the verified receipt into the job, so a registry edit cannot retarget
+  an existing job or its retry.
+- **Slice 2b (trusted-worker admission)** — shipped. Trust is ONE worker-side
+  setting (`delegation/settings` via `fleet_delegation_set`/`_get`,
+  approval-gated and on the control-plane deny list), off when absent and refused
+  **before any turn runs**. `delegationPolicyVersion: 1` is advertised so a
+  requester refuses an older peer instead of silently downgrading to `ask`.
+  Tools and budgets are optional; an explicit value may only narrow. Every stored
+  `taskProfile` job keeps its recorded policy verbatim.
+- **Slice 3 (follow-up)** — shipped for the continuation half.
+  `fleet_task_continue` appends an activation to a settled delegated goal on the
+  SAME worker conversation, with a fresh admission key per activation and
+  instruction-only changes; the parent's report is never overwritten. The
+  active-cancellation half still needs a live exercise against a real peer
+  (queued-vs-dispatched cancel semantics themselves are implemented and tested).
+- **Slice 4 (Fleet-only acceptance)** — **not met, and blocked on a deployment
+  step rather than on code.** The registered `worker` instance is pinned at a
+  revision with no `delegationPolicyVersion`, so a delegated goal is correctly
+  refused by the requester before dispatch. Acceptance needs the worker updated
+  (`fleet_update`) and its operator to enable trust — deliberate operator acts,
+  not something a merge can self-certify. The requester-side contract is covered:
+  an older peer refuses a goal, and the same peer still serves an `ask` task.
+
+Honest boundaries that did not change: the envelope `caller` is self-declared, so
+unattended trust means trusted bus/SSH access, not per-requester authentication;
+a worker with `bash` and its own credentials can push and open PRs, and no
+sandbox is claimed; a worker's report is a claim, not verified fact. PR #24 is
+assigned independently and was not dispatched here.
+
+The older F2 ladder below is kept as history. Its exit stock (patch/commit
+artifact as a completion contract, workspace isolation, runtime deadline) is
+deliberately NOT the target any more: artifacts are optional supporting evidence.
 
 Durable worker admission is implemented (F1: versioned capability negotiation,
 immutable birth-policy digest, idempotent admission, activation-bound terminal
@@ -98,16 +135,16 @@ alert instead of polling (docs/FLEET-INBOX.md records the experience). The TUI
 listing, toast, client-local seen markers and drill-down are implemented. Still
 open there: artifact retrieval for a settled activation.
 
-Still open: multi-activation records and receipt retention (F1); scoped
-artifact retrieval, verification evidence and patch/commit return (F2/F4);
-steering, continuation and a live exercise of remote cancellation (F3);
-sequenced blocked/completion notices (F3/F4); a human UI for task profiles and
-grants. Read-only tasks remain the default, and unattended coding
-is never enabled by requesting it. Human seen state stays separate from agent
-notice acknowledgement. Follow F1–F5 in the Fleet plan rather than the
-historical research ladders. Published-revision update and real-provider coding
-acceptance remain separate gates; the completed Linux Lima smoke does not
-certify macOS/VZ.
+Still open: a live exercise of remote cancellation (F3) — the queued/dispatched
+semantics and their tests exist, but no real peer has been stopped and observed;
+scoped artifact retrieval and patch/commit return (F2/F4), now OPTIONAL evidence
+rather than an exit condition; sequenced blocked/completion notices (F3/F4); a
+human UI for the delegation setting and task profiles. Read-only tasks remain the
+default, and unattended coding is never enabled by requesting it — it needs the
+worker operator's `fleet_delegation_set` (or a named `taskProfile`). Human seen
+state stays separate from agent notice acknowledgement. Published-revision update
+and real-provider coding acceptance remain separate gates (they are what blocks
+slice 4 above); the completed Linux Lima smoke does not certify macOS/VZ.
 
 Unattended work on a resident instance has both halves of the approval story
 shipped: `NIF_APPROVALS_DEFAULT=auto` (rendered by `scripts/server.sh`) gives
