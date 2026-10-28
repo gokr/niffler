@@ -537,6 +537,113 @@ proc main() =
     check("exactly one raw-phrase rejection (one recovery attempt)",
           rejected9c == 1, $rejected9c)
 
+  # --- 9c2. The refusal's own count drives recovery (§6.5, prod regression) --
+  # conv-aedf2d00aef8 (2026-10-27) ended `context-recovery-required: … and the
+  # candidate could not be reduced below the window` TWICE while ~200k tokens
+  # of droppable history sat in the projection. The chain: admission measured
+  # the candidate with the chars/4 proxy plus a calibration seed that a resumed
+  # runner had clamped to 0, so it believed it was 14% under the line; the
+  # provider counted 14% over and refused; recovery then re-measured with the
+  # SAME proxy, concluded "fits", and refused to resend what it could not
+  # prove had shrunk.
+  #
+  # Fixture: phase 1 builds droppable history against a provider that reports
+  # usage at the raw proxy (no bias → the stored seed teaches nothing). Phase 2
+  # restarts core with a provider whose tokenizer packs 1200 tokens more on
+  # every request (PT_BIAS) and which refuses above 6000 — so the first resumed
+  # request is refused even though the stale seed measures it as fitting. The
+  # refusal names its own count; recovery must calibrate from it, run the
+  # ladder, and complete the turn.
+  block refusalCalibrates:
+    let repoRoot = getEnv("NIF_REPO_ROOT",
+                          getEnv("NIF_ROOT", getAppDir().parentDir()))
+    let sandbox = newCoreSandbox("calibrefuse", ["store", "bash", "llm", "recall"])
+    let root = sandbox.root
+    let compProc = startProcess("nim", args = [
+      "c", "--hints:off", "--warnings:off",
+      "--path:" & repoRoot / "sdk",
+      "-o:" & sandbox.sandboxBin("llm"),
+      repoRoot / "tests" / "mock_llm.nim"],
+      options = {poUsePath, poStdErrToStdOut})
+    if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
+      fail("mock llm failed to compile for calibrefuse")
+      quit(1)
+    compProc.close()
+    let logPath = root / "mock-requests.log"
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    defer: nc.close()
+    defer: stopServer(server)
+    let sessionId = "conv-calibrefuse-" & $int(epochTime())
+    # phase 1: build history; the provider counts exactly the raw proxy, so a
+    # resumed runner's calibration seed is legitimately 0.
+    block phase1:
+      let knobs: seq[(string, string)] = @[
+        ("NIF_AUTO_APPROVE", "1"),
+        ("NIF_MOCK_CTX", "8000"),
+        ("NIF_MOCK_ENFORCE_CTX", "8000"),
+        ("NIF_MOCK_ROUNDS", "1"),
+        ("NIF_MOCK_TOOLCMD", "head -c 4000 /dev/zero | tr '\\0' 'x'"),
+        ("NIF_MOCK_LOG", logPath),
+        ("NIF_CTX_RESERVE", "2000")]
+      var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+        root = root, extra = knobs,
+        logFile = root / "var" / "test-logs" / "core-calibrefuse-1.log")
+      doAssert waitComponent(nc, "store"), "phase1: store did not register"
+      doAssert waitComponent(nc, "llm"), "phase1: mock llm did not register"
+      for i in 1 .. 5:
+        let turn = call(nc, "core", "session",
+                        %*{"sessionId": sessionId,
+                           "content": "Warm turn " & $i & ": run the command, then say W" &
+                             $i & "-DONE."}, 180_000)
+        if turn{"turnError"}.getStr("").len > 0:
+          check("phase-1 warm turn " & $i & " completes", false,
+                turn{"turnError"}.getStr(""))
+          break
+      coreProc.stopHard()
+    # phase 2: same store, a tokenizer 1200 tokens denser and a real ceiling
+    # below the catalog window. The stale (zero) seed cannot see it coming.
+    block phase2:
+      let knobs: seq[(string, string)] = @[
+        ("NIF_AUTO_APPROVE", "1"),
+        ("NIF_MOCK_CTX", "8000"),
+        ("NIF_MOCK_PT_BIAS", "1200"),
+        ("NIF_MOCK_ENFORCE_CTX", "6000"),
+        ("NIF_MOCK_OVERFLOW_DETAIL", "1"),
+        ("NIF_MOCK_ROUNDS", "1"),
+        ("NIF_MOCK_TOOLCMD", "head -c 4000 /dev/zero | tr '\\0' 'x'"),
+        ("NIF_MOCK_LOG", logPath),
+        ("NIF_CTX_RESERVE", "2000"),
+        ("NIF_STUB_DERIVABLE", "0")]
+      var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+        root = root, extra = knobs,
+        logFile = root / "var" / "test-logs" / "core-calibrefuse-2.log")
+      doAssert waitComponent(nc, "store"), "phase2: store did not register"
+      doAssert waitComponent(nc, "llm"), "phase2: mock llm did not register"
+      let turn = call(nc, "core", "session",
+                      %*{"sessionId": sessionId,
+                         "content": "Final turn: say DONE-CALIB-9Q."}, 180_000)
+      let err = turn{"turnError"}.getStr("")
+      check("a refusal whose own count exceeds our estimate still recovers",
+            err.len == 0, err)
+      # The distinction this fixture exists for: the OLD behavior produced
+      # "could not be reduced below the window" here, because recovery
+      # re-measured with the under-reporting proxy.
+      check("recovery did not declare the candidate irreducible",
+            not err.contains("could not be reduced"), err)
+      check("final answer produced after the calibrated recovery",
+            turn{"reply"}.getStr("").contains("done —"),
+            turn{"reply"}.getStr(""))
+      let (accepted, rejected) = readRequests(logPath)
+      check("exactly one refusal — one calibrated recovery attempt",
+            rejected == 1, $rejected)
+      var within = true
+      for a in accepted:
+        if a > 6000: within = false
+      check("every accepted request fit the provider's real ceiling", within,
+            $accepted)
+      coreProc.stopHard()
+
   # --- 9d. Durable trim: the cut survives a restart (§6.3 watermark) ------
   # Trim drops whole turns from the projection. Until now that cut lived
   # only in memory: a restart rebuilt the FULL pre-trim context from

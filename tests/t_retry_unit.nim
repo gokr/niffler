@@ -72,6 +72,33 @@ proc main() =
   check("plain 400 is still permanent",
         classifyLlmError("HTTP 400: messages required") == lfcPermanent)
 
+  # --- the refusal's own count (§6.5 recovery input) -----------------------
+  # A provider that refuses names exactly what it counted, and that number is
+  # the ONLY measurement of the real tokenizer a failed request yields. Prod
+  # conv-aedf2d00aef8: two terminal overflow receipts because recovery
+  # re-measured with the same chars/4 proxy that under-reported by ~14% and
+  # concluded the candidate could not be reduced. Recovery now calibrates from
+  # this number before the ladder measures anything.
+  check("provider prompt count parsed from the DeepSeek refusal",
+        promptTokensFromOverflow("context-overflow: This model's maximum " &
+          "context length is 1048576 tokens. However, you requested " &
+          "1122561 tokens (729345 in the messages, 393216 in the " &
+          "completion). Please reduce the length of the messages or " &
+          "completion. (request_id: 685eb992-a0bd-4063-ac09-184ee79e1ff1); " &
+          "window 1048576 tokens") == 729345)
+  check("thousands separators tolerated",
+        promptTokensFromOverflow("requested 1,084,407 tokens " &
+          "(691,191 in the messages, 393,216 in the completion)") == 691191)
+  check("the completion figure is never mistaken for the prompt",
+        promptTokensFromOverflow("requested 500 tokens " &
+          "(300 in the messages, 200 in the completion)") == 300)
+  check("absent counts yield 0, not a guess",
+        promptTokensFromOverflow("context-overflow: request too large; " &
+          "window 8192 tokens") == 0)
+  check("the adapter's own window text does not leak into the count",
+        promptTokensFromOverflow("context-overflow: request ~90000 tokens " &
+          "exceeds the window of 8192; window 8192 tokens") == 0)
+
   # --- independent budgets and Retry-After ----------------------------------
   check("millisecond Retry-After parsed",
         retryAfterMs("HTTP 429; retry-after-ms: 1500") == 1500)

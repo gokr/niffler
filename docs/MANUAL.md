@@ -1414,7 +1414,25 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   additionally clamps the requested output to the headroom the serialized
   prompt (messages plus tool schemas) leaves, so estimation drift in either
   layer cannot push a fitting prompt over the provider's limit. It never
-  knowingly sends an over-window request.
+  knowingly sends an over-window request. That clamp measures the prompt
+  through an **observed ratio** as well as chars/4: `llm` keeps, per
+  provider+model, the ratio between the `prompt_tokens` a provider reports and
+  its own estimate of the same request, and prices the NEXT request's headroom
+  in that scale. chars/4 alone under-counted code-dense history by ~14%
+  (729,345 provider tokens against a 641k estimate), which left the full
+  393,216-token completion budget in place and made the provider refuse
+  prompt+completion; the ratio converges within one round trip and needs no
+  configuration.
+- A refusal corrects the calibration **before** recovery measures anything.
+  The provider names its own count ("… 1122561 tokens (729345 in the
+  messages, 393216 in the completion)"); recovery parses the prompt figure and
+  raises the offset to match, so the ladder's prune/compact/trim rungs see the
+  provider's scale rather than re-confirming the under-reporting estimate.
+  Without it, recovery concluded the candidate already fit and declined to
+  resend it — reporting `context-recovery-required … could not be reduced
+  below the window` while hundreds of thousands of droppable tokens sat in the
+  projection. The offset is only ever raised by a refusal, and
+  `ev.session.<id>.context {reason: "calib:refusal"}` reports both counts.
 - The trigger measures in the **provider's scale, not the estimate's**: every
   successful response re-measures a calibration offset (reported
   `prompt_tokens` minus the local estimate of the same request) and

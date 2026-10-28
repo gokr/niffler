@@ -6,6 +6,45 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The `llm` component no longer leaves a request over the provider's limit. Its
+  output clamp (`fitOutput`) priced the prompt with chars/4, which under-counts
+  code-dense history by ~14% — 729,345 provider tokens against a 641k estimate
+  on a live 5,246-message conversation with a 1,048,576-token window — so it
+  believed it had 88k more headroom than it did, kept the full 393,216-token
+  completion budget in place, and the provider refused prompt+completion
+  (1,122,561 > 1,048,576). The clamp now measures the prompt through an
+  **observed ratio** as well: per provider+model, the ratio between the
+  `prompt_tokens` a provider reports and `llm`'s own estimate of the same
+  request, applied to the next request's headroom. It converges within one
+  round trip, needs no configuration, never shrinks an estimate below chars/4,
+  and is sanity-bounded so one mismeasured response cannot poison it.
+  Regression: `TestFitOutputUsesObservedProviderRatio`.
+
+- Context recovery now trusts the refusal's own count instead of re-confirming
+  the estimate that let the request out. A provider refusal names exactly what
+  it counted ("… 1122561 tokens (729345 in the messages, 393216 in the
+  completion)"); recovery parses the prompt figure
+  (`retry.promptTokensFromOverflow`) and raises the calibration offset before
+  the ladder measures anything, reporting `calib:refusal`. Previously it
+  re-measured with the same under-reporting proxy, concluded the candidate
+  already fit, and declined to resend — ending the turn with
+  `context-recovery-required … the candidate could not be reduced below the
+  window` while ~200k tokens of droppable history sat in the projection. The
+  offset is only ever raised by a refusal. Regressions: `t_retry_unit`'s
+  `promptTokensFromOverflow` cases and `t_ctxcompact`'s `refusalCalibrates`
+  block, which reproduces the production error against the old behaviour.
+
+- The runner sends a compactor the bounds validation enforces
+  (`budget.maxListItems`/`maxFiles`/`maxFieldChars`), and the shipped
+  `compaction` component restates them in the summarization instruction as hard
+  limits with a merge-and-prioritize rule. A summarizer that was never told the
+  cap answered with what the covered span implied — over 32 completed-work items
+  on a 5,000-message span — and every escalation was rejected as an *invalid*
+  candidate (`checkpoint field "completedWork" must be a bounded list`), so
+  `/compact` and the pressure rung both failed on the longest conversations.
+  Validation remains the authority; a component that ignores the field fails as
+  it did before.
+
 - Configuration properties can now be marked `x-config.humanOnly`: readable and
   reportable by a model, but writable only from a human's own conversation or
   from a direct (sessionless) tool call. Approval alone was not enough for a
