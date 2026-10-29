@@ -1,7 +1,8 @@
 # Fleet simplification
 
 Agreed direction (supersedes the task-profile/artifact-first roadmap in
-FLEET.md; not a claim that the new delegation API is already implemented):
+FLEET.md). Slices 1–3 are implemented; the Fleet-only acceptance run in slice 4
+is blocked on a deployment step, not on code (see Slice status):
 
 - Delegate a goal to a named trusted Niffler, like remote agent_spawn.
 - Configure explicit worker trust once, off by default, through existing

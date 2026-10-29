@@ -69,11 +69,13 @@ the inbox could list every job and open none of them, which is exactly how it
 failed the first time it was tried against a real client.
 
 *The TUI surface.* Opening a row calls `fleet_task_result {jobId, human}` — the
-remote transcript, paged, `bounded: true` per line — and, when present, fetches
-the artifact descriptor's bytes through the scoped artifact protocol. This
-**does not work offline**: the worker's transcript is canonical there. A job
-whose instance is gone keeps its verdict in the inbox and loses its detail.
-That is the intended trade, not a bug.
+locally cached prose report, paged with `offset`/`nextOffset` (UTF-8 byte
+boundaries) — and, when present, fetches the artifact descriptor's bytes through
+the scoped artifact protocol. Report reads contact no peer, so they work while
+the worker is unreachable; the full transcript stays canonical on the worker. A
+job that cached only its bounded summary says so (`reportComplete: false`), and
+one whose instance is gone keeps its verdict in the inbox. That is the intended
+trade, not a bug.
 
 ## Unread, and why it is yours alone
 
@@ -136,5 +138,5 @@ An `uncertain` job is honest; a `settled`-with-guess would not be.
 |---|---|
 | ✅ | `ev.fleet.settled` broadcast so a connected TUI can toast instead of polling |
 | ✅ | TUI: `/tasks` list, toast, client-local seen markers, baseline-on-connect |
-| ✅ | Drill-down: `/tasks <jobId>` renders the peer's bounded report |
+| ✅ | Drill-down: `/tasks <jobId>` renders the locally cached report, paged |
 | ▢ | Artifact retrieval for a settled activation |

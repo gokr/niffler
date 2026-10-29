@@ -6,6 +6,43 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **Trusted goal delegation replaces per-assignment profile negotiation.**
+  `fleet_task_submit` gains `mode: "delegate"`: a registered `instance` (name or
+  32-hex identity, XOR the legacy private `profile` receipt) plus a goal, and
+  the worker decides its own steps with its normal capabilities. The worker's
+  operator makes one decision per machine —
+  `fleet_delegation_set {enabled, tools, roots, maxRounds?, maxCalls?,
+  maxTokens?}`, stored as `delegation/settings` and readable with
+  `fleet_delegation_get` — which is off when absent and refused **before any
+  turn runs**. Omitted tools and budgets take that worker ceiling (a 0 round
+  ceiling means the runner's ordinary turn default); a named value may only
+  narrow, and a wider one refuses with `task-policy-widened` rather than
+  clamping. Control-plane tools and `confinement: "sandbox"` are refused. The
+  setting trusts reachability of the private bus/SSH route, not a per-requester
+  credential (the envelope's `caller` is self-declared), and a delegated goal
+  with `bash` has that machine's ordinary shell authority — including its
+  GitHub credentials. `delegationPolicyVersion: 1` is advertised so a requester
+  refuses an older peer instead of downgrading to `ask`; every stored
+  `taskProfile` and `mode: "unattended"` job keeps its recorded policy verbatim.
+  `fleet_task_continue {jobId, requestId, content, close?}` then appends an
+  activation to a **settled** delegated goal in the SAME worker conversation,
+  with its own admission key. Only the instruction may change: naming `cwd`,
+  the machine, tools or any budget refuses, because authority was frozen when
+  the goal was admitted. `close: true` closes the goal after a successful turn
+  only. Reconciliation now reads the peer's transcript, activity and admission
+  by the remote session rather than the job id (a continuation's job id differs
+  from its parent's session), and an explicit peer refusal is kept as the job's
+  `diagnostic` instead of being discarded as an unknown.
+
+- `fleet_task_result {jobId, offset?, limit?}` now serves the full final prose
+  report from the local job cache, not just a bounded summary: `report`,
+  `nextOffset`, `hasMore`, `reportBytes` and `reportComplete` beside `summary`.
+  Offsets are UTF-8 byte boundaries and `limit` is 4..32768 bytes (default
+  8192); reads never contact the peer. A job that cached only a summary (an
+  older job) returns `reportComplete: false` with an explicit detail, and a
+  capped or ambiguous transcript scan never claims a complete report. Status,
+  notices and the inbox still carry only the bounded summary.
+
 - The `llm` component no longer leaves a request over the provider's limit. Its
   output clamp (`fitOutput`) priced the prompt with chars/4, which under-counts
   code-dense history by ~14% — 729,345 provider tokens against a 641k estimate
@@ -44,6 +81,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/compact` and the pressure rung both failed on the longest conversations.
   Validation remains the authority; a component that ignores the field fails as
   it did before.
+
+- A component rebuilt in place can spawn children again. `make build` replaces
+  the binary while a long-lived component runs; Linux then resolves
+  `/proc/self/exe` to `<path> (deleted)`, and `getAppFilename()` returned that
+  name verbatim, so every re-exec failed with ENOENT naming a path that never
+  existed — silently, because the supervisor's child still looked healthy while
+  its subprocesses never started. `fleet` stopped reconciling entirely (jobs sat
+  `queued` with `checkedAt: 0`, which reads exactly like an unreachable peer);
+  `jev`'s judge subprocess and `git`'s self-recursion guard were affected too
+  (the deleted name never matched, so the guard was dead after a rebuild). New
+  `selfBinaryPath()` returns `/proc/self/exe` when the on-disk name is stale; it
+  deliberately does not strip the suffix, because that name now holds the
+  replacement or nothing. Regression: `t_selfbinary`.
 
 - Configuration properties can now be marked `x-config.humanOnly`: readable and
   reportable by a model, but writable only from a human's own conversation or

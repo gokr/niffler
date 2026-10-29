@@ -40,15 +40,16 @@ drives remote cancellation through this op.
 
 Optional fleet uses requester-owned `fleetjob` documents, never shared remote
 stores or core imports. `fleet_task_submit` binds injected `__session.session`,
-requestId, immutable receipt route/instance identity and explicit birth budgets
-before dispatch. A submission accepts either `instance` (registered name or
-32-hex identity) or legacy private `profile` receipt, never both. Resolution
+requestId, immutable receipt route/instance identity and any explicit birth
+budgets before dispatch. A submission accepts either `instance` (registered name
+or 32-hex identity) or legacy private `profile` receipt, never both. Resolution
 happens only for a fresh job: its verified receipt is pinned into the record,
 so removal/renaming of registry entries cannot retarget a retry. Catalog components/snapshot advertise `taskScopeVersion:1`:
 model-originated calls in allowlisted sessions may not use runner/store
 machinery exemptions. Internal runner persistence remains exempt. Fleet refuses
-older peers and restricts its first slice to audited file/search/git read tools;
-no invoke/orchestrator, shell, store or further delegation authority.
+older peers and restricts its default `ask` slice to audited file/search/git
+read tools; no invoke/orchestrator, shell, store or further delegation
+authority.
 
 Only `queued` permits submission. Persisting `submitting` spends that permission
 before remote preparation/submission; uncertain outcomes remain unknown, never
