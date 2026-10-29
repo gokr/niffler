@@ -691,8 +691,8 @@ ev.session.<id>.turn        # {sessionId, turnId, phase: start|done, content?, e
                        #   outcome?, usage?}
                        #   turn lifecycle; content (the user request) on start.
                        #   turnId identifies the turn — advisory delivery binds
-                       #   to it and every session event carries it. The ONE
-                       #   phase:done frame per turn is the authoritative
+                       #   to it and every frame runTurn publishes carries it.
+                       #   The ONE phase:done frame per turn is the authoritative
                        #   terminal frame: it carries the same `outcome` and
                        #   `usage` object the session result returns (see
                        #   "Turn usage")
@@ -780,6 +780,20 @@ ev.session.<id>.done        # {sessionId, turnId, reply} or {sessionId, turnId, 
 Wildcards compose: `ev.session.>` observes every conversation's frames,
 `ev.session.<id>.>` one conversation, `ev.session.*.token` every token
 stream. The payload keeps `sessionId` for clients that subscribe wide.
+
+**Is the conversation mid-turn? Derive it from the frame, not the kind.** A
+control call runs no turn yet publishes on the same subjects: `/compact` emits
+`context` frames (its refusals, and the commit's own `reset:compact`), and the
+idle lanes publish `map` (a repo map) and `diagnostics` (an lsp verdict that
+arrives long after the edit) from an idle slot. A client that adopts "busy"
+from any of those latches itself mid-turn with no `done` frame coming to clear
+it — Enter then steers into nothing and `/compact` refuses to run. `turnId` is
+the frame's own statement: non-empty means a running turn published it (every
+`turn`, `assistant`, `token`, `toolcall`, `retry`, `steer` and in-turn
+`notice`/`context` frame carries one); empty or absent means a control call or
+an idle lane produced it, so it is not evidence of a turn. Confirm with the
+read-only status readback (an idle runner answers it, a mid-turn one refuses
+with `code: "busy"`), which is what a client attaching to a live turn uses.
 
 ### Turn usage
 

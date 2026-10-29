@@ -6,6 +6,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **A client can tell a live turn from a control call by the frame's `turnId`,
+  and the wire doc now says so.** `/compact` publishes `context` frames (its
+  refusals, and the commit's own `reset:compact`), while the idle lanes publish
+  `map` and `diagnostics` — all on the same `ev.session.<id>.>` subjects a
+  turn's frames use, all with no turn behind them. A client that treated "an
+  activity kind arrived" as "the conversation is mid-turn" latched itself busy
+  with no `done` frame coming to clear it; niffler-tui did exactly that and
+  needed `/restart` to recover. docs/WIRE.md "Session events" now states the
+  rule: a non-empty `turnId` is the frame's own evidence of a running turn, an
+  empty/absent one marks a control call or idle lane, and the read-only status
+  readback (still answered `busy` mid-turn by `pumpBusyCall`) is the
+  confirmation. The one in-turn frame that was missing its `turnId`
+  (`drainNotices`' fleet-settled `notice`) now carries it like every other
+  frame a turn publishes.
 - **A `droid` bench lane, and the `full31` three-way run.** `bench/adapters/droid.mjs`
   drives Factory's Droid CLI per round (`-o stream-json`, `-f` prompt file,
   `-s` session continuation, `--skip-permissions-unsafe`) with the BYOK model

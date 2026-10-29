@@ -2200,7 +2200,14 @@ proc drainNotices*(ct: CoreTools, p: var Persister,
           discard ct.dispatchToolCall("fleet_notices",
             %*{"session": sessionId, "ack": id}, 5_000)
         except CatchableError: discard
-      if onEvent != nil: onEvent("notice", %*{"kind": "fleet-settled", "jobId": id, "content": content})
+      if onEvent != nil:
+        # turnId, like every other frame drainNotices emits (eventId above):
+        # this branch only ever publishes from a running turn, and a client
+        # that attaches mid-turn uses the turnId as the frame's own evidence
+        # that a turn is live (docs/WIRE.md "notice ... turnId?").
+        onEvent("notice", %*{"sessionId": sessionId, "turnId": turnId,
+                              "kind": "fleet-settled", "jobId": id,
+                              "content": content})
       inc result
       continue
     if n{"kind"}.getStr("") == "process-exited":
