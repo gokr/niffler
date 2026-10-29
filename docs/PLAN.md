@@ -224,6 +224,20 @@ prefix must stay byte-stable.
    implemented: tier 1 elides results a later write superseded, tier 2 elides
    results whose producing tool declares them re-obtainable
    (`x-harness.derivable`, disabled with `NIF_STUB_DERIVABLE=0`).
+   **Follow-up — make what a refusal teaches durable.** Recovery now adopts the
+   window a provider's `context-overflow` refusal names and the reply budget it
+   implies (`window:refusal`/`calib:refusal`/`reserve:clamped`,
+   `runOverflowFallback`; docs/COMPACTION.md "A refusal the ladder did not
+   predict"). None of it survives the process: `ctxSize` is rehydrated on resume
+   from the last assistant message's `context` field rather than a header field,
+   and `ctxOutput` is re-resolved from the catalog every turn, so the clamp is
+   overwritten. A provider whose real ceiling sits below its catalog window
+   therefore pays one extra refused round trip per fresh runner and per turn —
+   automatic and correct, but not remembered. Persist both to the conversation
+   header beside `trimThrough` (that plumbing already exists) and seed them on
+   resume, so a learned ceiling is learned once. Not urgent: it costs a wasted
+   request, never a stuck turn.
+
 One item is small, fully measured and can be taken in parallel with any of the
 above: the read-vs-shell routing quest in "Benchmark evidence" (prompt and tool
 description plus one re-run; acceptance is shape, since pass rate is saturated).
