@@ -564,6 +564,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   branch: `plugin_update` deliberately does not move it to a release, so
   adopting one means `plugin_remove` + `plugin_install {version}`.
 
+- **`make install-tools` gains trafilatura, so `fetch` gets better HTML.**
+  The `fetch` component already shells out to the trafilatura CLI for HTML
+  extraction and falls back to its built-in extractor when it is missing, so
+  the result is better but never required. It is not distributed as a package,
+  so the toolkit entry installs it as an isolated Python CLI, preferring `uv`,
+  then `pipx`, then `pip --user`. The prompt is `[Y/n]` on a terminal only and
+  never appears in a non-interactive run unless `WITH_TRAFILATURA=1` asks for
+  it, so a build is never blocked on a question nobody can answer.
+
 - **Async post-edit diagnostics got a real budget.** The LSP component's
   edit-triggered check waited 8s for a server's `publishDiagnostics` push —
   routinely too short for a cold or loaded language server, so the check was
@@ -750,6 +759,64 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and advances the receipt's pinned revision only after the updated instance
   verifies. A `main`/`v0.4.0` style ref resolves to a pinned commit before any
   remote write, so the receipt still proves exactly what is installed.
+- **`replace_across` and `read` select mode turn two `bash` idioms into
+  structured calls.** From Pi's bash corpus (124 sessions, 373 commands), the
+  two shapes a model shells out for are `sed -i 's/A/B/g' f*.go` with a leftover
+  check, and grep-then-cat to locate and fetch a region. `replace_across` is a
+  literal `s///g` over a file set (`paths` and/or `glob`, `**/*.go` recursive,
+  at most 12 files): rules apply in order like a sed pipeline, `word: true`
+  keeps a change inside a `\b` span, and it counts every match before writing
+  anything — so a zero total refuses with `E_NO_MATCH` instead of sed's silent
+  "success" on a typo, while zero-match files pass and are named in the reply.
+  Per-file counts, per-file undo entries, per-file observe state and a diff
+  preview of the first change come back with it; the counting phase is the dry
+  run, so there is no dry-run round trip. `read` accepts
+  `select: [{glob|path, pattern, word?, context?, max?}]` — locate and fetch in
+  one call, with line-based grep semantics, verbatim hit regions (±context,
+  merged when close) ready to paste into `old_string`, and no line numbers.
+  Omitting `pattern` lists the matched paths (`find`/`ls`), and per-file rows
+  keep zero-hit files. Mixed content and select items are refused as a shape
+  error.
+- **In-turn tool pipelines: `save_as` captures a field, `resolve_vars`
+  substitutes `$name`.** A batched call can now feed a later one without a
+  round trip through the model. `save_as: "name"` (default field `text`) or
+  `save_as: {name, from: "items.0.content"}` captures a response field, and an
+  explicit `resolve_vars: true` substitutes `$name` in that call's arguments.
+  Calls without the directives are never scanned, so `$HOME`, sed expressions,
+  shell syntax and source code stay byte-for-byte literal. Pipeline calls leave
+  the parallel wave and run on the serial spine in message order; the runner
+  resolves a private dispatch copy, so raw tool-call arguments stay in history
+  for strict providers while approvals see real values. Captured values live in
+  the conversation header (never the prompt or the frozen prefix), persist at
+  capture time, and replace the tool result with a small receipt so an
+  intermediate payload does not flood the model's context. Failures are loud:
+  `E_NO_VAR`, `E_VAR_TYPE`, `E_VAR_RACE`, `E_VAR_FULL` and
+  `E_NO_VAR_SUPPORT`. `read`, `edit`, `replace_across` and `write` declare both
+  directives in their schemas, so a model can discover them.
+- **The human can grant extra conversation roots.** Write arbitration fences
+  every claim to the conversation's workspace set, and that set only ever came
+  from git discovery: a legitimate write to a sibling checkout refused with
+  `E_WRITE_OUTSIDE` had no remedy, because `addWorkspaceRoot` and
+  `removeWorkspaceRoot` existed but nothing called them.
+  `session {roots: {add: [...], remove: [...]}}` is that control
+  (content-less, like the other conversation controls), so Niffler can propose
+  a path and only the human's call grants it. The grant feeds
+  `workspaceRootsFor`, the one helper the write fence, the private
+  `__workspace` context and every path-taking tool already consult, so `write`
+  cannot be allowed while its lock is still refused. Grants persist to their
+  own store document (kind `grantedroot`) rather than the best-effort
+  conversation header — a store failure refuses the grant instead of activating
+  a policy that would not survive a restart. Relative paths, nonexistent
+  directories, `/` and the primary workspace are refused; removing something
+  never granted is a no-op, so the control stays usable. The path cache key
+  includes the granted roots, so a grant or revocation takes effect on the next
+  call, and a turn already in flight keeps the set it started with.
+- **`NIF_INSTANCE_ID` names the instance that owns documents.** The store binds
+  its owner once at startup and never takes it from a tool argument:
+  `NIF_INSTANCE_ID` if set, else `$NIF_ROOT/var/instance-id`; with neither it
+  serves the legacy owner `''`, which is single-instance/test only. Required
+  for every instance on a shared TiDB cluster and recommended where the root is
+  not persistent; never copy it between instances.
 
 ### Fixed
 
