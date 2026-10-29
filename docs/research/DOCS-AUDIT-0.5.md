@@ -1,5 +1,15 @@
 # Documentation audit — release after 0.4.0
 
+> **Status: the MANUAL gaps below are closed** (commit following this audit).
+> `MANUAL.md` now carries the shell guard and read masks as their own section
+> with all six variables and `bash_sandbox_status`, `session {roots}` as a
+> conversation control, and `fleet_instances`/`fleet_notices` prose. The audit's
+> §3.2 claim that `fleet_task_inbox` had "tool rows only" was already stale when
+> written — it has had a full paragraph since 04e4cf3. Still open and outside
+> the manual: the **website** (§3.4) says nothing about fleet or sandbox, and
+> `WIRE.md` has a settlement-notice paragraph mentioning `fleet_notices` but no
+> contract for `fleet_instances`.
+
 Compiled from `git log v0.4.0..HEAD` (**366 commits**, `v0.4.0` = 2026-10-17) to
 answer one question: *what shipped since the last release that the manual, the
 wire spec and the website do not yet describe?*

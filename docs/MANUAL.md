@@ -29,6 +29,7 @@ outcomes, crash windows and the session-ID reuse restriction.
 - [Store engines](#store-engines)
 - [State and configuration](#state-and-configuration) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
+- [Shell guard and read masks](#shell-guard-and-read-masks)
 - [Context window](#context-window) · [Images (dropped and tool-produced)](#images-dropped-and-tool-produced) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
@@ -75,7 +76,7 @@ A one-file index of every shipped capability (not a reference) is
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
 | `store` | Go | required | document store over the bus (`put/get/list/search/del`, rev-based concurrency). All five tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with the same five tools (`put`/`get`/`list`/`search`/`del`) and a hidden `selftest` in every engine (used by `/doctor`): `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `store-tidb` remains selectable with `NIF_STORE_BACKEND=tidb` — the Nim/bitbarrel engine was removed in 0.4.0, see [Store engines](#store-engines) |
-| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled, 126 = cwd not enterable (the tool also uses 126 for found-but-not-executable), 127 = `bash` not on `PATH`, 128 + signal when the command killed itself (139 = SIGSEGV, 143 = SIGTERM) — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a file under `var/toolout/` (the absolute path is in `spill.path`; pageable with `read`, swept after 1 h). `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes) |
+| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled, 126 = cwd not enterable (the tool also uses 126 for found-but-not-executable), 127 = `bash` not on `PATH`, 128 + signal when the command killed itself (139 = SIGSEGV, 143 = SIGTERM) — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a file under `var/toolout/` (the absolute path is in `spill.path`; pageable with `read`, swept after 1 h). `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes). `bash_sandbox_status` (on demand) reports the opt-in shell guard's configuration and the backend this host can enforce — see [Shell guard and read masks](#shell-guard-and-read-masks) |
 | `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect. Workspace-open auto-append (one append-only history entry on `ev.workspace.opened`) is **on by default but gated** (`docs/research/REPOMAP-GATES.md`): the workspace must have at least 50 covered files, and its rendered map must have at least 800 bytes, 25 symbols and 5 symbol-bearing files. A small/stub map is withheld and logged as `repo map withheld`; set `NIF_REPOMAP_AUTOAPPEND=0` to disable the append. The explicit `repo_map` tool is available regardless of these gates. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes. Parameters, tag tiers and append payload: [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
 | `builder` | Nim | required | compiles agent-written Nim/Go/TypeScript source with `build {lang, name, source, files?, defines?}`, and builds manifest-v2 plugin projects with `build_package {name, lang, sourceRoot, project, steps, artifact}` (approval-gated, on demand). Package projects keep their own dependency manifests and lockfiles; the builder stages them, expands only controlled SDK/output placeholders, executes bounded argv recipes, validates the declared `executable`/`node` artifact, and returns the published binary/runtime bundle. Recipes may combine toolchains (for example `npm ci` followed by `wails build`); recipes use a bounded argv tool set and cannot invoke a shell wrapper. `info` returns SDK paths, the global tool-naming rule, and both build flows |
@@ -661,6 +662,12 @@ see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_D
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
 | `NIF_BASH_SANDBOX_MAP` | `<absolute-dir>=<image>` lines (longest matching prefix of the command's `cwd` wins) that make the `bash` tool run every command — foreground and `run_in_background` alike — as `docker run --rm --network none` with only that workspace root bind-mounted at the same path (the image's toolchains and caches, the workspace, and nothing else). Written by hosted-benchmark lanes (the DeepSWE port); a `cwd` that matches no entry fails the call loudly (exit 125) rather than running unsandboxed. Takes precedence over `NIF_BASH_NET` | unset |
+| `NIF_BASH_SANDBOX` | `on` runs every **foreground** `bash` command through the `niffler-sandbox` launcher (see [Shell guard and read masks](#shell-guard-and-read-masks)): workspace writable at its own path, the rest of the host bind-mounted read-only, private `/tmp`, fresh `/proc`, no network and no bus. `off` (the default) is unguarded. Any other value refuses. The workspace comes from the runner's session context, else `NIF_BASH_SANDBOX_ROOT`; a guarded `run_in_background` call is refused rather than run unguarded, and the guard cannot be combined with `NIF_BASH_SANDBOX_MAP` | `off` |
+| `NIF_BASH_SANDBOX_ROOT` | workspace path for a guarded command that has **no** session context (a bare `cli` call). A conversation turn supplies the workspace itself, so this is only for direct bus calls | unset |
+| `NIF_BASH_SANDBOX_MASKS` | operator-owned exact paths, one per line (absolute, or relative to the workspace), hidden from reads **and** writes: `read`, `grep`/`files`, `repomap` and skill resources refuse them, symlink and hard-link aliases are refused, and the shell guard binds `/dev/null` over each so a guarded command cannot read them either. Active whether or not the shell guard is on. A mask is a mask, not a confidentiality boundary: it removes what would have been returned, and cannot hide the same bytes behind an undeclared path or a copy taken before it was configured. A configured but missing path refuses rather than dropping the protection | unset |
+| `NIF_SANDBOX_BACKEND` | `landlock` forces the Landlock backend instead of preferring bubblewrap. Landlock confines **writes only** — reads stay unconfined — so it is the degraded option, and the probe says so in its detail line | auto (prefer `bwrap`) |
+| `NIF_SANDBOX_ALLOW_DEGRADED` | `1` accepts the writes-only Landlock backend when bubblewrap is unusable (typical on Ubuntu 23.10+, where AppArmor refuses unprivileged user namespaces). Without it, a host that cannot enforce the full promise runs nothing and says why — there is no silent fallback | unset |
+| `NIF_BWRAP` | path to the `bubblewrap` binary, overriding the `PATH` lookup (tests and non-standard installs) | `PATH` |
 | `NIF_BASH_NET` | `off` runs `bash` commands in a host `unshare` network namespace (loopback up, no routes) — the lightweight variant, used only when `NIF_BASH_SANDBOX_MAP` is unset; needs unprivileged user namespaces (Ubuntu's AppArmor refuses them without root). Off Linux, or with no `unshare`, the call fails (exit 125) | unset |
 | `NIF_NATS_URL` | bus address. In the **environment** (tests, bench, scripts): attach-only — core uses exactly that bus. Declared in **`.env`** (or the well-known `nats://127.0.0.1:4222`): the clone's **home bus** — claimed when free, attached to only when the answering core serves this root (identity via the catalog's `root` field), yielded loudly to a foreign core or bare nats-server (isolated random bus instead; a recorded leftover `var/nats-pid` is reclaimed first), and written to `var/nats-url` | auto |
 | `NIF_NATS_SPAWN` | `1` forces an isolated core-owned bus on a random port — never 4222, never attaches (dev clones and tests). With an explicit `NIF_NATS_URL` the URL wins | unset |
@@ -1206,6 +1213,72 @@ rather than waiting: turns never nest, and a client that waits instead just
 expires its own timeout (this is what made `/export` look broken during a long
 turn).
 
+## Shell guard and read masks
+
+Three different things in this harness are called isolation. They do not borrow
+each other's authority, and the manual keeps them apart deliberately:
+
+| layer | state | what it actually is |
+|---|---|---|
+| **conversation boundary** | always on | one runner process per conversation, turns never nest, a write fence over the workspace set ([write arbitration](research/WRITE-ARBITRATION.md)). Keeps two conversations of *the same user* from interleaving writes. Says nothing about untrusted code |
+| **command containment** | **opt-in, Linux, partial** | the shell guard below: a mount/network/capability view for one `bash` command |
+| **machine isolation** | shipped, for fleet | an Incus container or Lima VM per remote instance — a separate kernel and userland, which is why trusted-worker delegation is meaningful |
+
+### The shell guard (off by default)
+
+With `NIF_BASH_SANDBOX=on`, every foreground `bash` command is exec'd through the
+launcher (`var/bin/niffler-sandbox`, built by `make build`) instead of directly.
+The launcher asks the kernel for one of two backends:
+
+- **bubblewrap** — the full promise: the workspace is bind-mounted writable at
+  its own absolute path, the rest of the host read-only, `/tmp` a private tmpfs,
+  a fresh `/proc`, a minimal `/dev`, capabilities dropped, the environment
+  cleared to `PATH`/`HOME`/`TMPDIR`/`LANG`, and — this is the one that matters for
+  an agent harness — `--unshare-net`, so the command has no network and no route
+  to the bus.
+- **Landlock** — writes confined, **reads unconfined**. Degraded, and only chosen
+  on purpose: `NIF_SANDBOX_BACKEND=landlock` forces it, or
+  `NIF_SANDBOX_ALLOW_DEGRADED=1` accepts it when bubblewrap is unusable (normal
+  on Ubuntu 23.10+, where AppArmor refuses unprivileged user namespaces).
+
+With neither available, a guarded command **refuses**. There is no silent
+fallback, because a guard that quietly stops guarding is worse than no guard.
+The probe runs a real invocation *inside* the namespace rather than only
+checking that the binary exists — on Ubuntu 23.10+ AppArmor refuses the user
+namespace, so `bwrap` on `PATH` says nothing about whether it works — and the
+launcher writes per-launch status the tool can report. Availability is not
+attestation of enforcement for any particular launch.
+
+What it is not: a workspace-only filesystem view or a chroot. Arbitrary host
+**reads** remain possible except for paths you mask, and the command runs as you
+with your session's authority inside that view. A guarded `run_in_background`
+call is refused rather than run unguarded (process containment on the background
+path is not implemented), and the guard cannot be combined with the benchmark
+container map (`NIF_BASH_SANDBOX_MAP`). Seatbelt (macOS) is **not implemented**.
+
+`bash_sandbox_status` (on demand, read-effect) reports whether the guard is
+configured, which backend the host can actually enforce and why, and repeats the
+honest limits above. Run it before trusting a guarded command.
+
+### Read masks (`NIF_BASH_SANDBOX_MASKS`)
+
+A separate feature with a misleadingly similar name, active whether or not the
+shell guard is on. Operator-owned exact paths, one per line, hidden from reads
+**and** writes: `read`, `grep`/`files`, `repomap` and skill resources refuse
+them, symlink and hard-link aliases are refused, the sweep tools do not list
+them, and the shell guard binds `/dev/null` over each so a guarded command
+cannot read them either. A configured but missing path refuses rather than
+dropping the protection.
+
+It is a **mask, not a confidentiality boundary** — its own header says so. It
+removes what would have been returned; it cannot hide the same bytes behind an
+undeclared path, nor a copy taken before the mask was configured.
+
+Current status, including the reproducible evidence behind each limit, is
+[SANDBOX-BASH-STATUS.md](research/SANDBOX-BASH-STATUS.md); the agreed target for
+conversation-level policy is
+[SANDBOX-CONVERSATION-POLICY.md](research/SANDBOX-CONVERSATION-POLICY.md).
+
 ## Images (dropped and tool-produced)
 
 A conversation can carry images on two paths, and they meet in the same code:
@@ -1302,7 +1375,24 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Both fields are absent when nothing determined it, and absence is never read
   as "text-only".
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?, stop?}` accepts a
+- `session {roots: {add?: [path], remove?: [path]}}` is how the **human**
+  widens a conversation's workspace set — the fix for `[E_WRITE_OUTSIDE] … is
+  outside this conversation's workspace` when the work belongs in a sibling
+  checkout. A content-less control call, like the other conversation controls,
+  applied **between tool calls**: a turn already in flight keeps the set it
+  started with. Entries must be absolute, existing directories; the filesystem
+  root is refused, as is the primary workspace (already in the set), and the
+  set is capped at eight roots including the primary. The whole list is
+  validated and persisted before it takes effect, and a persistence failure
+  refuses the change rather than leaving a live grant that would not survive a
+  restart. Grants widen what the conversation may touch — the write fence, and
+  the trees components are told about through `x-harness.workspace` (so `lsp`
+  indexes the sibling checkout instead of refusing it) — and are reported back
+  as `grantedRoots` on the status readback. They grant nothing else: approval
+  mode, budgets and provider pins are separate controls, and a granted root is
+  not an isolation boundary.
+
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?, roots?, stop?}` accepts a
   conversation-scoped provider and model override. `provider` names a stored
   provider nickname (empty clears it back to the harness-global default); a
   model-only call resolves and pins the provider it belongs to in the same
@@ -3232,6 +3322,29 @@ are UTF-8 byte boundaries, `limit` is 4..32768 bytes (default 8192), and a calle
 continues with `offset: nextOffset` while `hasMore`. A job that cached only a
 summary returns `reportComplete: false` and says so. Full transcripts remain on
 the worker under `remoteSession`.
+
+`fleet_instances {}` lists the registered routes — stable 32-hex identity, name,
+root, transport and pinned revision — which is what a client reads instead of a
+local `instances.json`, and what `instance`/`identity` arguments resolve
+against. It is a route list, never authority and never liveness: every action
+still proves the live identity before it writes, and an entry does not claim the
+peer is reachable or authorized right now (the inbox deliberately keeps
+rendering a job whose entry was removed). `fleet_instance_import` is the
+explicit one-time migration from the receipt-file era; `fleet_remove` forgets
+the registry entry only — the peer keeps running, keeps its receipt file and is
+never contacted.
+
+`fleet_notices {session, peek?, ack?}` is the **runner's** inbox, not a client's:
+hidden, `runner`-exempt, read-effect, and owned by the conversation that must
+receive the settlements. A read is non-consuming; `ack` marks delivered for that
+owner only, and the runner appends the notice to the transcript durably *before*
+acking, so a failed append never acks and a retry recovers. Replay is
+deduplicated against canonical history, which is what lets it survive a restart
+or a projection compaction. Both the opening call and a would-stop drain
+participate; idle wake attempts use the bounded `NIF_AGENT_WAKES` admission, and
+a declined wake leaves the notice pending for the pull lane. None of it touches
+the frozen prefix — only appended notice messages enter model history
+(docs/WIRE.md "Settlement notices").
 
 `fleet_task_inbox {peer?, state?, after?, limit?}` is the human listing over the
 same local `fleetjob` documents: peer, objective, lifecycle state and — once
