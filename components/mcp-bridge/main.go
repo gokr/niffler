@@ -432,9 +432,13 @@ func epoch(t time.Time) any {
 	return float64(t.UnixMilli()) / 1000
 }
 
-func runProbe(cfg *serverConfig) error {
+func runProbe(cfg *serverConfig, explicitMs int) error {
+	// Precedence: the caller's resolved value (which already folded in the
+	// owner's stored setting), then this process's env, then the default.
 	timeout := listingTimeout
-	if raw := os.Getenv("NIF_MCP_PROBE_TIMEOUT_MS"); raw != "" {
+	if explicitMs > 0 {
+		timeout = time.Duration(explicitMs) * time.Millisecond
+	} else if raw := os.Getenv("NIF_MCP_PROBE_TIMEOUT_MS"); raw != "" {
 		var ms int
 		if _, err := fmt.Sscanf(raw, "%d", &ms); err == nil && ms > 0 {
 			timeout = time.Duration(ms) * time.Millisecond
@@ -457,6 +461,11 @@ func run() int {
 	sdk.DieWithParent()
 	server := flag.String("server", "", "stored MCP server name")
 	probe := flag.Bool("probe", false, "validate JSON config from stdin without the bus")
+	// The caller (the mcp component) already resolved the timeout from the
+	// owner's stored settings. Passing it explicitly is what lets a stored
+	// value cross the process boundary: the bridge cannot read the owner's
+	// record, and its own env read would otherwise silently win.
+	probeTimeoutMs := flag.Int("probe-timeout-ms", 0, "probe deadline; overrides NIF_MCP_PROBE_TIMEOUT_MS")
 	flag.Parse()
 	if err := validateName(*server); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -469,7 +478,7 @@ func run() int {
 			return 1
 		}
 		cfg.Name = *server
-		if err := runProbe(&cfg); err != nil {
+		if err := runProbe(&cfg, *probeTimeoutMs); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}

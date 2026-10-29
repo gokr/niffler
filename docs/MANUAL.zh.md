@@ -111,6 +111,29 @@
 
 建议使用 `read {path}` 或 `read {reads: [{path, offset?, limit?}, ...]}`（最多 12 项），而不是同时使用。两者同时提供仍被接受，并集/去重行为不变。选择项的限制不变，不能与内容项混用。每个会话在 edit 组件生命周期中的首次成功 `edit` 或 `replace_across` 修改会追加 `undo_last_edit` 发现提示，不会每次修改都重复。
 
+### 批量字面量替换（`replace_across`）
+
+在一组已知文件上做完全相同的字面量替换时使用 `replace_across`，无需预先读取每个文件。需要唯一上下文才能定位的修改请用 `edit`；需要计算、正则或语法感知的改写请用 `bash` 中的脚本。
+
+```json
+{
+  "glob": "src/**/*.nim",
+  "replace": [
+    {"old": "relayBaseUrl", "new": "apiBaseUrl", "word": true},
+    {"old": "old.example.org", "new": "api.example.org"}
+  ],
+  "min_matches": 1
+}
+```
+
+**选择与匹配。** `paths` 提供显式文件；`glob` 把文件加入该集合（去重后的并集，而不是交集）。相对选择器按会话工作区解析。glob 支持 `*`、`?` 和递归 `**/`，不是完整的 shell 模式语言。最多可选择 512 个文件。每条规则替换其字面量 `old` 的所有不重叠出现；`new: ""` 表示删除。多行字符串可用。`word: true` 要求两侧都有边界，把字母数字与下划线视为单词字符；这是文本匹配，不是语义符号重命名。规则按顺序执行：先 `A` → `B`、再 `B` → `C`，会把原本的 `A` 也变成 `C`。未开启 `resolve_vars: true` 时，`$` 保持字面量，正则元字符、斜杠与 `&` 同样如此。
+
+**先计划再写入。** 工具在修改任何内容之前先载入文本文件、计算替换次数与预期内容。没有匹配的文件直接通过；显式指定但不存在的文件会被报告。总数低于 `min_matches`（默认 1）时以 `E_NO_MATCH` 拒绝，且不改变任何内容；只有在确实希望空操作时才设为 0。阈值是聚合的，不是按规则或按文件。被修改文件的撤销前置副本必须能放进每次调用 32 MiB 的预算，否则计划被拒绝。二进制文件会被拒绝而不是被改写。所有撤销记录必须在第一次写入前持久化。
+
+**写入与恢复。** 每个被修改的文件都以原子方式写入，并保留其 BOM 与换行风格。这一批**不是多文件事务**：写入过程中的 I/O 错误可能让先前的文件已被修改。每个成功写入的文件都有各自单层的、已持久化的撤销条目；`undo_last_edit {path}` 会恢复之前的字节，但若文件此后已被改动，则拒绝过期的撤销。没有自动的整批回滚。结果会报告总出现次数、按文件/按规则的计数、完整的结构化 `files`、`unmatched` 与 `missing` 列表，以及有界的第一份文件 diff 预览。当前实现只为第一个被修改的文件排队 LSP 诊断，而不是全部；请用适当的测试验证完整的改动。
+
+**为什么优先于 shell 替换？** 它避免了 shell/sed 转义问题与 GNU/BSD `sed -i` 的差异，拼错待查字符串时会直接拒绝而不是静默地零匹配成功，保留格式，提供撤销与结构化计数，并限制意外的广泛改动。shell 脚本则需要自己显式实现这些保护。两个工具都受批准门控，并参与协作式写入仲裁：`replace_across` 声明其选中的路径（glob 认领覆盖通配符之前的基础目录），而不透明的 `bash` 会对整个会话工作区取得租约。两者都不是针对外部写入者的操作系统级围栏。字面量替换不能替代正则引擎、解析器或构建验证；被选中的文件是读入内存，而不是流式处理。
+
 ### File pipelines
 
 文件工具通过 `save_as: "name"`（默认 `text`）或 `save_as: {name, from: "items.0.content"}` 显式捕获。只有 `resolve_vars: true` 才替换变量；否则 `$` 保持字面值，即使捕获时也是如此。值保存在会话头部，runner 重启后仍可用。工具历史只收到报告实际 JSON 编码大小的小收据，不重复复制内容。裸字符串结果显示原文而不是 JSON 引号/转义；对象有 `text` 时投影该字段。
@@ -1035,6 +1058,13 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 一个通用接缝，覆盖任何 stdio 语言服务器。该组件不了解任何语言：哪个服务器处理哪个文件扩展名是**数据** —— 一个内置合理默认值的注册表。添加一种语言是配置条目，绝不是代码（AGENTS.md 不变式：语言无关核心）。`repomap` 组件是当前的例外：地图语言需要其语法被 vendored 到 `components/repomap/csrc/` 下，在 `ts.nim` 中有一个 `{.compile.}` 条目，一个 `queries/<lang>-tags.scm` 及其扩展名在 `tags.nim` 中 —— 该层级列表是接缝当前的限制，不是策略。
 
+### 固定的 provider 绝不会改道
+
+一个会话的 `provider` 固定值每回合解析一次（`llm_resolve`），随后随该回合的每次 chat 调用一起传递，因此模型 id 与它所属的后端不会彼此漂移。有两条规则在解析本身失败时维持这一点：
+
+- **具名** provider 只会由该名字应答 —— 先是它的 store 记录，然后是环境表中同名的条目（来自 `NIF_OPENAI_*` 的 `default`，或 `NIF_LLM_PROVIDERS` 中的条目）。如果两者都无法应答，`llm` 会说明是哪一种失败：*provider registry 未应答*（总线/registry 故障，值得重试），还是*未知 provider “x”* 并列出已配置的昵称（固定值写错了，值得修正）。registry 查询在放弃前会重试一次，因此一个正在写会话记录的忙碌 store 不会让回合失败。**空**固定值不是名字：先取活动 provider，再取 `NIF_OPENAI_*`。
+- 一旦固定值解析成功，该回合就不会换到其他后端。模型名看起来"很像"另一个 provider 的模型，也不构成理由 —— 宁可让回合以明确的错误失败，也不静默地用另一个后端运行它，那正是本规则要防止的错误归因。
+
 ### The tools
 
 | Tool | What it does |
@@ -1316,6 +1346,25 @@ Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小
   直接投影。它不是现有会话的工具集。
 - 派发、审批、`x-harness.timeoutMs` 以及组件到组件的调用
   始终查询完整目录。
+
+### 声明的配置（`config` 组件）
+
+拥有设置（settings）的组件继续拥有它：值保存在该组件自己的 store 记录中，并由它自己的工具写入。可选的 `config` 组件在其上增加发现、校验和一个统一的编辑 API，这样无论是人还是模型都不必知道哪个组件拥有哪个开关。
+
+所有者会在启动时发布一份*声明*（`config_declare`，hidden —— 属于基础设施，不是模型工具）：一个稳定的 domain id、它使用的 store kind、负责应答 `get`/`patch`/`reset` 的工具、用于取值的 JSON Schema 子集，以及每个属性的 `x-config` 元数据（`title`、`description`、`secret`、`readOnly`、`humanOnly`、`application`）。声明是持久的，所以已停止的所有者仍然会出现在列表中。
+
+| 工具 | 作用 |
+|---|---|
+| `config_list` | 列出每个已声明的 domain：标题、所有者、属性数量、所有者当前是否应答 |
+| `config_get {domain}` | 一并返回当前值、默认值、revision 和 schema，另外还有 `timings`（生效时机与 domain 不同的属性）和 `humanOnly`（只有人类才能修改的名称）；**secret 只报告 `{"set": true}`，绝不报告其值**；所有者缺席时报告为不可用，而不是用默认值顶替 |
+| `config_patch {domain, patch, expectRev?}` | 校验 merge patch（type、enum、bounds、required、未知属性、read-only 与 human-only 字段），然后转发给所有者，由所有者执行 compare-and-set 写入；回复中的 `applies` 说明每个被修改的属性何时生效 |
+| `config_reset {domain, properties?, expectRev?}` | 删除显式设置的值，使声明的默认值重新生效 |
+
+这四个工具都是 on-demand（先 `discover` 再 `invoke`）：修改配置是一次有意的绕行，而不是每个会话都应当背在冻结 prompt 前缀里的工具。patch 与 reset 都带 `x-harness.approval: "always"`。`config` 绝不写入其他组件的记录 —— 所有者的不变量（凭据处理、派生缓存、迁移）仍然由所有者自己强制执行。如果一份声明使用了本接口无法强制执行的 schema 关键字，它会在**声明时被拒绝**：静默忽略一条约束，等于报告了一次从未发生过的校验。`scope` 仅支持 `instance`；请求 `shared` 的声明会被拒绝，直到该设计落地。任何值都不会进入冻结的 prompt 前缀 —— 变更会在所有者的下一次调用时可见。契约见：[research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md)。
+
+一份声明必须指明 domain 的 `application` 生效时机 —— `immediate`、`next turn`、`next conversation` 或 `component restart`；没有默认值。每个属性的 `x-config.application` 可以覆盖它。`config_get` 会在 `timings` 覆盖项旁报告 domain 的时机，`config_patch` 返回的 `applies` 会指出每个被修改属性何时生效；真正遵守该时机的是所有者，而不是 `config`。
+
+**`humanOnly` —— 批准是必要条件，而不是充分条件。** 对于含义为*这是人类决定的*的字段（付费调用闸门、权限扩大、预算），批准提示会送到委派任务的那一方，而不是拥有该设置的人类，因此一个 agent 的"是"可能代表另一个 agent 同意。这类属性只能从人类自己的会话中写入，或通过一次直接的（无会话的）调用写入 —— 例如 CLI、脚本、运维人员。调用方依据 core 所拥有的信息分类：注入的 `__session.session` 加上它在 `sessionmeta.parent` 中的血缘记录。子 agent 会被以 `code: "human-only"` 拒绝；血缘记录无法读取的会话同样被拒绝（读不到不等于它是根）。普通属性仍然可以由正在干活的子 agent 编辑。无限制的 `config_reset` 会针对每一个可写属性做检查，因此它无法清掉窄路径检查所保护的闸门。
 
 ### Instance identity
 
@@ -1671,6 +1720,68 @@ sudo。停止的已固定 Incus 或 Lima guest 必须由管理员先启动再验
 niffler-tui --instance worker --instance-import /absolute/path/to/worker.json
 niffler-tui --instance worker
 ```
+
+### GitHub CLI 与令牌
+
+`make install-tools` 会安装 [`gh`](https://cli.github.com) 二进制文件，让实例可以开 PR、读 issue、查看 workflow 运行。只有二进制本身什么也做不了，而唯一值得弄明白的是*为什么*：
+
+**`gh` 无法复用 SSH 密钥。** SSH 密钥只认证 **git 传输**（`git push`/`git clone` 走 `git@github.com:…`）。每条 `gh` 命令都访问 **REST API**，那需要 bearer token。所以一台通过 SSH 推送正常的机器，执行 `gh pr create` 仍会得到：
+
+```
+To get started with GitHub CLI, please run: gh auth login
+Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.
+```
+
+这不是需要追查的配置错误 —— 而是两种协议使用两种不同的凭据。一个实例可以用自己的身份推送（机器用户的 SSH 密钥，或部署密钥），却仍然无法开 PR。
+
+#### 制作令牌
+
+**以实例应当作为的身份**创建它 —— 不要用一个你不希望实例以其写入的账户来签发。
+
+> [!IMPORTANT]
+> **细粒度（fine-grained）** 令牌无法写入**另一个个人账户**拥有的仓库，即使该账户已被加入并以协作者身份接受了 `Contents: Read and write` 的邀请。GitHub 的 [Outside Collaborator support for Fine-grained PATs](https://github.com/github/roadmap/issues/601) 条目仍未关闭。症状令人抓狂，因为一切*看起来*都对：令牌列出了该仓库，仓库报告 `push: true`，权限也勾上了 —— 但每次写入都返回 `403 Resource not accessible by personal access token`，而读取成功、SSH 推送照旧可用（SSH 从不使用该令牌）。
+>
+> 这种情形（机器用户：一个账户协作另一个账户的仓库）请改用带 `repo` 权限范围的**经典**令牌，或在该仓库上安装 **GitHub App**，它独立于任何用户行事。
+
+否则优先使用细粒度个人访问令牌，并精确限定到任务所需：
+
+1. GitHub → Settings → Developer settings → **Personal access tokens → Fine-grained tokens** → *Generate new token*（如果你配置的是机器用户，就以它登录）。
+2. **Repository access**：*Only select repositories* → 只选实例可以触及的仓库。无人值守的机器永远不要选 "All repositories"。
+3. **Permissions**（仅这些）：
+   - `Contents: Read and write` —— 推送需要，或只读时用 `Read`。
+   - `Pull requests: Read and write` —— 开 PR 与评论。
+   - `Metadata: Read` 会自动添加且是必需的。
+4. **Expiration**：设一个。没有有效期的实例凭据是一种没人会再审视的永久授权；90 天加一个日历提醒，胜过比实验活得更久的令牌。
+5. 一次性复制 `github_pat_…` 值 —— GitHub 不会再次显示它。
+
+经典令牌（`repo`、`read:org` 等）同样可用，而且**对该账户可见的每个仓库都生效**，这就是它的代价 —— 但它正是上面"外部协作者"情形所要求的形式，也是确认你撞到的是这条限制的最快方式。它也便于区分两类令牌：`gh auth status` 对经典令牌会打印 `Token scopes: 'repo'`，对细粒度令牌则完全没有 scope 行。
+
+#### 放在哪里
+
+放在 `gh` 会查找、**且任何仓库都无法触及**的地方 —— 放在实例本机上，以运行 harness 的那个用户（**不是** root，也不是管理主机：`gh` 从本地 `$HOME` 读取配置，存在主机上的令牌对客户机里的 harness 是不可见的）：
+
+```bash
+# 在实例上，以 harness 用户身份（开箱配置的机器上是 `ubuntu`）：
+read -rs GH_TOKEN_PASTE        # 粘贴；不回显，不进入 shell 历史
+printf '%s' "$GH_TOKEN_PASTE" | gh auth login --with-token
+unset GH_TOKEN_PASTE
+gh auth status                 # 确认是哪个账户、哪些 scope 在应答
+```
+
+`gh` 会把令牌写入 `$XDG_CONFIG_HOME/gh/hosts.yml`（默认 `~/.config/gh/hosts.yml`，权限 0600），此后从那里读取。该位置在任何 checkout 之外，这正是重点。
+
+**用文件，而不是导出的环境变量。** `gh auth login` 写入的是 `hosts.yml`，这是磁盘上的按用户状态，因此以该用户运行的每个进程都能找到它 —— 包括 harness 自己的 `bash` 组件。你在交互式 shell 中 `export GH_TOKEN=…`，以 systemd 用户单元启动的 harness **看不到**：单元的环境是服务文件中固定的 `Environment=` 列表，绝不是你的登录 shell。那种情况下你会以为自己已登录，而 agent 仍被告知 "run gh auth login"。（由 systemd 管理的 harness 可以用 `Environment=` 提供 `GH_TOKEN` —— 但那用一个 0600 文件换来一个在 `/proc/<pid>/environ` 和 `systemctl show` 中都可见的值，所以优先用 `hosts.yml`。）
+
+**不要**把 GitHub 令牌放进 harness 根目录的 `.env`。该文件位于仓库目录*内部*，会被每个组件的 dotenv 加载器读取，也是随手一个 `git add -A` 首先扫进去的东西。它适合放 LLM 密钥；不适合放一个能改写仓库的凭据。
+
+如果你根本不想让令牌落在磁盘上，可以在服务的环境里导出 `GH_TOKEN` —— 那样 `gh` 从不写入它，但该值对以该用户运行的任何东西都可通过 `/proc/<pid>/environ` 看到。在单租户机器上这是等价取舍；在共享机器上，`hosts.yml`（0600）更严格。
+
+#### 把范围限定到实例被允许做的事
+
+这与批准是同一个信任问题，并与它们叠加：一台运行 `NIF_APPROVALS_DEFAULT=auto` 的常驻实例（见[批准](#approvals)）会自动批准 `bash` 和 `git`，所以用它配一个可写令牌意味着**无人值守的 agent 可以在没有人类参与的情况下开并推送 PR**。这是一种合理姿态，但要有意选择。两个低成本的限制，按价值排序：
+
+- **保护默认分支**（要求 PR + 评审）。这样令牌的写权限产出的是*提案*，这正是你希望 worker 做的事，而 `main` 仍然需要人类。
+- **把令牌限定到 worker 实际拥有的仓库**，并在只应提案之处只给 `Contents: Read` 加 `Pull requests: Read and write`。
 
 ### Scheduled turns (heartbeat)
 

@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,58 @@ type manager struct {
 	comp      *sdk.Component
 	bridgeBin string // absolute path to mcp-bridge (NIF_ROOT/var/bin/mcp-bridge)
 	root      string
+	// owner settings (config surface). Read per call so a stored change applies
+	// to the next probe without restarting the component — what the declaration
+	// promises. NIF_MCP_DIRECT_THRESHOLD is deliberately NOT here: mcp-bridge
+	// reads it in its own process, so a domain value would change a mirror and
+	// not the rule (docs/research/CONFIG-TODO.md, the authoritative-reader rule).
+	owner sdk.OwnerStore
+}
+
+const (
+	mcpSettingsKind = "mcp-settings"
+	mcpSettingsID   = "main"
+)
+
+// probeTimeoutNow resolves the validation probe timeout: a stored value wins,
+// then NIF_MCP_PROBE_TIMEOUT_MS (the migration path), then the per-server
+// timeout (itself already widened past 30s when configured).
+func (m *manager) probeTimeoutNow(serverTimeout time.Duration) time.Duration {
+	values, _ := m.comp.LoadOwnerValues(m.owner, 3*time.Second)
+	if ms, ok := values["probeTimeoutMs"].(float64); ok && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	if raw := os.Getenv("NIF_MCP_PROBE_TIMEOUT_MS"); raw != "" {
+		var ms int
+		if _, err := fmt.Sscanf(raw, "%d", &ms); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return serverTimeout
+}
+
+// mcpDeclaration is this owner's settings (docs/research/CONFIG-CONTRACT.md).
+var mcpDeclaration = sdk.Declaration{
+	Domain:      "mcp.limits",
+	Owner:       "mcp",
+	OwnerTool:   "mcp_config",
+	Title:       "MCP connection limits",
+	Description: "How long a new or edited MCP server may take to answer its validation probe.",
+	Kind:        mcpSettingsKind,
+	ID:          mcpSettingsID,
+	Application: sdk.Immediate,
+	Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"probeTimeoutMs": map[string]any{
+				"type": "integer", "minimum": 1000, "maximum": 600000,
+				"default": 30000,
+				"x-config": map[string]any{
+					"title":       "Validation probe timeout (ms)",
+					"description": "How long mcp_add/mcp_edit waits for a server to answer. The first run of an npx/uvx server downloads packages, so this sometimes needs raising."}},
+		},
+		"additionalProperties": false,
+	},
 }
 
 func main() {
@@ -61,7 +114,8 @@ func main() {
 	}
 
 	comp := sdk.New("mcp", defaultManagerVersion)
-	m := &manager{comp: comp, bridgeBin: bridgeBin, root: root}
+	m := &manager{comp: comp, bridgeBin: bridgeBin, root: root,
+		owner: sdk.OwnerStore{Kind: mcpSettingsKind, ID: mcpSettingsID}}
 
 	comp.Tool("mcp_servers", map[string]any{
 		"type": "object",
@@ -157,6 +211,30 @@ func main() {
 		"required":  []string{"query"},
 		"x-harness": map[string]any{"onDemand": true, "effect": "read"},
 	}, m.search)
+
+	// Owner side of the configuration surface: config forwards validated,
+	// approval-gated changes here, and this writes its OWN record.
+	comp.Tool("mcp_config", sdk.OwnerToolSchema("mcp.limits",
+		"Owner-side settings protocol for the mcp.limits domain. Called by the "+
+			"config component; never call it directly."),
+		func(c *sdk.Component, raw json.RawMessage) (any, error) {
+			var args sdk.OwnerArgs
+			if err := json.Unmarshal(raw, &args); err != nil {
+				return map[string]any{"ok": false, "code": "bad-request",
+					"error": "invalid args: " + err.Error()}, nil
+			}
+			return c.OwnerOp(m.owner, args, 8*time.Second), nil
+		})
+
+	// ONE idle handler: sdk.OnIdle replaces an existing registration (and now
+	// warns about it), so periodic work must join a single handler.
+	declared := false
+	comp.OnIdle(500*time.Millisecond, func(c *sdk.Component) {
+		if declared {
+			return
+		}
+		declared = c.DeclareConfigAs(mcpDeclaration, 2*time.Second)
+	})
 
 	if err := comp.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "mcp: %v\n", err)
@@ -465,15 +543,14 @@ func (m *manager) probe(cfg *serverConfig) ([]cachedTool, []cachedPrompt, error)
 	if cfg.TimeoutMs > 30_000 {
 		timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
 	}
-	if raw := os.Getenv("NIF_MCP_PROBE_TIMEOUT_MS"); raw != "" {
-		var ms int
-		if _, err := fmt.Sscanf(raw, "%d", &ms); err == nil && ms > 0 {
-			timeout = time.Duration(ms) * time.Millisecond
-		}
-	}
+	timeout = m.probeTimeoutNow(timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, m.bridgeBin, "--server", cfg.Name, "--probe")
+	// The resolved timeout is passed DOWN: a stored setting lives in the owner's
+	// record, which the bridge (a separate process) cannot read, so without this
+	// its own env lookup would silently override what the operator saved.
+	cmd := exec.CommandContext(ctx, m.bridgeBin, "--server", cfg.Name, "--probe",
+		"--probe-timeout-ms", strconv.Itoa(int(timeout/time.Millisecond)))
 	cmd.Stdin = bytes.NewReader(payload)
 	stdout := cappedBuffer{limit: 1 << 20}
 	stderr := cappedBuffer{limit: 64 << 10}

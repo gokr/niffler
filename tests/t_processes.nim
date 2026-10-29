@@ -110,6 +110,14 @@ proc main() =
       sleep(100)
     false
 
+  proc waitUntil(predicate: proc(): bool, timeoutMs = 5000): bool =
+    ## Local copy (each bus-contract test keeps its own small helpers).
+    let deadline = epochTime() + timeoutMs.float / 1000.0
+    while epochTime() < deadline:
+      if predicate(): return true
+      sleep(50)
+    false
+
   proc waitUntilDead(pid: int, tries = 100): bool =
     for _ in 1 .. tries:
       if not pidAlive(pid): return true
@@ -559,6 +567,65 @@ proc main() =
     let output = call(recoveryNc, "processes", "process_poll", %*{"id": recoveredId})
     check("completion output survives component restart",
       output{"text"}.getStr("").contains("retained output"), $output)
+
+  # --- the limits are editable settings, and a stored value beats the env ----
+  # The env above sets a 4096-byte poll chunk; storing 1024 must change what a
+  # poll actually returns, with no restart (the declaration promises
+  # "immediate"). Proved on the observable the setting controls, not on a
+  # reported value. Needs store + config: a declaration lives in the store.
+  let storeBin = root / "var" / "bin" / "store-sqlite"
+  let configBin = root / "var" / "bin" / "config"
+  if fileExists(storeBin) and fileExists(configBin):
+    let store9 = startComponent(storeBin, url, root = tmp)
+    defer:
+      if store9.running(): store9.terminate()
+      store9.close()
+    check("store up for the limits check", waitUntil(proc(): bool =
+      call(nc, "store", "list", %*{"kind": "probe"}, 1000).hasKey("items")))
+    let config9 = startComponent(configBin, url, root = tmp)
+    defer:
+      if config9.running(): config9.terminate()
+      config9.close()
+    check("config up for the limits check", waitUntil(proc(): bool =
+      call(nc, "config", "config_list", %*{}, 2000).hasKey("count")))
+
+    var found9 = false
+    var listed9 = newJNull()
+    for i in 0 ..< 60:
+      listed9 = call(nc, "config", "config_list", %*{}, 3000)
+      if listed9{"domains"} != nil and listed9{"domains"}.kind == JArray:
+        for entry in listed9{"domains"}:
+          if entry{"domain"}.getStr("") == "processes.limits": found9 = true
+      if found9: break
+      sleep(150)
+    check("processes declares its limits domain", found9, $listed9)
+
+    let patched = call(nc, "config", "config_patch", %*{
+      "domain": "processes.limits", "patch": {"pollChunk": 1024}})
+    check("the poll chunk is changed through config",
+          patched{"ok"}.getBool(false), $patched)
+    # applies may legitimately be absent (a reset, or an older harness): only
+    # assert on it when it is there, never on a nil node.
+    if patched{"applies"} != nil and patched{"applies"}.kind == JObject:
+      check("the patch reports when it takes effect",
+            patched{"applies"}{"pollChunk"}.getStr("") == "immediate",
+            $patched{"applies"})
+
+    sleep(300)  # let the change event land in the owner's snapshot
+    let s9 = pcall("process_start", %*{"command": "seq 1 5000",
+                                       "label": "storedcap"})
+    let id9 = s9{"id"}.getStr("")
+    var maxStored = 0
+    var polls9 = 0
+    var done9 = false
+    while polls9 < 80 and not done9:
+      let p = pcall("process_poll", %*{"id": id9, "waitMs": 250})
+      inc polls9
+      maxStored = max(maxStored, p{"new_bytes"}.getInt(0))
+      if p{"status"}.getStr("") != "running" and p{"new_bytes"}.getInt(0) == 0:
+        done9 = true
+    check("a stored poll chunk beats the environment value, without a restart",
+          maxStored > 0 and maxStored <= 1024, $maxStored)
 
   report("t_processes")
 

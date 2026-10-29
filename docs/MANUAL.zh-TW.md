@@ -111,6 +111,29 @@
 
 建議使用 `read {path}` 或 `read {reads: [{path, offset?, limit?}, ...]}`（最多 12 項），而非同時使用。兩者同時提供仍被接受，聯集/去重行為不變。選擇項限制不變，不能與內容項混用。每個會話在 edit 元件生命週期中的首次成功 `edit` 或 `replace_across` 修改會附加 `undo_last_edit` 探索提示，不會每次修改都重複。
 
+### 批次字面量取代（`replace_across`）
+
+在一組已知檔案上做完全相同的字面量取代時使用 `replace_across`，無需預先讀取每個檔案。需要唯一上下文才能定位的修改請用 `edit`；需要計算、正規表示式或語法感知的改寫請用 `bash` 中的腳本。
+
+```json
+{
+  "glob": "src/**/*.nim",
+  "replace": [
+    {"old": "relayBaseUrl", "new": "apiBaseUrl", "word": true},
+    {"old": "old.example.org", "new": "api.example.org"}
+  ],
+  "min_matches": 1
+}
+```
+
+**選擇與比對。** `paths` 提供明確檔案；`glob` 把檔案加入該集合（去重後的聯集，而不是交集）。相對選擇器按對話工作區解析。glob 支援 `*`、`?` 與遞迴 `**/`，不是完整的 shell 樣式語言。最多可選擇 512 個檔案。每條規則取代其字面量 `old` 的所有不重疊出現；`new: ""` 表示刪除。多行字串可用。`word: true` 要求兩側都有邊界，把字母數字與底線視為單字字元；這是文字比對，不是語意符號重新命名。規則按順序執行：先 `A` → `B`、再 `B` → `C`，會把原本的 `A` 也變成 `C`。未開啟 `resolve_vars: true` 時，`$` 保持字面量，正規表示式中繼字元、斜線與 `&` 同樣如此。
+
+**先計劃再寫入。** 工具在修改任何內容之前先載入文字檔、計算取代次數與預期內容。沒有相符的檔案直接通過；明確指定但不存在的檔案會被回報。總數低於 `min_matches`（預設 1）時以 `E_NO_MATCH` 拒絕，且不改變任何內容；只有在確實希望空操作時才設為 0。閾值是彙總的，不是按規則或按檔案。被修改檔案的復原前置副本必須能放進每次呼叫 32 MiB 的預算，否則計劃被拒絕。二進位檔會被拒絕而不是被改寫。所有復原記錄必須在第一次寫入前持久化。
+
+**寫入與復原。** 每個被修改的檔案都以原子方式寫入，並保留其 BOM 與換行風格。這一批**不是多檔案交易**：寫入過程中的 I/O 錯誤可能讓先前的檔案已被修改。每個成功寫入的檔案都有各自單層的、已持久化的復原項目；`undo_last_edit {path}` 會還原之前的位元組，但若檔案此後已被改動，則拒絕過期的復原。沒有自動的整批回滾。結果會回報總出現次數、按檔案/按規則的計數、完整的結構化 `files`、`unmatched` 與 `missing` 清單，以及有界的第一份檔案 diff 預覽。目前實作只為第一個被修改的檔案排入 LSP 診斷，而不是全部；請用適當的測試驗證完整的改動。
+
+**為什麼優先於 shell 取代？** 它避免了 shell/sed 跳脫問題與 GNU/BSD `sed -i` 的差異，拼錯待查字串時會直接拒絕而不是靜默地零相符成功，保留格式，提供復原與結構化計數，並限制意外的廣泛改動。shell 腳本則需要自己明確實作這些保護。兩個工具都受核准閘門控管，並參與協作式寫入仲裁：`replace_across` 宣告其選中的路徑（glob 認領覆蓋萬用字元之前的基礎目錄），而不透明的 `bash` 會對整個對話工作區取得租約。兩者都不是針對外部寫入者的作業系統級圍籬。字面量取代不能替代正規表示式引擎、解析器或建置驗證；被選中的檔案是讀入記憶體，而不是串流處理。
+
 ### File pipelines
 
 檔案工具透過 `save_as: "name"`（預設 `text`）或 `save_as: {name, from: "items.0.content"}` 明確擷取。只有 `resolve_vars: true` 才替換變數；否則 `$` 保持字面值，即使擷取時也是如此。值保存在會話標頭，runner 重啟後仍可用。工具歷史只收到報告實際 JSON 編碼大小的小收據，不重複複製內容。裸字串結果顯示原文而非 JSON 引號/跳脫；物件有 `text` 時投影該欄位。
@@ -1225,6 +1248,13 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 在任何 stdio 語言伺服器之上的一個通用接縫。該元件不認識任何語言：哪個伺服器處理哪個副檔名是**資料** —— 一個內建合理預設值的登錄。新增語言是設定項目，絕不是程式碼（AGENTS.md 不變量：語言無關核心）。`repomap` 元件是目前例外：地圖語言需要其文法被納入 `components/repomap/csrc/` 之下、在 `ts.nim` 中有一個 `{.compile.}` 項目、一個 `queries/<lang>-tags.scm`，以及其在 `tags.nim` 中的副檔名 —— 該層級清單是此接縫目前的限制，不是政策。
 
+### 固定的 provider 絕不會改道
+
+一個對話的 `provider` 固定值每回合解析一次（`llm_resolve`），隨後隨該回合的每次 chat 呼叫一起傳遞，因此模型 id 與它所屬的後端不會彼此漂移。有兩條規則在解析本身失敗時維持這一點：
+
+- **具名** provider 只會由該名字回應 —— 先是它的 store 記錄，然後是環境表中同名的項目（來自 `NIF_OPENAI_*` 的 `default`，或 `NIF_LLM_PROVIDERS` 中的項目）。如果兩者都無法回應，`llm` 會說明是哪一種失敗：*provider registry 未回應*（匯流排/registry 故障，值得重試），還是*未知 provider “x”* 並列出已設定的暱稱（固定值寫錯了，值得修正）。registry 查詢在放棄前會重試一次，因此一個正在寫入對話記錄的忙碌 store 不會讓回合失敗。**空**固定值不是名字：先取活動 provider，再取 `NIF_OPENAI_*`。
+- 一旦固定值解析成功，該回合就不會換到其他後端。模型名稱看起來「很像」另一個 provider 的模型，也不構成理由 —— 寧可讓回合以明確的錯誤失敗，也不靜默地用另一個後端執行它，那正是本規則要防止的錯誤歸因。
+
 ### The tools
 
 | Tool | What it does |
@@ -1511,6 +1541,25 @@ Niffler 維護一份完整的全域目錄，同時對每個會話只暴露一組
   它不是既有會話的工具集。
 - 分派、核准、`x-harness.timeoutMs` 以及元件對元件的呼叫
   一律查詢完整目錄。
+
+### 宣告式設定（`config` 元件）
+
+擁有設定（settings）的元件繼續擁有它：值保存在該元件自己的 store 記錄中，並由它自己的工具寫入。可選的 `config` 元件在其上增加探索、驗證與一個統一的編輯 API，這樣無論是人或模型都不必知道哪個元件擁有哪個開關。
+
+擁有者會在啟動時發佈一份*宣告*（`config_declare`，hidden —— 屬於基礎設施，不是模型工具）：一個穩定的 domain id、它使用的 store kind、負責回應 `get`/`patch`/`reset` 的工具、用於取值的 JSON Schema 子集，以及每個屬性的 `x-config` 中介資料（`title`、`description`、`secret`、`readOnly`、`humanOnly`、`application`）。宣告是持久的，所以已停止的擁有者仍然會出現在清單中。
+
+| 工具 | 作用 |
+|---|---|
+| `config_list` | 列出每個已宣告的 domain：標題、擁有者、屬性數量、擁有者目前是否回應 |
+| `config_get {domain}` | 一併回傳目前值、預設值、revision 與 schema，另外還有 `timings`（生效時機與 domain 不同的屬性）與 `humanOnly`（只有人類才能修改的名稱）；**secret 只回報 `{"set": true}`，絕不回報其值**；擁有者缺席時回報為不可用，而不是用預設值頂替 |
+| `config_patch {domain, patch, expectRev?}` | 驗證 merge patch（type、enum、bounds、required、未知屬性、read-only 與 human-only 欄位），然後轉送給擁有者，由擁有者執行 compare-and-set 寫入；回覆中的 `applies` 說明每個被修改的屬性何時生效 |
+| `config_reset {domain, properties?, expectRev?}` | 刪除明確設定的值，使宣告的預設值重新生效 |
+
+這四個工具都是 on-demand（先 `discover` 再 `invoke`）：修改設定是一次刻意的繞行，而不是每個對話都應該背在凍結 prompt 前綴裡的工具。patch 與 reset 都帶 `x-harness.approval: "always"`。`config` 絕不寫入其他元件的記錄 —— 擁有者的不變量（憑證處理、衍生快取、遷移）仍然由擁有者自己強制執行。如果一份宣告使用了本介面無法強制執行的 schema 關鍵字，它會在**宣告時被拒絕**：靜默忽略一條約束，等於回報了一次從未發生過的驗證。`scope` 僅支援 `instance`；請求 `shared` 的宣告會被拒絕，直到該設計落地。任何值都不會進入凍結的 prompt 前綴 —— 變更會在擁有者的下一次呼叫時可見。契約見：[research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md)。
+
+一份宣告必須指明 domain 的 `application` 生效時機 —— `immediate`、`next turn`、`next conversation` 或 `component restart`；沒有預設值。每個屬性的 `x-config.application` 可以覆寫它。`config_get` 會在 `timings` 覆寫項旁回報 domain 的時機，`config_patch` 回傳的 `applies` 會指出每個被修改屬性何時生效；真正遵守該時機的是擁有者，而不是 `config`。
+
+**`humanOnly` —— 核准是必要條件，而不是充分條件。** 對於含義為*這是人類決定的*的欄位（付費呼叫閘門、權限擴大、預算），核准提示會送到委派任務的那一方，而不是擁有該設定的人類，因此一個 agent 的「是」可能代表另一個 agent 同意。這類屬性只能從人類自己的對話中寫入，或透過一次直接的（無對話的）呼叫寫入 —— 例如 CLI、腳本、維運人員。呼叫方依據 core 所擁有的資訊分類：注入的 `__session.session` 加上它在 `sessionmeta.parent` 中的血緣記錄。子 agent 會被以 `code: "human-only"` 拒絕；血緣記錄無法讀取的對話同樣被拒絕（讀不到不等於它是根）。一般屬性仍然可以由正在工作的子 agent 編輯。無限制的 `config_reset` 會針對每一個可寫屬性做檢查，因此它無法清掉窄路徑檢查所保護的閘門。
 
 ### Instance identity
 
@@ -1866,6 +1915,68 @@ sudo。停止的已固定 Incus 或 Lima guest 必須由管理員先啟動再驗
 niffler-tui --instance worker --instance-import /absolute/path/to/worker.json
 niffler-tui --instance worker
 ```
+
+### GitHub CLI 與權杖
+
+`make install-tools` 会安装 [`gh`](https://cli.github.com) 二进制檔案，讓實例可以開 PR、讀 issue、查看 workflow 執行。只有二进制本身什么也做不了，而唯一值得弄明白的是*為什么*：
+
+**`gh` 无法复用 SSH 密钥。** SSH 密钥只认证 **git 传输**（`git push`/`git clone` 走 `git@github.com:…`）。每条 `gh` 命令都访问 **REST API**，那需要 bearer token。所以一台透過 SSH 推送正常的機器，执行 `gh pr create` 仍会得到：
+
+```
+To get started with GitHub CLI, please run: gh auth login
+Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.
+```
+
+這不是需要追查的設定錯誤 —— 而是两種协议使用两種不同的憑證。一個實例可以用自己的身份推送（機器使用者的 SSH 密钥，或部署密钥），却仍然无法開 PR。
+
+#### 制作權杖
+
+**以實例應当作為的身份**建立它 —— 不要用一個你不希望實例以其寫入的帳戶来签发。
+
+> [!IMPORTANT]
+> **细粒度（fine-grained）** 權杖无法寫入**另一個個人帳戶**拥有的儲存庫，即使該帳戶已被加入並以协作者身份接受了 `Contents: Read and write` 的邀請。GitHub 的 [Outside Collaborator support for Fine-grained PATs](https://github.com/github/roadmap/issues/601) 条目仍未關闭。症状令人抓狂，因為一切*看起来*都對：權杖列出了該儲存庫，儲存庫报告 `push: true`，權限也勾上了 —— 但每次寫入都返回 `403 Resource not accessible by personal access token`，而讀取成功、SSH 推送照旧可用（SSH 從不使用該權杖）。
+>
+> 這種情形（機器使用者：一個帳戶协作另一個帳戶的儲存庫）請改用带 `repo` 權限範圍的**经典**權杖，或在該儲存庫上安装 **GitHub App**，它独立于任何使用者行事。
+
+否则优先使用细粒度個人访问權杖，並精确限定到任务所需：
+
+1. GitHub → Settings → Developer settings → **Personal access tokens → Fine-grained tokens** → *Generate new token*（如果你設定的是機器使用者，就以它登入）。
+2. **Repository access**：*Only select repositories* → 只选實例可以触及的儲存庫。无人值守的機器永远不要选 "All repositories"。
+3. **Permissions**（仅這些）：
+   - `Contents: Read and write` —— 推送需要，或只讀時用 `Read`。
+   - `Pull requests: Read and write` —— 開 PR 與评论。
+   - `Metadata: Read` 会自动添加且是必需的。
+4. **Expiration**：设一個。没有有效期的實例憑證是一種没人会再审视的永久授权；90 天加一個日历提醒，胜过比實驗活得更久的權杖。
+5. 一次性複製 `github_pat_…` 值 —— GitHub 不会再次显示它。
+
+经典權杖（`repo`、`read:org` 等）同样可用，而且**對該帳戶可见的每個儲存庫都生效**，這就是它的代价 —— 但它正是上面"外部协作者"情形所要求的形式，也是確認你撞到的是這条限制的最快方式。它也便于区分两类權杖：`gh auth status` 對经典權杖会打印 `Token scopes: 'repo'`，對细粒度權杖则完全没有 scope 行。
+
+#### 放在哪里
+
+放在 `gh` 会查找、**且任何儲存庫都无法触及**的地方 —— 放在實例本机上，以執行 harness 的那個使用者（**不是** root，也不是管理主機：`gh` 從本地 `$HOME` 讀取設定，存在主機上的權杖對客户机里的 harness 是不可见的）：
+
+```bash
+# 在實例上，以 harness 使用者身份（開箱設定的機器上是 `ubuntu`）：
+read -rs GH_TOKEN_PASTE        # 粘贴；不回显，不进入 shell 历史
+printf '%s' "$GH_TOKEN_PASTE" | gh auth login --with-token
+unset GH_TOKEN_PASTE
+gh auth status                 # 確認是哪個帳戶、哪些 scope 在應答
+```
+
+`gh` 会把權杖寫入 `$XDG_CONFIG_HOME/gh/hosts.yml`（預設 `~/.config/gh/hosts.yml`，權限 0600），此後從那里讀取。該位置在任何 checkout 之外，這正是重点。
+
+**用檔案，而不是导出的環境變數。** `gh auth login` 寫入的是 `hosts.yml`，這是磁盘上的按使用者状态，因此以該使用者執行的每個程序都能找到它 —— 包括 harness 自己的 `bash` 组件。你在交互式 shell 中 `export GH_TOKEN=…`，以 systemd 使用者单元启动的 harness **看不到**：单元的環境是服務檔案中固定的 `Environment=` 列表，绝不是你的登入 shell。那種情况下你会以為自己已登入，而 agent 仍被告知 "run gh auth login"。（由 systemd 管理的 harness 可以用 `Environment=` 提供 `GH_TOKEN` —— 但那用一個 0600 檔案换来一個在 `/proc/<pid>/environ` 和 `systemctl show` 中都可见的值，所以优先用 `hosts.yml`。）
+
+**不要**把 GitHub 權杖放进 harness 根目录的 `.env`。該檔案位于儲存庫目录*内部*，会被每個组件的 dotenv 加载器讀取，也是随手一個 `git add -A` 首先扫进去的东西。它适合放 LLM 密钥；不适合放一個能改寫儲存庫的憑證。
+
+如果你根本不想讓權杖落在磁盘上，可以在服務的環境里导出 `GH_TOKEN` —— 那样 `gh` 從不寫入它，但該值對以該使用者執行的任何东西都可透過 `/proc/<pid>/environ` 看到。在单租户機器上這是等价取舍；在共享機器上，`hosts.yml`（0600）更严格。
+
+#### 把範圍限定到實例被允許做的事
+
+這與批准是同一個信任問題，並與它們叠加：一台執行 `NIF_APPROVALS_DEFAULT=auto` 的常驻實例（见[批准](#approvals)）会自动批准 `bash` 和 `git`，所以用它配一個可寫權杖意味着**无人值守的 agent 可以在没有人类参與的情况下開並推送 PR**。這是一種合理姿态，但要有意選擇。两個低成本的限制，按价值排序：
+
+- **保护預設分支**（要求 PR + 评审）。這样權杖的寫權限产出的是*提案*，這正是你希望 worker 做的事，而 `main` 仍然需要人类。
+- **把權杖限定到 worker 實際拥有的儲存庫**，並在只應提案之处只给 `Contents: Read` 加 `Pull requests: Read and write`。
 
 ### Scheduled turns (heartbeat)
 

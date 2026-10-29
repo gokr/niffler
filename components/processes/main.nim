@@ -28,6 +28,7 @@ import std/[json, monotimes, os, posix, strutils, tables, times]
 import std/syncio
 import regex
 import niffler/sdk
+import niffler/configowner
 import subjects   # sanitizeSessionId: the notice lane is per conversation
 
 const
@@ -40,7 +41,18 @@ const
   WAIT_SLICE_MS = 100              # wait granularity
   MAX_WAIT_MS = 25_000             # wait cap (inside the 30s tool timeout)
 
+## Configuration (docs/research/CONFIG-CONTRACT.md). Both limits are read on
+## every call rather than captured at boot, so a stored change takes effect
+## without restarting the component — which is what the declaration promises.
+let ownerStore* = OwnerStore(kind: "processes-settings", id: "main")
+let settings* = newOwnerSnapshot(ownerStore)
+
 proc spoolCap(): int =
+  ## A stored value wins, then the environment (the migration path), then the
+  ## default. A non-positive value falls back: a zeroed spool cap would empty
+  ## every spool on its next poll.
+  let stored = settings.num("spoolCap", "", 0)
+  if stored > 0: return stored
   let v = getEnv("NIF_PROCESSES_SPOOL_CAP", "")
   if v.len > 0:
     try: return parseInt(v)
@@ -48,8 +60,11 @@ proc spoolCap(): int =
   return SPOOL_CAP
 
 proc pollChunk(): int =
-  ## Max new bytes one poll returns per stream (NIF_PROCESSES_POLL_CHUNK
-  ## override, kept below the spool cap so a burst is always split).
+  ## Max new bytes one poll returns per stream, kept below the spool cap so a
+  ## burst is always split. Stored value → NIF_PROCESSES_POLL_CHUNK → default,
+  ## clamped to the range the schema also publishes.
+  let stored = settings.num("pollChunk", "", 0)
+  if stored > 0: return clamp(stored, 1024, 1_048_576)
   let v = getEnv("NIF_PROCESSES_POLL_CHUNK", "")
   if v.len > 0:
     try: return clamp(parseInt(v), 1024, 1_048_576)
@@ -599,6 +614,44 @@ proc retryNoticeWakes(c: Component) =
 # caller. This is what makes the notice possible at all (the SDK's onIdle seam)
 # — and it also stops process_list from reporting a finished child as running
 # until someone happens to poll.
+# ---------------------------------------------------------------------------
+# configuration: spool and poll limits, served by our own record
+
+let declaration* = %*{
+  "domain": "processes.limits", "version": 1, "owner": "processes",
+  "ownerTool": "processes_config", "title": "Background process limits",
+  "description": "How much output a background process may accumulate before its spool is truncated to a tail, and how much one poll returns.",
+  "kind": ownerStore.kind, "id": ownerStore.id,
+  # "immediate": both readers consult this record on every call.
+  "application": "immediate",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "spoolCap": {"type": "integer", "minimum": 65536, "maximum": 1073741824,
+                   "default": SPOOL_CAP, "x-config": {
+        "title": "Spool size before truncation (bytes)",
+        "description": "A process's output spool is truncated to its tail (min(2 MiB, half this)) on the next poll once it grows past this."}},
+      "pollChunk": {"type": "integer", "minimum": 1024, "maximum": 1048576,
+                    "default": POLL_CHUNK, "x-config": {
+        "title": "Bytes returned per poll",
+        "description": "Kept below the spool cap so a burst is always split across polls."}}},
+    "additionalProperties": false}}
+
+discard comp.tool("processes_config", ownerToolSchema("processes.limits",
+    "Owner-side settings protocol for the processes.limits domain. Called by " &
+    "the config component; never call it directly."),
+  proc(c: Component, args: JsonNode): JsonNode = c.ownerOp(ownerStore, args))
+
+# Values follow config's change event (no store read in the idle seam, which
+# runs on the pump thread and would starve the process output lane).
+comp.watchConfig(settings, "processes.limits")
+
+# ONE idle handler for the whole component: the SDK keeps a single one and a
+# second registration REPLACES the first. Declaring the settings domain from its
+# own onIdle() silently disabled this reaper — background exits then went
+# unannounced until someone polled, which is the bug this seam exists to avoid.
+# So the declaration rides here, and any future periodic work must join it.
+var declared = false
 discard comp.onIdle(500) do (c: Component):
   for e in gProcs.values:
     if e.status == stRunning:
@@ -608,6 +661,8 @@ discard comp.onIdle(500) do (c: Component):
       publishExitNotice(e)
   retryNoticeWakes(c)
   evictFinished()                  # the registry cap holds without callers
+  if not declared:
+    declared = c.declareConfig(declaration) or declared
 
 discard comp.onDrain do (c: Component):
   for e in gProcs.values:

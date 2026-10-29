@@ -180,6 +180,26 @@ pass. Repository status is not a claim that installed binaries were updated.
   registry is still `servers.json` (by design — it is language data, and
   `lsp_registry add` is the single-path mutation), and `NIF_LSP_BIN_DIRS` stays
   env (an executable search path is a deployment fact, same category as above).
+- [x] MCP connection limits (`mcp.limits`): `probeTimeoutMs`, with
+  `NIF_MCP_PROBE_TIMEOUT_MS` retained as the migration path. Two things the
+  authoritative-reader rule decided here:
+  - `NIF_MCP_DIRECT_THRESHOLD` is **NOT** in the domain: `mcp-bridge` reads it
+    in its own process, so a value stored in `mcp`'s record would change a
+    mirror and not the rule. `NIF_MCP_REGISTRY_URL`/`BRIDGE_BIN` stay env by
+    category (egress/path).
+  - The timeout has to CROSS the process boundary: the bridge cannot read the
+    owner's record and its own env lookup would silently win, so it now takes
+    `--probe-timeout-ms`, with the caller's resolved value beating the bridge's
+    env. A unit test pins that precedence (and fails if env wins).
+- [x] Background process limits (`processes.limits`): `spoolCap`, `pollChunk`,
+  with `NIF_PROCESSES_*` retained as the migration path and bench seam. The test
+  proves a STORED value changes what a poll actually returns (1024 bytes instead
+  of the env's 4096), without a restart — the declaration's own "immediate"
+  claim, checked on the observable it controls.
+  Caught while shipping it: registering the declaration from a SECOND `onIdle()`
+  silently replaced `processes`' child reaper (the SDK keeps one handler), so
+  background exits went unannounced. Both SDKs now warn on a replacing
+  registration, and the declaration rides the existing handler.
 - [x] Fetch extraction/network preferences (`fetch.network`): `allowPrivate`
   and `extractor`, with the `NIF_FETCH_ALLOW_PRIVATE`/`NIF_TRAFILATURA` env
   path retained. The test proves the stored opt-in both grants and revokes
@@ -281,16 +301,16 @@ pass. Repository status is not a claim that installed binaries were updated.
   (`make test-store-tidb`, `go test ./...` in components/store-tidb), and two
   owners on one dataset are isolated there. What remains is the **harness**
   layer — two live harnesses, one dataset — which §2 tracks separately.
-- [ ] Update manual translations, migration docs, PLAN and changelog.
-  Changelog is current for every slice shipped so far. Still open: the
-  translations (below) and `docs/PLAN.md`, whose last entry predates this
-  branch's configuration/instance work.
-  Known gap: `MANUAL.zh.md`/`MANUAL.zh-TW.md` have 56 `###` sections against 58
-  in English — they are missing "Declared configuration (the `config`
-  component)", "Pinned providers never reroute" and "GitHub CLI and a token".
-  So the whole config surface (including `humanOnly`) has no localized
-  documentation. A section-level refresh, not a line edit: translate those
-  three, then re-sync the rest.
+- [x] Update manual translations, migration docs, PLAN and changelog.
+  Changelog is current for every slice shipped so far. The translations were
+  the real gap: `MANUAL.zh.md`/`MANUAL.zh-TW.md` were missing **four** sections
+  against English — "Declared configuration (the `config` component)", "Bulk
+  literal replacement (`replace_across`)", "Pinned providers never reroute" and
+  "GitHub CLI and a token" — so the whole config surface (including
+  `humanOnly`) had no localized documentation. All four are now translated in
+  both locales and interleaved at the same positions English uses (verified by
+  heading position, not just by presence). §PLAN still lags this branch's
+  configuration/instance work and is tracked separately.
 - [ ] Separate plugin/TUI commits, tests and release tracking. No implied
   production restart, migration or plugin release from source edits alone.
 
