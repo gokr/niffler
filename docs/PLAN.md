@@ -161,6 +161,45 @@ a registered client by local pid liveness, so a relayed/tunnelled client is
 never visible to that check (its directed `svc.approval.<caller>.request`
 routing still works).
 
+## Benchmark evidence: tool routing is the measured gap
+
+The `droid` lane is on `main` (`bench/adapters/droid.mjs`), so the benchmark can
+now be run against a third harness besides niffler and pi. The
+`full31-syn-ds41-droid` run (31 tasks × 3 lanes, Synthetic DeepSeek V4.1 Flash)
+is recorded in `bench/reports/full31-syn-ds41-droid-{report.md,report.csv,analysis.md}`:
+**93/93 cells pass, no leaks, every cell in round 1**. That saturation is itself
+the result — `full31` and the mid-tier are exhausted for this model class, so
+any future capability claim needs a suite with headroom (`deepswe/` or the
+SWE-bench slice), not another `full31` number.
+
+What `full31` can still measure is shape, and it says the frozen-prefix
+discipline is working but not yet paying off: droid's first prompt is ~60.4k
+tokens against ~3.05k here (20× smaller), it buys that back with ~4.4 tool calls
+per assistant message against 1.2, and round trips (1.9 vs 6.5), uncached input
+(3.4k vs 7.0k) and wall clock (30 s vs 29 s) land within noise. Do not quote a
+cost ordering without its basis: on Synthetic's catalog niffler is 20% cheaper
+than droid, on first-party list prices it is ~18% more expensive, because
+droid's prefix is cached and ours is sent fresh.
+
+**Open quest — make the model use the direct tools it is given.** Per cell
+droid reads (`read` 4.6, `bash` 1.5) while niffler shells (`bash` 4.2,
+`read` 2.0), and across the 31 niffler cells the bash heads were `pwd` 26,
+`cd` 20, `cat` 19, `ls` 6, `find` 3. So ~2.4 of our 4.2 bash calls per cell are
+navigation and reading the direct tools should have absorbed, and ~1.5 are
+spent establishing where we already are — despite the base prompt saying both
+"Batch independent calls in one reply" and "Use bash for execution/computation,
+not `cat`/`sed` file I/O". The tools and the words both exist and the model
+routes around them; that is a prompt/description lever, not a core change.
+In order: (1) make the read-vs-shell preference impossible to miss — a "not" in
+a 12-word sentence is not carrying it; name `cat`/`ls`/`pwd` beside the tool
+description; (2) ask for larger batches with a concrete shape ("three files →
+one message"); (3) check whether `pwd` feels necessary because the workspace
+line is ambiguous about the repo being the cwd. Verification is the same run,
+not a spot check: re-run these 31 cells and compare bash-head counts per cell
+and turns per cell. Pass rate cannot move — it is already 31/31 — so shape
+(`bashCalls`, `turns`, `firstPromptTokens`) is the acceptance signal, and the
+prefix must stay byte-stable.
+
 ## Recommended work order
 
 1. **Complete remote task delegation.** Follow [FLEET.md](FLEET.md): F1 durable
@@ -185,6 +224,9 @@ routing still works).
    implemented: tier 1 elides results a later write superseded, tier 2 elides
    results whose producing tool declares them re-obtainable
    (`x-harness.derivable`, disabled with `NIF_STUB_DERIVABLE=0`).
+One item is small, fully measured and can be taken in parallel with any of the
+above: the read-vs-shell routing quest in "Benchmark evidence" (prompt and tool
+description plus one re-run; acceptance is shape, since pass rate is saturated).
 Keep write arbitration in maintenance mode unless real contention demonstrates
 a need for automatic worktrees or stronger fencing. Do not turn the evidence
 ledger, settings UI or research shelf into prerequisites for the above slices.
