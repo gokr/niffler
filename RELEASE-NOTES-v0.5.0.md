@@ -1,8 +1,8 @@
 # Niffler 0.5.0 — release notes
 
-**Release date:** 2026-10-29 (candidate)
-**Range:** `v0.4.0` (2026-10-05) … `5f6d135` — 366 commits, 52 merges
-**Size:** 354 files, +51 477 / −2 821; 82 test files touched (105 in tree), 45 new
+**Release date:** 2026-10-29
+**Range:** `v0.4.0` (2026-10-05) … `b497918` — 377 commits, 52 merges
+**Size:** 362 files, +53 798 / −2 844; 70 `tests/t_*.nim` touched (105 in tree), 45 new
 **Synced client:** niffler-tui **0.10.0**
 
 ## In one paragraph

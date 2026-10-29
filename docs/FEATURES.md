@@ -224,9 +224,12 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
 - `processes` — owned long-running commands: start, incremental poll (filter
   and tail), kill the group, list; spool files, process cap, crash-safe
   registry sweep, and durable exit notices pushed to the owning conversation.
-- `fleet` — opt-in Nim provisioning peer: approval-gated SSH/Lima
+- `fleet` — opt-in Nim provisioning peer: approval-gated SSH/Lima/Incus
   install/adopt, pinned private receipts, scoped service/VM lifecycle; native
-  Lima `cli relay`, no Python runtime. Cross-instance delegation is planned.
+  Lima `cli relay`, no Python runtime; durable task admission with receipts and
+  settlement notices, a human inbox over the local job records, task
+  continuation, queued and active cancellation, and trusted goal delegation
+  (`mode: "delegate"`) under an operator-set ceiling.
 
 ### Files, search and repository inspection
 
@@ -573,5 +576,6 @@ work lives in [PLAN.md](PLAN.md); proposals live in
 - Completed per-conversation sandbox enforcement and macOS Seatbelt support.
   The opt-in Linux shell guard and partial mask checks are implemented; see
   [current limits](research/SANDBOX-BASH-STATUS.md).
-- Cross-instance task delegation and a durable fleet-job/artifact surface;
-  SSH/Lima provisioning and lifecycle are already implemented.
+- A real-provider acceptance run of the F2 exit (patch/commit artifact), and
+  automatic retry of work whose outcome is `uncertain`. Delegation, admission
+  receipts and the inbox are implemented.

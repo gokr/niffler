@@ -29,7 +29,7 @@
       "hero.h1": "Simple and fast harness.<br><em>Batteries included.</em>",
       "hero.lede1": "Niffler is built from small Unix-style processes — every capability is a component on one NATS wire — so the agent can write, compile and spawn <strong>its own tools mid-conversation</strong>.",
       "hero.lede2": "Niffler is as simple and efficient to drive as the leanest coding agents — cache-stable prompts, a tiny toolset, measured low token use. Sub-agents, background processes, a permission gate, MCP, LSP? In the box as well.",
-      "hero.release": "First stable and complete release",
+      "hero.release": "Fleet, one settings surface, vector search",
       "hero.shotCap": "niffler-tui — one client of a shared, local instance. Cache hit rate reported on every turn.",
 
       "fast.kicker": "Fast &amp; cache-effective",
@@ -182,7 +182,7 @@
       "hero.h1": "简单快速的框架。<br><em>功能一应俱全。</em>",
       "hero.lede1": "Niffler 由一个个小型 Unix 风格进程构成——每项能力都是挂在同一条 NATS 总线上的组件——因此智能体可以在<strong>对话中途编写、编译并启动自己的新工具</strong>。",
       "hero.lede2": "Niffler 像最精简的编程智能体一样简单高效——稳定的缓存提示词、极小的工具集、经过测量的低 token 消耗。子智能体、后台进程、权限审批、MCP、LSP？也全都内置。",
-      "hero.release": "首个稳定且完整的版本",
+      "hero.release": "Fleet、统一设置面板、向量搜索",
       "hero.shotCap": "niffler-tui——共享本地实例的其中一个客户端。每一轮都会显示缓存命中率。",
 
       "fast.kicker": "快速且节省缓存",
@@ -335,7 +335,7 @@
       "hero.h1": "簡單快速的框架。<br><em>功能一應俱全。</em>",
       "hero.lede1": "Niffler 由一個個小型 Unix 風格行程組成——每項能力都是掛在同一條 NATS 匯流排上的元件——因此代理可以在<strong>對話中途編寫、編譯並啟動自己的新工具</strong>。",
       "hero.lede2": "Niffler 像最精簡的程式設計代理一樣簡單高效——穩定的快取提示詞、極小的工具集、經過量測的低 token 消耗。子代理、背景行程、權限審批、MCP、LSP？也全都內建。",
-      "hero.release": "首個穩定且完整的版本",
+      "hero.release": "Fleet、統一設定面板、向量搜尋",
       "hero.shotCap": "niffler-tui——共享本機實例的其中一個用戶端。每一輪都會顯示快取命中率。",
 
       "fast.kicker": "快速且節省快取",

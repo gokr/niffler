@@ -19,10 +19,11 @@ behavior.
 
 ## Baseline
 
-Reconciled against local `main` at `6300a06`. This is source status, not a fresh
-runtime certification or a claim about the v0.4.0 release. Existing uncommitted
-implementation changes were not used to mark work complete. The old fleet
-worktrees have been removed; their commits are included in `main`.
+Reconciled against local `main` at `v0.5.0`. This is source status, not a fresh
+runtime certification of that release. Existing uncommitted implementation
+changes were not used to mark work complete. The old fleet worktrees have been
+removed, and the `compact` worktree was merged and is likewise gone; their
+commits are included in `main`.
 
 ## Larger features
 

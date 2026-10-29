@@ -6,6 +6,33 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-29
+
+Fleet grew from "run a task on another machine" into a real distributed
+surface — containers and SSH hosts with Lima replacing Multipass, durable
+admission with receipts, an inbox the human can read, and goal-oriented
+delegation under an operator-set ceiling. Beside it, every component gained one
+discoverable configuration surface, the store learned which instance owns which
+document (and how to answer a vector query), and the context manager learned to
+elide what a later write superseded rather than compressing everything
+indiscriminately.
+
+Underneath: an opt-in Linux shell guard with an honest attestation mechanism
+plus an always-available read mask, cooperative write arbitration that cannot
+deadlock on its own table size, embeddings end to end, image-carrying tool
+results in all three SDKs, and a tool diet (`replace_across`, `read` select
+mode, in-turn variable pipelines) that replaces three shell idioms. The synced
+client release is **niffler-tui 0.10.0**.
+
+**Compatibility:** Multipass provisioning is gone (re-provision as Lima; SSH
+and Incus are unchanged); `store-sqlite` is now cgo and needs
+`CGO_ENABLED=1 -tags sqlite_fts5`; config declarations must state `application`
+timing; `CLAUDE.md` is no longer auto-loaded (`NIF_SKILLS_BUNDLED_DIR` removed,
+foreign-agent/XDG skill directories no longer scanned); a shared TiDB dataset
+must set `NIF_INSTANCE_ID` and moves pre-scoping rows only through the
+approval-gated `store_claim`. The full list, with the reasoning, is in
+[RELEASE-NOTES-v0.5.0.md](RELEASE-NOTES-v0.5.0.md).
+
 - **A provider refusal no longer leaves the human holding the ladder.** When a
   request came back `context-overflow` although admission considered it
   acceptable — the provider reserves the requested completion budget, and its
