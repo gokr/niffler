@@ -1498,7 +1498,13 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   prune (tool results and past-turn reasoning) + the stale-read stub →
   configured compactor (one replay if it fails without a verdict) →
   derivable-result stub (`NIF_STUB_DERIVABLE=0` disables it) → proportional
-  oldest-complete-turn trim → explicit `context-recovery-required`. Only the compactor needs a component
+  oldest-complete-turn trim → explicit `context-recovery-required`. A refusal
+  admission did not foresee (a provider whose real ceiling is below its
+  catalog window, or one that counts the completion budget) runs the same
+  ladder against the numbers the refusal itself supplied, and asks for a
+  shorter reply when only the completion budget overshot — the harness never
+  answers such a refusal with "run `/compact`", because reducing is its own
+  job (docs/COMPACTION.md, "A refusal the ladder did not predict"). Only the compactor needs a component
   or a model; every other rung is deterministic and cannot fail, which is what
   guarantees the ladder always terminates. On the wire the `llm` component
   additionally clamps the requested output to the headroom the serialized
@@ -1521,7 +1527,11 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   Without it, recovery concluded the candidate already fit and declined to
   resend it — reporting `context-recovery-required … could not be reduced
   below the window` while hundreds of thousands of droppable tokens sat in the
-  projection. The offset is only ever raised by a refusal, and
+  projection. The same block also adopts a window the refusal names when it is
+  lower than the one held (`window:refusal`): the provider states the limit it
+  actually enforces, and continuing to measure against a catalog number it does
+  not use would refuse every request that looked like it fit. The offset is
+  only ever raised by a refusal, and
   `ev.session.<id>.context {reason: "calib:refusal"}` reports both counts.
 - The trigger measures in the **provider's scale, not the estimate's**: every
   successful response re-measures a calibration offset (reported

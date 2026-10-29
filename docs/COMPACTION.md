@@ -70,6 +70,36 @@ round. The rungs, cheapest and least lossy first:
 | 3 | **Trim** | last lossy rung, when compaction declines or is absent | the **projection**: oldest complete turns dropped, an explicit "history omitted without summary" notice put in their place; `trimThrough` recorded durably in the header | `mode: search` over canonical history |
 | — | **`context-recovery-required`** | when even the frozen prefix or the newest indivisible tool group cannot fit | nothing | enlarging the window, a different compactor, or continuing from selected history |
 
+### A refusal the ladder did not predict
+
+The table assumes admission sees the problem coming. A provider can refuse a
+candidate admission considers acceptable: it reserves the requested completion
+budget against its limit, and its real limit can be below the window its catalog
+declares (a gateway's own ceiling, a plan limit). The refusal is still the
+best-informed measurement available, so recovery acts on its own numbers rather
+than handing the human a manual step:
+
+1. **The refusal names the window.** If it says the provider enforces a lower
+   window than the one held, admission adopts it (`window:refusal`) — otherwise
+   every later request is measured against a number the provider does not use.
+2. **The refusal names the prompt count.** That figure replaces the local
+   estimate for every rung that follows (`calib:refusal`), because chars/4 is
+   exactly the estimate that let the request go out.
+3. **Whose budget is over the line?** If the prompt fits and only the requested
+   completion budget did not, ask for a shorter reply and keep every message
+   (`reserve:clamped`). `chat {maxTokens}` only ever lowers the provider
+   default, so this cannot widen anything.
+4. **Otherwise the prompt must come down**, and the ordinary ladder runs
+   (`runOverflowFallback`: derivable stub → compaction → trim), re-measuring
+   against the ceiling the refusal named and retrying the same logical request
+   once.
+
+The terminal error therefore means what it says: the prompt itself is over what
+the provider accepts even after prune, compaction and trim. A refusal is never
+answered with "the candidate could not be reduced" while history the harness
+owns is still reducible — a manual `/compact` is not a recovery step the harness
+may delegate to the person waiting.
+
 Spill is the execution-time cousin of prune and the purest case of the model: a
 big result was *never only in context* to begin with.
 

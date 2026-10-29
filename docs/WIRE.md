@@ -735,7 +735,19 @@ ev.session.<id>.context     # {sessionId, turnId?, reason, detail?, promptTokens
                        #   results) need no event of their own: both are part of
                        #   the existing `reset:prune` rung and arrive in
                        #   `bytesSaved`/`pruned` with the rest. Only the
-                       #   reset:* reasons rebuild the provider prompt prefix
+                       #   reset:* reasons rebuild the provider prompt prefix.
+                       #   Three more carry a refusal's own numbers:
+                       #   `window:refusal` ({context}) — the refusal named the
+                       #   window this provider actually enforces, which can be
+                       #   BELOW what the catalog advertises, and admission now
+                       #   measures against it; `calib:refusal`
+                       #   ({providerTokens, estimatedTokens, calib}) — the
+                       #   provider's own prompt count replaces the local
+                       #   estimate for every rung that follows;
+                       #   `reserve:clamped` ({reserveTokens, promptTokens,
+                       #   context}) — the prompt fit and only the requested
+                       #   completion budget did not, so recovery asked for a
+                       #   shorter reply instead of dropping history
 ev.session.<id>.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
                        #   a transient LLM failure is being retried after delayMs
                        #   (exponential backoff; NIF_LLM_MAX_RETRIES, default 2).

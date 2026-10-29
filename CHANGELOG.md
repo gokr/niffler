@@ -6,6 +6,31 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **A provider refusal no longer leaves the human holding the ladder.** When a
+  request came back `context-overflow` although admission considered it
+  acceptable — the provider reserves the requested completion budget, and its
+  real ceiling can be below the window its catalog declares — recovery used to
+  conclude "the candidate could not be reduced below the window" and end the
+  turn terminally while every message that produced the refusal was still in
+  the projection, and a free retry was still available. The advice it printed
+  was to run `/compact`: a manual step the harness can take itself. Recovery
+  now acts on the refusal's own numbers and in order of what each step costs
+  the conversation: it adopts the window the refusal names when that is lower
+  than the one held (`window:refusal`, otherwise every later request is
+  measured against a limit the provider does not use); it calibrates the
+  offset from the prompt count the provider reports (`calib:refusal`); when the
+  prompt fits and only the requested completion budget overshot it asks for a
+  shorter reply and keeps every message (`reserve:clamped`, via `chat
+  {maxTokens}`, which can only lower the provider default); and otherwise it
+  runs the ordinary ladder (derivable stub → compaction → trim) against the
+  named ceiling and retries the same logical request once
+  (`runOverflowFallback`). The terminal error now means what it says — the
+  prompt itself is over what the provider accepts even after prune, compaction
+  and trim — and names switching to a larger-context model as the remedy.
+  Contract fixture: `t_ctxcompact`, "an unexplained refusal does not end the
+  turn terminally" (a declared 8000-token window over a real ceiling, with a
+  counted completion budget).
+
 - **A client can tell a live turn from a control call by the frame's `turnId`,
   and the wire doc now says so.** `/compact` publishes `context` frames (its
   refusals, and the commit's own `reset:compact`), while the idle lanes publish

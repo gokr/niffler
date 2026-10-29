@@ -817,6 +817,22 @@ alone cannot fit, the runner returns `context-recovery-required` with the cause,
 known sizes, attempt counts and the available actions (larger context model,
 another compactor, explicit continuation from selected history).
 
+**A refusal bypasses the prediction, not the ladder.** Admission can be wrong in
+the permissive direction — it prices the catalog's window, while a provider may
+enforce a lower real ceiling and count the requested completion budget against
+it — so a request it waved through comes back `context-overflow`. The refusal is
+the better-informed measurement, and recovery uses it rather than declaring the
+candidate irreducible: the window it names is adopted when lower (continuing at
+the catalog number keeps refusing every request that looks like it fits), the
+prompt count it reports calibrates the offset, a prompt that fits with only the
+completion budget overshooting is retried with a smaller reply (keeping every
+message), and otherwise `runOverflowFallback` runs derivable stub → compaction →
+trim against the named ceiling before the single retry. §6.3d therefore means
+"the prompt is over what the provider accepts even after prune, compaction and
+trim" — never "we did not get as far as trying". Delegating the reduction to the
+human as a manual `/compact` is the failure this rule exists to prevent: the
+person waiting is the one party that cannot measure the candidate.
+
 #### Implementation log
 
 These are the production findings that shaped the ladder above; each was a real

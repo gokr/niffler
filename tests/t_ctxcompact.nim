@@ -644,6 +644,88 @@ proc main() =
             $accepted)
       coreProc.stopHard()
 
+  # --- 9c2. A refusal our own measure cannot explain still gets reduced ---
+  # The shape of the live terminal error: the provider enforces a real ceiling
+  # BELOW the window llm_resolve advertises, and it reserves the completion
+  # budget against it (NIF_MOCK_OUTPUT_CAP), so the request is refused while
+  # admission — which measures the window the catalog declares — says it fits.
+  # Then no rung above runs: `checkContext` returns "" and recovery concluded
+  # "could not be reduced below the window" with every message still in hand,
+  # handing the human a terminal error whose advice was to run /compact by
+  # hand. The rung this fixture guards (runOverflowFallback) takes that step
+  # itself: reduce (stub → compaction → trim), re-measure, retry once.
+  block refusalNotExplainedByOurMeasure:
+    let repoRoot = getEnv("NIF_REPO_ROOT",
+                          getEnv("NIF_ROOT", getAppDir().parentDir()))
+    let sandbox = newCoreSandbox("oobrefuse", ["store", "bash", "llm", "recall"])
+    let root = sandbox.root
+    let compProc = startProcess("nim", args = [
+      "c", "--hints:off", "--warnings:off",
+      "--path:" & repoRoot / "sdk",
+      "-o:" & sandbox.sandboxBin("llm"),
+      repoRoot / "tests" / "mock_llm.nim"],
+      options = {poUsePath, poStdErrToStdOut})
+    if waitForExit(compProc, fixtureCompileTimeoutMs) != 0:
+      fail("mock llm failed to compile for oobrefuse")
+      quit(1)
+    compProc.close()
+    let logPath = root / "mock-requests.log"
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    defer: nc.close()
+    defer: stopServer(server)
+    let sessionId = "conv-oob-" & $int(epochTime())
+    # The window is declared generously (8000) so admission is happy; the
+    # provider's real ceiling is 4000 and it counts a 3000-token completion
+    # budget, so it refuses anything over ~1000 prompt tokens. It reports its
+    # ceiling in the refusal, which is how recovery learns the real limit and
+    # reduces against THAT instead of the advertised window.
+    let knobs: seq[(string, string)] = @[
+      ("NIF_AUTO_APPROVE", "1"),
+      ("NIF_MOCK_CTX", "8000"),
+      ("NIF_MOCK_ENFORCE_CTX", "12000"),
+      ("NIF_MOCK_OUTPUT_CAP", "3000"),
+      ("NIF_MOCK_OVERFLOW_DETAIL", "1"),
+      ("NIF_MOCK_ROUNDS", "1"),
+      ("NIF_MOCK_TOOLCMD", "head -c 6000 /dev/zero | tr '\\0' 'x'"),
+      ("NIF_MOCK_LOG", logPath),
+      ("NIF_CTX_RESERVE", "100")]
+    var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+      root = root, extra = knobs,
+      logFile = root / "var" / "test-logs" / "core-oob-" & $int(epochTime()) & ".log")
+    doAssert waitComponent(nc, "store"), "oob: store did not register"
+    doAssert waitComponent(nc, "llm"), "oob: mock llm did not register"
+    var lastTurn: JsonNode
+    var recovered = -1
+    # Heavy turns build a projection the provider will refuse. The FIRST turn
+    # that gets refused must be recovered by the harness itself, not by a
+    # second call from the client — which is why the assertion is on the very
+    # turn that overflowed, not on a later one.
+    for i in 1 .. 6:
+      lastTurn = call(nc, "core", "session",
+                      %*{"sessionId": sessionId,
+                         "content": "Heavy turn " & $i &
+                           ": run the command, then say O" & $i & "-DONE."},
+                      180_000)
+      let err = lastTurn{"turnError"}.getStr("")
+      if err.contains("context"):
+        recovered = i
+        break
+      if err.len > 0:
+        break
+    let err = lastTurn{"turnError"}.getStr("")
+    check("an unexplained refusal does not end the turn terminally",
+          err.len == 0, err)
+    check("the refusal really happened (the fixture reached recovery)",
+          recovered > 0 or err.len == 0, "turn " & $recovered)
+    check("the reply is produced after the harness reduced and retried",
+          lastTurn{"reply"}.getStr("").contains("done —"),
+          lastTurn{"reply"}.getStr(""))
+    check("the failure never blamed an irreducible candidate",
+          not err.contains("could not be reduced") and
+          not err.contains("cannot be reduced"), err)
+    coreProc.stopHard()
+
   # --- 9d. Durable trim: the cut survives a restart (§6.3 watermark) ------
   # Trim drops whole turns from the projection. Until now that cut lived
   # only in memory: a restart rebuilt the FULL pre-trim context from

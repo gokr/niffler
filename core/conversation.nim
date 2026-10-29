@@ -818,10 +818,28 @@ const
   ctxWarnRatio = ctxWarnRatioDefault
     ## warn once this far along the way to the trim rung
   minKeepTurns* = 2    ## never trim below this many user turns
+  minCompletionTokens* = 512
+    ## The smallest reply budget a clamped reserve may leave (`fitOutput` in
+    ## the llm component uses the same floor): below this a "reply" is not a
+    ## reply, so recovery drops history instead of asking for a truncated
+    ## non-answer. A refusal that leaves less room than this is telling us the
+    ## PROMPT is the problem.
   pruneThreshold = 8192   ## chars — tool results over this get pruned (§5.2)
   pruneHead = 4096        ## chars kept from the head
   pruneTail = 1024        ## chars kept from the tail
   thinkingTombstonePrefix = "[thinking omitted — "  ## reasoning stub marker
+
+proc attemptCompaction*(ct: CoreTools, p: var Persister,
+                        messages: var seq[JsonNode],
+                        frozenTools: JsonNode,
+                        onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+                        turnId = "", trigger = "pressure",
+                        provider = "", model = "",
+                        cfg = compactionConfigFromEnv()): CompactionAttempt
+  ## Forward declaration: `runOverflowFallback` (the refusal-driven last
+  ## resort, next to the trim rung) runs the same replaceable-compactor rung
+  ## the pressure ladder runs, and the definition below it also calls the
+  ## drain helpers that live with runTurn.
 
 proc outputReserve*(p: Persister): int =
   ## Tokens held back for the model's next reply. The rule itself lives in
@@ -1852,6 +1870,75 @@ proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
                             "reason": "reset:trim",
                             "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
     used = estimateTokens(messages) + toolTokens + p.calib
+
+proc runOverflowFallback*(ct: CoreTools, p: var Persister,
+                          messages: var seq[JsonNode], toolTokens: int,
+                          frozenTools: JsonNode,
+                          onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+                          turnId = "", bar = 0, provider = "", model = "",
+                          cfg = compactionConfigFromEnv()): int =
+  ## The last resort when a provider REFUSED a candidate that admission
+  ## considered acceptable, and the ordinary rungs therefore stood down.
+  ##
+  ## Why this exists (a live terminal error): a refusal does not prove the
+  ## candidate was oversized by OUR measure. It can mean the provider counts a
+  ## completion budget we did not reserve, or enforces a stricter real limit
+  ## than the window its catalog declares. In both cases `checkContext` says
+  ## "fits" — no rung above has run — and recovery then concluded "could not be
+  ## reduced below the window" while the harness still held every message that
+  ## produced the refusal and a retry was still free (the retry slot is per
+  ## logical request). The human was handed a terminal error whose advice was
+  ## to run `/compact` — a manual step the harness can take itself. A user must
+  ## never end up "in the spot" while history the harness owns is reducible.
+  ##
+  ## So this rung runs the SAME ladder the pressure path runs, in the same
+  ## order, against `bar` — the measurement the retried request must fall
+  ## below, which the caller derives from the refusal itself:
+  ##   1. the derivable stub tier (elide results whose tool declares them
+  ##      re-obtainable — content the model can regain, not content it loses);
+  ##   2. the replaceable compactor, which keeps the whole covered span as one
+  ##      checkpoint. Skipped when even the frozen prefix alone exceeds the bar,
+  ##      where no summary could help;
+  ##   3. trim to the structural floor (system + newest request), the lossy rung.
+  ## Each step is re-measured, never claimed. Returns the candidate's
+  ## measurement in the provider's scale (estimate + calibration), so the
+  ## caller tests the one number it will actually send.
+  template measured: int = estimateTokens(messages) + toolTokens + p.calib
+  result = measured
+  if bar <= 0 or measured < bar: return
+  let frozenOnly = (if messages.len > 0: estimateTokens(@[messages[0]]) else: 0) +
+                   toolTokens + p.calib
+  if derivableStubEnabled():
+    let regained = p.stubResults(messages, smDerivable)
+    if regained > 0 and onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "reset:prune",
+                            "bytesSaved": regained,
+                            "derivable": true,
+                            "note": "overflow recovery: elided results the tool declares re-obtainable before dropping history"})
+  if measured < bar:
+    return
+  # A committed checkpoint ADDS tokens to the prefix, so when the frozen prefix
+  # alone is already over the bar nothing a summary could keep can fit — go
+  # straight to the rung that removes history instead of spending two
+  # auxiliary LLM calls on a checkpoint that cannot help.
+  if frozenOnly < bar and cfg.tool.len > 0 and
+      ct.cat.toolSchema(cfg.tool) != nil:
+    discard attemptCompaction(ct, p, messages, frozenTools, onEvent, turnId,
+                              "overflow", provider, model, cfg)
+    if measured < bar: return
+  if frozenOnly < bar:
+    let dropped = p.trimTurns(messages, 1)
+    if dropped > 0 and onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "promptTokens": p.promptTokens,
+                            "usedTokens": measured, "context": p.ctxSize,
+                            "trimAt": trimThreshold(p),
+                            "reserveTokens": outputReserve(p),
+                            "trimmed": dropped,
+                            "reason": "reset:trim",
+                            "note": "overflow recovery took the last resort — history reset to the newest request so the refused request could be retried"})
+  result = measured
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -3845,39 +3932,76 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           writeContextReceipt(p, requestId, "context-overflow", "attempted",
                               e.msg)
           let beforeOverflow = estimateTokens(messages) + toolTokens
-          if p.ctxSize <= 0:
-            let window = windowFromOverflow(e.msg)
-            if window > 0:
-              p.ctxSize = window
-              p.ctxWarned = false
-          # Correct the calibration offset from the refusal's OWN count before
-          # measuring anything. The provider just told us what this exact
-          # projection cost in its tokenizer ("729345 in the messages"); the
-          # local chars/4 proxy is what under-reported and let the request go
-          # out. Re-measuring with the same estimator produced a false "the
-          # candidate fits" verdict and then a false "cannot be reduced":
-          # the ladder never ran and a 5k-message conversation ended terminal
-          # twice with ~200k tokens of droppable history in the projection.
-          # calib is the additive offset checkContext/runTrimRung/contextTarget
-          # already measure in (provider scale − local estimate), so setting it
-          # here makes every rung below see the provider's number. Only ever
-          # RAISES the offset: a refusal under-counting us would be a different
-          # bug, and lowering calib here could un-trigger a legitimate trim.
-          block:
-            let providerCount = promptTokensFromOverflow(e.msg)
-            if providerCount > 0:
-              let localCount = estimateTokens(messages) + toolTokens
-              let offset = providerCount - localCount
-              if offset > p.calib:
-                p.calib = min(offset, max(p.ctxSize, providerCount))
-                if onEvent != nil:
-                  onEvent("context", %*{
-                    "sessionId": p.convId, "turnId": turnId,
-                    "reason": "calib:refusal",
-                    "providerTokens": providerCount,
-                    "estimatedTokens": localCount,
-                    "calib": p.calib,
-                    "note": "provider-counted prompt tokens from the refusal correct the local estimate before recovery measures the candidate"})
+          # The provider's own numbers, in ITS scale, from the refusal:
+          #   ceiling — the window it says it enforces. It is authoritative for
+          #     THIS provider, so admission adopts it (a gateway's own ceiling, a
+          #     plan limit, an effective server-side cap can all be below what the
+          #     catalog advertises — and then a request that "fits" the catalog
+          #     number is refused forever). 0 when the refusal named none.
+          #   measured — how many prompt tokens it counted for the request it
+          #     just refused ("729345 in the messages"). This is the one exact
+          #     measurement to calibrate against: the local chars/4 proxy is what
+          #     under-reported and let the request go out. 0 when absent.
+          let ceiling = windowFromOverflow(e.msg)
+          let measured = promptTokensFromOverflow(e.msg)
+          if ceiling > 0 and ceiling != p.ctxSize:
+            p.ctxSize = ceiling
+            p.ctxWarned = false
+            if onEvent != nil:
+              onEvent("context", %*{
+                "sessionId": p.convId, "turnId": turnId,
+                "reason": "window:refusal",
+                "context": p.ctxSize,
+                "note": "the refusal named the window this provider actually enforces; admission now measures against it"})
+          # Correct the calibration offset before measuring anything else, so
+          # every rung below prices the candidate in the provider's scale rather
+          # than re-confirming the estimate that was too optimistic. Only ever
+          # RAISES the offset: a refusal that under-counted us is a different
+          # bug, and lowering calib could un-trigger a legitimate trim.
+          if measured > 0:
+            let localCount = estimateTokens(messages) + toolTokens
+            let offset = measured - localCount
+            if offset > p.calib:
+              p.calib = min(offset, max(p.ctxSize, measured))
+              if onEvent != nil:
+                onEvent("context", %*{
+                  "sessionId": p.convId, "turnId": turnId,
+                  "reason": "calib:refusal",
+                  "providerTokens": measured,
+                  "estimatedTokens": localCount,
+                  "calib": p.calib,
+                  "note": "provider-counted prompt tokens from the refusal correct the local estimate before recovery measures the candidate"})
+          # CHEAPEST RUNG FIRST: whose budget is over the line?
+          #
+          # A provider sums prompt + max_tokens against its limit, so a refusal
+          # often means the PROMPT is fine and only our reply budget overshoots —
+          # `fitOutput` in the llm component reserved headroom against the
+          # catalog's window, and the real ceiling was lower. When there is
+          # still room for a usable answer, ask for a smaller one and keep every
+          # message: `chat {maxTokens}` only ever LOWERS the provider default, so
+          # this cannot widen anything, and a shorter reply beats deleting
+          # history the model still needs. (The live case: 2378 tokens of prompt
+          # against a 4000 ceiling, refused only because 3000 more were reserved
+          # for the completion — the answer had to be shorter, nothing else.)
+          #
+          # When even a minimal completion would not fit, the PROMPT is the
+          # problem and the ladder below has to reduce it.
+          var clampedForRetry = 0
+          var promptTokens = estimateTokens(messages) + toolTokens + p.calib
+          if ceiling > 0 and promptTokens + minCompletionTokens <= ceiling:
+            clampedForRetry = ceiling - promptTokens
+            # Book it too, so ordinary admission prices the NEXT request with the
+            # reserve that actually fits (ctxOutput drives outputReserve).
+            p.ctxOutput = clampedForRetry
+            llmArgs["maxTokens"] = %clampedForRetry
+            if onEvent != nil:
+              onEvent("context", %*{
+                "sessionId": p.convId, "turnId": turnId,
+                "reason": "reserve:clamped",
+                "reserveTokens": clampedForRetry,
+                "promptTokens": promptTokens,
+                "context": ceiling,
+                "note": "the prompt fits what the provider accepts; clamped the reply budget and kept every message"})
           # Unknown capacity and a refusal that carries no parseable window:
           # admission stands down, so checkContext below would pass the
           # candidate unchanged and the retry would be byte-identical — a
@@ -3931,17 +4055,55 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                 checkContext(p, messages, onEvent, turnId, toolTokens)
           if overflowVerdict.len == 0:
             if failMsg.len == 0 and
-                estimateTokens(messages) + toolTokens >= beforeOverflow:
+                estimateTokens(messages) + toolTokens + p.calib >= beforeOverflow:
               # The candidate fits the known window yet the provider refused
-              # it: the refusal cannot come from the message size alone (a
-              # counted completion budget, a stricter real limit than the
-              # declared window). Never resend what was refused unchanged —
-              # the retry would be byte-identical and refuse again.
+              # it: the refusal cannot come from our own measure (a stricter real
+              # limit than the declared window, or a counted completion budget),
+              # so the admission ladder above had nothing to do. An unchanged
+              # resend would be byte-identical and refuse again, but the harness
+              # still holds the history that produced the refusal and this retry
+              # is free — so act before giving up.
+              #
+              # The retry must fit the ceiling the refusal named, in the
+              # provider's own scale. `measure` is what the provider will count
+              # for this candidate (its own figure for the same prompt content
+              # when it gave one, else estimate + calibration) — the only number
+              # whose comparison means anything. When no ceiling was named there
+              # is nothing to validate a reduction against, so any shrink counts,
+              # and it is still what stops a byte-identical resend.
+              template measure: int = estimateTokens(messages) + toolTokens + p.calib
+              let readyAsIs = clampedForRetry > 0 and
+                              promptTokens + clampedForRetry <= ceiling
+              if not readyAsIs:
+                var bar = if ceiling > 0: ceiling else: measure
+                discard runOverflowFallback(ct, p, messages, toolTokens,
+                                            promptToolsJson, onEvent, turnId,
+                                            bar, resolvedProvider, selectedModel)
+                # Fold what arrived while the auxiliary compactor call was in
+                # flight: append-only history, never a silently dropped steer.
+                discard drainSteer(ct, p, messages, onEvent, turnId)
+                drainMap(ct, p, messages, onEvent)
+                drainDiagnostics(ct, p, messages, onEvent)
+                discard drainAdvisories(ct, p, messages, onEvent, turnId)
+              if readyAsIs or (ceiling > 0 and measure + outputReserve(p) <= ceiling) or
+                  (ceiling <= 0 and measure < promptTokens):
+                if onEvent != nil:
+                  onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
+                                     "reason": "context-overflow",
+                                     "error": e.msg})
+                llmArgs["messages"] = %messages
+                llmArgs["tools"] = promptToolsJson.formatToolsForLlm()
+                continue
+              # Genuinely irreducible: the prompt alone is over what the
+              # provider accepts, so no history the harness owns can bring this
+              # request in.
               writeContextReceipt(p, requestId, "context-overflow", "terminal",
                                   e.msg)
               failMsg = "context-recovery-required: provider refused the request (" &
-                        e.msg & ") and the candidate could not be reduced " &
-                        "below the window"
+                        e.msg & ") and the prompt itself (conversation history " &
+                        "plus the frozen system prompt and tool schemas) is " &
+                        "over what it accepts even after prune, compaction and " &
+                        "trim — switch to a larger-context model"
             elif failMsg.len == 0:
               if onEvent != nil:
                 onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
@@ -3955,8 +4117,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
             writeContextReceipt(p, requestId, "context-overflow", "terminal",
                                 e.msg)
             failMsg = "context-recovery-required: provider refused the request (" &
-                      e.msg & ") and the fallback ladder could not reduce it " &
-                      "below the window"
+                      e.msg & ") and the recovery ladder (stub, compaction, " &
+                      "trim) could not bring it under what the provider accepts"
         elif klass == lfcTransient and canRetry(retryPolicy, e.msg, attempt):
           # Retry budgets are independent: hinted rate limits wait exactly as
           # requested (up to the local cap), while stream timeouts and refused
