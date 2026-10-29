@@ -5017,10 +5017,11 @@ Its context exclusions remain unchanged, including `AGENTS.md` and
 context into benchmark tasks.
 
 ```bash
-make test           # the full gate: the bus-contract suite + bench adapters
+make test           # the full gate: the bus-contract suite (Nim/Go only)
 make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
-make test-bench     # ... Node adapter readiness and telemetry tests only
-                    #     (skips cleanly when Node is absent)
+make test-bench     # ... Node adapter readiness and telemetry tests only;
+                    #     NOT part of `make test` — it SIGKILLs matched
+                    #     processes. Skips cleanly when Node is absent
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`
@@ -5186,7 +5187,7 @@ make install-jev    # install the Von runtime for jev (opt-in, ~5.4 GB;
                     # never part of `make setup`)
 make von-up         # enable the supervised Von launcher (persisted spawn
                     # record; `make von-down` removes it again)
-make test           # the full gate: the bus-contract suite + bench adapters
+make test           # the full gate: the bus-contract suite (Nim/Go only)
 make test-server    # the bus-contract suite alone (each test owns a private bus)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)

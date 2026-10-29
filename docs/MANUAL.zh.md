@@ -2717,10 +2717,11 @@ make build
 基准适配器在私有总线上等待全部八个直接工具、`systemprompt.systemprompt` 和 manifest 中每个 required autostart 组件，并在创建会话前检查目录 root 与对象 schema。上下文排除项不变，包括 `AGENTS.md` 与 `AGENTS.local.md`；就绪检查不允许将 harness 贡献者上下文注入基准任务。
 
 ```bash
-make test           # the full gate: the bus-contract suite + bench adapters
+make test           # the full gate: the bus-contract suite (Nim/Go only)
 make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
-make test-bench     # ... Node adapter readiness and telemetry tests only
-                    #     (skips cleanly when Node is absent)
+make test-bench     # ... Node adapter readiness and telemetry tests only;
+                    #     NOT part of `make test` — it SIGKILLs matched
+                    #     processes. Skips cleanly when Node is absent
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

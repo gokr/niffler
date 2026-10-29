@@ -2881,10 +2881,11 @@ core 中所有必須看見整個種類的東西都走 `storeListAll`——
 基準適配器在私有匯流排上等待全部八個直接工具、`systemprompt.systemprompt` 和 manifest 中每個 required autostart 元件，並在建立會話前檢查目錄 root 與物件 schema。上下文排除項不變，包括 `AGENTS.md` 與 `AGENTS.local.md`；就緒檢查不允許將 harness 貢獻者上下文注入基準任務。
 
 ```bash
-make test           # the full gate: the bus-contract suite + bench adapters
+make test           # the full gate: the bus-contract suite (Nim/Go only)
 make test-server    # ... bus and Go tests; no bench adapters or frontend toolchain
-make test-bench     # ... Node adapter readiness and telemetry tests only
-                    #     (skips cleanly when Node is absent)
+make test-bench     # ... Node adapter readiness and telemetry tests only;
+                    #     NOT part of `make test` — it SIGKILLs matched
+                    #     processes. Skips cleanly when Node is absent
 make test-bash      # ... or just one — `make help` lists every target
                  # (test-uireg, test-autostart, test-<component>); the full
                  # bus suite is `make test-server`

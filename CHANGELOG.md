@@ -6,6 +6,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **`scripts/kill-run.sh` no longer kills the whole login session.** Its scan
+  for a bench run's processes had lost its scope: the link pattern was
+  `-lname "**"` instead of the run directory, and `**` matches every
+  `/proc/<pid>/cwd` on the host. The script therefore SIGKILLed every process
+  of the invoking user — including `gnome-shell`, `gnome-session-binary` and
+  the session bus — which presents as being thrown back to the greeter with
+  every application gone and nothing in the journal (no crash, no core, no
+  stop job). Because `kill-run.test.mjs` is part of `make test-bench` (and
+  `make test`), the ordinary gate could trigger it: both desktop sessions lost
+  on 2026-10-29 (12:39 and 13:32) began at the second a `make test-bench` tool
+  call was issued. The scan is
+  scoped again (`-lname "$target"` and `-lname "$target/*"`), `--list` prints
+  the match set without killing anything, an `inside_run` guard re-checks each
+  pid's `cwd`/`exe` before it is signalled, and a new contract test asserts the
+  match set is exactly the run's own processes — a sibling run and an unrelated
+  process in the repository root must not appear. **`make test` no longer
+  depends on `test-bench`** (`test: test-server`): a gate that runs with the
+  invoking user's session authority must not include host-scoped process
+  surgery, however well-tested. Bench coverage stays reachable by name
+  (`make test-bench`, and CI runs it as its own step), which is where the new
+  scope test runs too.
+
 - **Trusted goal delegation replaces per-assignment profile negotiation.**
   `fleet_task_submit` gains `mode: "delegate"`: a registered `instance` (name or
   32-hex identity, XOR the legacy private `profile` receipt) plus a goal, and

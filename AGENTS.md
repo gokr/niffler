@@ -275,7 +275,7 @@ make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler --minimal  # boot only store + bash + llm + systemprompt; skip persisted extras
 niffler-tui           # the client: autostarts core on demand; the last
                       # interactive client stops it
-make test             # the full gate: the bus-contract suite + bench adapters
+make test             # the full gate: the bus-contract suite (Nim/Go only)
 make test-server      # the whole bus-contract suite: smoke + every
                       # `tests/t_*.nim` — each owns a private NATS server +
                       # temporary NIF_ROOT, so component targets can overlap a

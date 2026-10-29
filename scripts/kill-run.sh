@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kill-run.sh <exact-run-id> — stop a bench run and everything it left
+# kill-run.sh [--list] <exact-run-id> — stop a bench run and everything it left
 # behind. The global `make down` cannot be used for this: its patterns match
 # bench worktrees too, so it takes unrelated runs down with it. Here the match
 # is the run's own directory under var/bench/results (cwd or executable), and
@@ -10,10 +10,20 @@
 # ~4k processes it took 33 seconds with zero matches, which is long enough that
 # a caller (the contract test spawns `sleep 60` children and asserts on them)
 # can outlive its own fixtures. `find -lname` resolves the symlinks in one
-# process and does the same comparison. The match is still an exact path
-# component: `-lname "$target"` plus `-lname "$target/*"`.
+# process and does the same comparison. The match is an exact path component:
+# `-lname "$target"` plus `-lname "$target/*"`.
+#
+# Both patterns must name $target. An unscoped link pattern (`-lname "**"`)
+# matches every /proc/<pid>/cwd on the host, so this script SIGKILLs every
+# process of the invoking user — measured on a live desktop that meant one
+# `make test-bench` killed gnome-shell, gnome-session-binary, the session bus
+# and every application, i.e. a logout with no crash and no log line. `--list`
+# prints the match set and kills nothing, which is how the contract test pins
+# the scope.
 set -u
-pat="${1:?usage: kill-run.sh <exact-run-id>}"
+list_only=0
+if [ "${1:-}" = "--list" ]; then list_only=1; shift; fi
+pat="${1:?usage: kill-run.sh [--list] <exact-run-id>}"
 case "$pat" in
   .|..|*/*) echo "kill-run: expected one exact run directory name" >&2; exit 2 ;;
 esac
@@ -32,9 +42,26 @@ target="$root/var/bench/results/$pat"
 matching_pids() {
   local links
   links="$(find /proc -maxdepth 2 \( -name cwd -o -name exe \) \
-             \( -lname "**" \) 2>/dev/null)"
+             \( -lname "$target" -o -lname "$target/*" \) 2>/dev/null)"
   [ -z "$links" ] && return 0
   printf '%s\n' "$links" | sed -e 's|^/proc/||' -e 's|/.*$||' | sort -u
+}
+
+if [ "$list_only" = 1 ]; then
+  matching_pids | grep -v "^$$\$" || true
+  exit 0
+fi
+
+# Belt and braces: the scan above decides WHAT to look at, this decides what may
+# be killed. Two forks per matched pid (not per /proc entry) is cheap, and it
+# keeps a future pattern regression from turning this script into a logout.
+inside_run() {
+  local cwd exe
+  cwd="$(readlink "/proc/$1/cwd" 2>/dev/null)" || cwd=""
+  exe="$(readlink "/proc/$1/exe" 2>/dev/null)" || exe=""
+  case "$cwd" in "$target"|"$target"/*) return 0 ;; esac
+  case "$exe" in "$target"|"$target"/*) return 0 ;; esac
+  return 1
 }
 
 hit=0
@@ -43,6 +70,7 @@ for _ in $(seq 1 6); do
   [ -z "$pids" ] && break
   found=0
   for pid in $pids; do
+    inside_run "$pid" || continue
     if kill -9 "$pid" 2>/dev/null; then
       found=1
       hit=$((hit + 1))

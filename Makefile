@@ -140,9 +140,10 @@ help:
 
 help-tests:
 	@echo 'Tests (private NATS servers and isolated runtime roots)'
-	@echo '  test / test-server   Same full gate; includes Go/vet, Node benchmark and native Fleet tests'
+	@echo '  test / test-server   Same full gate; includes Go/vet and native Fleet tests'
 	@echo '  test-go              Go unit tests + vet; race detector on audited packages'
-	@echo '  test-bench           Node benchmark infrastructure unit tests; not a model eval'
+	@echo '  test-bench           Node benchmark unit tests; not a model eval, and not'
+	@echo '                       part of make test (they SIGKILL matched processes)'
 	@echo '  test-clean           Cleanup contract only; no full build or live store access'
 	@echo '  test-fleet           Mocked provisioning tests; no real SSH/VM mutations'
 	@echo '  test-fleet-tasks     Two-instance task smoke (real bus/runners, mock model)'
@@ -647,17 +648,25 @@ var/bin/test_t_llm_modelpin: var/bin/llm var/bin/models
 var/bin/test_t_provider_pin: var/bin/llm var/bin/models
 
 # The full gate, self-contained: core + components + the bus-contract suite
-# (each test owns a private NATS server and a temporary root), plus the bench
-# adapter tests when Node is available.
-test: test-server test-bench
+# (each test owns a private NATS server and a temporary root).
+#
+# Deliberately NOT test-bench. Those Node tests drive host-scoped process
+# surgery — `bench/tests/kill-run.test.mjs` executes `scripts/kill-run.sh`,
+# which scans /proc and SIGKILLs what it matches — and an unscoped match there
+# once killed the invoking user's whole session (gnome-shell, the session bus,
+# every application) in the middle of an ordinary `make test`. A gate that runs
+# with the user's session authority must not do that. Bench coverage is opt-in
+# via `make test-bench`; CI runs it as its own step, where the runners ship Node.
+test: test-server
 
 # The bus-contract suite: one test per component + smoke + the Go unit tests.
 #
 # Deliberately does NOT depend on test-bench: the suite is pure Nim/Go and a
 # stock harness install has no Node — requiring it made `make test-server`
 # abort with `node: command not found` before running a single contract test.
-# `make test` still covers both, and CI runs test-bench as its own step (the
-# runners ship Node), so the benchmark adapters keep their coverage.
+# `make test` does not pull it in either (see the note above): these are Node
+# tests that stop processes by scanning /proc, so they stay opt-in here and CI
+# runs them as their own step, so the benchmark adapters keep their coverage.
 test-bench:
 	@mkdir -p var
 	@if ! command -v node >/dev/null 2>&1; then \
