@@ -3178,16 +3178,23 @@ fake transports, never real hosts or VMs.
 ### Fleet tasks
 
 The optional fleet component offers session-context `fleet_task_submit`,
-`fleet_task_status`, `fleet_task_result`, `fleet_task_receipt` and
-`fleet_task_cancel`, plus the local `fleet_task_inbox` listing, distinct from
-service `fleet_status`/`fleet_stop`. Submit requires human approval, a private
-verified `profile` receipt, an idempotent `requestId`, `content`, remote `cwd`,
-explicit `tools`, and positive `maxRounds` (≤32), `maxCalls` (≤100), `maxTokens`
-(≤100000). This first slice permits only `read`, `grep`, and read-only `git_*`
-inspection tools (status/diff/log/show/blame). Shell, store, indirect invocation,
-local/remote delegation and orchestration are refused. The peer must advertise
-`taskScopeVersion:1`; older peers refuse before dispatch. This is capability
-scoping, not an OS sandbox: audit the selected remote tools and workspace.
+`fleet_task_continue`, `fleet_task_status`, `fleet_task_result`,
+`fleet_task_receipt` and `fleet_task_cancel`, plus the local `fleet_task_inbox`
+listing, distinct from service `fleet_status`/`fleet_stop`; the worker side adds
+`fleet_delegation_set`/`fleet_delegation_get`. Submit requires human approval, an
+idempotent `requestId`, `content`, remote `cwd`, and either a registered
+`instance` (name or identity) or a private verified `profile` receipt. In `ask`
+and `unattended` modes the explicit `tools` list (1..16) and all three positive
+budgets are required: `maxRounds` (≤32), `maxCalls` (≤100), `maxTokens`
+(≤100000). In `delegate` mode tools and budgets are optional — an omitted value
+takes the worker's configured ceiling, and a named one can only narrow it
+(`maxRounds` ≤32, `maxCalls` ≤500, `maxTokens` ≤2000000). The default (`ask`)
+read-only slice permits only `read`, `grep`, and read-only `git_*` inspection
+tools (status/diff/log/show/blame); in that slice, shell, store, indirect
+invocation, local/remote delegation and orchestration are refused. The peer
+must advertise `taskScopeVersion:1`; older peers refuse before dispatch. This is
+capability scoping, not an OS sandbox: audit the selected remote tools and
+workspace.
 
 Owner identity comes from injected session context, never a target session in
 the tool arguments. The requester persists the owner, task, route and identity
@@ -3218,9 +3225,13 @@ would-stop boundaries; idle turns use the existing `NIF_AGENT_WAKES` budget.
 A declined wake leaves the notice pending. Human activity/seen state is separate.
 A real transition into `settled` also publishes `ev.fleet.settled` for connected
 clients; it is fire-and-forget and grants nothing, and the job record remains the
-durable truth. `fleet_task_result` returns the cached bounded report without
-blocking management on a remote transport. Full transcripts remain on the worker
-under `remoteSession`.
+durable truth. `fleet_task_result {jobId, offset?, limit?}` returns a locally
+cached prose report without contacting the peer: `report`, `nextOffset`,
+`hasMore`, `reportBytes` and `reportComplete` beside the short `summary`. Offsets
+are UTF-8 byte boundaries, `limit` is 4..32768 bytes (default 8192), and a caller
+continues with `offset: nextOffset` while `hasMore`. A job that cached only a
+summary returns `reportComplete: false` and says so. Full transcripts remain on
+the worker under `remoteSession`.
 
 `fleet_task_inbox {peer?, state?, after?, limit?}` is the human listing over the
 same local `fleetjob` documents: peer, objective, lifecycle state and — once
@@ -3315,7 +3326,8 @@ machine refuses, because those were fixed when the goal was admitted — a
 follow-up that retargeted them would be a different grant wearing an old
 conversation id. Each continuation is its own activation with its own admission
 key, so a retried request can never run the work twice, and the parent's report
-stays exactly as it was: the follow-up's answer is recorded against the new job.
+stays exactly as it was: the follow-up's settlement is recorded against the new
+job.
 
 Three honest limits worth knowing before relying on it:
 

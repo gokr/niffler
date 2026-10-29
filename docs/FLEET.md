@@ -46,10 +46,10 @@ Example target interaction:
 | Instances | Stable identity, root-scoped resident user service, SSH/Incus/Lima provisioning and lifecycle, pinned private connection receipts | Long-lived operation recovery/reporting and more live update acceptance |
 | Transports | SSH forwarding; native guest CLI relay; optional SSH management host; Multipass explicitly rejected | No new transport needed for task semantics |
 | Client | Per-instance connections and state, switching, identity checks, completion badges | Background-instance approval interaction |
-| Task submission | `fleet_task_submit`, owner-bound durable `fleetjob`, explicit read-tool allowlist and round/call/token budgets | Named task peers, coding authority, agent/model selection, continuation |
-| Result | `fleet_task_status`, cached bounded `fleet_task_result`, local `fleet_task_inbox` listing, remote-session pointer | Paged task-specific detail and artifact retrieval |
+| Task submission | `fleet_task_submit` (registered `instance` or pinned receipt), `mode: "delegate"` with one worker trust setting and optional limits, `fleet_task_continue` follow-ups, owner-bound durable `fleetjob` | Agent/model selection; live acceptance of delegation on a real worker |
+| Result | `fleet_task_status`, locally paged prose `fleet_task_result`, local `fleet_task_inbox` listing, remote-session pointer | Artifact retrieval |
 | Notification | Durable `fleet-settled` notice; `ev.fleet.settled` for connected clients; runner append before ack; canonical-history dedup; bounded idle wake and busy-turn drain | Blocked/approval-needed notices; artifact retrieval |
-| Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption; durable worker admission with an activation-bound terminal receipt ([WIRE.md](WIRE.md) "Durable task admission") | Multi-activation/continuation records and a receipt retention policy |
+| Recovery | Reconcile uncertain submissions without blind replay; identity mismatch/unreachable are not success or interruption; durable worker admission with an activation-bound terminal receipt ([WIRE.md](WIRE.md) "Durable task admission") | Receipt retention policy |
 | Cancellation | `fleet_task_cancel` settles queued work locally and requests a peer-side stop (`session {stop: true}`) for dispatched work; the reply follows the peer's status | Live acceptance of a remote stop's success path |
 | Approval | Submission approval locally; worker explicitly receives `approvals: ask`; read-only tasks by default; operator task profiles ∩ an exact human grant ([WIRE.md](WIRE.md) "Task policy"), enforced at birth with the honest `unconfined` verdict | No default unattended mode (by design); no human UI for profiles/grants |
 | Scheduling | Optional heartbeat, durable admission marks, daily attempt cap | Cron, daily token/cost budgets, retention and completion integration |
@@ -233,9 +233,10 @@ merge per-item sequence. Reconnect must reconcile beyond a single 1000-item page
 
 ### Results and artifacts (new)
 
-Return bounded reports plus paged detail for the **specific activation**. Worker
-transcripts remain canonical on the worker. Full-detail reads must not leak
-another session via cursors, supplied paths or artifact IDs.
+Reports are cached locally and paged through `fleet_task_result` for the
+**specific activation**. Worker transcripts remain canonical on the worker.
+Full-detail reads must not leak another session via cursors, supplied paths or
+artifact IDs.
 
 A coding result should include base revision, resulting commit/diff, dirty-state
 warning, observed verification commands/outcomes and artifact descriptors
