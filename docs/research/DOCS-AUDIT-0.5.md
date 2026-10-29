@@ -57,30 +57,49 @@ Counts are `feat`/`fix` commits in that scope since `v0.4.0`.
 
 ## 3. Confirmed gaps
 
-### 3.1 The sandbox subsystem has research docs but no user docs
+### 3.1 The sandbox work is OPT-IN and PARTIAL — docs must say so, not imply more
 
-`sandbox/` is a launcher binary (`main.nim`, `landlock.nim`, `policy.nim`, built
-as `var/bin/niffler-sandbox`, deliberately **not** a manifest component), plus
-`sdk/niffler/sandboxpolicy.nim` for versioned conversation policy. Four research
-documents describe it (`SANDBOX-BASH-STATUS.md`, `SANDBOX-CONVERSATION-POLICY.md`,
-`SANDBOX-IMPLEMENTATION.md`, `SANDBOX-MATRIX.md`).
+First, a correction to an earlier draft of this audit, which called this "the
+largest gap" as though a sandbox were shipped: **there is no sandbox in the
+default configuration.** `NIF_BASH_SANDBOX` defaults to `"off"`
+(`components/bash/guard.nim:14`). What exists, verified in the code:
 
-`MANUAL.md` mentions **none** of:
+| layer | state | what it actually is |
+|---|---|---|
+| **write arbitration** (`locks`) | shipped, on | cooperative path leases between conversations. **Not** OS fencing — the MANUAL already says "Not an OS sandbox" |
+| **read masks** (`NIF_BASH_SANDBOX_MASKS`) | shipped, independent of the shell guard | `sdk/niffler/readscope.nim` is consulted by `edit`, `grep`/`files`, `repomap` and skills whenever masks are configured. Its own header: *"a mask, not a confidentiality model"* — it removes what would have been RETURNED, and cannot hide a copy, an undeclared hard link, or the same bytes via an undeclared path |
+| **opt-in bwrap shell guard** | implemented, **off by default** | read-only host root, writable workspace, private tmpfs `/tmp`, fresh `/proc`, minimal `/dev`, isolated network, dropped capabilities. Honest limits from its own status doc: *arbitrary host reads remain possible except explicitly masked paths; this is not a workspace-only filesystem view or chroot*; background calls refuse; the benchmark container-map combination refuses |
+| **Landlock backend** | prototype | hand-rolled syscalls are real (ABI 8 on this host), but it is a **separate opt-in**, and masks *refuse* under it — so it is strictly weaker than the bwrap guard, not a second production option |
+| **Seatbelt (macOS)** | **not implemented** | zero occurrences in any `.nim`/`.go` source; research documents only |
+| **`SandboxPolicy` snapshots** | shipped as data | used by `core/dispatch.nim` to persist a conversation's **granted roots** (the `roots` feature), not to enforce a sandbox |
 
-| symbol | purpose |
-|---|---|
-| `NIF_BASH_SANDBOX_ROOT` | workspace root the guard grants |
-| `NIF_BASH_SANDBOX_MASKS` | paths never readable through `read`/`grep` |
-| `NIF_SANDBOX_BACKEND` | which enforcement backend (Landlock/bwrap) |
-| `NIF_SANDBOX_ALLOW_DEGRADED` | permit running without enforcement |
-| `NIF_BWRAP` | path to the bwrap binary |
-| `bash_sandbox_status` | what the guard actually applied |
+So the accurate characterisation is: *one opt-in Linux shell guard with an
+honest attestation mechanism, plus an always-available path mask, plus
+cooperative write leases.* The isolation story that actually runs today is
+**fleet's Incus/Lima guests** (§3.6), not the bash guard.
 
-The existing MANUAL `sandbox` mentions (`NIF_BASH_SANDBOX_MAP`, docker image map,
-`netScoped`) are a **different** feature — the hosted-benchmark container map —
-so a reader following "sandbox" in the manual lands on the wrong thing. This is
-also a security-shaped feature: `NIF_SANDBOX_ALLOW_DEGRADED` changes the
-guarantee, and an operator currently cannot learn that from the manual.
+The documentation gap is therefore narrower than the draft claimed, but still
+real and still worth fixing — with the right framing:
+
+- `NIF_BASH_SANDBOX`, `NIF_BASH_SANDBOX_ROOT`, `NIF_BASH_SANDBOX_MASKS`,
+  `NIF_SANDBOX_BACKEND`, `NIF_SANDBOX_ALLOW_DEGRADED`, `NIF_BWRAP` and
+  `bash_sandbox_status` appear **zero times** in `MANUAL.md`. An operator
+  cannot learn the guard exists, how to enable it, or what it does not cover.
+- `NIF_SANDBOX_ALLOW_DEGRADED` is the sharp one: it changes whether enforcement
+  is guaranteed at all, and it is invisible.
+- The manual's existing "sandbox" text (`NIF_BASH_SANDBOX_MAP`, the docker image
+  map for hosted benchmarks) is a **different feature**, so a reader who greps
+  "sandbox" in the manual lands on the wrong one.
+- `docs/research/SANDBOX-BASH-STATUS.md` is the honest, current source — it heads
+  itself *"implemented on main, opt-in and off by default… Seatbelt remains
+  unimplemented"*. That is the document to promote/link from the MANUAL, rather
+  than a new prose section that would inevitably overstate the guarantee.
+
+Proposed wording for the manual, in one line: **"Opt-in bash guard (Linux,
+off by default): constrains the COMMAND's mount/network view; it is not a
+workspace-only filesystem and does not confine in-process readers — those are
+covered separately by `NIF_BASH_SANDBOX_MASKS`, which is a mask and not a
+confidentiality boundary."**
 
 ### 3.2 Newest fleet tools are absent from the MANUAL
 
@@ -109,6 +128,25 @@ later (#195, 2026-10-29). `config_list` therefore reports six domains
 (`fetch.network`, `logfile.retention`, `lsp.warm`, `models.refresh`,
 `observe.capture`, `repomap.gates`) and not the two new ones. Rebuild and
 restart before testing those.
+
+### 3.6 Three different kinds of "isolation" — keep them apart
+
+The word means three unrelated things in this repo, and conflating them is how
+over-claiming starts:
+
+1. **Conversation boundary** (shipped, always on): one runner process per
+   conversation, turns never nest, a write fence over the workspace set, and
+   cooperative leases between conversations. Prevents two *conversations of the
+   same user* interleaving writes. Nothing to do with untrusted code.
+2. **Command containment** (opt-in, Linux, partial): the bwrap shell guard
+   above. Mount/network/capability view for a `bash` command. Off by default.
+3. **Machine isolation** (shipped, for fleet): an Incus container or Lima VM per
+   remote instance — a separate kernel/userland where the worker's harness
+   runs. This is the real isolation boundary today, and it is what makes
+   trusted-worker delegation meaningful: the worker cannot touch this host's
+   files because it is not on this host.
+
+A doc pass must not let (1) or (2) borrow the authority of (3).
 
 ## 4. Test playbooks
 
@@ -216,8 +254,11 @@ outside a session context.
 2. **Test settings and fleet** (§4) and note what actually differs from the docs
    as written — a doc written from code is worth less than one corrected while
    using it.
-3. **Write the sandbox section** (§3.1) — the largest gap, and the only one with
-   a security consequence.
+3. **Write the sandbox entry** (§3.1) — but as an *opt-in, partial, off-by-default
+   guard*, linking `SANDBOX-BASH-STATUS.md` as the owning document rather than
+   restating a guarantee. The security consequence is in
+   `NIF_SANDBOX_ALLOW_DEGRADED`, which must be stated plainly. Do not let it read
+   like the fleet-level isolation in §3.6.
 4. **Fill the fleet holes** (§3.2, §3.3, §4 inbox/notices prose).
 5. **Update the website** (§3.4) — fleet and sandbox in the component story.
 6. **Then** cut the release: version bump, freeze `[Unreleased]`, release
