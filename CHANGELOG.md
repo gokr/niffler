@@ -449,6 +449,43 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A trusted worker can be given a goal instead of a per-task profile.**
+  `mode: "delegate"` on `fleet_task_submit` sends a goal to a registered
+  instance (name or identity, pinned into the job at creation) or a verified
+  profile receipt, and the worker decides its own steps and reports back. The
+  authority is one operator decision per machine — `fleet_delegation_set
+  {enabled, tools, roots, maxRounds?, maxCalls?, maxTokens?}`, read back with
+  `fleet_delegation_get` — not a tool/root/budget negotiation restated for
+  every assignment. It is off by default, and a delegated goal refused at birth
+  leaves no admission receipt (no remote turn ran). A requester may only narrow
+  the configured limits; a wider value is refused with `task-policy-widened`,
+  never clamped. `confinement: "sandbox"` is refused because nothing here
+  enforces it, and the envelope's `caller` is self-declared, so `enabled`
+  trusts bus/SSH reachability rather than a per-requester credential — stated
+  where an operator decides. `mode: "unattended"` and stored task profiles keep
+  exactly their recorded policy, and `delegationPolicyVersion: 1` is advertised
+  so a peer without it refuses a delegated goal instead of downgrading to
+  `ask`. Resolution is pure (`sdk/niffler/taskpolicy.nim:resolveDelegationPolicy`).
+
+- **A settled delegated goal can be continued in the same worker
+  conversation.** `fleet_task_continue {jobId, requestId, content, close?}`
+  appends an activation to the parent's remote session, so a follow-up such as
+  "address the review comments on that PR" keeps the context the worker built.
+  Only the instruction may change: naming `cwd`, `instance`/`profile`, `tools`
+  or any budget is refused with `task-policy-immutable`, because those were
+  frozen when the goal was admitted. Each continuation carries its own
+  admission key, so a retry replays a receipt instead of running twice, and
+  `close: true` closes the goal only after a successful continuation. A
+  content-only turn onto a delegated conversation is accepted only with an
+  admission key; profile-based `unattended` tasks keep the old refusal.
+
+- **`fleet_task_result` returns the worker's full prose report, paged
+  locally.** The final report is cached with the job and read back with
+  `offset`/`limit` (4–32768 bytes, default 8192) from `nextOffset` while
+  `hasMore`, cutting only on UTF-8 boundaries. Reading a report never contacts
+  the worker; a legacy job whose full text was not cached says so instead of
+  presenting its short summary as the complete report.
+
 - **Reasoning effort accepts `none`, `minimal` and `xhigh`, and degrades
   instead of failing.** The ladder was guessed separately in core's session
   enum, the TUI's shift-tab cycle and the web UI, and `none` was missing — so
@@ -659,6 +696,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remote write, so the receipt still proves exactly what is installed.
 
 ### Fixed
+
+- **A rebuilt component no longer loses its own subprocesses.** `make build`
+  replaces a running binary in place, after which Linux reports
+  `/proc/self/exe` as `<path> (deleted)` and `getAppFilename()` returns that
+  string verbatim, so every re-exec failed with ENOENT. It failed silently in
+  the worst way: `fleet`'s supervisor looked healthy while its subprocesses
+  never started, so reconciliation stopped and every task sat at `queued` with
+  `checkedAt: 0` — indistinguishable from an unreachable peer; `jev` could not
+  start its judge, and `git`'s own-binary recursion guard never matched after a
+  rebuild. `selfBinaryPath()` now returns `/proc/self/exe` when the on-disk
+  name is stale (stripping the suffix would run whatever now holds that name),
+  and all three re-exec sites and the self-comparison use it. Regression:
+  `t_selfbinary`, which replaces a copy of itself and asserts the fix.
+
+- **A peer's explicit refusal is kept as a job's diagnostic instead of leaving
+  it `unknown`.** Reconcile discarded it with `except CatchableError: discard`,
+  so the reason for a failed job was lost; a refusal is now recorded and no
+  longer cleared by a later healthy read, while a transport timeout stays
+  silent because that is the genuinely unknown case durable admission exists
+  for. Reconcile also reads the peer's transcript, activity receipt and
+  admission from the job's `remoteSession` — the parent conversation for a
+  continuation — rather than the job id, which previously made a follow-up look
+  like work that never ran.
 
 - **The TiDB store engine can boot again.** Migration 3 used `ALTER TABLE
   docs DROP PRIMARY KEY, ADD PRIMARY KEY(...)`, which TiDB v5.0 and later
