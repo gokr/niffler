@@ -28,6 +28,7 @@
 - [Store engines](#store-engines)
 - [State and configuration](#state-and-configuration) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
+- [Shell guard and read masks](#shell-guard-and-read-masks)
 - [Images (dropped and tool-produced)](#images-dropped-and-tool-produced) · [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
@@ -111,8 +112,7 @@
 
 建议使用 `read {path}` 或 `read {reads: [{path, offset?, limit?}, ...]}`（最多 12 项），而不是同时使用。两者同时提供仍被接受，并集/去重行为不变。选择项的限制不变，不能与内容项混用。每个会话在 edit 组件生命周期中的首次成功 `edit` 或 `replace_across` 修改会追加 `undo_last_edit` 发现提示，不会每次修改都重复。
 
-### 批量字面量替换（`replace_across`）
-
+### Bulk literal replacement (`replace_across`)
 在一组已知文件上做完全相同的字面量替换时使用 `replace_across`，无需预先读取每个文件。需要唯一上下文才能定位的修改请用 `edit`；需要计算、正则或语法感知的改写请用 `bash` 中的脚本。
 
 ```json
@@ -276,6 +276,16 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | Variable | Meaning | Default |
 |---|---|---|
 | `NIF_ROOT` | harness 根目录（仓库）。未设置时 core 从其二进制位置推导，并为所有子进程设置它。组件用它来查找 SDK、`var/`、`.env`。每个组件都以 **cwd = NIF_ROOT** 运行，因此 agent 的 `bash pwd` 始终是 home——无论你从哪里启动 harness | `<binary location>/../..` |
+| `NIF_BASH_SANDBOX_MAP` | `<absolute-dir>=<image>` 行（按命令 `cwd` 的最长匹配前缀生效），让 `bash` 工具把每条命令——前台与 `run_in_background` 都一样——作为 `docker run --rm --network none` 运行，只把该工作区根绑定挂载到同一路径（镜像的工具链与缓存、工作区，别无一物）。由托管基准测试泳道写入（DeepSWE 移植）；`cwd` 匹配不到任何条目时调用会大声失败（exit 125），而不是无沙箱运行。优先于 `NIF_BASH_NET` | 未设置 |
+| `NIF_BASH_SANDBOX` | `on` 让每条**前台** `bash` 命令都经过 `niffler-sandbox` 启动器（见[Shell guard and read masks](#shell-guard-and-read-masks)）：工作区在自己的路径上可写，主机其余部分以只读方式绑定挂载，`/tmp` 私有、`/proc` 全新，无网络、无总线。`off`（默认）表示不启用守护。其他任何值都会拒绝。工作区来自 runner 的会话上下文，否则用 `NIF_BASH_SANDBOX_ROOT`；被守护的 `run_in_background` 调用会被拒绝，而不是无守护运行；该守护也不能与 `NIF_BASH_SANDBOX_MAP` 组合使用 | `off` |
+| `NIF_BASH_SANDBOX_ROOT` | 给**没有**会话上下文的受守护命令（裸 `cli` 调用）用的工作区路径。对话回合自己会提供工作区，所以这只用于直接的总线调用 | 未设置 |
+| `NIF_BASH_SANDBOX_MASKS` | 由运维管理的精确路径，每行一个（绝对路径，或相对工作区），对读**与**写都隐藏：`read`、`grep`/`files`、`repomap` 和技能资源都会拒绝它们，符号链接与硬链接别名同样被拒绝，shell 守护会在每个路径上绑定 `/dev/null`，使受守护的命令也无法读取。无论是否启用 shell 守护都生效。掩码就是掩码，不是机密性边界：它移除本来会被返回的内容，但无法隐藏躲在未声明路径后面的同一批字节，也无法隐藏配置之前已经取走的副本。配置了但不存在的路径会被拒绝，而不是悄悄放弃保护 | 未设置 |
+| `NIF_SANDBOX_BACKEND` | `landlock` 强制使用 Landlock 后端，而不是优先 bubblewrap。Landlock **只限制写**——读不受限制——因此它是降级选项，探测输出会在详情行里说明这一点 | 自动（优先 `bwrap`） |
+| `NIF_SANDBOX_ALLOW_DEGRADED` | `1` 表示在 bubblewrap 不可用时接受只限制写的 Landlock 后端（Ubuntu 23.10+ 常见，因为 AppArmor 拒绝非特权用户命名空间）。不设置时，无法兑现完整承诺的主机什么也不运行并说明原因——没有静默降级 | 未设置 |
+| `NIF_BWRAP` | `bubblewrap` 二进制的路径，覆盖 `PATH` 查找（测试与非标准安装） | `PATH` |
+| `NIF_BASH_NET` | `off` 让 `bash` 命令运行在主机 `unshare` 网络命名空间中（loopback 可用，无路由）——轻量变体，仅在 `NIF_BASH_SANDBOX_MAP` 未设置时使用；需要非特权用户命名空间（Ubuntu 的 AppArmor 在无 root 时拒绝）。非 Linux 或没有 `unshare` 时，调用会失败（exit 125） | 未设置 |
+| `NIF_INSTANCE_ID` | 本实例稳定的文档所有者身份（32 位小写十六进制）。未设置 → `$NIF_ROOT/var/instance-id`；两者都没有时 store 使用旧版所有者 `''`（仅限单实例/测试，绝不能用于同一数据集上的多个 harness）。共享 TiDB 集群上的每个实例都必须设置，根目录不持久时也建议设置；绝不要在实例之间复制。store 在启动时解析一次——它从来不是工具参数 | 未设置（身份文件） |
+| `NIF_LOCK_TTL_MS` | `locks` 组件的写租约寿命（docs/research/WRITE-ARBITRATION.md）。调用结束时租约即释放；TTL 是 runner 在调用中途死亡时的兜底，到期后该路径可以再次被认领 | `600000` |
 | `NIF_NATS_URL` | 总线地址。在**环境**中（测试、bench、脚本）：仅附加——core 使用恰好那个总线。在 **`.env`** 中声明（或众所周知的 `nats://127.0.0.1:4222`）：克隆的 **home 总线**——空闲时认领，仅当应答的 core 服务此根目录时才附加（身份通过目录的 `root` 字段），对外来 core 或裸 nats-server 大声让出（改用隔离的随机总线；先回收记录的遗留 `var/nats-pid`），并写入 `var/nats-url` | 自动 |
 | `NIF_NATS_SPAWN` | `1` 强制在随机端口上使用隔离的 core 拥有的总线——绝不用 4222，绝不附加（开发克隆和测试）。有显式 `NIF_NATS_URL` 时 URL 优先 | 未设置 |
 | `NIF_AUTOSTART` | 当 UI 不得不生成 core 时由 SDK 的 `ensureHarness` 设置：该 core 在最后一个交互式客户端离开时退出（见 Starting and stopping） | 未设置 |
@@ -744,6 +754,37 @@ true`，加上窗口——否则上下文仪表会一直显示
 而不是等待：回合绝不嵌套，而选择等待的客户端只会
 耗尽自己的超时（这就是为什么在长回合期间 `/export` 看起来像坏了一样）。
 
+## Shell guard and read masks
+
+这个 harness 里有三件不同的事都被叫作隔离。它们不借用彼此的权威，本手册刻意把它们分开：
+
+| 层次 | 状态 | 它实际上是什么 |
+|---|---|---|
+| **会话边界** | 始终开启 | 每个会话一个 runner 进程，回合永不嵌套，工作区集合上有写入栅栏（[write arbitration](research/WRITE-ARBITRATION.md)）。防止*同一用户*的两个会话交错写入。与不受信任的代码无关 |
+| **命令围栏** | **可选、仅 Linux、部分** | 下面的 shell 守护：为一条 `bash` 命令提供的挂载/网络/能力视图 |
+| **机器隔离** | 已交付，用于 fleet | 每个远程实例一个 Incus 容器或 Lima VM —— 独立的内核与用户态，这正是受信任工作端委派有意义的原因 |
+
+### The shell guard (off by default)
+
+当 `NIF_BASH_SANDBOX=on` 时，每条前台 `bash` 命令都通过启动器（`var/bin/niffler-sandbox`，由 `make build` 构建）执行，而不是直接执行。
+启动器向内核请求两种后端之一：
+
+- **bubblewrap** —— 完整承诺：工作区以其绝对路径绑定挂载为可写，主机其余部分只读，`/tmp` 是私有 tmpfs，`/proc` 全新，`/dev` 最小化，能力被丢弃，环境清成 `PATH`/`HOME`/`TMPDIR`/`LANG`，还有——对 agent harness 最关键的一条——`--unshare-net`，使命令既无网络、也无通往总线的路由。
+- **Landlock** —— 限制写、**不限制读**。属于降级方案，且只在明确选择时使用：`NIF_SANDBOX_BACKEND=landlock` 强制它，或在 bubblewrap 不可用时用 `NIF_SANDBOX_ALLOW_DEGRADED=1` 接受它（在 Ubuntu 23.10+ 上很常见，因为 AppArmor 拒绝非特权用户命名空间）。
+
+两者都不可用时，受守护的命令会**拒绝执行**。没有静默降级，因为悄悄停止守护的守护比没有守护更糟。
+探测会在命名空间*内部*真正执行一次调用，而不只是检查二进制是否存在——在 Ubuntu 23.10+ 上 AppArmor 会拒绝用户命名空间，所以 `PATH` 上有 `bwrap` 并不能说明它可用——启动器会写入每次启动的状态，供工具报告。可用性不是对某次启动确实生效的证明。
+
+它不是什么：不是只含工作区的文件系统视图，也不是 chroot。除了你掩码的路径，主机的任意**读**仍然可能，命令在以该视图为你会话的权限运行。受守护的 `run_in_background` 调用会被拒绝而不是无守护运行（后台路径还没有进程围栏），该守护也不能与基准测试的容器映射（`NIF_BASH_SANDBOX_MAP`）组合使用。Seatbelt（macOS）**尚未实现**。
+
+`bash_sandbox_status`（on demand、read-effect）报告守护是否已配置、本主机实际能兑现哪种后端以及原因，并复述上面这些诚实的限制。在信任受守护命令之前先运行它。
+
+### Read masks (`NIF_BASH_SANDBOX_MASKS`)
+
+一个名字相似得容易误导的独立功能，无论是否启用 shell 守护都生效。由运维管理的精确路径，每行一个，对读**与**写都隐藏：`read`、`grep`/`files`、`repomap` 和技能资源都会拒绝它们，符号链接与硬链接别名被拒绝，遍历类工具不会列出它们，shell 守护还会在每个路径上绑定 `/dev/null`，使受守护的命令同样无法读取。配置了但不存在的路径会被拒绝，而不是悄悄放弃保护。
+
+它是**掩码，不是机密性边界**——它自己的文档头就这么写。它移除本来会被返回的内容；它无法隐藏躲在未声明路径后面的同一批字节，也无法隐藏掩码配置之前已经取走的副本。
+
 ## Images (dropped and tool-produced)
 
 一条对话可以通过两条路径携带图像，而它们最终汇入同一段代码：
@@ -797,7 +838,9 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 
 - **输出**窗口与上下文窗口一起解析，并以 `output`/`outputSource` 返回：目录中的 `model.limit.output`，否则是一个刻意设定的 32768 默认值——如果没有显式上限，提供方会应用其自己的服务端上限，并在流中途截断长回答。每次调用的 `maxTokens` 只会降低已解析的值（专家裁判的微小裁决），而 Codex 通道完全忽略它。
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` 接受会话作用域的 provider 和模型覆盖。`provider` 指定一个已存储的 provider 昵称（为空则清除，回到 harness 全局默认）；仅指定模型的调用会在同一次头写入中解析并固定其所属的 provider，因此 provider 和模型总是一起出现——模型不会在事后因为另一个 UI 切换了全局默认而被发送到不支持它的 provider。无法解析的显式 `provider` 是一个指名它的错误，而不是静默回退（docs/WIRE.md "Provider/model pins are one selection"）。仅指定模型的调用会持久化并解析该选择而不进行推理；存在但值为空会清除它。`profile` 指定一个已存储的工具配置，仅在对话的第一次调用时解析为直接工具集（`NIF_PROFILE` 提供默认值）；未知配置会使调用失败，而恢复会忽略该参数。`thinking` 是推理强度，取值为 `""`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 之一；`""` 是提供方默认值（UI 将其显示为 "auto"），并且是唯一能清除先前选择的值；`none` 明确要求不进行推理，与提供方默认值不同。它作为 `reasoning_effort` 转发给提供方——且仅在非空时转发，因此不支持该字段的提供方永远不会看到它；`llm` 适配器将该值映射到每种协议自己的形式（Codex `reasoning {effort, summary}`，Anthropic `thinking` 加上 `output_config.effort`）——并携带在对话头上。当提供方拒绝该**值**时，`llm` 会记录 `status=effort-rejected`，并在不带该字段的情况下重试一次，而不是让该轮失败。
+- `session {roots: {add?: [path], remove?: [path]}}` 是**人类**扩大会话工作区集合的方式 —— 当工作属于同级 checkout 时，正是 `[E_WRITE_OUTSIDE] … is outside this conversation's workspace` 的解法。它和其余会话控制一样是不带 content 的控制调用，并在**工具调用之间**生效：已经在飞的回合保持它开始时的集合。条目必须是绝对路径且目录存在；文件系统根会被拒绝，主工作区也一样（它已在集合中），集合上限为包含主工作区在内的八个根。整个列表在生效前会先校验并持久化，持久化失败会拒绝这次变更，而不是留下一个重启后不存在的活动授权。授权会扩大会话可触及的范围 —— 写入栅栏，以及通过 `x-harness.workspace` 告知组件的那些树（因此 `lsp` 会把同级 checkout 索引进来而不是拒绝）—— 并在状态回读中以 `grantedRoots` 返回。它不授予别的任何东西：审批模式、预算和 provider 固定是各自独立的控制，而被授予的根不是隔离边界。
+
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?, roots?}` 接受会话作用域的 provider 和模型覆盖。`provider` 指定一个已存储的 provider 昵称（为空则清除，回到 harness 全局默认）；仅指定模型的调用会在同一次头写入中解析并固定其所属的 provider，因此 provider 和模型总是一起出现——模型不会在事后因为另一个 UI 切换了全局默认而被发送到不支持它的 provider。无法解析的显式 `provider` 是一个指名它的错误，而不是静默回退（docs/WIRE.md "Provider/model pins are one selection"）。仅指定模型的调用会持久化并解析该选择而不进行推理；存在但值为空会清除它。`profile` 指定一个已存储的工具配置，仅在对话的第一次调用时解析为直接工具集（`NIF_PROFILE` 提供默认值）；未知配置会使调用失败，而恢复会忽略该参数。`thinking` 是推理强度，取值为 `""`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 之一；`""` 是提供方默认值（UI 将其显示为 "auto"），并且是唯一能清除先前选择的值；`none` 明确要求不进行推理，与提供方默认值不同。它作为 `reasoning_effort` 转发给提供方——且仅在非空时转发，因此不支持该字段的提供方永远不会看到它；`llm` 适配器将该值映射到每种协议自己的形式（Codex `reasoning {effort, summary}`，Anthropic `thinking` 加上 `output_config.effort`）——并携带在对话头上。当提供方拒绝该**值**时，`llm` 会记录 `status=effort-rejected`，并在不带该字段的情况下重试一次，而不是让该轮失败。
   `discovery {…}` 是显式的客户端发现：它运行 `discover`，将模式记录到持久发现摘要中，并将它们作为用户消息追加——没有 LLM 轮次，也不会提升到直接工具集。
   Core 将该选择存储在对话头中，并在一个轮次内的所有工具轮次中固定已解析的模型。
 - 每会话控制项在第一次调用时冻结并持久化在头中：`tools`（子级可以分派的工具允许列表；最多接受 32 个名称，且接受的参数不会在 `session` 工具模式中声明）、`maxRounds`（每轮 LLM 轮次数，1–`NIF_MAX_TURN_ROUNDS`，收窄硬上限）、`maxCalls`（每轮工具分派总数，1-500——每次分派尝试都计数，无论成功还是错误），以及 `maxTokens`（每轮提供方报告的累计 token 数，在每一新轮次之前检查）。预算耗尽会以预算耗尽错误结束该轮次——子代理驱动（`agent_run`/`agent_spawn`）将其作为失败呈现，而绝不是文本回复。
@@ -1058,8 +1101,7 @@ NIF_HOOKS_TIMEOUT_MS=10000
 
 一个通用接缝，覆盖任何 stdio 语言服务器。该组件不了解任何语言：哪个服务器处理哪个文件扩展名是**数据** —— 一个内置合理默认值的注册表。添加一种语言是配置条目，绝不是代码（AGENTS.md 不变式：语言无关核心）。`repomap` 组件是当前的例外：地图语言需要其语法被 vendored 到 `components/repomap/csrc/` 下，在 `ts.nim` 中有一个 `{.compile.}` 条目，一个 `queries/<lang>-tags.scm` 及其扩展名在 `tags.nim` 中 —— 该层级列表是接缝当前的限制，不是策略。
 
-### 固定的 provider 绝不会改道
-
+### Pinned providers never reroute
 一个会话的 `provider` 固定值每回合解析一次（`llm_resolve`），随后随该回合的每次 chat 调用一起传递，因此模型 id 与它所属的后端不会彼此漂移。有两条规则在解析本身失败时维持这一点：
 
 - **具名** provider 只会由该名字应答 —— 先是它的 store 记录，然后是环境表中同名的条目（来自 `NIF_OPENAI_*` 的 `default`，或 `NIF_LLM_PROVIDERS` 中的条目）。如果两者都无法应答，`llm` 会说明是哪一种失败：*provider registry 未应答*（总线/registry 故障，值得重试），还是*未知 provider “x”* 并列出已配置的昵称（固定值写错了，值得修正）。registry 查询在放弃前会重试一次，因此一个正在写会话记录的忙碌 store 不会让回合失败。**空**固定值不是名字：先取活动 provider，再取 `NIF_OPENAI_*`。
@@ -1347,8 +1389,7 @@ Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小
 - 派发、审批、`x-harness.timeoutMs` 以及组件到组件的调用
   始终查询完整目录。
 
-### 声明的配置（`config` 组件）
-
+### Declared configuration (the `config` component)
 拥有设置（settings）的组件继续拥有它：值保存在该组件自己的 store 记录中，并由它自己的工具写入。可选的 `config` 组件在其上增加发现、校验和一个统一的编辑 API，这样无论是人还是模型都不必知道哪个组件拥有哪个开关。
 
 所有者会在启动时发布一份*声明*（`config_declare`，hidden —— 属于基础设施，不是模型工具）：一个稳定的 domain id、它使用的 store kind、负责应答 `get`/`patch`/`reset` 的工具、用于取值的 JSON Schema 子集，以及每个属性的 `x-config` 元数据（`title`、`description`、`secret`、`readOnly`、`humanOnly`、`application`）。声明是持久的，所以已停止的所有者仍然会出现在列表中。
@@ -1452,13 +1493,34 @@ make test-fleet 使用假传输，不操作真实主机或 VM。
 
 ### Fleet tasks
 
-可选 fleet 提供 `fleet_task_submit`、`fleet_task_status`、`fleet_task_result`、
-`fleet_task_cancel`，不与服务生命周期 `fleet_status`/`fleet_stop` 混用。
-提交须经人类批准，并提供私有已验证 `profile`、幂等 `requestId`、`content`、
-远端 `cwd`、显式 `tools`，以及正数 `maxRounds`（≤32）、`maxCalls`（≤100）、
-`maxTokens`（≤100000）。首个切片仅允许 read、grep 和只读 git 工具
-（status/diff/log/show/blame）；拒绝 shell、存储、间接调用和再次委派。
-对端须发布 `taskScopeVersion:1`；这不是操作系统沙箱，仍须审计工具与工作区。
+可选 fleet 提供 `fleet_task_submit`、`fleet_task_continue`、`fleet_task_status`、
+`fleet_task_result`、`fleet_task_receipt`、`fleet_task_cancel`，加上本地的
+`fleet_task_inbox` 列表，不与服务生命周期 `fleet_status`/`fleet_stop` 混用；
+worker 一侧另加 `fleet_delegation_set`/`fleet_delegation_get`。
+提交须经人类批准，需要幂等的 `requestId`、`content`、远端 `cwd`，以及一个注册的
+`instance`（名称或身份）或私有的已验证 `profile` 回执。`ask` 与 `unattended` 模式
+要求显式的 `tools` 列表（1..16）和三个正数预算：`maxRounds`（≤32）、
+`maxCalls`（≤100）、`maxTokens`（≤100000）。`delegate` 模式下工具与预算是可选的
+——省略的取 worker 配置的上限，指定的只能收窄（`maxRounds` ≤32、`maxCalls` ≤500、
+`maxTokens` ≤2000000）。默认（`ask`）的只读切片只允许 `read`、`grep` 和只读
+`git_*` 检查工具（status/diff/log/show/blame）；该切片内拒绝 shell、存储、间接调用、
+本地/远程委派与编排。对端必须发布 `taskScopeVersion:1`；更旧的对端在派发前就拒绝。
+这是能力范围界定，不是操作系统沙箱：请审计所选远端工具和工作区。
+
+`fleet_instances {}` 列出已注册的路由 —— 稳定的 32 位十六进制身份、名称、root、
+传输方式和固定 revision —— 客户端读它而不是本地 `instances.json`，`instance`/`identity`
+参数也据此解析。它只是路由列表，从不是权限、也从不表示存活：每个动作仍会在写入前
+证明实时身份，条目也不声称对端当前可连或已授权（收件箱刻意会继续显示条目已被移除的任务）。
+`fleet_instance_import` 是从回执文件时代的显式一次性迁移；`fleet_remove` 只忘记注册表条目
+—— 对端继续运行、保留自己的回执文件，且从不被联系。
+
+`fleet_notices {session, peek?, ack?}` 是 **runner 的**收件箱，不是客户端的：hidden、
+`runner` 豁免、read-effect，并归属于必须接收结算的那个会话。读取不消费；`ack` 只为该所有者
+标记已投递，而 runner 会在 ack *之前*先把通知持久化进 transcript，所以追加失败绝不会 ack，
+重试可以恢复。重放会对照规范历史去重，这也正是它能跨重启或投影压缩存活的原因。
+开轮调用和 would-stop 排空都参与；空闲唤醒尝试使用既有的有界 `NIF_AGENT_WAKES` 准入，
+被拒绝的唤醒会让通知留在拉取通道里。它完全不碰冻结前缀 —— 只有追加的通知消息进入模型历史
+（docs/WIRE.md "Settlement notices"）。
 
 所有者来自注入的会话上下文。任务、所有者、路由与实例身份在派发前持久化；
 修改回执不能重定向现有任务。相同请求标识配不同工作会被拒绝。
@@ -1511,8 +1573,34 @@ make test-fleet 使用假传输，不操作真实主机或 VM。
 `make test-fleet-admission` 覆盖记录/幂等契约，`t_fleet_admission_e2e` 覆盖
 真实 store 加运行器在使用模拟模型下的行为。
 
-#### 向受信任工作端委派目标
+#### Updating a provisioned instance
 
+`fleet_install` 从不更新：重跑只是收养。把已有实例向前推进是一个单独的、需批准的动作：
+
+```json
+{"profile":"var/fleet/worker.json","revision":"main"}
+```
+
+`fleet_update` 先通过实时目录验证实例身份（已停止的固定 guest 需要管理员启动），解析 ref，
+然后在主机上拒绝符号链接的、无关的或**本地已修改**的 checkout —— 实例上的未提交工作是运维者的，
+不是更新可以丢弃的东西。否则它会拉取、checkout 解析出的 commit、原地运行 `make build`
+（绝不用 `bootstrap.sh`：更新不应该在非交互的 SSH 会话里索要 sudo）、重新安装并重启用户服务，
+之后才探测**更新后**的实例，并把回执里固定的 `gitHash` 推进。失败的更新会让回执继续描述最后一次
+真正验证过的内容。更新到已经固定的 revision 会报告 `changed: false` 且不碰任何东西。
+
+`fleet_install`、`fleet_update`、`fleet_start`、`fleet_stop`、`fleet_vm_start`、
+`fleet_vm_stop` 和 `fleet_remove` 都要求 harness 常规的审批闸门。审批请求通过其参数
+指出目标、root、revision 与资源。不存在第二套 tty 同意协议。人类明确选择时，
+标准 harness 自动审批策略仍然适用。`fleet_probe`、`fleet_status` 与 `fleet_logs`
+是只读的；生命周期与探测工具都接受 `{profile:"/absolute/path/to/receipt.json"}`。
+绝不要把 NATS 公开暴露。
+
+SSH 支持别名、密钥、ProxyJump 与 known_hosts，并关闭 agent forwarding。
+Lima 使用原生 limactl shell，不做主机挂载，也不抽取密钥。不存在删除/清除 guest 的工具：
+`fleet_remove` 只忘记注册表条目 —— 对端继续运行、保有自己的回执文件，且从不被联系。
+名称有歧义时会拒绝而不是随便选一个，`expectRevision` 则守护同一身份下重新置备的实例。
+
+#### Delegating a goal to a trusted worker
 最简单的方式：指名一个已注册工作端，给出目标。工作端自行决定步骤，使用其正常能力，
 以文字报告结果 —— 例如「已修复 #123，已开设草稿 PR #456，#124 需要澄清」。
 无需 task profile，也无需必须提供工具清单或预算。这是推荐的委派方式；下方 (F2)
@@ -1721,8 +1809,7 @@ niffler-tui --instance worker --instance-import /absolute/path/to/worker.json
 niffler-tui --instance worker
 ```
 
-### GitHub CLI 与令牌
-
+### GitHub CLI and a token
 `make install-tools` 会安装 [`gh`](https://cli.github.com) 二进制文件，让实例可以开 PR、读 issue、查看 workflow 运行。只有二进制本身什么也做不了，而唯一值得弄明白的是*为什么*：
 
 **`gh` 无法复用 SSH 密钥。** SSH 密钥只认证 **git 传输**（`git push`/`git clone` 走 `git@github.com:…`）。每条 `gh` 命令都访问 **REST API**，那需要 bearer token。所以一台通过 SSH 推送正常的机器，执行 `gh pr create` 仍会得到：
@@ -1734,8 +1821,7 @@ Alternatively, populate the GH_TOKEN environment variable with a GitHub API auth
 
 这不是需要追查的配置错误 —— 而是两种协议使用两种不同的凭据。一个实例可以用自己的身份推送（机器用户的 SSH 密钥，或部署密钥），却仍然无法开 PR。
 
-#### 制作令牌
-
+#### Making a token
 **以实例应当作为的身份**创建它 —— 不要用一个你不希望实例以其写入的账户来签发。
 
 > [!IMPORTANT]
@@ -1756,8 +1842,7 @@ Alternatively, populate the GH_TOKEN environment variable with a GitHub API auth
 
 经典令牌（`repo`、`read:org` 等）同样可用，而且**对该账户可见的每个仓库都生效**，这就是它的代价 —— 但它正是上面"外部协作者"情形所要求的形式，也是确认你撞到的是这条限制的最快方式。它也便于区分两类令牌：`gh auth status` 对经典令牌会打印 `Token scopes: 'repo'`，对细粒度令牌则完全没有 scope 行。
 
-#### 放在哪里
-
+#### Where to put it
 放在 `gh` 会查找、**且任何仓库都无法触及**的地方 —— 放在实例本机上，以运行 harness 的那个用户（**不是** root，也不是管理主机：`gh` 从本地 `$HOME` 读取配置，存在主机上的令牌对客户机里的 harness 是不可见的）：
 
 ```bash
@@ -1776,8 +1861,7 @@ gh auth status                 # 确认是哪个账户、哪些 scope 在应答
 
 如果你根本不想让令牌落在磁盘上，可以在服务的环境里导出 `GH_TOKEN` —— 那样 `gh` 从不写入它，但该值对以该用户运行的任何东西都可通过 `/proc/<pid>/environ` 看到。在单租户机器上这是等价取舍；在共享机器上，`hosts.yml`（0600）更严格。
 
-#### 把范围限定到实例被允许做的事
-
+#### Scope it to what the instance is allowed to do
 这与批准是同一个信任问题，并与它们叠加：一台运行 `NIF_APPROVALS_DEFAULT=auto` 的常驻实例（见[批准](#approvals)）会自动批准 `bash` 和 `git`，所以用它配一个可写令牌意味着**无人值守的 agent 可以在没有人类参与的情况下开并推送 PR**。这是一种合理姿态，但要有意选择。两个低成本的限制，按价值排序：
 
 - **保护默认分支**（要求 PR + 评审）。这样令牌的写权限产出的是*提案*，这正是你希望 worker 做的事，而 `main` 仍然需要人类。
@@ -2359,8 +2443,7 @@ await comp.requestEnvelope(subject, envelope, timeoutMs?)
 
 每个 SDK 都让 NATS 执行主题匹配，并且只分派绑定到投递该消息的订阅的处理程序。这避免了以前的叉积问题，即一次调用可能通过 call、event 和 tap 路径多次投递。Nim 保持无回调和无线程；Go 使用其现有的互斥锁，TypeScript 使用其 promise 链。关闭时，Go 先排空订阅（至其有界关闭宽限期），然后停止每个组件的投递循环并等待所有正在运行的处理器完成，以保留欠给调用方的回复——已接受但尚未启动的调用会被拒绝，而不是静默丢弃；TypeScript 等待排队的处理程序，而不会死锁显式关闭自身组件的处理程序。
 
-#### 总线中断后重新接入
-
+#### Re-attaching after a bus outage
 NATS 客户端会透明地重连到同一 URL，但总线在超出其重连预算后仍不可达——或 harness 在新端口上重启——过去会让组件**存活却失聪**：订阅不再投递，没有发出 `reg.depart`，目录仍宣告着无人能到达的工具，恢复只能靠杀死进程。Nim 和 Go SDK 现在监视连接健康（每 2 秒一次 `Flush` 探测），一旦连接不健康持续 `NIF_RECONNECT_GRACE_S`（默认 180 秒，刻意高于客户端自身的耐心），就**重新接入**：重新解析总线 URL、重拨（Nim 采用指数退避；Go 在其健康 tick 上重试）、重建每个订阅（call、event 与 tap）并重新发布 `reg.publish`——无需重启进程。
 
 延迟宣告的组件（Go SDK 的 `DeferAnnounce`，例如 `mcp-bridge`）必须在全新连接上重新发布自己的契约，因为它可能在不健康期间已经漂移；用 `onReattached`（Go 为 `OnReattached`）注册它。普通组件无需钩子——重新接入已经重新宣告了它们冻结的契约。TypeScript SDK 目前尚不重新接入。
