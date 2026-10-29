@@ -303,6 +303,25 @@ patch instead of burning the remaining feedback rounds.
     telemetry also counts multi-call/pipeline messages, selector use, explicitly
     emitted/default arguments, and result characters per tool. Tool results
     never count as additional calls. `make test-bench` tests these contracts.
+- **droid** — Factory's Droid CLI (`droid exec`) per round in the repo dir.
+  `-o stream-json` for the frame stream, `-f <promptfile>` for the prompt,
+  `--skip-permissions-unsafe` (a bench cell has no human to approve), and
+  `-s <session id>` to continue the round-1 session reported in the
+  `system/init` frame. The BYOK model is passed as a per-combo **runtime
+  settings file** (`--settings`, `customModels: [{model, provider, baseUrl,
+  apiKey: "${SYNTHETIC_API_KEY}", ...}]`), never into `~/.factory`; the key is
+  interpolated by Droid from the env the adapter passes, so nothing is written
+  to disk. Note: a custom model that arrives via `~/.factory/settings.json`
+  instead of `--settings` is not picked up before the folder is trusted and
+  Droid silently falls back to `gpt-6-sol`, which demands a Factory login.
+  Usage comes from the final `completion` frame's counters (Anthropic-shaped:
+  `input_tokens` EXCLUSIVE of `cache_read_input_tokens`; `thinking_tokens`),
+  which are summed per round; `firstPromptTokens` is the first usage-bearing
+  frame's total prompt. Droid's own counters were verified against a
+  controlled 2-call round. `bench/adapters/droid.mjs` documents the frames.
+  Its fixed tool surface is large (46 tools) and therefore its first prompt is
+  ~44k–72k tokens on these tasks versus Niffler's ~3k — keep that in mind when
+  comparing cost columns.
 - **niffler-expert** — the same private Niffler setup, but the runner waits for
   the expert component and calls `expert_follow` with the exact task session id
   before the first turn. The result records judgment/steer/acceptance counters,

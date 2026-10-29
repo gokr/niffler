@@ -6,6 +6,27 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **A `droid` bench lane, and the `full31` three-way run.** `bench/adapters/droid.mjs`
+  drives Factory's Droid CLI per round (`-o stream-json`, `-f` prompt file,
+  `-s` session continuation, `--skip-permissions-unsafe`) with the BYOK model
+  passed as a per-combo runtime `--settings` file so nothing is written to
+  `~/.factory`; usage comes from the final `completion` frame
+  (`input_tokens` exclusive of `cache_read_input_tokens`, plus
+  `thinking_tokens`), verified against a controlled 2-call round. The
+  `full31-syn-ds41-droid` run compared droid / niffler / pi on Synthetic
+  DeepSeek V4.1 Flash: **93/93 cells pass, no leaks, every cell in round 1**,
+  so the suite is saturated for this model class and the numbers measure
+  shape, not capability. Droid's frozen prompt is ~60.4k tokens against
+  Niffler's ~3.05k (20× smaller), which it buys back with ~4.4 tool calls per
+  assistant message versus 1.2 — round trips 1.9 vs 6.5, uncached input 3.4k
+  vs 7.0k, wall clock 30 s vs 29 s: the small prefix and the batching cancel
+  out almost exactly on this suite. The one behavioural gap worth acting on:
+  droid reads (4.6 `read`/cell, 1.5 `bash`), niffler shells (4.2 `bash`,
+  2.0 `read`) with `pwd` 26 / `cd` 20 / `cat` 19 heads — the model routes
+  around the direct tools it is told to prefer. Reports in
+  `bench/reports/full31-syn-ds41-droid-*`, rationale in
+  `docs/research/STEAL-WAVE-2.md`.
+
 - **`scripts/kill-run.sh` no longer kills the whole login session.** Its scan
   for a bench run's processes had lost its scope: the link pattern was
   `-lname "**"` instead of the run directory, and `**` matches every

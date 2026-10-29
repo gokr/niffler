@@ -154,6 +154,15 @@
         "model": "hf:deepseek-ai/DeepSeek-V4.1-Flash",
         "apiKeyEnv": "SYNTHETIC_API_KEY",
         "thinking": "low"
+      },
+      "droid": {
+        "model": "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+        "provider": "generic-chat-completion-api",
+        "baseUrl": "https://api.synthetic.new/openai/v1",
+        "apiKeyEnv": "SYNTHETIC_API_KEY",
+        "thinking": "low",
+        "maxContextLimit": 1000000,
+        "maxOutputTokens": 64000
       }
     }
   },
@@ -180,7 +189,8 @@
         "opencode": "low",
         "codewhale": "low",
         "claudecode": "low",
-        "dsh": "low"
+        "dsh": "low",
+        "droid": "low"
       },
       "medium": {
         "niffler": "medium",
@@ -188,7 +198,8 @@
         "opencode": "medium",
         "codewhale": "medium",
         "claudecode": "medium",
-        "dsh": "medium"
+        "dsh": "medium",
+        "droid": "medium"
       },
       "high": {
         "niffler": "high",
@@ -196,7 +207,8 @@
         "opencode": "high",
         "codewhale": "high",
         "claudecode": "high",
-        "dsh": "high"
+        "dsh": "high",
+        "droid": "high"
       },
       "max": {
         "niffler": "max",
@@ -204,7 +216,8 @@
         "opencode": "max",
         "codewhale": "max",
         "claudecode": "max",
-        "dsh": "max"
+        "dsh": "max",
+        "droid": "max"
       }
     }
   },

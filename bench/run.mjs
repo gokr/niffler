@@ -22,6 +22,7 @@ import * as niffler from "./adapters/niffler.mjs";
 import * as dsh from "./adapters/dsh.mjs";
 import * as maki from "./adapters/maki.mjs";
 import * as openhands from "./adapters/openhands.mjs";
+import * as droid from "./adapters/droid.mjs";
 
 const BENCH_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const BENCH_DIR = path.join(BENCH_ROOT, "bench");
@@ -193,6 +194,7 @@ async function preflight() {
     if (mc?.niffler) add(mc.niffler.baseUrl, mc.niffler.apiKeyEnv);
     if (harnesses.includes("dsh") && mc?.dsh) add(mc.dsh.baseUrl, mc.dsh.apiKeyEnv);
     if (mc?.claudecode) add(mc.claudecode.baseUrl, mc.claudecode.apiKeyEnv);
+    if (harnesses.includes("droid") && mc?.droid) add(mc.droid.baseUrl, mc.droid.apiKeyEnv);
   }
   if (harnessArg.split(",").includes("niffler-expert") && cfg.expertJudge) {
     add(cfg.expertJudge.baseUrl, cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY");
@@ -406,6 +408,10 @@ const ADAPTERS = {
     needsKeys: ["DEEPSEEK_API_KEY"],
     isService: true, // one agent-server stack per combo
   },
+  droid: {
+    mod: droid,
+    needsKeys: ["SYNTHETIC_API_KEY"],
+  },
   "niffler-expert": {
     mod: niffler,
     needsKeys: [],
@@ -468,7 +474,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   // verification of the partial patch (which may already pass — seen: a
   // DeepSeek 402 killed t17 mid-turn while its patch was complete).
   const isFatalProviderError = (msg) =>
-    /\b(401|402|403)\b|insufficient.{0,20}balance|balance.{0,20}insufficient|unauthorized|invalid.{0,20}key|quota.{0,20}exceeded|permission.{0,20}denied/i.test(
+    /\b(401|402|403)\b|\[E_AUTH\]|insufficient.{0,20}balance|balance.{0,20}insufficient|unauthorized|invalid.{0,20}key|quota.{0,20}exceeded|permission.{0,20}denied/i.test(
       String(msg || ""),
     );
 
@@ -553,6 +559,18 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             model: combo.model,
             sessionId: adapterState.sessionId || null,
             turnTimeoutMs,
+          });
+          adapterState.sessionId = res.sessionId;
+        } else if (combo.harness === "droid") {
+          res = await droid.round({
+            repo,
+            prompt,
+            modelCfg: combo.modelCfg.droid,
+            turnTimeoutMs,
+            sessionId: adapterState.sessionId || null,
+            settingsFile: shared.droidSettings,
+            workdir,
+            thinking: thinkingFor("droid"),
           });
           adapterState.sessionId = res.sessionId;
         } else if (combo.harness === "maki") {
@@ -691,6 +709,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     else if (combo.harness === "claudecode") usage = cc.usageFromRounds(roundUsages);
     else if (combo.harness === "openhands") usage = openhands.usageFromRounds(roundUsages);
     else if (combo.harness === "maki") usage = maki.usageFromRounds(roundUsages);
+    else if (combo.harness === "droid") usage = droid.usageFromRounds(roundUsages);
     else if (combo.harness === "dsh") usage = dsh.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
       transcript = await shared.niffler.transcript(sessionId);
@@ -708,6 +727,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     else if (combo.harness === "claudecode") shape = cc.shapeFromRounds(roundUsages);
     else if (combo.harness === "openhands") shape = openhands.shapeFromRounds(roundUsages);
     else if (combo.harness === "maki") shape = maki.shapeFromRounds(roundUsages);
+    else if (combo.harness === "droid") shape = droid.shapeFromRounds(roundUsages);
     else if (combo.harness === "opencode") shape = oc.shapeFromRounds(roundUsages);
     else if (combo.harness === "dsh") shape = dsh.shapeFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness) && transcript)
@@ -725,6 +745,10 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
   }
   if (combo.harness === "dsh") {
+    firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
+  }
+  if (combo.harness === "droid") {
+    // Same footprint proxy: the first usage-bearing stream frame's prompt.
     firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
   }
   if (combo.harness === "maki") {
@@ -864,6 +888,9 @@ async function ensureCombo(combo) {
       const shared = {
         piCfgDir: pi.setupPiConfig(comboRoot, cfg),
         ccCfgDir: cc.setupClaudeCodeConfig(comboRoot),
+        droidSettings: combo.modelCfg.droid
+          ? droid.setupDroidConfig(comboRoot, combo.modelCfg.droid)
+          : null,
       };
       if (isNifflerHarness(combo.harness)) {
         shared.niffler = new niffler.NifflerHarness({
@@ -955,6 +982,12 @@ async function main() {
       if (harness === "claudecode" && !cfg.models[model].claudecode) {
         console.error(
           `bench: model '${model}' has no claudecode section in config.json`,
+        );
+        process.exit(1);
+      }
+      if (harness === "droid" && !cfg.models[model].droid) {
+        console.error(
+          `bench: model '${model}' has no droid section in config.json`,
         );
         process.exit(1);
       }
