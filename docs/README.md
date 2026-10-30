@@ -13,6 +13,7 @@ material across them.
 | What should we build next? | [PLAN.md](PLAN.md) — current status and acceptance work |
 | How do we finish remote task delegation? | [FLEET.md](FLEET.md) — active plan, authority, receipts, notices and artifacts |
 | How do I orchestrate tools and subagents? | [FABRIC_GUIDE.md](FABRIC_GUIDE.md) |
+| How do I work in a git worktree? | [WORKTREES-TUTORIAL.md](WORKTREES-TUTORIAL.md) — Part 1 is what ships today, Part 2 what 0.6.0 adds |
 | How does the context projection work? | [COMPACTION.md](COMPACTION.md) — conceptual model; operating knobs stay in the manual |
 | How do I extend the model catalog? | [MODEL_SOURCES.md](MODEL_SOURCES.md) |
 | Why was a design chosen? | [research/README.md](research/README.md) |

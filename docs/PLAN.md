@@ -261,7 +261,8 @@ four things a user hits first.
 
 The authoritative plan is [WORKTREES.md](research/WORKTREES.md) (proposal, basis
 `v0.5.0`): eight independently shippable slices with their tests. Prior art:
-[CODEWHALE.md](CODEWHALE.md) D1, [OPENHANDS.md](OPENHANDS.md) §3.15. This
+[CODEWHALE.md](research/CODEWHALE.md) D1, [OPENHANDS.md](research/OPENHANDS.md)
+§3.15. This
 section records only what 0.6.0 requires of it and why it is not optional.
 
 Today `core/workspace.nim` discovers worktrees it did not create, the set is

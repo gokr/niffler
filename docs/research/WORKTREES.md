@@ -4,7 +4,8 @@
 > (`6f95a20`). Every claim about current behaviour below was read from the code
 > at that commit, and every claim about git was measured on git 2.43 in a
 > throwaway repo — where the two disagreed, the measurement wins and the note
-> says so.
+> says so. Adopted as the substrate for `docs/PLAN.md` pillar 2 (0.6.0); §10
+> records where PLAN and this document still differ.
 
 ## 0. The problem, stated as four separate failures
 
@@ -44,14 +45,17 @@ the human; the human types `/roots add ../repo-feat`; work proceeds; later the
 human types `/roots remove`. Every one of those steps is friction on the *one*
 workflow the harness is supposed to delegate.
 
-**F3 — the friction is not just the grant, it is the location.** A worktree
-created as a sibling (`git worktree add ../repo-feat`) lands outside every root
-in the set → F1/F2 apply. A worktree created *inside* the repo lands inside a
-root, so the fence is happy — but now the checkout contains a second full copy
-of the tree, and `git status` in the primary goes dirty:
+**F3 — the friction is not just the grant, it is the location.** Both of the
+obvious places are wrong, and that is the trap:
+
+- A worktree created as a **sibling** (`git worktree add ../repo-feat`) lands
+  outside every root in the set → F1/F2 apply.
+- A worktree created **inside** the repo lands inside a root, so the fence is
+  happy — but the checkout now contains a second full copy of the tree, and
+  `git status` in the primary goes dirty:
 
 ```
-?? .niffler/          # or .worktrees/ — a worktree inside the repo is untracked
+?? .worktrees/        # a worktree inside the repo is untracked
 ```
 
 The skill that documents this workflow — `using-git-worktrees`, an
@@ -60,6 +64,10 @@ answers with "verify the directory is ignored before creating the worktree", so
 the agent's first act in a fresh repo is an edit to `.gitignore`: a stray,
 committed, unrelated change in the user's repo. That is the friction that
 actually gets noticed, and it is pure mechanics, not policy.
+
+The resolution is not to pick one of those two placements: it is to fix F1 so a
+sibling is *inside the working set anyway*, leaving the worktree out of the repo's
+tree entirely (§4.3 step 1, decided 2026-10-30).
 
 **F4 — merge-back is eight bash rounds with no preview, no claim, and a
 silent arbitration hole.** Today the merge runs in `bash` (`components/git`
@@ -150,16 +158,15 @@ A worktree becomes a first-class, *recorded* object: created as a SIBLING at
 `<repo>.wt/<name>` (`~/git/repo` → `~/git/repo.wt/feat`), locked with a reason
 naming the conversation, recorded as a `worktree` store doc, immediately
 reachable because core recomputes the workspace set when git says the checkout
-graph changed, reviewable without a merge (`git_merge {op: "preview"}`),
+graph changed, reviewable without a merge (`git_merge_preview`),
 mergeable as an *ordinary claimed write into the primary*
 (`git_merge {op: "start"}`), and removable only when nothing is pinned to it.
 The sibling placement is load-bearing for arbitration, not cosmetic: two claim
 sets on disjoint paths are the only way two sessions can work in parallel (see
-§4.3 step 1). The conversation stays pinned to its tree — the merge is a write, not a
-move — and an optional
-`isolation: "worktree"` scope makes the tree a *fence* rather than a
-convenience, which is what finally makes "my checkout of main cannot be touched
-by this conversation" true.
+§4.3 step 1). The conversation stays pinned to its tree — the merge is a write,
+not a move — and an optional `isolation: "worktree"` scope makes the tree a
+*fence* rather than a convenience, which is what finally makes "my checkout of
+main cannot be touched by this conversation" true.
 
 ## 4. The pieces
 
@@ -288,7 +295,8 @@ its own small read tool and `git_worktree` carries only the three mutating ops.
 | `remove` | always | `paths: ["repo", "path"]` | refuses when (i) another *live conversation* is pinned there (the ledger, which git cannot know), (ii) the branch is not merged into its base — each refusal names the flag that overrides it. A dirty tree is already refused by git itself (measured: exit 128, "contains modified or untracked files"); surface that message verbatim rather than re-implementing it. The `repo` in the claim is not decoration: removal deletes `<commonDir>/worktrees/<name>`, so it writes the repository's own git metadata |
 | `prune` | always | `paths: ["repo"]` | `git worktree prune` for trees deleted out from under git |
 
-`add` is where F3 dies, in three concrete steps, each verified:
+`add` is where F3 dies, in two live steps (the third is now a no-op, kept
+because it records why), each verified:
 
 1. **Layout.** `<repo>.wt/<name>` — a SIBLING of the repo, one shared
    container directory (`~/git/repo` → `~/git/repo.wt/feat`). **Revised
@@ -359,11 +367,14 @@ shared by every worktree, and `git check-ignore -v` names the rule), *not*
    tree each one is, and `remove` refuses on a live pin using it — the fact git
    cannot know.
 
-#### `git_merge {op, repo?, into?, from?, strategy?, allow_dirty?}`
+#### `git_merge_preview {repo?, into?, from?}` (read) and `git_merge {op, repo?, into?, from?, strategy?, allow_dirty?}` (write)
+
+Same split, same reason: a declaration is per tool, so the read half cannot ride
+with the write half.
 
 | op | approval | claim | notes |
 |---|---|---|---|
-| `preview` | no | none | **the missing verb.** `git merge-tree --write-tree --name-only <into> <from>`: exit 0 → `{clean: true, files: N, ahead, behind}`; exit 1 → `{clean: false, conflicts: [paths]}`. Plus `rev-list --left-right --count` for divergence and `git diff --stat into...from` for the shape of the change. |
+| `preview` (`git_merge_preview`) | no (`effect: read`) | none | **the missing verb.** `git merge-tree --write-tree --name-only <into> <from>`: exit 0 → `{clean: true, files: N, ahead, behind}`; exit 1 → `{clean: false, conflicts: [paths]}`. Plus `rev-list --left-right --count` for divergence and `git diff --stat into...from` for the shape of the change. |
 | `start` | always | `paths: ["repo"]` | refuses up front when the target tree has local changes to a path the merge touches (the `preview` file list intersected with `git status --porcelain`), so the refusal names the paths instead of quoting git's abort; `allow_dirty: true` proceeds anyway. Then `git merge --no-ff --no-edit <from>` → `{merged: true, head, files}`. Unrelated dirt is allowed, which is git's own semantics |
 | `abort` | always | `paths: ["repo"]` | `git merge --abort` — the honest answer to a conflict the model cannot resolve |
 
@@ -426,13 +437,19 @@ Rules:
   `builder`, `fabric`, and anything else declaring a `cwdField`.)
 - no `cwdField`, or a cwd outside every root → claim the primary, exactly as
   today (fail-safe: keep the coarse claim rather than guard nothing).
+- With the sibling layout the containing-root test is unambiguous (no root is
+  inside another); "deepest match wins" is kept anyway so the function stays
+  correct if a nested layout ever comes back, and so `cwd` deeper inside one
+  tree still resolves to that one tree.
 - `writes: {"roots": true}` — a new, explicit declaration for a tool that
   legitimately touches **every** root (a whole-repo formatter, a cross-tree
   build): claim them all. Nothing shipped needs it today; it exists so that
   "claim everything" is a statement, not an accident.
 
 This is the fix that makes "the agent worked in a worktree and the primary was
-never touched without a lease" true, and it costs one stat-free comparison.
+never touched without a lease" true, and it costs one stat-free comparison:
+`pathInWorkspace` (`core/workspace.nim`) already performs exactly this
+containment test on already-normalized, already-cached roots.
 
 ### 4.5 Conversation birth in a worktree, and `isolation: "worktree"`
 
@@ -466,10 +483,14 @@ session {sessionId, isolation: "shared" | "worktree"}   // default "shared"
 - `shared` — today's behaviour, unchanged: the whole set is writable.
 - `worktree` — the **write fence** narrows to the conversation's own workspace,
   `roots[0]`: `workspaceRootsFor` returns just that entry, so `lock_acquire`
-  refuses a claim anywhere else (`[E_WRITE_OUTSIDE]`, naming the escape:
-  `session {roots: {add: [...]}}` for a deliberate one-off, or `isolation:
-  "shared"`). Without it a worktree conversation can edit the primary in place,
-  which is the one thing a worktree is supposed to prevent.
+  refuses a claim anywhere else. The refusal keeps the code it already emits
+  (`[E_WRITE_OUTSIDE]`, `components/locks/main.nim:282`) and gains the two ways
+  out in the text: `session {roots: {add: [...]}}` for a deliberate one-off, or
+  `isolation: "shared"`. Without this a worktree conversation can edit the
+  primary in place, which is the one thing a worktree is supposed to prevent.
+  No new code is needed for the refusal itself: `lock_acquire` already answers
+  "outside the declared working set: not ours to grant or deny" whenever the
+  claim escapes the roots core sends it — the change is which roots core sends.
 
   Note what this deliberately does **not** narrow: reads. There is no read fence
   in `locks` — `read`/`grep`/`git_diff` take no claim — so comparing against the
@@ -514,10 +535,10 @@ behaviour change, and why no client work is a prerequisite for it.
 
 One genuine wrapper gap, worth fixing whether or not the rest lands:
 `resolveNATSURL()` in the client falls back to a **cwd-relative** `var/nats-url`
-(`niffler-tui` `tui/main.go:4012`), which inside a worktree is a path that does not exist.
-Today it is masked because the wrapper always exports `NIF_NATS_URL`; the SDKs
-resolve against the clone (`sdk/go/harness.go:ResolveNatsUrl`) and the client
-should too.
+(`niffler-tui` `tui/main.go:4012`), which inside a worktree is a path that does
+not exist. Today it is masked because the wrapper always exports `NIF_NATS_URL`;
+the SDKs resolve against the clone (`sdk/go/harness.go:ResolveNatsUrl`) and the
+client should too.
 
 ### 4.7 The client surface itself (niffler-tui, separate repo)
 
@@ -528,11 +549,9 @@ Small, and mostly reading what core now reports:
 - **`/workspace`**: report `linked worktree of <primary> on <branch>`,
   `isolation: shared|worktree`, and the merge candidate (`<primary> ← <branch>`,
   ahead/behind) — a one-line preview, not a command.
-- **`/worktree`** (new, mirrors `/roots`): bare = `git_worktree_list`
-  readback (path, branch, whose tree, dirty?); `new <name>` = `op: add`;
-  `rm <name>` = `op: remove`; `merge` = `preview` then a `y/N` over `start`.
-  It exists so the "eight bash rounds" become one visible sentence and one
-  approval, and so the human's ritual has a single key.
+- **`/worktree`** (new, mirrors `/roots`): the single key for the ritual —
+  readback, `new`, `rm`, `merge`; the exact rendering and the decisions behind
+  each subcommand are §5.5.
 
 ## 5. How people actually work in a worktree (the ideal setup)
 
@@ -564,7 +583,7 @@ What it does, in order:
 
    | Conversation state | Tree state | Outcome |
    |---|---|---|
-   | pristine, or unpinned (nobody ever chose a workspace) | clean | **MOVE** — the same conversation continues, now pinned to the worktree. `repinWorkspace` already allows exactly this case, and it costs no prompt-cache rebuild because the frozen prompt embeds the harness root, never the workspace path |
+   | pristine, or unpinned (nobody ever chose a workspace) | clean | **MOVE** — the same conversation continues, now pinned to the worktree. `repinWorkspace` already allows exactly this case. A pristine one re-resolves the constitution (nothing was cached yet, so nothing is lost); an unpinned one with turns keeps the prompt it froze, which is safe because the frozen prompt names the harness root and never the workspace path |
    | chosen (a workspace was picked, or it already moved once) | clean | **FORK** — a new conversation seeded with this one's transcript (`agent_spawn {fork: true}`, shipped), born in the worktree. The exploration stays as its own record |
    | any | dirty (uncommitted changes in the old tree) | **REFUSE the move, offer fork** — moving would strand the edits in a tree nobody is looking at any more. The refusal names the dirty paths and the two ways forward: commit first, or fork and leave the old tree as it is |
 
@@ -616,18 +635,9 @@ sandbox policy, the undo ledger — all scoped to *this* checkout, and the prima
 stays readable (compare, diff, search) but not writable when
 `isolation: "worktree"` is on.
 
-If you started the client inside the tree instead (`cd ~/repo.wt/feature &&
-niffler-tui`), you get the same place with no commands at all:
-
-```
-$ cd ~/repo.wt/feature && niffler-tui
-  today:  workspace = the worktree ✓, primary also writable ✓,
-          branch shown with ⧉ ✓, model told nothing ✗,
-          primary writable in place (no fence) ✗
-  after:  same, plus isolation: "worktree" available so the primary is
-          READable (compare/diff) but not writable, and session_info
-          answers "linked worktree of ~/repo on feature" in one call
-```
+Starting the client inside the tree instead (`cd ~/repo.wt/feature &&
+niffler-tui`) reaches the same place with no commands at all; §4.6 lists exactly
+which parts of that already work today and which three do not.
 
 Note the asymmetry that makes this worth doing: **reading** the primary is how
 you compare branches, so it stays; **writing** it is what a worktree exists to
@@ -649,7 +659,7 @@ agent: bash "cd ../repo && git status"                (which files conflicted)
 After this proposal, `/worktree merge` is the whole ritual:
 
 ```
-preview:  git_merge {op: "preview"}      → {clean: true, ahead: 3, behind: 1, files: 12}
+preview:  git_merge_preview              → {clean: true, ahead: 3, behind: 1, files: 12}
           (a one-line sentence to the human, no approval needed — it writes nothing)
 commit:   git_commit {message: "…"}      → {commit: "9cba035", files: 4}
 merge:    git_merge {op: "start"}        → {merged: true, head: "…", files: 12}
@@ -664,9 +674,9 @@ and in the conflict case the preview says so *before* anything is touched:
 
 The rules that make this safe, and what the refusals say:
 
-- **Preview first, always.** `preview` is a read (`merge-tree`), so it needs no
-  approval. The human sees the shape of the change and the conflict list before
-  authorising a write into the primary.
+- **Preview first, always.** `git_merge_preview` is a read (`merge-tree`), so it
+  needs no approval and the model may call it freely. The human sees the shape of
+  the change and the conflict list before authorising a write into the primary.
 - **`repo` defaults to the primary.** In a conversation whose workspace is a
   linked worktree, "merge this branch back" is what you mean; making the model
   name the primary path is the step that gets skipped and merges into the wrong
@@ -689,31 +699,40 @@ The rules that make this safe, and what the refusals say:
 
 ### 5.4 How conversations relate to each other
 
-They already relate; the shape just needs to be right for this workflow. Today
-`sessionmeta.parent` records a **subagent** child (`agent_spawn`), which carries
-supervision semantics: the child cannot spawn its own children, its approvals
-route to the original caller, and its runner retires when idle. That is the
-wrong relationship for "same piece of work, now in its own tree" — you keep
-talking to that conversation as your main thread.
+They already relate, and the records exist — but they encode the wrong thing
+for this workflow. Today `agent_spawn {fork: true}` writes BOTH
+`sessionmeta.parent = <caller>` and `sessionmeta.fork = {source, uptoId,
+copied}` (verified, `components/agent/main.nim:635`), and `session_info` reports
+the `fork` block. That is nearly what §5.1's FORK needs, with one consequence to
+accept or change: `parent` means **supervision** — the child may not spawn its
+own children (`NIF_AGENT_MAX_DEPTH`), its approvals route to the original
+caller, and its runner retires when idle — whereas a worktree fork is a *peer*:
+the same piece of work, in its own tree, which you keep talking to as your main
+thread.
 
-So the proposal splits the edge in two:
+So the proposal is to name the distinction rather than invent a new relation:
 
 | Edge | Meaning | Authority | Used by |
 |---|---|---|---|
 | `parent` | supervision: this conversation was spawned to do a job for another | depth rules, approvals route up, idle retirement | `agent_spawn`/`fleet_task_submit` (unchanged) |
-| `origin` | provenance: this conversation's history was seeded from another | **none** — it is a peer | the fork in §5.1 |
+| `fork` | provenance: this conversation's history was seeded from another | currently *inherits* `parent`'s supervision rules; the proposal records a peer origin instead | `agent_spawn {fork}` (unchanged), worktree fork (new) |
 
-`sessionmeta` gains `origin: {session, atSeq, reason: "worktree"|"fork",
-worktree: {path, branch, primary}}`, written at birth and never rewritten. Both
-directions are then answerable, which is what makes the experience coherent:
+Concretely `sessionmeta.fork` gains two optional fields — `worktree: {path,
+branch, primary}` and `peer: true` (no supervision: depth-exempt for its own
+children, approvals stay with its own client) — rather than a second relation
+that would duplicate `source`/`uptoId`/`copied`. Written at birth, never
+rewritten. Both directions are then answerable, which is what makes the
+experience coherent:
 
 - **Forward:** `session_info` in the fork reports *"seeded from conv-abc123 at
   message 84; working tree ../repo.wt/fix-flaky-test (branch fix-flaky-test,
   primary ~/repo)"*. That is one call, and it is what lets the model reason about
   which tree it is in without guessing from paths.
-- **Backward:** the parent's `session_info` lists `descendants` (currently found
-  via `sessionmeta.parent`; extended to `origin`), so "what came out of this
-  exploration?" is answerable — and the client's session list can show a `⧉`
+- **Backward:** the origin's `session_info` lists `descendants` — today a
+  `children` count derived from `sessionmeta.parent`
+  (`core/dispatch.nim:1009`), extended to also count records whose
+  `fork.source` names this conversation — so "what came out of this
+  exploration?" is answerable, and the client's session list can show a `⧉`
   marker with the origin, the way it already shows lineage.
 - **Across a merge:** the merge receipt (`commit`, `files`, `into`, `from`)
   lands in the worktree conversation's history, so the pair (exploration → fork →
@@ -752,7 +771,7 @@ it never has to discover the layout by hitting a refusal.
 |---|---|
 | Frozen prefix byte-stable | Nothing added to the system prompt: the worktree shape lives in `__workspace` (private, post-message), `session_info` (tool result), and `ev.worktree.changed` (event). The one prompt-visible thing that exists today — systemprompt's `<workspace>` tail — is unchanged, and its content depends on `cwd != root`, not on the set. |
 | History append-only | Every worktree fact arrives as a tool result or an appended user/notice message. No splice, no rewrite. |
-| No silent escalation | Discovered trees were already admitted by shipped code; this stops pretending otherwise — the creation becomes an approved, recorded act (§4.3) — and adds `isolation: "worktree"` as an opt-in **restriction**. `roots` grants stay human-only, so the model still cannot widen scope through the control channel. |
+| No silent escalation | Discovered trees were already admitted by shipped code; this stops pretending otherwise — the creation becomes an approved, recorded act (§4.3) — and adds `isolation: "worktree"` as an opt-in **restriction**. `roots` grants stay human-only, so the model still cannot widen scope through the control channel. The one new scope-changing action the model *can* take (`worktree_add`) is `approval: "always"`, so it is a human's yes, not the model's decision. The move/fork in §5.1 is a client command (`/worktree new`), not a model tool. |
 | `x-harness.writes` claims are real | `git_worktree`/`git_merge`/`git_commit` name `repo` as a claimed path (the tree the write lands in), and the opaque-claim fix closes the cross-root hole that exists today. |
 | Nothing about a write-only tool is silent | Every new verb is `approval: "always"` and records what it did (a store doc, or a commit/merge receipt in the result). `worktree_add` is the one place where an approved write also **widens** what later calls reach — stated plainly rather than hidden: the widening is the human's approved act, it is recorded, and `isolation: "worktree"` is the control that refuses it. |
 | Component-local concurrency | All new verbs are serial handlers in one process; worktree creation is a shell-out, not a thread. |
@@ -768,7 +787,10 @@ undo the above:
 - **No automatic conversation move on merge.** "Merge done → also repin the
   conversation to the primary" would violate the immutability rule and rewrite
   a chosen workspace. A merge is a write into another root; continuing in the
-  primary is a new conversation.
+  primary is a new conversation. (The one move that IS automatic is §5.1's, and
+  it happens *before* any turn in the new tree: a pristine or never-chosen
+  workspace, which `repinWorkspace` already permits. Never after a merge, never
+  once a workspace was chosen.)
 - **No worktree per conversation by default.** Allocation stays explicit
   (`worktree_add`, or `agent_spawn {isolation: "worktree"}`, or a fleet task
   asking for one). The evidence for defaulting exists in `OPENHANDS.md` §3.15
@@ -793,21 +815,25 @@ order.
 | 0 | `sdk/checkout.nim` + three consumers | sdk, core/workspace, systemprompt, lsp/roots | extend `t_workspaces` (worktree/submodule/superproject shapes, `primaryRoot` from inside a worktree); `t_lsp`, `t_systemprompt` stay green |
 | 1 | live set: graph signature + `ev.worktree.changed` + `__workspace.primary/worktree` | core/dispatch, core/conversation, core/workspace | `t_workspaces` (pure) + a new `t_worktrees` (e2e, `newCoreSandbox` + `mock_llm` like `t_arbitration`: create mid-turn → next dispatch admits) |
 | 2 | opaque claim follows resolved cwd (+ `roots: true`) | core/dispatch | `t_locks` (pure: claim root per cwd), `t_arbitration` (two roots, one lease) |
-| 3 | `git_worktree` verbs + layout + lock + store ledger + remove guards | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "dirty/merged/live-pin refusals"; `add` lands the tree as a sibling and leaves `git status` clean with no ignore edit) |
-| 4 | `git_merge` preview/start/abort + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
+| 3 | `git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "merged/live-pin refusals", git's own dirty refusal surfaced verbatim, and `add` landing a sibling that leaves `git status` clean with no ignore edit) |
+| 4 | `git_merge_preview` + `git_merge {start,abort}` + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
 | 5 | `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
-| 6 | client: chip, `/worktree`, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests |
-| 7 | docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`), FEATURES, PLAN, then the zh/zh-TW refresh | docs | — |
+| 6 | peer origin: `sessionmeta.fork.worktree`/`peer`, `session_info` forward+backward, depth/approval exemption | components/agent, core/dispatch | `t_agentfork` (peer flagged, not supervised), `t_core_requests` (descendants include forks) |
+| 7 | client: the move-vs-fork decision (§5.1), chip, `/worktree`, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus) |
+| 8 | docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`, `sessionmeta.fork`), FEATURES, PLAN, then the zh/zh-TW refresh | docs | — |
 
 The user's own ordering is worth respecting over the dependency order: slice 5
 (one header key, one dispatch filter, one `session_info` block) is what makes
 "I started in a worktree and Niffler understood" *feel* true, and slices 0–2 are
-what make it *stay* true and be arbitrated. Slices 3–4 are the merge half; 6–7
-are the surface.
+what make it *stay* true and be arbitrated. Slices 3–4 are the merge half; 7–8
+are the surface, and 6 is the only slice that could be dropped without breaking
+a §5 promise beyond "the fork is supervised like a subagent".
 
 Effort, honestly: 0 ≈ 1 day, 1 ≈ 1 day, 2 ≈ ½ day, 3 ≈ 2–3 days, 4 ≈ 1–2 days,
-5 ≈ 1 day, 6 ≈ 1 day, 7 ≈ 1 day. Slices 0–2 are ~2½ days and remove F1 and the
-arbitration hole on their own — worth doing even if nothing else lands.
+5 ≈ 1 day, 6 ≈ 1 day, 7 ≈ 1–2 days (the decision table plus four subcommands),
+8 ≈ 1 day. Slices 0–2 are ~2½ days and remove F1 and the arbitration hole on
+their own — worth doing even if nothing else lands. Slices 3–5 plus 7 are what
+the "friction-free" claim actually rests on.
 
 ## 9. Open questions, with a recommendation each
 
@@ -842,12 +868,13 @@ arbitration hole on their own — worth doing even if nothing else lands.
    `delete_branch: true` **and** `git branch --merged <into>` proves it is
    contained, with the containment check in the refusal text. Deleting a branch
    is the one irreversible thing in the flow.
-6. **Should a worktree conversation auto-*read* the primary?** Recommend yes
-   (`isolation: "worktree"` scopes the **fence** and `__workspace.roots`, but
-   `read`/`grep`/`git_diff` against the primary are how you compare branches;
-   refusing them makes the tree a cage). If a future sandbox needs read
-   confinement too, that is the conversation-policy work in
-   `SANDBOX-CONVERSATION-POLICY.md`, not this.
+6. **Should a worktree conversation auto-*read* the primary?** Recommend yes.
+   `isolation: "worktree"` narrows the **claim** set only; `read`/`grep`/
+   `git_diff` against the primary are how you compare branches, and refusing them
+   makes the tree a cage. `__workspace.roots` deliberately keeps the full set for
+   components that *accept* work (`lsp` indexes a primary file under its own
+   root). If a future sandbox needs read confinement too, that is the
+   conversation-policy work in `SANDBOX-CONVERSATION-POLICY.md`, not this.
 7. **Do we still need the `.gitignore` advice in `using-git-worktrees`?** Yes —
    for humans and for harnesses that do not have this. But the harness should
    stop *needing* it (that is F3), and the skill's Step 1b "default to
@@ -870,41 +897,47 @@ arbitration hole on their own — worth doing even if nothing else lands.
 ## 10. Relationship to the 0.6.0 plan (`docs/PLAN.md` pillar 2)
 
 `docs/PLAN.md` adopts this document as the substrate for worktrees in 0.6.0 and
-adds four requirements the other pillars need. Its item 1 has two halves: the
-opaque-claim half is §4.4 here, the per-worktree-exclusivity half is **not** in
-this proposal and contradicts a shipped design rule, so it should be settled
-deliberately rather than inherited:
+adds four requirements the other pillars need. Three need nothing from this
+document beyond the outputs §4.1–§4.5 already define; two need a note, because
+PLAN's wording is looser than the mechanisms.
 
-- **PLAN pillar 2 item 1**: "a claim is parallel-safe only when a REAL isolated
-  worktree backs it … a second writer in the SAME worktree is refused before
-  mutation."
-  Today `locks` stripes by **path** and never by tree, on purpose — "disjoint
-  stays parallel" is a stated design rule of the component
-  (`components/locks/main.nim`, design rules) and the phase-1 acceptance test
-  is "two sessions, different files of one repo: both succeed". A rule that
-  serializes per worktree reverses that: two conversations in one tree would
-  conflict even on unrelated files.
-  That may still be the right call for 0.6.0 — the sandbox wants one
-  unambiguous writable root, and per-tree serialization makes the fence a fence
-  rather than a path filter — but it is a **policy change to `locks`**, not an
-  application of this proposal: it needs its own decision record, and two
-  shipped assertions would have to change with it — `tests/t_locks.nim`'s
-  "disjoint claims proceed (striping must not serialize a whole repo)" /
-  "different file, different session, both ok", and `WRITE-ARBITRATION.md` §A.4
-  phase 1's "two sessions, different files of one repo: both succeed". Editing
-  the component while leaving those in place is the failure mode AGENTS.md warns
-  about: a green suite certifying the opposite of the component's rule. It is
-  also *independent* of §4.4 — the cwd-following claim closes the wrong-tree
-  hole without serializing inside a tree, so 0.6.0 can have the hole fixed
-  without adopting exclusivity.
-- **PLAN pillar 2 item 4** (per-worktree state for undo, repomap census, LSP
-  roots, readscope, `__workspace`) is mostly already true by construction and
-  worth verifying per path rather than changing: `edit` keys undo/seen by
-  `session:absolute-path`, so two worktrees are two keys; `lsp` indexes per
-  root; `repomap` caches by path. The one that is *not* automatic is the LSP and
-  repomap **census cost**: a worktree is a second full tree, so a conversation
-  in one may warm and map the same files twice. `__workspace.primary` (§4.2) is
-  what lets those components decide — the proposal's job is to hand them the
+- **"A claim is parallel-safe only when a REAL isolated worktree backs it … a
+  second writer in the SAME worktree is refused before mutation"** was the
+  original pillar-2 item 1. PLAN has since adopted this document's position: it
+  is **rejected**, and `locks` keeps path striping ("disjoint stays parallel" is
+  a stated design rule of the component, and its phase-1 acceptance test is "two
+  sessions, different files of one repo: both succeed"). Serializing per tree
+  would reverse that, and would have to take `tests/t_locks.nim`'s "disjoint
+  claims proceed (striping must not serialize a whole repo)" / "different file,
+  different session, both ok" and `WRITE-ARBITRATION.md` §A.4 phase 1's "two
+  sessions, different files of one repo: both succeed" with it — a decision
+  record, not an application. `isolation: "worktree"` (§4.5) therefore scopes
+  *where a conversation may write*, it is not a mutex around a tree.
+- **"A worktree child does not see the parent's uncommitted or committed work"**
+  (pillar 2 item 3, language borrowed from OpenHands) is only half true, and the
+  half that is false is the important one:
+  - *uncommitted* — true, and mechanically: `git worktree add` starts from a
+    **commit**; the parent's working-tree dirt stays in the parent. This is the
+    property that makes a worktree lane safe.
+  - *committed* — false for anything committed **before** the worktree was
+    created: the new tree's HEAD is that commit, so the child sees all of it.
+    Only work committed to the parent branch *after* the child's tree branched
+    is invisible. That is desirable (the child starts from the parent's latest
+    known good state, which is what "branch from here" means) but it must not be
+    written as total isolation, because a child that believes it cannot see the
+    parent's commits will re-derive what it already has.
+  Stated as the rule the implementation should follow: a worktree child starts
+  at the parent's **HEAD commit**, sees no uncommitted work, and never sees the
+  parent's subsequent commits unless asked to (`git_merge`/`git_diff` against the
+  parent branch, which the workspace set permits as *reads*).
+- **Per-worktree state** (undo, repomap census, LSP roots, readscope,
+  `__workspace`) is mostly already true by construction and worth verifying per
+  path rather than changing: `edit` keys undo/seen by `session:absolute-path`, so
+  two worktrees are two keys; `lsp` indexes per root; `repomap` caches by path.
+  The one that is *not* automatic is **census cost**: a worktree is a second full
+  tree, so a conversation in one may warm servers and build a map that another
+  conversation already built for the same content. `__workspace.primary` (§4.2)
+  is what lets those components decide — the proposal's job is to hand them the
   fact, not to guess for them.
 
 Everything else in PLAN pillar 2 (fleet `isolation: worktree|shared` lanes,
