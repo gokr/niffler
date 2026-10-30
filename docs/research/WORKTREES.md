@@ -550,8 +550,9 @@ Small, and mostly reading what core now reports:
   `isolation: shared|worktree`, and the merge candidate (`<primary> ← <branch>`,
   ahead/behind) — a one-line preview, not a command.
 - **`/worktree`** (new, mirrors `/roots`): the single key for the ritual —
-  readback, `new`, `rm`, `merge`; the exact rendering and the decisions behind
-  each subcommand are §5.5.
+  readback, `add`, `merge`, `rm`, `close`; the exact rendering and the decisions
+  behind each subcommand are §5.5, and `close` (switch back to the origin) is
+  §5.3b.
 
 ## 5. How people actually work in a worktree (the ideal setup)
 
@@ -571,7 +572,7 @@ do not want the edits landing in your checkout of `main`.
 the old one.** One command decides:
 
 ```
-/worktree new fix-flaky-test
+/worktree add fix-flaky-test
 ```
 
 What it does, in order:
@@ -597,7 +598,33 @@ long-lived/pinned one is forked, and the harness tells you which. Nothing is
 silently abandoned either way — a fork leaves the parent untouched, and a move
 keeps the transcript that motivated it.
 
-Why not simply always fork? Because a fork splits attention: two conversations,
+**What a fork actually carries — exactly** (verified against
+`components/agent/main.nim` `forkHistory`, so the promise above is not a guess):
+
+- **Copied verbatim:** the parent's completed turns as real `message` records
+  under the child's id — `role`, `content`, `tool_calls`, `tool_call_id`, `name`
+  and `createdAt`. Tool calls travel with their results, so the child's first
+  request replays a valid provider history, and the model has literally *read*
+  the conversation rather than being told about it. The copy always cuts on turn
+  boundaries (`fork: true`, `{lastK: n}` or `{maxChars: n}`), never mid-tool-round,
+  and excludes the turn in flight.
+- **Deliberately dropped:** per-message `usage` (the child's accounting is its
+  own — copying the parent's meters would lie twice), `summary` records (a
+  derivation of records also being copied) and `error` records (the parent's turn
+  audit).
+- **Not inherited — the child's own:** the system prompt (re-resolved at the
+  child's birth, so a persona/AGENTS change between the two is picked up), the
+  frozen toolset snapshot, the model/provider pin, the approval mode, the budget
+  limits, the granted roots and `isolation`. A fork is a *new conversation with a
+  history*, not a clone of the old one's configuration.
+- **Known gap to close in this slice:** a compaction checkpoint is **not**
+  copied. A parent that `/compact`ed hands the child the raw pre-compaction
+  records, so the child may summarize differently. Either copy the checkpoint
+  forward as the projection seed, or state it in the command's output — silently
+  re-deriving a summary the human already accepted is the wrong default. This is
+  the one place where "all context copied" would be an overstatement today.
+
+**Why not simply always fork?** Because a fork splits attention: two conversations,
 two transcripts, and the "which one am I in?" moment every time you switch. Move
 when it is safe, fork only when there is a reason (a chosen workspace, dirty
 edits).
@@ -629,7 +656,7 @@ agent: git_worktree {op: "add", branch: "feat"}       (approval; human sees
 agent: edit "../repo.wt/feat/src/x.nim"               (works: the set is live)
 ```
 
-With `/worktree new` the first line is already done, so the agent simply works.
+With `/worktree add` the first line is already done, so the agent simply works.
 Inside the tree, everything else is unchanged: `read`, `edit`, `bash`, the
 sandbox policy, the undo ledger — all scoped to *this* checkout, and the primary
 stays readable (compare, diff, search) but not writable when
@@ -697,6 +724,54 @@ The rules that make this safe, and what the refusals say:
 - **Nothing cleans up implicitly.** No `prune` at end of turn, no removal when a
   child settles, no merge because the branch "looks done" (§7).
 
+### 5.3b Returning to the parent afterwards
+
+The merge does not end the story, because the merge is not the end of the work:
+the branch still has to be pushed, a PR opened, reviewers answered, a release cut.
+The natural question is *"and now I go back to the conversation I came from?"* —
+so the answer has to be designed, not left to luck.
+
+**Today (no new machinery): yes, `/session`.** The client's session browser
+switches conversations and rebuilds the transcript from the store
+(`switchSessionWithHistory` + `bootstrapBackendCmd`), so picking the parent puts
+you back in exactly the conversation you left, with its own workspace still
+pinned. Nothing about the fork changed the parent: no messages were added to it
+by the fork, and its workspace is still the primary.
+
+What is missing is *why you would know to do that*: the parent has no record that
+a fork exists, so its transcript reads as if you simply stopped mid-thought.
+
+**In 0.6.0, three things make the loop whole:**
+
+1. **The fork is recorded in the parent.** `sessionmeta.origin` is written on the
+   child (`{session, atSeq, reason: "worktree", worktree: {path, branch,
+   primary}}`) and the parent's `session_info` lists its `descendants`, so
+   "what came of this?" is one call from the conversation that started it. The
+   client shows it in the session list, the way it already shows lineage.
+2. **The merge settles into the parent's notice lane.** `git_merge` appends a
+   durable `worktreemerge` notice to the **origin** conversation once the merge
+   lands (`{worktree, branch, commit, files, into}`). That lane already exists and
+   already drains at the top of every turn — `drainNotices` folds
+   `agent_notices`, `process_notices` and `fleet_notices` into history, marked as
+   runtime machinery rather than something the user said. So the parent does not
+   poll and does not need a new mechanism: when you return (or when it next runs
+   a turn), the first thing it sees is *"the worktree `fix-race` was merged into
+   `main` as `9cba035` (4 files)"* — with the commit id, which is what a push or
+   a PR needs next. Delivery is push-or-pull, deduplicated against canonical
+   history, exactly like a fleet settlement.
+3. **`/worktree close` returns you to the origin deliberately.** One command
+   that (a) refuses while the branch is unmerged or dirty, (b) removes the tree,
+   and (c) *switches the client back to the origin conversation* and says what it
+   did — `merged into main as 9cba035; back in conv-abc123 (the conversation that
+   started this)`. It is a client-side convenience over `/session` plus the
+   facts above, and it exists so the ritual has one closing key instead of "now
+   remember which conversation this came from".
+
+Two deliberate non-goals: the parent never gets the child's *transcript* (that is
+what `/session` and the `origin` link are for — copying it in would double the
+history in one conversation), and the parent's workspace is never repinned by a
+merge (a merge is a write into the primary, not a move, §7).
+
 ### 5.4 How conversations relate to each other
 
 They already relate, and the records exist — but they encode the wrong thing
@@ -715,14 +790,17 @@ So the proposal is to name the distinction rather than invent a new relation:
 | Edge | Meaning | Authority | Used by |
 |---|---|---|---|
 | `parent` | supervision: this conversation was spawned to do a job for another | depth rules, approvals route up, idle retirement | `agent_spawn`/`fleet_task_submit` (unchanged) |
-| `fork` | provenance: this conversation's history was seeded from another | currently *inherits* `parent`'s supervision rules; the proposal records a peer origin instead | `agent_spawn {fork}` (unchanged), worktree fork (new) |
+| `origin` | provenance: this conversation's history was seeded from another | **none** — it is a peer, so it may spawn its own children and its approvals stay with its own client | a fork (new); `agent_spawn {fork}` records it too, alongside the `parent` it already has |
 
-Concretely `sessionmeta.fork` gains two optional fields — `worktree: {path,
-branch, primary}` and `peer: true` (no supervision: depth-exempt for its own
-children, approvals stay with its own client) — rather than a second relation
-that would duplicate `source`/`uptoId`/`copied`. Written at birth, never
-rewritten. Both directions are then answerable, which is what makes the
-experience coherent:
+The mechanism, deliberately small: `sessionmeta.origin = {session, atSeq,
+reason: "worktree"|"fork", worktree: {path, branch, primary}}`, written at birth
+and never rewritten. A supervised fork (`agent_spawn {fork: true}`) carries BOTH
+edges — `parent` for supervision, `origin` for provenance — which is the honest
+description of what it already is; a worktree fork carries only `origin`, because
+nothing is supervising it. One new key, no duplicate relation, and
+`source`/`uptoId`/`copied` stay where they are in the existing `fork` block.
+
+Both directions are then answerable, which is what makes the experience coherent:
 
 - **Forward:** `session_info` in the fork reports *"seeded from conv-abc123 at
   message 84; working tree ../repo.wt/fix-flaky-test (branch fix-flaky-test,
@@ -755,9 +833,14 @@ One command, one line of feedback, and a status block that answers "where am I".
                                fix-flaky-test, mine, dirty: 2 files, ahead 1)
                                this conversation: ../repo.wt/fix-flaky-test
                                origin: conv-abc123 (84 msgs)
-/worktree new <name>         → created + moved|forked (says which, see §5.1)
-/worktree merge              → preview line, then y/N over the merge
+/worktree add <name>         → created + moved|forked (says which, see §5.1)
+                               (`new` stays as an alias — `add` is the verb
+                               that matches git and `git_worktree {op: "add"}`)
+/worktree merge              → preview line, then y/N over the merge, then a
+                               notice to the origin conversation (§5.3b)
 /worktree rm <name>          → guarded removal, names what blocks it
+/worktree close              → remove if unmerged/dirty-free, then switch back
+                               to the origin (says the commit it landed as)
 ```
 
 It exists so that the "eight bash rounds" become one visible sentence and one
@@ -771,7 +854,7 @@ it never has to discover the layout by hitting a refusal.
 |---|---|
 | Frozen prefix byte-stable | Nothing added to the system prompt: the worktree shape lives in `__workspace` (private, post-message), `session_info` (tool result), and `ev.worktree.changed` (event). The one prompt-visible thing that exists today — systemprompt's `<workspace>` tail — is unchanged, and its content depends on `cwd != root`, not on the set. |
 | History append-only | Every worktree fact arrives as a tool result or an appended user/notice message. No splice, no rewrite. |
-| No silent escalation | Discovered trees were already admitted by shipped code; this stops pretending otherwise — the creation becomes an approved, recorded act (§4.3) — and adds `isolation: "worktree"` as an opt-in **restriction**. `roots` grants stay human-only, so the model still cannot widen scope through the control channel. The one new scope-changing action the model *can* take (`worktree_add`) is `approval: "always"`, so it is a human's yes, not the model's decision. The move/fork in §5.1 is a client command (`/worktree new`), not a model tool. |
+| No silent escalation | Discovered trees were already admitted by shipped code; this stops pretending otherwise — the creation becomes an approved, recorded act (§4.3) — and adds `isolation: "worktree"` as an opt-in **restriction**. `roots` grants stay human-only, so the model still cannot widen scope through the control channel. The one new scope-changing action the model *can* take (`worktree_add`) is `approval: "always"`, so it is a human's yes, not the model's decision. The move/fork in §5.1 is a client command (`/worktree add`), not a model tool — and `close`'s switch-back only changes which conversation the CLIENT is showing, never a workspace. |
 | `x-harness.writes` claims are real | `git_worktree`/`git_merge`/`git_commit` name `repo` as a claimed path (the tree the write lands in), and the opaque-claim fix closes the cross-root hole that exists today. |
 | Nothing about a write-only tool is silent | Every new verb is `approval: "always"` and records what it did (a store doc, or a commit/merge receipt in the result). `worktree_add` is the one place where an approved write also **widens** what later calls reach — stated plainly rather than hidden: the widening is the human's approved act, it is recorded, and `isolation: "worktree"` is the control that refuses it. |
 | Component-local concurrency | All new verbs are serial handlers in one process; worktree creation is a shell-out, not a thread. |
@@ -818,9 +901,9 @@ order.
 | 3 | `git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "merged/live-pin refusals", git's own dirty refusal surfaced verbatim, and `add` landing a sibling that leaves `git status` clean with no ignore edit) |
 | 4 | `git_merge_preview` + `git_merge {start,abort}` + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
 | 5 | `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
-| 6 | peer origin: `sessionmeta.fork.worktree`/`peer`, `session_info` forward+backward, depth/approval exemption | components/agent, core/dispatch | `t_agentfork` (peer flagged, not supervised), `t_core_requests` (descendants include forks) |
-| 7 | client: the move-vs-fork decision (§5.1), chip, `/worktree`, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus) |
-| 8 | docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`, `sessionmeta.fork`), FEATURES, PLAN, then the zh/zh-TW refresh | docs | — |
+| 6 | peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
+| 7 | client: the move-vs-fork decision (§5.1), `/worktree add|merge|rm|close` (with `close` switching back to the origin), chip, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus; `close` asserts the switch-back target) |
+| 8 | docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`, `sessionmeta.origin`, the merge notice kind), a refresh of [../WORKTREES-TUTORIAL.md](../WORKTREES-TUTORIAL.md) so Part 1 becomes Part 2, FEATURES, PLAN, then the zh/zh-TW refresh | docs | — |
 
 The user's own ordering is worth respecting over the dependency order: slice 5
 (one header key, one dispatch filter, one `session_info` block) is what makes

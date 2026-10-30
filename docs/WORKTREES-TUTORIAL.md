@@ -253,7 +253,7 @@ You have been discussing an approach and now want to make changes. You stay in
 the same window:
 
 ```
-/worktree new fix-race
+/worktree add fix-race
 ```
 
 That one command creates `../myrepo.wt/fix-race` and then does one of two things,
@@ -272,6 +272,21 @@ depending on your conversation — and tells you which:
 Either way you are not asked about workspace immutability, and nothing is
 silently abandoned: a fork leaves the parent untouched, a move keeps the
 motivation in the same transcript.
+
+**What the fork carries, exactly** — because "all context copied" would be an
+overstatement, and this is the shipped `forkHistory` behaviour rather than a new
+promise:
+
+| | |
+|---|---|
+| **Copied, verbatim** | every completed turn as real messages: `role`, `content`, `tool_calls`, `tool_call_id`, `name`, `createdAt`. Tool calls travel with their results, so the child's first request is a valid provider history. The cut is always on a turn boundary and never includes the turn in flight |
+| **Dropped on purpose** | per-message token `usage` (the child's accounting is its own), `summary` records (a derivation of records also copied), `error` records (the parent's turn audit) |
+| **The child's own, not inherited** | system prompt (re-resolved at birth, so a persona or `AGENTS.md` change is picked up), frozen toolset, model/provider pin, approval mode, budgets, granted roots, `isolation` |
+| **Known gap** | a `/compact` checkpoint is not copied, so a parent that compacted hands the child the raw pre-compaction records and the child may summarize differently. 0.6.0 should either copy the checkpoint forward or say so in the command's output |
+
+So: a new conversation id, with your conversation's messages in it, its own
+configuration — you continue where you left off with the full argument still in
+front of the model, not a summary of it.
 
 `isolation: "worktree"` becomes available at birth too: the primary checkout
 stays **readable** (diff, search, compare) but is no longer writable from this
@@ -351,8 +366,40 @@ becomes the whole ritual, in four visible steps:
 The merge receipt (commit, files, into, from) lands in the conversation's
 history, so "what came out of this exploration?" has an answer months later.
 
+And then you go back:
+
+```
+/worktree close
+→ merged into main as 9cba035 (4 files); back in conv-abc123 — the
+  conversation that started this
+```
+
+`/worktree close` is the closing key: it refuses while the branch is unmerged or
+the tree is dirty, removes the tree, and **switches the client back to the
+conversation that forked you there**. Which raises the fair question: *can't I
+just `/session` back to the parent myself?* Yes, and that is all `close` is doing
+underneath — but the parent then has no idea any of this happened, so its
+transcript reads as if you stopped mid-thought.
+
+That is the part 0.6.0 fixes, using machinery that already exists:
+
+- the fork is recorded (`origin`), so the parent's `session_info` lists it as a
+  descendant — "what came of this?" is one call from where the work started;
+- the merge **settles into the parent's notice lane**. `drainNotices` already
+  folds `agent_notices` / `process_notices` / `fleet_notices` into history at the
+  top of every turn, marked as runtime machinery rather than something you said.
+  A merged worktree joins that lane, so returning to the parent shows *"the
+  worktree `fix-race` was merged into `main` as `9cba035` (4 files)"* — the
+  commit id being exactly what the next step (push, PR) needs.
+
+So the whole loop, end to end: explore in the parent → `/worktree add fix-race`
+(moves or forks, says which) → work in the tree → `/worktree merge` (preview,
+commit, merge, remove) → `/worktree close` returns you to the parent, which now
+knows the commit. Push and open the PR from there, with the argument and the
+decision still in context.
+
 *Until it ships:* the shell sequence in §1.6, remembering that its merge is
-unarbitrated.
+unarbitrated; then `/session` back to the parent and paste the commit id.
 
 ## 2.5 How linked conversations will relate
 
@@ -363,13 +410,18 @@ talking to that conversation as your main thread.
 
 0.6.0 names the distinction rather than adding a second relation. A fork already
 writes both `sessionmeta.parent` and `sessionmeta.fork = {source, uptoId,
-copied}` today; the proposal is to add `fork.peer: true` (+ `fork.worktree`) so a
-worktree fork is a **peer** instead of inheriting subagent supervision:
+copied}` today, which is a problem in itself: every worktree fork would inherit
+**subagent** supervision — depth rules, approvals routed to the original caller,
+idle retirement — which is wrong for your main thread. The proposal is therefore
+to separate them:
 
 | Edge | Meaning | Authority |
 |---|---|---|
 | `parent` | supervision — spawned to do a job for another conversation | depth rules, approvals route up, idle retirement (unchanged) |
-| `fork` with `peer` | provenance — this transcript was seeded from another, and it is your main thread | **none**; it may spawn its own children, and its approvals stay with its own client |
+| `origin` | provenance — this transcript was seeded from another, and it is your main thread | **none**; it may spawn its own children, and its approvals stay with its own client |
+
+So yes: the fork is a `peer`, which is the thing that makes it usable as your
+main thread rather than a supervised helper.
 
 So a fork's `session_info` will say *"seeded from `conv-abc123` at message 84;
 working tree `../myrepo.wt/fix-race` (branch `fix-race`, primary `../myrepo`)"*,
@@ -388,14 +440,15 @@ discipline forbids.
 
 | Want | Today (§1) | 0.6.0 (§2) |
 |---|---|---|
-| Start working in a tree | `git worktree add ../repo.wt/x -b x`, then start the client there | `/worktree new x` |
-| Keep exploring, then switch | write a note, new conversation, paste it | `/worktree new x` moves or forks, and says which |
+| Start working in a tree | `git worktree add ../repo.wt/x -b x`, then start the client there | `/worktree add x` (alias `new`) |
+| Keep exploring, then switch | write a note, new conversation, paste it | `/worktree add x` moves or forks, and says which |
 | A tree created mid-conversation is writable | `/roots add ../myrepo.wt/exp` (the client expands `~` and workspace-relative paths; core requires the absolute result) | automatic on the next dispatch |
 | See where I am / what I can touch | `/workspace`, `/roots` | same, plus the tree list and origin |
 | Stop writes to `main` | not possible | `isolation: "worktree"` |
 | Merge back | shell: `git merge --no-ff` in the primary | `/worktree merge` (preview → commit → merge → remove) |
 | Clean up | shell: `git worktree remove`, `git branch -d` | `/worktree rm x`, guarded |
-| Relate two conversations | manually | `fork.peer` origin edge, reported by `session_info` |
+| Relate two conversations | manually | `origin` origin edge, reported by `session_info` |
+| Come back to the parent afterwards | `/session` back to it, then paste the commit id | `/worktree close` switches back, and the merge notice is waiting there |
 
 ## 2.7 Where the pieces live
 

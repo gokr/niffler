@@ -260,10 +260,12 @@ four things a user hits first.
 ### Pillar 2 — Worktrees: the substrate both other pillars need
 
 The authoritative plan is [WORKTREES.md](research/WORKTREES.md) (proposal, basis
-`v0.5.0`): eight independently shippable slices with their tests. Prior art:
+`v0.5.0`): nine independently shippable slices with their tests, plus
+[WORKTREES-TUTORIAL.md](WORKTREES-TUTORIAL.md) for the workflows in operator
+language (its Part 1 is what ships today). Prior art:
 [CODEWHALE.md](research/CODEWHALE.md) D1, [OPENHANDS.md](research/OPENHANDS.md)
-§3.15. This
-section records only what 0.6.0 requires of it and why it is not optional.
+§3.15. This section records only what 0.6.0 requires of it and why it is not
+optional.
 
 Today `core/workspace.nim` discovers worktrees it did not create, the set is
 cached so a tree created mid-conversation stays invisible (`workspaceRootsFor`,
@@ -307,19 +309,29 @@ What 0.6.0 adds on top of that proposal, because the other pillars need it:
    cost**: a worktree is a second full tree, so `lsp`/`repomap` may warm and map
    the same files twice; `__workspace.primary` is the fact that lets them decide.
 5. **A conversation's move-or-fork is a first-class act (WORKTREES.md §5.1).**
-   `/worktree new <name>` from an exploratory conversation moves it when that is
+   `/worktree add <name>` from an exploratory conversation moves it when that is
    safe (pristine or unpinned, and a clean tree — `repinWorkspace` already allows
    it, at no prompt-cache cost) and forks it into a linked conversation when it
    is not (a chosen workspace, or uncommitted edits). The human says "work in a
    worktree" and is told which happened; nobody has to reason about workspace
    immutability. This is the difference between worktrees being available and
-   being usable.
+   being usable. The fork's copy semantics are `forkHistory`'s as shipped
+   (messages verbatim, `usage`/`summary`/`error` dropped, configuration the
+   child's own) with one gap to close: a compaction checkpoint is not carried,
+   so either copy it forward as the projection seed or say so in the output.
+6. **The loop closes back on the origin (WORKTREES.md §5.3b).** `/worktree close`
+   returns the client to the conversation that forked you there, and the merge
+   settles a durable notice into that conversation's lane (`drainNotices` already
+   folds `agent_notices`/`process_notices`/`fleet_notices`), so the parent learns
+   the commit id without polling. Without this, `/session` works but the parent
+   has no record that a fork ever existed — the work is done and the conversation
+   that started it reads as if you stopped mid-thought.
 
 **Gate.** Two conversations, same file, two worktrees: zero cross-talk, both
 claims granted. A third writer in one worktree is allowed on a DIFFERENT file
 ("disjoint stays parallel") and refused on the same one. A tree created
 mid-conversation is admitted on the NEXT dispatch without a restart. Resume
-reuses the tree. Masks and sandbox policy still apply inside it. `/worktree new`
+reuses the tree. Masks and sandbox policy still apply inside it. `/worktree add`
 from an unpinned conversation moves it; from a pinned one, or with a dirty tree,
 it forks and says so.
 
