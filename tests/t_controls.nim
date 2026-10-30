@@ -769,6 +769,80 @@ proc main() =
           epochTime() - cancelAt < 15.0,
           "took " & $(epochTime() - cancelAt) & "s: " & $turnReply)
 
+  # -------------------------------------------------------------------------
+  # 9. `session {stop: true}` DURING a turn is accepted and stops it. This is
+  # the one op that must not answer "busy": it is the only way a caller with
+  # no bus subscription of its own (a Fleet requester across the country) can
+  # cancel a running turn, and it used to be refused with exactly that busy
+  # error — the moment it was needed. Regression for pumpBusyCall's exception.
+  block stopDuringTurn:
+    var p = startProbe("stopmidturn", @[("NIF_MOCK_ROUNDS", "2"),
+                                        ("NIF_MOCK_TOOLCMD", "sleep 20"),
+                                        ("NIF_AUTO_APPROVE", "1")])
+    defer: p.stopProbe()
+    let nc = p.nc
+    let sid = "stopmidturn-" & $int(epochTime())
+    var seen: seq[JsonNode] = @[]
+    let turnInbox = "_INBOX.stopmidturn." & newId()
+    let turnReplies = openSub(nc, turnInbox)
+    let directed = openSub(nc, "svc.approval.probe.request")
+    let calls = openSub(nc, "ev.session.*.toolcall")
+    defer:
+      natsSubscription_Destroy(turnReplies)
+      natsSubscription_Destroy(directed)
+      natsSubscription_Destroy(calls)
+    publishCall(nc, "svc.core.call", turnInbox,
+                callEnvelope("session", %*{"sessionId": sid, "content": "work"},
+                             "probe"))
+
+    # Wait until a real tool dispatch is in flight: the wide window in which
+    # the runner's idle slots serve the busy pump.
+    var dispatching = false
+    let dispatchDeadline = epochTime() + 60.0
+    while not dispatching and epochTime() < dispatchDeadline:
+      discard serviceQuestions(nc, [directed], "yes", seen)
+      let polled = pollEnv(calls, 50)
+      if polled.found and polled.env.payload{"phase"}.getStr("") == "start" and
+          polled.env.payload{"tool"}.getStr("") == "bash":
+        dispatching = true
+    check("stop mid-turn: a tool dispatch is in flight", dispatching)
+
+    # THE regression: a stop call lands on the general surface (svc.core.call,
+    # what a remote peer uses) while the turn runs.
+    let stopInbox = "_INBOX.stopcall." & newId()
+    let stopReplies = openSub(nc, stopInbox)
+    defer: natsSubscription_Destroy(stopReplies)
+    let stoppedAt = epochTime()
+    publishCall(nc, "svc.core.call", stopInbox,
+                callEnvelope("session", %*{"sessionId": sid, "stop": true}))
+    var stopReply: JsonNode = nil
+    let stopDeadline = epochTime() + 5.0
+    while stopReply == nil and epochTime() < stopDeadline:
+      discard serviceQuestions(nc, [directed], "yes", seen)
+      let polled = pollEnv(stopReplies, 50)
+      if polled.found: stopReply = callerOf(polled.env)
+    check("stop mid-turn: the stop call is answered at once, not refused busy",
+          stopReply != nil and stopReply{"error"}.getStr("").len == 0 and
+          epochTime() - stoppedAt < 5.0,
+          $stopReply)
+    check("stop mid-turn: it reports REQUESTED, never a claimed outcome",
+          stopReply != nil and stopReply{"stopped"}.getStr("") == "requested" and
+          stopReply{"note"}.getStr("").contains("confirm"),
+          $stopReply)
+
+    # ...and the turn really ends, rather than running out its sleep.
+    var turnReply: JsonNode = nil
+    let doneDeadline = epochTime() + 25.0
+    while turnReply == nil and epochTime() < doneDeadline:
+      discard serviceQuestions(nc, [directed], "yes", seen)
+      let polled = pollEnv(turnReplies, 50)
+      if polled.found: turnReply = callerOf(polled.env)
+    check("stop mid-turn: the running turn actually stops",
+          turnReply != nil and
+          turnReply{"turnError"}.getStr("").contains("cancelled") and
+          epochTime() - stoppedAt < 20.0,
+          "took " & $(epochTime() - stoppedAt) & "s: " & $turnReply)
+
   report("CONTROLS")
 
 main()

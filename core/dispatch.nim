@@ -1348,7 +1348,8 @@ proc awaitSpawnRegistration(ct: CoreTools, name: string, waitMs: int): bool =
     sleep(10)
 
 proc pumpBusyCall*(ct: CoreTools) =
-  ## Refuse session calls that arrive while a turn is running.
+  ## Serve the one session call that must work DURING a turn, and refuse the
+  ## rest.
   ##
   ## The runner's main loop is blocked inside the turn, so without this its own
   ## svc.session.<id>.call subscription is unserviced until the turn ends — and
@@ -1362,6 +1363,17 @@ proc pumpBusyCall*(ct: CoreTools) =
   ## handleSessionCall on the same session while runTurn holds its context —
   ## precisely the state the no-nesting rule protects. The caller retries once
   ## the turn ends.
+  ##
+  ## `session {stop: true}` is the EXCEPTION, and it has to be served here:
+  ## it is the only way a caller with no bus subscription of its own — a Fleet
+  ## requester across the country — can cancel a RUNNING turn, and refusing it
+  ## with "busy" refused it exactly when it was needed. It is safe to serve in
+  ## this pump because it needs no session state at all: it publishes the same
+  ## `__cancel` control the UI emits on the steer channel (here, then
+  ## returns). The reply still says "requested", never "stopped": publishing
+  ## succeeds whether or not a runner is listening, so claiming an outcome
+  ## would be a claim about state nobody verified — the caller confirms from
+  ## the job record.
   if ct.callSub == nil: return
   while true:
     var msg: ptr natsMsg
@@ -1380,6 +1392,32 @@ proc pumpBusyCall*(ct: CoreTools) =
     if env.kind != ekCall:
       ct.nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
         "expected a call envelope").encode())
+      continue
+    # Cancel is the one mid-turn op that does not read or mutate session state.
+    # A missing sessionId is still a bad request, not a cancel of nothing.
+    if env.tool == "session" and env.args != nil and
+        env.args{"stop"}.getBool(false):
+      let sessionId = env.args{"sessionId"}.getStr("")
+      if sessionId.len == 0:
+        ct.nc.publish(reply, errorEnvelope(env.id, "bad-request",
+          "session stop needs sessionId").encode())
+        continue
+      let subject = sessionSteerSubject(sessionId)
+      let cancel = Envelope(v: 1, id: newId(), kind: ekEvent,
+                            payload: %*{"__cancel": true})
+      try:
+        ct.nc.publish(subject, cancel.encode())
+      except CatchableError as e:
+        ct.nc.publish(reply, errorEnvelope(env.id, "boom",
+          "cannot publish the cancel control: " & e.msg).encode())
+        continue
+      ct.nc.publish(reply, resultEnvelope(env.id, %*{
+        "ok": true, "stopped": "requested", "sessionId": sessionId,
+        "subject": subject,
+        "note": "the runner raises its cancel flag between rounds; an " &
+                "in-flight tool runs to completion, so confirm the " &
+                "outcome from the task record rather than assuming it"
+      }).encode())
       continue
     ct.nc.publish(reply, errorEnvelope(env.id, "busy",
       "the conversation is mid-turn — retry when the turn finishes").encode())
