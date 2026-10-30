@@ -198,6 +198,15 @@
             continue or fork it later.</p>
         </article>
         <article>
+          <h3 data-i18n="f.fleet.h">Fleet — remote workers</h3>
+          <p data-i18n-html="f.fleet.p">Delegate a goal to a registered worker — an Incus
+            container, Lima VM or SSH host. In delegate mode it plans its own
+            steps under the ceiling its operator set for that machine: tools,
+            roots and round/call/token budgets, off until enabled. Containers
+            and VMs run the worker in a separate guest; a human inbox lists
+            settled work with its artifact.</p>
+        </article>
+        <article>
           <h3 data-i18n="f.bg.h">Background processes</h3>
           <p data-i18n-html="f.bg.p">Servers, watchers and builds run under the harness: start, poll,
             kill. No second terminal, no tmux discipline.</p>
@@ -302,7 +311,7 @@
           <li><strong data-i18n="ed.steer.h">Steering</strong><span data-i18n="ed.steer.p">course-correct mid-turn without cancelling the work in flight</span></li>
           <li><strong data-i18n="ed.recall.h">Full recall</strong><span data-i18n="ed.recall.p">trimmed or compacted-away messages stay searchable through <code>context_recall</code></span></li>
           <li><strong data-i18n="ed.resume.h">Durable resume</strong><span data-i18n="ed.resume.p">canonical append-only history in the store — restart mid-task and continue, attachments included</span></li>
-          <li><strong data-i18n="ed.controls.h">Per-conversation controls</strong><span data-i18n="ed.controls.p">tool allowlists, budgets, workspace pin, provider/model/effort pins</span></li>
+          <li><strong data-i18n="ed.controls.h">Per-conversation controls</strong><span data-i18n="ed.controls.p">tool allowlists, budgets, workspace pin plus human-granted extra roots, provider/model/effort pins</span></li>
           <li><strong data-i18n="ed.introspect.h">Introspection</strong><span data-i18n="ed.introspect.p"><code>/export</code> the exact provider request, <code>prompt_preview</code>, <code>context_status</code> for context health and loss attribution, per-role counts, <code>/compact</code> now — <code>--log=debug</code> logs per-model-call timing to <code>var/logs</code></span></li>
           <li><strong data-i18n="ed.slash.h">Slash commands</strong><span data-i18n="ed.slash.p">built in — plus ones contributed by installed plugins and MCP servers</span></li>
         </ul>
@@ -315,6 +324,7 @@
           <li><strong data-i18n="ed.grants.h">Remembered grants</strong><span data-i18n="ed.grants.p">per-tool “don't ask again”, digest-keyed for program-shaped calls</span></li>
           <li><strong data-i18n="ed.failclosed.h">Fail closed</strong><span data-i18n="ed.failclosed.p">timeouts deny, unknown limits refuse, a missing component degrades explicitly — never silently</span></li>
           <li><strong data-i18n="ed.leastpriv.h">Least privilege</strong><span data-i18n="ed.leastpriv.p">MCP environment allowlists and guard processes, no bus access or secrets in fabric's executor, redacted listings</span></li>
+          <li><strong data-i18n="ed.shellguard.h">Opt-in shell guard</strong><span data-i18n="ed.shellguard.p">Linux only and off by default: one bash command gets a read-only host view, private /tmp, no network and no bus — and read masks hide operator-named paths from reads and writes whether or not the guard is on. A mask is not a confidentiality boundary.</span></li>
         </ul>
       </div>
       <div class="feat-group">
@@ -324,6 +334,7 @@
           <li><strong data-i18n="ed.plugins.h">Plugins</strong><span data-i18n="ed.plugins.p">GitHub packages cloned and built from source, approval-gated, manifest v1 or v2 recipes</span></li>
           <li><strong data-i18n="ed.sdks.h">Three SDKs</strong><span data-i18n="ed.sdks.p">Nim, Go and TypeScript around one tiny portable codec — or no SDK at all, a shell script speaks the wire</span></li>
           <li><strong data-i18n="ed.profiles.h">Tool profiles</strong><span data-i18n="ed.profiles.p">named toolset selectors resolved once per conversation, or sticky tools promoted on demand</span></li>
+          <li><strong data-i18n="ed.config.h">One settings surface</strong><span data-i18n="ed.config.p">every component publishes a discoverable config domain: list, inspect and patch with schema validation, compare-and-set revisions and approval — secrets redacted, human-only keys writable only by a person</span></li>
           <li><strong data-i18n="ed.store.h">A store that answers</strong><span data-i18n="ed.store.p">server-side full-text search, plus nearest-neighbour search over embeddings on SQLite — one contract; TiDB reports vectors unsupported</span></li>
         </ul>
       </div>
