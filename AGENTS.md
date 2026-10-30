@@ -350,7 +350,8 @@ other: `cli install gokr/niffler-ui`.
 Cut a release from a green `main` — no open PR that should ship, and the gate
 run on the exact commit being tagged. The order below is the ritual; the
 v0.2.0 cut (`docs: changelog 0.2.0 …, website + README point at the release`)
-is the precedent for steps 2–6.
+is the precedent for steps 2–6, and the 0.5.0 cut (harness `v0.5.0` published
+beside client `v0.10.0`) for steps 7–8.
 
 1. **Freeze and verify.** `make build && make test` (plus `make doctor` for the
    prerequisite report) on the commit to tag; for SDK, bus or
@@ -377,12 +378,58 @@ is the precedent for steps 2–6.
    (the v0.2.0 tag body is the model), then a GitHub release from that tag.
    The tag *is* the release; `make release` only picks release *build flags*
    for local benchmarking and is not part of this step.
-7. **Release the plugins that ship fixed code.** Plugins install at a repo's
-   latest GitHub *release*, so a merged fix reaches users only once its repo is
-   released — `gokr/niffler-tui` moves with the harness (bump its
-   `niffler.json` `version`, cut its own `CHANGELOG.md`, tag, create the
-   release). The experimental desktop UI (`gokr/niffler-ui`) is not released
-   with the harness.
+7. **Release the plugins that ship fixed code, and the client in the same
+   window.** Plugins install at a repo's latest GitHub *release*, so a merged
+   fix reaches users only once its repo is released. `gokr/niffler-tui` is the
+   one that matters most: it is the client people actually launch, so a harness
+   release without it ships half a product. Its number is independent of the
+   harness's (0.5.0 shipped beside client 0.10.0) — "synced" means one window
+   and cross-referencing notes, not a shared number. The client repo has no
+   `AGENTS.md` of its own, so this ritual is the only place it is written down.
+
+   a. **Find the baseline from `git describe --tags --abbrev=0`, never
+      `git tag --sort=-creatordate`.** Marker tags (`pre-rebase-1895339`)
+      sort first and are not releases; `git describe` ignores non-ancestors
+      and names the last real one. Then compare the manifest against it:
+      `niffler.json`'s `version` vs that tag. Untagged bumps accumulate
+      silently — `0.8.0`, `0.9.0` and `0.9.1` were each bumped with no tag, so
+      the newest *installable* client stayed `v0.7.0`. Cut the accumulated
+      versions as ONE release (0.10.0) and say so in the notes; do not tag the
+      skipped numbers retroactively.
+   b. **Audit the client changelog before renaming it.** `git log --no-merges
+      --format=%s <lasttag>..HEAD` against the `[Unreleased]` bullets: a
+      feature commit with no line is the normal failure mode (the client
+      section was missing three features and three fixes; the harness section
+      five entries). A prose *mention* is not an entry — grep the shipped
+      surface names (`/config`, `/tasks`, `fleet_task_*`, `NIF_*`) rather than
+      trusting the section to be complete.
+   c. **Write the standalone notes first**, `RELEASE-NOTES-vX.Y.Z.md`, and
+      commit the file *in* the release commit so it is reachable from the tag:
+      executive summary, a section per subsystem, Upgrading, Migration notes,
+      Known limitations, and the paired version named up front. The client
+      keeps only `CHANGELOG.md`; the notes live in the harness repo.
+   d. **Commit everything before tagging.** `git status --porcelain` empty in
+      the client repo, `make build && make test` green there: the notes
+      describe the tag's contents, so an uncommitted tree turns them into a
+      claim about nothing.
+   e. **Order harness → client, minutes apart.** The harness release defines
+      what the client can claim; cutting the client second lets its notes name
+      an already-published harness version.
+   f. **Annotated tag with the announcement as its body, then a GitHub release
+      from it**, matching the precedent bodies (`v0.2.0` here, `v0.7.0`/`v0.10.0`
+      for the client), and confirm each shows as **Latest**.
+
+   Writing outside the conversation's workspace is fenced (`E_WRITE_OUTSIDE`),
+   so a client release driven from a harness conversation needs the root
+   granted first: `session {roots: {add: ["/path/to/niffler-tui"]}}` — the
+   0.5.0 feature, and the reason it exists. The experimental desktop UI
+   (`gokr/niffler-ui`) is not released with the harness.
+8. **Verify the pair.** `git ls-remote --tags origin | grep <tag>` shows both
+   the tag object and its peeled commit; `origin/main` equals local `HEAD` in
+   both repos; `gh release list` shows both as Latest. Then check the notes'
+   "Full changelog" pointer: renaming `[Unreleased]` → `[X.Y.Z]` makes a
+   previously correct pointer stale, so it must be repointed in the release
+   commit.
 
 ## Environment and gotchas
 
