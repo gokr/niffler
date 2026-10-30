@@ -1,7 +1,8 @@
 # bench — harness comparison framework
 
 Compares coding-agent **harnesses** (Niffler, DeepSeek Harness, pi, opencode,
-codewhale, Claude Code) on the same set of coding tasks with the same models, and measures:
+codewhale, Claude Code, Droid) on the same set of coding tasks with the same
+models, and measures:
 
 - **time to green** — wall clock from the first agent turn until `./test.sh`
   exits 0 (multi-round: failing test output is fed back to the agent, exactly
@@ -21,7 +22,7 @@ bench/
   report.mjs           # aggregates a run dir into report.md + report.csv
   lib/                 # util + key resolution (keys never stored/logged)
   adapters/            # pi.mjs, opencode.mjs, niffler.mjs, dsh.mjs,
-                       # codewhale.mjs, claudecode.mjs
+                       # codewhale.mjs, claudecode.mjs, droid.mjs
   tasks/t0*/           # prompt.md, meta.json, repo/ (pristine git repo, tag `base`)
   reports/             # committed aggregates (one *-report.{md,csv} per run)
   swe/                 # SWE-bench Verified importer (see swe/README.md)

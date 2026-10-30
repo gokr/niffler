@@ -51,7 +51,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 `make doctor` 會檢查先決條件；`make down-here` 只會停止此複本的行程。
 
-測試：`make test` 是完整閘門（匯流排契約測試套件加基準適配器測試，見下方命令表）；`make gotest` 執行 Go 測試、vet 與競態檢查。
+測試：`make test` 是完整的程式碼閘門（匯流排契約測試套件加 Go 單元測試，見下方命令表）；`make test-bench` 單獨涵蓋 Node 基準適配器測試；`make gotest` 執行 Go 測試、vet 與競態檢查。
 
 ## Commands
 
@@ -69,7 +69,8 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make install-lsp` | 安裝 `lsp` 元件的預設語言伺服器 |
 | `make install-tools` | agent 的 CLI 工具箱（經 bash 使用）：jq、yq、ripgrep、fd、fzf、bat、tree、htop、wget、zip、unzip、sqlite3 |
 | `make install-tools-rg` | 僅 ripgrep（來自同一張表）；`make setup` 會執行它 |
-| `make test` | 完整測試門：匯流排契約測試套件加基準適配器測試（UI 自身的測試與型別檢查在 `gokr/niffler-ui`） |
+| `make test` | 完整的程式碼測試門：匯流排契約測試套件加 Go 單元測試（UI 自身的測試與型別檢查在 `gokr/niffler-ui`） |
+| `make test-bench` | Node 基準適配器的就緒與遙測測試——獨立於 `make test`，因為它會 SIGKILL 符合的基準程序；未安裝 Node 時跳過 |
 | `make test-server` | 匯流排契約測試套件（每個測試自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 單一元件的契約測試，例如 `make test-fetch` |
 | `make gotest` | Go 單元測試與 vet（重要模組帶 `-race`） |
@@ -125,6 +126,6 @@ Nim、Go 與 TypeScript 元件使用 `sdk/` 中的 SDK。正常的擴充路徑�
 ## Philosophies
 
 - **開放模型，所有供應商。** 本機、開放權重與代管模型獲得相同的一流路徑：OpenAI 相容的預設、在供應商不提供其他選擇時的訂閱 OAuth，以及由 models.dev 支援、將限制、能力與價格視為資料的目錄。新增 OpenAI 相容供應商是設定項目，而非程式碼路徑。
-- **改進是被測量的，而非被斷言的。** `bench/` 在相同任務與模型上讓 Niffler 對上 pi、opencode、CodeWhale 與 Claude Code，在 full31、SWE-bench Verified 與 DeepSWE 套件中比較達到綠燈的時間、token 成本與修補品質。功能以該證據為依據上線——有時也附帶閘門，例如 repo map 的自動附加，預設開啟，但會扣下過小或空殼的 map，因為 A/B 測試結果不一致——報告則提交於 `bench/reports/` 之下。
+- **改進是被測量的，而非被斷言的。** `bench/` 在相同任務與模型上讓 Niffler 對上 pi、opencode、DeepSeek Harness、CodeWhale、Droid 與 Claude Code，在 full31、SWE-bench Verified 與 DeepSWE 套件中比較達到綠燈的時間、token 成本與修補品質。功能以該證據為依據上線——有時也附帶閘門，例如 repo map 的自動附加，預設開啟，但會扣下過小或空殼的 map，因為 A/B 測試結果不一致——報告則提交於 `bench/reports/` 之下。
 - **中文在這裡是一流語言。** README 有英文、簡體中文與繁體中文，且網頁 UI 完全在地化（`en`/`zh`/`zh-TW`），附帶具型別的目錄——缺少翻譯會導致型別檢查失敗。
 - **帶著驕傲與感激地借鏡。** 我們從其他 harness 中汲取能找到的最佳想法——Pi、DeepSeek Harness、CodeWhale、OpenCode、Reasonix、Aider、OpenHands……——並在隨附前逐一對照 Niffler 的不變條件重新檢查。這些研究會標明其來源與鎖定的 commit，內嵌的程式碼保留其授權，且一切都在 [docs/research/](docs/research/) 中。

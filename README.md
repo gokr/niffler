@@ -106,7 +106,7 @@ gokr/niffler-ui` can still fetch it as a package if you want to poke at it).
 processes.
 
 Testing is covered by the command table below: `make test` is the complete
-gate.
+code gate; `make test-bench` covers the Node bench adapters separately.
 
 ## Commands
 
@@ -124,7 +124,8 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 | `make install-lsp` | install the default language servers for the `lsp` component |
 | `make install-tools` | the agent CLI toolkit for bash: jq, yq, ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip, sqlite3, gh |
 | `make install-tools-rg` | just ripgrep (from the same table); `make setup` runs this one |
-| `make test` | the complete gate: the bus-contract suite plus the bench adapter tests (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
+| `make test` | the complete code gate: the bus-contract suite plus the Go unit tests (the UI's own tests and typecheck live in `gokr/niffler-ui`) |
+| `make test-bench` | the Node bench adapter readiness and telemetry tests — opt-in and separate from `make test` because they SIGKILL matched bench processes; skipped when Node is absent |
 | `make test-server` | the bus-contract suite (each test owns a private NATS + `NIF_ROOT`) |
 | `make test-<name>` | one component's contract test, e.g. `make test-fetch` |
 | `make gotest` | Go unit tests and vet (`-race` where it matters) |
@@ -211,9 +212,10 @@ Community components are installed through the `plugins` component; see the
   keeps limits, capabilities and prices as data. Adding an
   OpenAI-compatible provider is a config entry, not a code path.
 - **Improvements are measured, not asserted.** `bench/` runs Niffler against
-  pi, opencode, CodeWhale and Claude Code on the same tasks and models,
-  comparing time-to-green, token cost and patch quality across the full31,
-  SWE-bench Verified and DeepSWE suites. Features land on that evidence — and
+  pi, opencode, DeepSeek Harness, CodeWhale, Droid and Claude Code on the
+  same tasks and models, comparing time-to-green, token cost and patch quality
+  across the full31, SWE-bench Verified and DeepSWE suites. Features land on
+  that evidence — and
   sometimes only behind a gate, like the repo map's auto-append, which ships on
   by default but withholds small or stub maps because the A/Bs disagreed — with
   reports committed under `bench/reports/`.
