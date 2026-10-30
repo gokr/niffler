@@ -98,7 +98,9 @@ it a goal, read a paged prose report.
   `fleet_task_continue` appends an activation to a settled delegated goal on the
   SAME worker conversation, with a fresh admission key per activation and
   instruction-only changes; the parent's report is never overwritten. The
-  active-cancellation half still needs a live exercise against a real peer
+  active-cancellation half was UNREACHABLE until `stop` was served by the busy
+  pump (it was refused with `busy` mid-turn); it now needs only a live exercise
+  against a real peer
   (queued-vs-dispatched cancel semantics themselves are implemented and tested).
 - **Slice 4 (Fleet-only acceptance)** — **not met, and blocked on a deployment
   step rather than on code.** The registered `worker` instance is pinned at a
@@ -140,7 +142,9 @@ listing, toast, client-local seen markers and drill-down are implemented. Still
 open there: artifact retrieval for a settled activation.
 
 Still open: a live exercise of remote cancellation (F3) — the queued/dispatched
-semantics and their tests exist, but no real peer has been stopped and observed;
+semantics and their tests exist, and the mid-turn stop path is now fixed and
+covered in-process (`t_controls` block 9), but no real peer has been stopped and
+observed;
 scoped artifact retrieval and patch/commit return (F2/F4), now OPTIONAL evidence
 rather than an exit condition; sequenced blocked/completion notices (F3/F4); a
 human UI for the delegation setting and task profiles. Read-only tasks remain the
