@@ -270,9 +270,9 @@ and only a *grant* invalidates it), and nothing owns a tree — two conversation
 in one tree is a live footgun.
 
 **The shape, adopted from WORKTREES.md:** a worktree is a first-class recorded
-object created at `<repo>/.niffler/wt/<name>`, ignored through
-`$GIT_COMMON_DIR/info/exclude` (never the user's `.gitignore`), locked with a
-reason naming the conversation, recorded as a `worktree` store doc, and reachable
+object created at `<repo>.wt/<name>` — a sibling of the repo, so it sits outside
+the primary's opaque write claim and needs no ignore rule — locked with a reason
+naming the conversation, recorded as a `worktree` store doc, and reachable
 immediately because core recomputes the workspace set when git says the checkout
 graph changed. The conversation stays pinned to its tree; merging is an ordinary
 claimed write into the primary, not a move. `isolation: "worktree"` makes the
@@ -280,13 +280,18 @@ tree a FENCE rather than a convenience.
 
 What 0.6.0 adds on top of that proposal, because the other pillars need it:
 
-1. **Locks integration (WORKTREES.md slice 2, plus one rule).** A claim is
-   "parallel-safe" only when a REAL isolated worktree backs it, verified from
-   `git worktree list --porcelain`, never from a path prefix. Disjoint worktrees
-   proceed in parallel; a second writer in the SAME worktree is refused before
-   mutation. The opaque claim must follow the RESOLVED cwd — that is the
-   cross-root arbitration hole the proposal names (4.4), and it is a 0.6.0
-   blocker rather than a follow-up.
+1. **Claims follow the resolved checkout (WORKTREES.md slice 2 + §4.4).** An
+   opaque writer's claim is the workspace-set root that CONTAINS its resolved
+   `cwd`, never a path-prefix guess and never blindly the primary — that is the
+   cross-root arbitration hole, and it is a 0.6.0 blocker. Two consequences worth
+   stating because they are *not* new rules: with sibling worktrees the primary's
+   claim and a worktree's writes are disjoint by construction, and **`locks`'
+   "disjoint stays parallel" striping is unchanged** — two conversations in ONE
+   tree still proceed on different files. `isolation: "worktree"` is therefore a
+   per-conversation FENCE (writes outside the tree refuse), not a mutex around the
+   tree. WORKTREES.md §10 records why the stricter reading ("a second writer in
+   the same worktree is refused") was rejected: it would reverse a shipped design
+   rule and invalidate two `t_locks.nim` assertions without a decision record.
 2. **Sandbox executable roots (pillar 3 item 4).** The bwrap reachable set and
    the policy's writable roots are computed from the same resolved checkout, so
    "the only writable root is my worktree" becomes expressible at all.
@@ -295,13 +300,27 @@ What 0.6.0 adds on top of that proposal, because the other pillars need it:
    uncommitted or committed work, and escaping to `shared` needs the grant.
 4. **Per-worktree state.** `edit` undo/seen store, repomap census, LSP roots,
    AGENTS discovery, readscope masks and the private `__workspace` context must
-   key on the worktree, not the repo. One test per path — this is what breaks
-   quietly, and it is why the proposal's invariant checklist (§6) is binding.
+   key on the worktree, not the repo — mostly true by construction (`edit` keys
+   undo/seen by `session:absolute-path`, `lsp` per root, `repomap` per path), so
+   this is a verification pass rather than a change. The real gap is **census
+   cost**: a worktree is a second full tree, so `lsp`/`repomap` may warm and map
+   the same files twice; `__workspace.primary` is the fact that lets them decide.
+5. **A conversation's move-or-fork is a first-class act (WORKTREES.md §5.1).**
+   `/worktree new <name>` from an exploratory conversation moves it when that is
+   safe (pristine or unpinned, and a clean tree — `repinWorkspace` already allows
+   it, at no prompt-cache cost) and forks it into a linked conversation when it
+   is not (a chosen workspace, or uncommitted edits). The human says "work in a
+   worktree" and is told which happened; nobody has to reason about workspace
+   immutability. This is the difference between worktrees being available and
+   being usable.
 
 **Gate.** Two conversations, same file, two worktrees: zero cross-talk, both
-claims granted. A third writer in one worktree refused. A tree created
+claims granted. A third writer in one worktree is allowed on a DIFFERENT file
+("disjoint stays parallel") and refused on the same one. A tree created
 mid-conversation is admitted on the NEXT dispatch without a restart. Resume
-reuses the tree. Masks and sandbox policy still apply inside it.
+reuses the tree. Masks and sandbox policy still apply inside it. `/worktree new`
+from an unpinned conversation moves it; from a pinned one, or with a dirty tree,
+it forks and says so.
 
 This supersedes the earlier "keep write arbitration in maintenance mode"
 position: worktrees are no longer a nice-to-have, because the sandbox needs one
