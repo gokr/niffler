@@ -6,6 +6,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The Chinese manuals (`docs/MANUAL.zh.md`, `docs/MANUAL.zh-TW.md`) are back
+  in step with the 0.5.0 English manual.** Both gained the shell guard and read
+  mask section with its TOC entry, all ten previously missing environment rows
+  (the six sandbox variables plus `NIF_BASH_SANDBOX_MAP`, `NIF_BASH_NET`,
+  `NIF_INSTANCE_ID` and `NIF_LOCK_TTL_MS`), `session {roots: …}`, and the
+  current Fleet contract (`fleet_task_continue`, `mode: "delegate"`, admission
+  states, the inbox, `fleet_instances`, `fleet_notices`, `fleet_update`). Two
+  structural defects were fixed on the way: 18 translated headings are English
+  again so internal `#anchor` links resolve in every language (heading counts
+  now 114/114/114, no broken anchors), and zh-TW's duplicate Simplified
+  "Embeddings" section and five Simplified lines in the GitHub-token section
+  are Traditional again.
+
 ## [0.5.0] — 2026-10-29
 
 Fleet grew from "run a task on another machine" into a real distributed
