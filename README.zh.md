@@ -51,7 +51,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 
 `make doctor` 检查先决条件；`make down-here` 仅停止此克隆的进程。
 
-测试：`make test` 是完整门禁（总线契约套件加基准适配器测试，见下方命令表）；`make gotest` 运行 Go 测试、vet 和竞态检查。
+测试：`make test` 是完整的代码门禁（总线契约套件加 Go 单元测试，见下方命令表）；`make test-bench` 单独覆盖 Node 基准适配器测试；`make gotest` 运行 Go 测试、vet 和竞态检查。
 
 ## Commands
 
@@ -69,7 +69,8 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make install-lsp` | 安装 `lsp` 组件的默认语言服务器 |
 | `make install-tools` | agent 的 CLI 工具箱（经 bash 使用）：jq、yq、ripgrep、fd、fzf、bat、tree、htop、wget、zip、unzip、sqlite3 |
 | `make install-tools-rg` | 仅 ripgrep（来自同一张表）；`make setup` 会运行它 |
-| `make test` | 完整测试门：总线契约测试套件加基准适配器测试（UI 自身的测试与类型检查在 `gokr/niffler-ui`） |
+| `make test` | 完整的代码测试门：总线契约测试套件加 Go 单元测试（UI 自身的测试与类型检查在 `gokr/niffler-ui`） |
+| `make test-bench` | Node 基准适配器的就绪与遥测测试——独立于 `make test`，因为它会 SIGKILL 匹配到的基准进程；未安装 Node 时跳过 |
 | `make test-server` | 总线契约测试套件（每个测试自建私有 NATS + `NIF_ROOT`） |
 | `make test-<name>` | 单个组件的契约测试，例如 `make test-fetch` |
 | `make gotest` | Go 单元测试与 vet（重要模块带 `-race`） |
@@ -125,6 +126,6 @@ Nim、Go 和 TypeScript 组件使用 `sdk/` 中的 SDK。正常的扩展路径�
 ## Philosophies
 
 - **开放模型，支持所有提供商。** 本地、开放权重和托管模型获得同等的一等路径：OpenAI 兼容默认、当供应商不提供其他方式时的订阅 OAuth，以及 models.dev 支持的目录，将限制、能力和价格作为数据保存。添加 OpenAI 兼容提供商是配置条目，而非代码路径。
-- **改进是衡量的，而非断言的。** `bench/` 在相同任务和模型上运行 Niffler 对比 pi、opencode、CodeWhale 和 Claude Code，在 full31、SWE-bench Verified 和 DeepSWE 套件中比较 time-to-green、token 成本和补丁质量。功能基于该证据落地——有时还附带门控，比如 repo map 的自动追加，默认开启，但会扣下过小或空壳的 map，因为 A/B 测试结果不一致——报告提交在 `bench/reports/` 下。
+- **改进是衡量的，而非断言的。** `bench/` 在相同任务和模型上运行 Niffler 对比 pi、opencode、DeepSeek Harness、CodeWhale、Droid 和 Claude Code，在 full31、SWE-bench Verified 和 DeepSWE 套件中比较 time-to-green、token 成本和补丁质量。功能基于该证据落地——有时还附带门控，比如 repo map 的自动追加，默认开启，但会扣下过小或空壳的 map，因为 A/B 测试结果不一致——报告提交在 `bench/reports/` 下。
 - **中文在这里是一等语言。** README 有英文、简体和繁体中文，Web UI 完全本地化（`en`/`zh`/`zh-TW`）并带类型化目录——缺失翻译会导致类型检查失败。
 - **带着自豪和感激地借鉴。** 我们采纳在其他 harness 中找到的最佳想法——Pi、DeepSeek Harness、CodeWhale、OpenCode、Reasonix、Aider、OpenHands 等——并在发布前对照 Niffler 的不变量重新检查每一项。研究注明其来源和固定提交，vendored 代码保留其许可证，一切都在 [docs/research/](docs/research/) 中。
