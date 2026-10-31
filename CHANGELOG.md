@@ -21,6 +21,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "Embeddings" section and five Simplified lines in the GitHub-token section
   are Traditional again.
 
+- **The website now describes the 0.5.0 surface.** The feature section gained a
+  Fleet card covering goal delegation to an Incus container, Lima VM or SSH
+  host in `delegate` mode under the operator's ceiling; trust and safety gained
+  the opt-in Linux shell guard with read masks; per-conversation controls now
+  mention human-granted extra roots; and ecosystem gained the discoverable
+  per-component settings surface. All of it is localized in `en`, `zh` and
+  `zh-TW`.
+
+- **The READMEs no longer claim `make test` runs the bench adapter suite.**
+  `make test` is documented as the complete code gate (bus-contract suite plus
+  Go unit tests), with `make test-bench` as the separate, opt-in Node bench
+  adapter suite that skips when Node is absent. The bench comparison list in
+  `README.md`, `README.zh.md`, `README.zh-TW.md` and `bench/README.md` now
+  names DeepSeek Harness and Droid.
+
 ## [0.5.0] — 2026-10-29
 
 Fleet grew from "run a task on another machine" into a real distributed
