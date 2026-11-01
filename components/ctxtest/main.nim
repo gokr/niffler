@@ -208,11 +208,32 @@ comp.tool(%*{"hidden": true}):
         r = %*{"content": "agent-turn-done"}
       r["model"] = %"echo-model"
       return r
-    if sessionId == "agt-inherit":
+    if sessionId == "agt-inherit" or sessionId == "agt-inherit-grant":
+      # Each of these parents spawns a child on its FIRST turn only. A test that
+      # wants a second spawn uses a second session id rather than a second turn:
+      # the stage counter is per conversation, so "turn 2 spawns again" would
+      # have to be scripted separately and adds nothing.
       var r: JsonNode
       if stage == 0:
+        # No `cwd`: the child must INHERIT this conversation's workspace. That
+        # is the whole point — before inheritance existed core fell back to the
+        # harness root, which is a property of the machine, not of the work.
         r = toolCall("t1", "agent_run",
                      %*{"task": "echo agent-ok via an inheriting subagent"})
+      else:
+        r = %*{"content": "agent-turn-done"}
+      r["model"] = %"echo-model"
+      return r
+    if sessionId == "agt-inherit-cwd":
+      # An EXPLICIT cwd must beat inheritance, so a parent can place a child in
+      # a worktree. The path is baked at compile time from the test's env (the
+      # sandbox root differs per run).
+      var r: JsonNode
+      if stage == 0:
+        let target = getEnv("CTXTEST_EXPLICIT_CWD", "")
+        var args = %*{"task": "echo agent-ok in an explicit tree"}
+        if target.len > 0: args["cwd"] = %target
+        r = toolCall("t1", "agent_run", args)
       else:
         r = %*{"content": "agent-turn-done"}
       r["model"] = %"echo-model"

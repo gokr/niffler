@@ -1184,6 +1184,38 @@ testing: docs/research/SUBAGENTS-PLAN.md P1.3.
   tap in `agent_spawn`. Nothing is deleted (record + transcript survive for
   forensics); only further continuation refuses.
 
+## Subagent workspace and grant inheritance
+
+A fresh child (`agent_run`/`agent_spawn` without `session`) is born with the
+**caller's** working context, not the harness's. Three rules, all snapshot-at-
+creation — a later change on the parent does not reach a child that already
+exists:
+
+- **Workspace.** `cwd` on the child's birth call is, in order: an explicit `cwd`
+  argument to `agent_run`/`agent_spawn`, else the parent conversation's pinned
+  `cwd`, else `NIF_ROOT`. The resolved value is sent as `cwd` on the first
+  session call, so core PINS it in the child's header — and it is the same value
+  the system prompt is composed for, so a child's frozen prompt and its actual
+  workspace can never disagree. A relative argument resolves against the
+  parent's workspace, never the component's process cwd.
+- **Grants.** The parent's `grantedroot` document is copied to the child's own
+  (`<child>:roots`), so a human's `session {roots}` reaches headless children
+  instead of stopping at the conversation boundary. This is the inheritance
+  `SANDBOX-CONVERSATION-POLICY.md` specifies and that
+  `sdk/niffler/sandboxpolicy.nim:inheritSandboxPolicy` exists for. A child never
+  ends up with MORE reach than its parent had at birth; revoking on the parent
+  later does not shrink a running child, and the child's set is refreshed from
+  its own document on resume.
+- **Why it matters beyond convenience.** Before this, every child was born in
+  `NIF_ROOT` — a property of the machine, not of the work. Its `bash` then took
+  an opaque write claim (`x-harness.writes: {"root": true}`) over that whole
+  tree and locked every other conversation working there out with
+  `[E_WRITE_BUSY]`. With worktrees the same mistake is worse: the child would
+  not be in the tree it was handed.
+
+Continuations (`agent_run {session}`) send content only and inherit nothing —
+their workspace and grants were fixed at birth (see "Subagent continuation").
+
 ## Subagent fork (`fork: true | {lastK} | {maxChars}`)
 
 On fresh spawns only — a fork is a birth, not a continuation (`fork` +

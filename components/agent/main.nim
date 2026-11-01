@@ -567,6 +567,63 @@ proc agentMaxDepth(): int =
   except CatchableError:
     return 1
 
+proc parentWorkspace(parentSession: string; override = ""): string =
+  ## Where a fresh child should work: an explicit override, else the parent
+  ## conversation's own pinned workspace, else the harness root.
+  ##
+  ## Why inherit rather than default to NIF_ROOT: the harness root is a
+  ## property of the MACHINE, not of the work. A conversation pinned to
+  ## ~/git/harding that spawns a child used to get a child in NIF_ROOT —
+  ## typically an unrelated repository — which then took an opaque write claim
+  ## over that whole tree (`x-harness.writes: {"root": true}`) and excluded
+  ## every other conversation working there. With sibling worktrees the same
+  ## mistake is worse: the child would not be in the worktree it was handed.
+  ##
+  ## Best effort by construction: the store absent or the header missing keeps
+  ## the old behaviour (harness root), because a child that cannot start is
+  ## worse than a child in the wrong-but-harmless tree.
+  ##
+  ## A RELATIVE override resolves against the parent's own workspace, not the
+  ## process cwd: the caller names a subdirectory of the work it is doing
+  ## ("the backend module"), and the process cwd of a component is the harness
+  ## root — resolving there would silently place the child in the wrong tree,
+  ## which is the very bug this proc exists to prevent.
+  let root = getEnv("NIF_ROOT", getCurrentDir())
+  let base = block:
+    if parentSession.len == 0: root
+    else:
+      var pinned = ""
+      try:
+        let header = comp.storeGet("conversation", parentSession, 5_000).value
+        if header != nil: pinned = header{"cwd"}.getStr("").strip()
+      except CatchableError:
+        discard
+      if pinned.len > 0: pinned else: root
+  let wanted = override.strip()
+  if wanted.len == 0: return base
+  if wanted.isAbsolute(): return wanted
+  base / wanted
+
+proc parentGrants(parentSession: string): JsonNode =
+  ## The parent's human-granted roots, as the sandbox policy document they are
+  ## stored in (kind grantedroot, id "<session>:roots").
+  ##
+  ## docs/research/SANDBOX-CONVERSATION-POLICY.md states the rule twice —
+  ## "Subagents inherit the parent's effective policy AND its active grants"
+  ## and "Conversation-wide root grants are inherited by subagents" — and
+  ## sdk/niffler/sandboxpolicy.nim:inheritSandboxPolicy exists for exactly
+  ## this, but nothing in production ever called it. A child therefore started
+  ## with no grants at all: the human's `/roots add` silently stopped at the
+  ## conversation boundary, so a headless child failed closed on work the human
+  ## had already approved. Inheritance is a SNAPSHOT at creation (the
+  ## documented semantics): later grants do not propagate to existing children.
+  if parentSession.len == 0: return nil
+  try:
+    return comp.storeGet("grantedroot", parentSession & ":roots",
+                          5_000).value
+  except CatchableError:
+    return nil
+
 proc lineageDepth(session: string; cap: int): int =
   ## Component-side mirror of core's depth walk (components cannot import
   ## core/dispatch): count sessionmeta.parent links from `session` up to a
@@ -641,6 +698,20 @@ proc prepareChild(parentSession, task, model: string;
   except CatchableError as e:
     return (false, "cannot record subagent lineage (store unreachable): " &
                     e.msg, "", "", 0, "")
+  # Inherit the parent's human-granted roots as a snapshot NOW, before the
+  # child's first dispatch can consult them. Written as the child's own
+  # grantedroot document, which is the same record `session {roots}` writes —
+  # so a later human revocation on the parent cannot silently shrink a running
+  # child, and the child's set is exactly the parent's set at birth.
+  # Best effort: a store hiccup leaves the child with no grants (fail closed
+  # toward its workspace) rather than refusing to start it.
+  let parentPolicy = parentGrants(parentSession)
+  if parentPolicy != nil:
+    try:
+      discard comp.storePut("grantedroot", child & ":roots", parentPolicy,
+                             timeoutMs = 10_000)
+    except CatchableError as e:
+      comp.log("warn", "child " & child & " did not inherit grants: " & e.msg)
   result = (true, "", subject, child, forkCopied, forkUpto)
 
 # Model inheritance (main's ac14d02): an explicit child override wins;
@@ -920,12 +991,18 @@ proc childSessArgs(child, task, model, thinking: string,
     let personaName = if toolArgs != nil:
                         toolArgs{"persona"}.getStr("").strip()
                       else: ""
+    # The child works where the parent works (parentWorkspace: explicit
+    # override, else the parent's pinned cwd, else the harness root). This is
+    # sent as `cwd` on the birth call so core PINS it in the child's header —
+    # inheritance by argument, not by a later guess — and the same value feeds
+    # the prompt pre-resolution below, so a child's frozen prompt and its
+    # actual workspace can never disagree.
+    let childWorkspace = parentWorkspace(
+      if toolArgs != nil: toolArgs{"__session"}{"session"}.getStr("") else: "",
+      if toolArgs != nil: toolArgs{"cwd"}.getStr("") else: "")
+    if childWorkspace.len > 0: result["cwd"] = %childWorkspace
     try:
-      let root = getEnv("NIF_ROOT", getCurrentDir())
-      var workspace = if toolArgs != nil: toolArgs{"cwd"}.getStr(root) else: root
-      if workspace.len == 0: workspace = root
-      if not workspace.isAbsolute(): workspace = root / workspace
-      var spArgs = %*{"cwd": workspace, "sessionId": child}
+      var spArgs = %*{"cwd": childWorkspace, "sessionId": child}
       if personaName.len > 0:
         spArgs["persona"] = %personaName
       let sp = comp.request("systemprompt", "systemprompt", spArgs, 5_000)
@@ -1110,6 +1187,8 @@ let runSchema = toolSchema(%*{
                 "description": "Give up waiting for the subagent after this many ms (default 600000)"},
   "session": {"type": "string",
               "description": "Continue an EXISTING child instead of starting a fresh one: pass the sessionId that a previous agent_run/agent_spawn returned. The child keeps its conversation, so send only the new task — and model/modelTier/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (they were frozen at the child's first turn; the result reports the effective values). Fails if the session is not a child of this conversation, is closed, or if its runner is mid-turn (use agent_spawn for that)."},
+  "cwd": {"type": "string",
+          "description": "FRESH RUNS ONLY: the directory the child works in. Omit to inherit the parent conversation's workspace — the right default, and what keeps a child from landing in the harness root (a property of the machine, not the work). Pass an explicit path to place it elsewhere, including a worktree."},
   "close": {"type": "boolean",
             "description": "Mark this child finished after THIS turn completes, so it can no longer be continued (nothing is deleted). Works on a fresh run (one-shot child) or a continuation (last turn)."},
   "fork": {"type": ["boolean", "object"],
@@ -1277,6 +1356,8 @@ let spawnSchema = toolSchema(%*{
                 "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"},
   "session": {"type": "string",
               "description": "Give an EXISTING child another turn in the background instead of starting a fresh one: pass the sessionId from a previous agent_run/agent_spawn. The child keeps its conversation, so send only the new task — model/modelTier/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (frozen at its first turn). Unlike agent_run this QUEUES if the child is mid-turn: a background job only promises the work happens. Fails if the session is not a child of this conversation or is closed."},
+  "cwd": {"type": "string",
+          "description": "FRESH RUNS ONLY: the directory the child works in. Omit to inherit the parent conversation's workspace — the right default, and what keeps a child from landing in the harness root (a property of the machine, not the work). Pass an explicit path to place it elsewhere, including a worktree."},
   "close": {"type": "boolean",
             "description": "Mark this child finished AFTER the queued/background turn settles, so it can no longer be continued (nothing is deleted). Applies via the job's completion, so it composes with session (queue the turn, then retire the child)."},
   "fork": {"type": ["boolean", "object"],

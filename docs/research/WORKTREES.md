@@ -655,6 +655,19 @@ component (pass the key through on the birth call), so a delegated child can be
 given its own isolated tree — which is the capability `CODEWHALE.md` D1 asks
 for, delivered as data through the existing seam rather than as new machinery.
 
+**Prerequisite, shipped ahead of the rest (2026-11-01): subagents now inherit
+the caller's workspace and grants.** This was not in the plan and should have
+been — it is the defect that makes a worktree fleet impossible. `agent_run`/
+`agent_spawn` had no `cwd` argument at all, so every child was born at
+`NIF_ROOT`: all 13 subagents in the store had the harness root as their
+workspace while 26 parent conversations lived elsewhere, and each child's
+opaque `bash` claim then locked an unrelated repository out from under every
+other conversation (`[E_WRITE_BUSY]`, observed live). `inheritSandboxPolicy`
+existed for the grant half and had no production caller. Both halves now travel
+at birth (docs/WIRE.md "Subagent workspace and grant inheritance"), asserted by
+`tests/t_agentinherit.nim`. Slice 5's `isolation` key rides the same seam, and
+`agent_spawn {isolation: "worktree"}` is now genuinely two lines.
+
 ### 4.6 Starting a client inside a worktree: what already works, and what doesn't
 
 The user-facing question is "if I start niffler-tui in a worktree, does Niffler
