@@ -226,9 +226,20 @@ A bash command CAN still be launched with an explicit, human-approved extra root
 or network grant as part of its request.
 
 **Implicit widening is never allowed.** Discovering a sibling checkout or git
-worktree does not add a root; only a human decision does. Repeated agent requests
-must not accumulate roots by persistence — a refusal is not a negotiation channel
-the agent drives.
+worktree does not add a *grant*; only a human decision does. Repeated agent
+requests must not accumulate roots by persistence — a refusal is not a
+negotiation channel the agent drives.
+
+> **Shipped behaviour differs, and this sentence is the one to amend.**
+> `core/workspace.nim:computeWorkspaceRoots` *does* fold discovered linked
+> worktrees and same-origin sibling checkouts into a conversation's workspace
+> set, and the `locks` fence honours that set — so a discovered tree is
+> writable without any human decision. That is deliberate and is what makes
+> "start the client in a worktree and it just works" true. The distinction the
+> policy should draw is therefore **grant vs. discovery**, not "no root at all":
+> grants are human-only, discovery is automatic but read-only-by-fence once
+> `isolation: "worktree"` exists. Recommendation and full reasoning:
+> [WORKTREES.md](WORKTREES.md) §9 Q8 and §4.5.
 
 ## Escape-capable tools — approved by the user
 

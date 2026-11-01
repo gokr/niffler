@@ -83,6 +83,47 @@ proc main() =
         ".git" in rootMarkersForExt(".zzz") and
         "go.mod" in rootMarkersForExt(".go") and
         "go.work" in rootMarkersForExt(".go"))
+  # --- treeRoot: git decides the TREE, markers decide the project inside it
+  # The defect this closes: a bare marker walk can climb out of a linked
+  # worktree into a parent checkout that also has .git, indexing the wrong
+  # tree. Real repos here, because the question IS the git shape.
+  block:
+    proc g(dir: string, args: varargs[string]): string =
+      var cmd = @["-C", dir]
+      for a in args: cmd.add(a)
+      execCmdEx("git " & cmd.mapIt(quoteShell(it)).join(" ") & " 2>&1").output
+    let repo = tmp / "treerepo"
+    createDir(repo)
+    discard g(repo, "init", "-q", "-b", "main")
+    discard g(repo, "config", "user.email", "t@example.invalid")
+    discard g(repo, "config", "user.name", "lsp test")
+    createDir(repo / "svc")
+    writeFile(repo / "svc" / "go.mod", "module svc\n")
+    writeFile(repo / "svc" / "main.go", "package main\n")
+    discard g(repo, "add", ".")
+    discard g(repo, "commit", "-qm", "init")
+    discard g(repo, "worktree", "add", "-q", repo & ".wt/feat", "-b", "feat")
+
+    let inPrimary = repo / "svc" / "main.go"
+    let inWorktree = repo & ".wt/feat/svc/main.go"
+    check("treeRoot keeps the module dir inside the primary tree",
+          treeRoot(inPrimary, rootMarkersForExt(".go")) == repo / "svc",
+          treeRoot(inPrimary, rootMarkersForExt(".go")))
+    check("treeRoot reports the WORKTREE's own tree, not the primary",
+          treeRoot(inWorktree, rootMarkersForExt(".go")) ==
+            normalizeRoot(repo & ".wt/feat/svc"),
+          treeRoot(inWorktree, rootMarkersForExt(".go")))
+    check("a worktree file is never resolved to the primary checkout",
+          treeRoot(inWorktree, rootMarkersForExt(".go")) !=
+            normalizeRoot(repo / "svc"))
+    # A file in no repository still gets a marker-derived root.
+    createDir(tmp / "plainproj")
+    writeFile(tmp / "plainproj" / "x.go", "package x\n")
+    check("treeRoot falls back to markers outside any repository",
+          treeRoot(tmp / "plainproj" / "x.go", rootMarkersForExt(".go")) ==
+            tmp / "plainproj",
+          treeRoot(tmp / "plainproj" / "x.go", rootMarkersForExt(".go")))
+
   check("hasMarker globs *.nimble",
         block:
           createDir(pure / "nimproj")

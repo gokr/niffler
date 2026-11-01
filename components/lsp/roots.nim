@@ -15,6 +15,11 @@
 ##   "not found on PATH — install it".
 
 import std/[os, strutils]
+# Bare module name: sdk/checkout.nim is std-only (no NATS, no SDK machinery),
+# so this file stays hermetic for tests/t_lsp.nim — it must not pull the bus
+# in just to learn what a directory is.
+import checkout
+export checkout.normalizeRoot
 
 # ---------------------------------------------------------------------------
 # language-server roots
@@ -69,19 +74,6 @@ proc deriveRoot*(file, workspace: string, markers: seq[string]): string =
     dir = up
   ws
 
-proc normalizeRoot*(path: string): string =
-  ## One spelling per root — absolute, symlink-resolved where possible, no
-  ## trailing separator — so a root core hands us and a root we derived compare
-  ## equal. (core/workspace.nim keeps the same helper for core's side of the
-  ## conversation; a component cannot import core.)
-  if path.len == 0: return ""
-  var p = path
-  try: p = expandFilename(absolutePath(p))
-  except CatchableError:
-    try: p = absolutePath(p)
-    except CatchableError: discard
-  while p.len > 1 and p[^1] == '/': p.setLen(p.len - 1)
-  p
 
 proc deriveRootUnbounded*(file: string, markers: seq[string]): string =
   ## The root for a file that lives *outside* the conversation workspace: walk
@@ -99,6 +91,33 @@ proc deriveRootUnbounded*(file: string, markers: seq[string]): string =
     if up == dir: break
     dir = up
   file.parentDir()
+
+proc treeRoot*(file: string, markers: seq[string]): string =
+  ## The checkout's working-tree root for `file`, with the language's own
+  ## project dir reported alongside it. Git decides where the TREE is
+  ## (sdk/checkout.nim); the markers decide which subdirectory of that tree is
+  ## the language's project. A file inside a worktree therefore gets the
+  ## worktree (not the primary, and not a marker found in a parent directory
+  ## of the checkout), while a monorepo module keeps its own `go.mod` dir.
+  ##
+  ## Falls back to `deriveRootUnbounded` when the file is in no repository, so
+  ## a loose file in a plain directory still gets the marker-derived root it
+  ## had before.
+  if file.len == 0 or not file.isAbsolute(): return ""
+  let shape = checkoutShape(file.parentDir())
+  if shape.kind == ckNone:
+
+    return deriveRootUnbounded(file, markers)
+  let tree = if shape.root.len > 0: shape.root else: file.parentDir()
+  # A marker strictly inside the tree wins (monorepo module); a marker at or
+  # above the tree does not, because the tree already bounds the work.
+  var dir = file.parentDir()
+  while dir.len > 0 and (dir == tree or dir.startsWith(tree & "/")):
+    if hasMarker(dir, markers): return dir
+    let up = dir.parentDir()
+    if up == dir or up.len < tree.len: break
+    dir = up
+  tree
 
 # ---------------------------------------------------------------------------
 # per-user install directories (PATH fallback)

@@ -19,7 +19,8 @@
 ## Best-effort by construction: no git, no repo, a weird remote — the set is
 ## just the primary workspace. Awareness is an improvement, never a requirement.
 
-import std/[algorithm, os, osproc, streams, strutils]
+import std/[algorithm, os, strutils]
+import ../sdk/checkout
 
 const
   maxWorkspaceRoots* = 8
@@ -27,34 +28,8 @@ const
     ## sibling checkouts. Past this, the extra roots stop being "the same
     ## project" and start being "the disk".
 
-proc gitLines(dir: string, args: seq[string]): seq[string] =
-  ## One best-effort git query. A missing repo, a missing binary or a nonzero
-  ## exit all yield nothing — the caller falls back to the primary workspace.
-  try:
-    let p = startProcess("git", workingDir = dir, args = @["-C", dir] & args,
-                         options = {poUsePath, poStdErrToStdOut})
-    let outp = p.outputStream.readAll()
-    let code = p.waitForExit()
-    p.close()
-    if code != 0: return @[]
-    for line in outp.splitLines():
-      let trimmed = line.strip()
-      if trimmed.len > 0: result.add(trimmed)
-  except CatchableError:
-    discard
-
-proc normalizeRoot*(path: string): string =
-  ## One spelling per root — absolute, symlinks resolved where possible, no
-  ## trailing separator — so a root git reports and the same root typed by hand
-  ## compare equal, and duplicates collapse.
-  if path.len == 0: return ""
-  var p = path
-  try: p = expandFilename(absolutePath(p))
-  except CatchableError:
-    try: p = absolutePath(p)
-    except CatchableError: discard
-  while p.len > 1 and p[^1] == '/': p.setLen(p.len - 1)
-  p
+export checkout.normalizeRoot
+export checkout.pathInRoots
 
 proc sameOrigin(dir, origin: string, known: seq[string]): bool =
   ## Direct siblings only: a directory counts when it is its own checkout of
@@ -64,7 +39,7 @@ proc sameOrigin(dir, origin: string, known: seq[string]): bool =
   ## clone made from a local path (`git clone /path/to/checkout`) records that
   ## path as its origin instead of the remote URL: same project, stated
   ## differently, so a path origin matching a known root counts too.
-  for line in gitLines(dir, @["remote", "get-url", "origin"]):
+  for line in checkout.gitLines(dir, ["remote", "get-url", "origin"]):
     if line == origin: return true
     if not line.isAbsolute(): continue
     let norm = normalizeRoot(line)
@@ -81,13 +56,15 @@ proc computeWorkspaceRoots*(primary: string,
   let root = normalizeRoot(primary)
   if root.len == 0: return @[]
   result.add(root)
-  for line in gitLines(root, @["worktree", "list", "--porcelain"]):
-    if not line.startsWith("worktree "): continue
-    let wt = normalizeRoot(line["worktree ".len .. ^1])
+  # One parser for `git worktree list --porcelain` (sdk/checkout.nim), so a
+  # locked/prunable/bare tree cannot be classified two different ways here and
+  # in the git component.
+  for tree in worktrees(root):
+    let wt = normalizeRoot(tree.path)
     if wt.len > 0 and wt != root and wt notin result and result.len < maxRoots:
       result.add(wt)
   var origin = ""
-  for line in gitLines(root, @["remote", "get-url", "origin"]):
+  for line in checkout.gitLines(root, ["remote", "get-url", "origin"]):
     if origin.len == 0: origin = line
   if origin.len > 0:
     var siblings: seq[string]
@@ -107,16 +84,10 @@ proc computeWorkspaceRoots*(primary: string,
 
 proc pathInWorkspace*(path: string, roots: openArray[string]): bool =
   ## True when path is the root itself or below one of the declared roots.
-  ## Comparisons use normalized absolute spellings and a separator boundary,
-  ## so /repo2 never matches /repo.
-  let target = normalizeRoot(path)
-  if target.len == 0: return false
-  for root0 in roots:
-    let root = normalizeRoot(root0)
-    if root.len == 0: continue
-    if target == root or target.startsWith(root & "/"):
-      return true
-  false
+  ## Delegates to sdk/checkout.pathInRoots — one containment test, so the fence
+  ## (locks) and the scope check cannot disagree about `/repo` vs `/repo2` or
+  ## about a sibling `<repo>.wt/x` (which is NOT inside `<repo>`).
+  pathInRoots(path, roots)
 
 proc addWorkspaceRoot*(roots: var seq[string], path: string,
                        maxRoots = maxWorkspaceRoots): tuple[ok: bool, root, error: string] =

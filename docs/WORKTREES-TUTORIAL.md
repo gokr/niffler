@@ -35,9 +35,10 @@ niffler-tui
 
 That is the whole setup. The new conversation's primary workspace *is* the
 worktree, so `read`, `edit`, `bash`, `grep`, the sandbox and the undo ledger all
-operate there. Your checkout of `main` is untouched and needs no `.gitignore`
-edit — verified: `git worktree add ../myrepo.wt/x` leaves the primary's
-`git status` clean.
+operate there. Your checkout of `main` is untouched, and nothing is added to
+`.gitignore` — a sibling tree is not in the repository at all (verified:
+`git worktree add ../myrepo.wt/x` leaves the primary's `git status` clean with no
+ignore rule anywhere).
 
 You do **not** need to grant anything. Say that twice, because the obvious
 question is the wrong one: `/roots add` grants extra roots *on top of* the primary
@@ -302,9 +303,11 @@ tree: two conversations in one tree still proceed on different files
 Three changes make the commands above honest:
 
 - **The set goes live.** `workspaceRootsFor` recomputes when the git graph
-  changes — a `stat` on `<commonDir>/worktrees`, not a `git` call — so a tree
-  created mid-conversation is admitted on the **next dispatch** with no grant and
-  no restart. §1.4 disappears as a workflow rule.
+  changes — a sub-second `stat` on `<commonDir>/worktrees`, not a `git` call — so
+  a tree created mid-conversation is admitted on the **next dispatch** with no
+  grant and no restart. §1.4 disappears as a workflow rule. (Sub-second matters:
+  two trees created inside one second share a second-granularity mtime, so a
+  coarse signature would drop the second — WORKTREES.md §4.2a.)
 - **The conversation learns its own shape.** `__workspace` gains
   `primary`/`worktree` and `session_info` gains a `workspace` block, so the model
   is told "you are in a linked worktree of `~/git/myrepo` on branch `fix-race`"
@@ -321,8 +324,9 @@ path-level facts only.
 Creating and entering a tree becomes a verb instead of a shell out plus a grant:
 
 ```
-git_worktree {op: "add", branch: "fix-race"}      ← approval-gated; you see the
+git_worktree {op: "add", name: "fix-race"}         ← approval-gated; you see the
                                                     layout, path and lock first
+                                                    (lands in ../myrepo.wt/)
 edit "../myrepo.wt/fix-race/src/queue.nim"        ← just works: the set is live
 ```
 
@@ -342,7 +346,9 @@ this conversation: ../myrepo.wt/fix-race
 origin: conv-abc123 (84 msgs)
 ```
 
-*Until it ships:* `git worktree add` in a terminal plus `/roots add`.
+*Until it ships:* `git worktree add ../myrepo.wt/<name> -b <name>` in a terminal
+plus `/roots add`. Create it **outside** the repo: an in-repo tree is swallowed
+by the primary's own `bash` claim and dirties `git status`.
 
 ## 2.4 Merge back and clean up (after)
 
@@ -420,10 +426,12 @@ to separate them:
 | `parent` | supervision — spawned to do a job for another conversation | depth rules, approvals route up, idle retirement (unchanged) |
 | `origin` | provenance — this transcript was seeded from another, and it is your main thread | **none**; it may spawn its own children, and its approvals stay with its own client |
 
-So yes: the fork is a `peer`, which is the thing that makes it usable as your
-main thread rather than a supervised helper.
+`sessionmeta.origin = {session, atSeq, reason, worktree}` is the one new key; a
+supervised fork keeps both edges (`parent` for supervision, `origin` for
+provenance), and a worktree fork carries only `origin`. That is what makes the
+fork usable as your main thread rather than a supervised helper.
 
-So a fork's `session_info` will say *"seeded from `conv-abc123` at message 84;
+A fork's `session_info` will then say *"seeded from `conv-abc123` at message 84;
 working tree `../myrepo.wt/fix-race` (branch `fix-race`, primary `../myrepo`)"*,
 and the originating conversation will list its descendants. That is what makes
 the exploration → worktree → merge trail readable instead of three unrelated
@@ -447,7 +455,7 @@ discipline forbids.
 | Stop writes to `main` | not possible | `isolation: "worktree"` |
 | Merge back | shell: `git merge --no-ff` in the primary | `/worktree merge` (preview → commit → merge → remove) |
 | Clean up | shell: `git worktree remove`, `git branch -d` | `/worktree rm x`, guarded |
-| Relate two conversations | manually | `origin` origin edge, reported by `session_info` |
+| Relate two conversations | manually | `sessionmeta.origin`, reported by `session_info` |
 | Come back to the parent afterwards | `/session` back to it, then paste the commit id | `/worktree close` switches back, and the merge notice is waiting there |
 
 ## 2.7 Where the pieces live

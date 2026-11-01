@@ -223,10 +223,34 @@ both cheap:
   `(primary, commonDir, presence+mtime of <commonDir>/worktrees)`. A `git
   worktree add/remove` creates or deletes a directory under
   `<commonDir>/worktrees/`, so this is one `stat`, not a `git` call, on the
-  dispatch path. Measured caveat: git **removes** that directory when the last
-  worktree goes, so absence is a signature value too, not an error. A full
-  recompute (three git invocations) still happens only when the signature
-  moves — the current cost profile is preserved for the ordinary case.
+  dispatch path. A full recompute (three git invocations) still happens only
+  when the signature moves — the current cost profile is preserved for the
+  ordinary case.
+
+  Three measured details that decide whether this works, all found before
+  implementation:
+
+  1. **Sub-second precision is required.** `git worktree add a` then
+     `add b` inside one second gives the same `st_mtime` at *second*
+     granularity and different `st_mtime_ns` — measured:
+     `…0030507445` vs `…0037507375`. A signature built from
+     `getLastModificationTime().toUnix` (seconds — what `core/dispatch.nim`
+     already does elsewhere for binary mtimes) would miss the second tree
+     entirely, which is exactly the "a worktree appeared and nobody noticed"
+     bug F1 exists to kill. Use nanosecond stat (`getFileInfo().lastWriteTime`
+     plus `size`, or `st_mtime_ns` on posix) and keep `size` in the signature as
+     a coarse backstop for filesystems with coarse timestamps.
+  2. **Absence is a value.** Git **deletes** `<commonDir>/worktrees/` when the
+     last worktree goes (measured: `stat` fails after `worktree remove`). The
+     signature must therefore encode "no such directory" as its own state, not
+     as an error that leaves the previous signature (and the stale set) in
+     place.
+  3. **The cache is per-runner and the field is on `NestedState`.** That is
+     fine — `ct.nested` is the live-turn object — but note `workspaceRootsFor`
+     already recomputes whenever `rootsKey` differs, and `rootsKey` is only
+     reset on a grant. The graph signature is a *second*, independent condition
+     (`rootsKey != key or graphSig != cachedSig`), not a replacement: a grant
+     must still rebuild even when the graph is unchanged.
 - `ev.worktree.changed {repo, path, branch, sessionId, action}` published by
   the `git` component after every mutating worktree verb. The runner clears
   `rootsKey` on it, the same way a settings change clears a config mirror
@@ -261,10 +285,13 @@ workspace that `ev.workspace.opened` named, not the whole set, so a worktree
 conversation already maps only its own tree).
 
 **(c) Make the model able to see it.** `session_info` gains a read-only
-`workspace` block (root, roots, linked, branch, primaryRoot, and the merge
-candidates below). It is a **tool result**, so it appends to history and never
-touches the prefix — and it is the only way an agent learns "I am in a linked
-worktree whose primary is X", which today it cannot learn at all.
+`workspace` block: `root`, `roots`, `linked`, `branch`, `primaryRoot`, the merge
+candidates, and a bounded `trees` array (§7.5 Q3). It is a **tool result**, so it
+appends to history and never touches the prefix — and it is the only way an agent
+learns "I am in a linked worktree whose primary is X", which today it cannot
+learn at all. It is a core tool, so it builds the shape from
+`sdk/checkout.nim` directly rather than calling the `git` component; cost is one
+`git worktree list` plus one `git status` per tree, bounded, nothing cached.
 
 ### 4.3 The `git` component grows a mutation surface (declared, approval-gated)
 
@@ -291,7 +318,7 @@ its own small read tool and `git_worktree` carries only the three mutating ops.
 | op | approval | claim (`x-harness.writes`) | notes |
 |---|---|---|---|
 | `list` (`git_worktree_list`) | no (`effect: read`) | none | `git worktree list --porcelain`, parsed: path, branch, HEAD, locked (with reason), prunable, bare, isCurrent, plus the ledger's owner conversation per tree |
-| `add` | always | `paths: ["repo", "path"]` | creates `path` (default `<repo>.wt/<name>`, a sibling of `repo`), branch from `base` (default the repo's current branch), then **writes the store record and locks the tree**. No ignore rule is needed for the sibling layout. `repo` is claimed because `add` also writes git metadata (`<commonDir>/worktrees/<name>`, `refs/heads/<branch>`) |
+| `add` | always | `paths: ["repo", "path"]` | creates `path` (default `<primary>.wt/<name>` — see the orientation rule below), branch from `base` (default the primary's current branch), then **writes the store record and locks the tree**. No ignore rule is needed for the sibling layout. `repo` is claimed because `add` also writes git metadata (`<commonDir>/worktrees/<name>`, `refs/heads/<branch>`) |
 | `remove` | always | `paths: ["repo", "path"]` | refuses when (i) another *live conversation* is pinned there (the ledger, which git cannot know), (ii) the branch is not merged into its base — each refusal names the flag that overrides it. A dirty tree is already refused by git itself (measured: exit 128, "contains modified or untracked files"); surface that message verbatim rather than re-implementing it. The `repo` in the claim is not decoration: removal deletes `<commonDir>/worktrees/<name>`, so it writes the repository's own git metadata |
 | `prune` | always | `paths: ["repo"]` | `git worktree prune` for trees deleted out from under git |
 
@@ -305,6 +332,24 @@ because it records why), each verified:
    `.worktrees/` probe are both dropped. One rule everywhere is worth more than
    honouring a repo's local habit, and the probes bought nothing that the
    sibling does not already give.
+
+   **Orientation: the container hangs off the PRIMARY, never off the current
+   workspace.** `<primary>.wt/<name>`, where `<primary>` is
+   `checkout.primaryRoot` — not `parentDir(workspace)/name(workspace).wt`.
+   Measured why: a conversation already in `~/git/repo.wt/feat` that computed a
+   sibling from its own path would create `~/git/repo.wt/feat.wt/<name>` — one
+   level deeper on every hop (`repo.wt/a.wt/b.wt/…`), a container per worktree
+   instead of one per repository, and a path nobody can predict. One container
+   per repository is the whole point, and it is what makes the claim sets
+   disjoint from the primary by construction. Three consequences to implement
+   explicitly:
+
+   - from the **primary**, `repo.wt/<name>` — the ordinary case;
+   - from a **worktree**, still `repo.wt/<name>` (the primary's container), so a
+     conversation in a tree can cut a second tree next to itself;
+   - and `add` must refuse when the resolved `path` would be **inside** an
+     existing worktree of the same repo (`pathInWorkspace` against the set),
+     which is the mistake this rule exists to prevent.
 
    Why the sibling, in order of weight:
 
@@ -367,6 +412,31 @@ shared by every worktree, and `git check-ignore -v` names the rule), *not*
    tree each one is, and `remove` refuses on a live pin using it — the fact git
    cannot know.
 
+   **Prerequisite the component does not have yet (verified 2026-10-30).** The
+   component never touches the store, so the ledger needs two things — and, to
+   be precise about what it does *not* need, no new handler shape: the
+   block-form `comp.tool` macro sets `comp.sessionContext` on every call
+   (`sdk/niffler/sdk.nim:1259`) and `git/main.nim:76` already binds a
+   module-level `comp`, so a plain `proc` can read the session and call
+   `comp.storeGet`/`storePut` exactly as `builder` does (`comp.sessionContext`,
+   `components/builder/main.nim:249`). Compile-checked before writing this down.
+
+   - the new verbs declare `x-harness.sessionId: true`, so core injects
+     `__session.session`; without it `comp.sessionContext` is `""` and the
+     ledger cannot record *whose* tree it made, which is the whole point of the
+     "another live conversation is pinned here" refusal;
+   - the store being unreachable must degrade honestly: `add` still creates the
+     tree and locks it (git's own lock already names the conversation in its
+     reason), but the result says the ledger write failed, and `remove`'s
+     live-pin check then falls back to the lock reason it can read from git.
+     **Failing closed** (refusing to create a tree because the store is down) is
+     the wrong trade — the git-level lock is the durable half, and a
+     conversation must not lose the ability to start work because a metadata
+     write failed.
+
+   So the step is real but small: the `git` component stops being purely
+   read-only, while staying handler-shape-identical to today.
+
 #### `git_merge_preview {repo?, into?, from?}` (read) and `git_merge {op, repo?, into?, from?, strategy?, allow_dirty?}` (write)
 
 Same split, same reason: a declaration is per tool, so the read half cannot ride
@@ -374,9 +444,49 @@ with the write half.
 
 | op | approval | claim | notes |
 |---|---|---|---|
-| `preview` (`git_merge_preview`) | no (`effect: read`) | none | **the missing verb.** `git merge-tree --write-tree --name-only <into> <from>`: exit 0 → `{clean: true, files: N, ahead, behind}`; exit 1 → `{clean: false, conflicts: [paths]}`. Plus `rev-list --left-right --count` for divergence and `git diff --stat into...from` for the shape of the change. |
+| `preview` (`git_merge_preview`) | no (`effect: read`) | none | **the missing verb.** `git merge-tree --write-tree --name-only <into> <from>` — but see the exit-code trap below before implementing. Plus `rev-list --left-right --count` for divergence and `git diff --stat into...from` for the shape of the change. |
 | `start` | always | `paths: ["repo"]` | refuses up front when the target tree has local changes to a path the merge touches (the `preview` file list intersected with `git status --porcelain`), so the refusal names the paths instead of quoting git's abort; `allow_dirty: true` proceeds anyway. Then `git merge --no-ff --no-edit <from>` → `{merged: true, head, files}`. Unrelated dirt is allowed, which is git's own semantics |
 | `abort` | always | `paths: ["repo"]` | `git merge --abort` — the honest answer to a conflict the model cannot resolve |
+
+#### `merge-tree`'s exit codes: 1 means two different things (found 2026-10-30)
+
+The obvious reading — "exit 0 clean, exit 1 conflicted" — is wrong, and the
+wrong reading is the dangerous one. Measured on git 2.43:
+
+| Situation | exit | stdout | stderr |
+|---|---|---|---|
+| clean merge | 0 | tree OID | (empty) |
+| real conflict | 1 | tree OID, then conflicted paths, then the `CONFLICT` lines | (empty — `--name-only` goes to stdout, `2>&1` is fine) |
+| **`from` does not exist** | **1** | **empty** | `merge-tree: <ref> - not something we can merge` |
+| both refs identical / already merged | 0 | tree OID, no paths | (empty) |
+
+So `exit == 1` covers both "conflicts in these files" and "you typo'd the
+branch". A `preview` that maps `exit 1 → {clean: false, conflicts: <parsed
+paths>}` therefore reports a **fabricated clean-nothing conflict** for a bad
+ref, and the model's next move is to try to resolve a conflict in a branch that
+does not exist. (The same shape would also let a *missing* `git` — exit 127,
+`findExe` returns "" and `runGit` reports it — read as "conflicted" if the
+mapping were `!= 0`.)
+
+The rule for the implementation, stated so it cannot be re-derived wrongly:
+
+```
+code 0   -> clean; parse the tree OID, no conflict paths
+code 1   -> REQUIRES a positive discriminator before claiming a conflict:
+            the first stdout line must be a 40/64-hex tree OID **and** the
+            output must contain "CONFLICT" (or `--name-only` produced paths).
+            Otherwise -> {ok: false, error: "cannot preview <into>...<from>: " +
+                          stderr verbatim, exit: 1}
+code 124 -> timed out (the component's own convention)
+code 127 -> git missing (runGit already answers this)
+other    -> error, stderr verbatim, never "conflicts"
+```
+
+`--messages` is the alternative discriminator (it is on by default for
+`--write-tree`); the point is that ONE exit code must never map to one verdict
+without inspecting output, and that a bad ref must never present as a conflict.
+This belongs in `t_git`: a preview against a nonexistent branch must fail with an
+error naming the ref, and must NOT return a conflict list.
 
 The claim is `paths: ["repo"]` — the resolved target tree. That is the hole
 from F4 closed *without* a new declaration shape, because lock stripes use
@@ -393,6 +503,40 @@ conversation almost always means, and making the model name the primary path
 (which it may only have learned from `session_info`) is the step that gets
 skipped and turns into a merge into the wrong tree. `into` defaults to the
 primary's current branch, `from` to the workspace's own branch.
+
+**The default and the claim disagree unless core helps (found 2026-10-30,
+before implementation).** `writePathsFor` derives the claim from the argument
+values it can see (`x-harness.writes.paths` names fields), while the *default*
+is applied by the component, after the gate has already run. Measured against
+the real function:
+
+```
+git_merge {from: "feat"}          -> claim @["/home/me/repo.wt/feat"]   ← the WORKTREE
+git_merge {repo: "/home/me/repo"} -> claim @["/home/me/repo"]           ← the primary
+bash (opaque root)                -> claim @["/home/me/repo.wt/feat"]
+```
+
+So the friction-free call would take a lease over the tree it is *not* writing —
+the exact F4 hole this section claims to close, re-created by the convenience
+default. Two ways out, and the plan must pick one rather than let the
+implementer discover it:
+
+1. **`repo` is required on `git_merge`** (and `git_commit`) — no default. Simple,
+   honest, and it makes the claim provably the write. Cost: the model must name
+   the primary path, which §4.2(c)'s `session_info.workspace.primaryRoot` gives
+   it in one call.
+2. **A core-side default**: `applyWorkspace` gains a `defaultPathFields`-style
+   rule for `cwdField` when the conversation is in a linked worktree, so the
+   value the gate sees is already the primary. This keeps the convenience and the
+   claim consistent — and it is the better answer *if* the same default is
+   meaningful for other tools, which it is not: `bash`'s `cwd` must stay the
+   workspace, never silently jump to the primary.
+
+**Recommendation: option 1.** Required `repo` for the merge/commit verbs, plus a
+refusal text that prints the primary path it thinks you meant (`checkout.primaryRoot`)
+so the model's next call is unambiguous. A silent default that changes which tree
+gets locked is the kind of thing that is invisible until two conversations
+collide.
 
 #### `git_commit {repo, message, paths?, all?, amend?}`
 
@@ -809,7 +953,7 @@ Both directions are then answerable, which is what makes the experience coherent
 - **Backward:** the origin's `session_info` lists `descendants` — today a
   `children` count derived from `sessionmeta.parent`
   (`core/dispatch.nim:1009`), extended to also count records whose
-  `fork.source` names this conversation — so "what came out of this
+  `origin.session` names this conversation — so "what came out of this
   exploration?" is answerable, and the client's session list can show a `⧉`
   marker with the origin, the way it already shows lineage.
 - **Across a merge:** the merge receipt (`commit`, `files`, `into`, `from`)
@@ -888,6 +1032,66 @@ undo the above:
   close`, or on `agent` child settlement: the tree is where the work is, and a
   child that settles must leave its tree for review.
 
+## 7.5 Implementation readiness (audited 2026-10-30, before any code)
+
+Written because "is the plan ready?" deserves a checkable answer rather than an
+impression. Five questions an implementer hits on day one were re-verified
+against the code and against git; every one of them changed the plan above.
+
+**Verdict: the design is ready — the shape, the invariants and the slice order
+hold up — but four previously-unstated details had to be settled first, and one
+of them (`repo` required on `git_merge`) is a decision, not a detail. Slices 0–2
+are ready to start today; slices 3–4 needed the fixes recorded below; slices 5–7
+have three open sub-questions (bottom of this section) that block only their own
+slice.**
+
+| Question the implementer will hit on day one | Answer found | Where it lands |
+|---|---|---|
+| Does `git` component code have a session id and store access for the ledger? | **Session yes, store unused.** The macro sets `comp.sessionContext`, `git/main.nim:76` binds `comp`, so a plain proc can do both (compile-checked) — but no `git` tool declares `sessionId` today, and the component has never written a store doc | §4.3 step 3; slice 3 costed |
+| Does the claim follow a *defaulted* argument? | **No** — `applyWorkspace` runs before the gate, but a component-side default is invisible to it. Measured: `git_merge {from}` claims the **worktree**, not the primary | §4.3: `repo` is **required** |
+| Is "exit 1 = conflicts" true for `merge-tree`? | **No** — a bad ref also exits 1, with empty stdout; mapping it to a conflict list fabricates a conflict | §4.3 `merge-tree` trap |
+| Is an mtime signature on `<commonDir>/worktrees` good enough? | **Only at sub-second precision** — two adds in one second share `st_mtime` seconds; and git deletes the directory when the last tree goes | §4.2(a) |
+| Is `<repo>.wt/<name>` well-defined when the conversation is already in a tree? | **No** — the naive sibling gives `repo.wt/feat.wt/`, one deeper per hop | §4.3 step 1, orientation rule |
+
+Two more findings that did **not** change the plan, recorded so they are not
+re-litigated:
+
+- **`git merge-tree --name-only` writes conflict paths to stdout on git 2.43**
+  (`2>&1` not required), and the first stdout line is a tree OID in both the
+  clean and conflicted cases — that OID is the discriminator the trap section
+  relies on, so the check is cheap rather than heuristic.
+- **`git worktree add` creates its container directory itself** (`repo.wt/` need
+  not pre-exist), so `add` does not need a `mkdir` step — but it *does* need the
+  collision refusal when `repo.wt/` already exists and was not ours (§4.3 step 1).
+
+What is **not** yet decided, and blocks only the slices it touches:
+
+1. **`/worktree new`'s move-vs-fork table: client or core?** Recommend
+   **client** to start — the table is a pure function of `cwdPinned`, the
+   transcript's turn count and the tree's dirtiness, and the two actions it picks
+   between (`session {cwd}` and `agent_spawn {fork}`) are already core calls, so a
+   client implementation ships without touching core and can move behind
+   `/worktree` later if a second client needs it. Blocks slice 7 only.
+2. **`isolation`: birth-only or mutable?** Recommend **mutable between calls**,
+   on the `roots` precedent: it is not in the prompt, so changing it costs no
+   cache rebuild, and a conversation that discovers it needs the primary (a
+   dependency bump, a generated file) should not have to be recreated. Blocks
+   slice 5's readback shape only.
+3. **Does `session_info` list the conversation's trees?** Recommend **yes, as a
+   `workspace.trees` array** (path, branch, mine, dirty, ahead/behind), because
+   §4.2(c)'s promise is "one call answers where am I" and a model that must call a
+   second tool for the sibling trees has not got that. Constraint this creates:
+   `session_info` is a **core** tool (`core/dispatch.nim:969`), so it may not
+   call the `git` component's tool `git_worktree_list`; the shape comes from
+   `sdk/checkout.nim` (slice 0) plus `git status --porcelain` per tree, stays
+   `effect: read`, and caches nothing. Two trees cost two `git` calls, so cap the
+   list (the ledger's own entries first, then git's, bounded like
+   `maxWorkspaceRoots`). Blocks slice 5.
+
+None of the three blocks slices 0–2, which is why those remain the recommended
+start — and none of them is a design risk: each already has a recommendation
+above that the implementer can take as the default.
+
 ## 8. Slices, tests, effort
 
 Each slice is independently shippable and testable; the order is the dependency
@@ -895,14 +1099,14 @@ order.
 
 | # | Slice | Touches | Test |
 |---|---|---|---|
-| 0 | `sdk/checkout.nim` + three consumers | sdk, core/workspace, systemprompt, lsp/roots | extend `t_workspaces` (worktree/submodule/superproject shapes, `primaryRoot` from inside a worktree); `t_lsp`, `t_systemprompt` stay green |
+| 0 | ~~`sdk/checkout.nim` + three consumers~~ **SHIPPED** | sdk, core/workspace, systemprompt, lsp/roots | `t_workspaces` (checkout kind for clone/worktree/submodule/plain, `primaryRoot` from inside a worktree, `pathInRoots` boundary, `containingRoot`); `t_lsp` gains `treeRoot` (a worktree file resolves to the worktree, never the primary); `t_systemprompt` green on the delegated shadow rule |
 | 1 | live set: graph signature + `ev.worktree.changed` + `__workspace.primary/worktree` | core/dispatch, core/conversation, core/workspace | `t_workspaces` (pure) + a new `t_worktrees` (e2e, `newCoreSandbox` + `mock_llm` like `t_arbitration`: create mid-turn → next dispatch admits) |
 | 2 | opaque claim follows resolved cwd (+ `roots: true`) | core/dispatch | `t_locks` (pure: claim root per cwd), `t_arbitration` (two roots, one lease) |
-| 3 | `git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "merged/live-pin refusals", git's own dirty refusal surfaced verbatim, and `add` landing a sibling that leaves `git status` clean with no ignore edit) |
+| 3 | `git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards. **Includes** the component's first store use and `x-harness.sessionId` on the new verbs (§4.3 step 3) | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "merged/live-pin refusals", a store-down `add` that still creates and reports the ledger miss, git's own dirty refusal surfaced verbatim, and `add` landing a sibling that leaves `git status` clean with no ignore edit; plus `add` from *inside* a worktree landing in the primary's container) |
 | 4 | `git_merge_preview` + `git_merge {start,abort}` + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
 | 5 | `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
 | 6 | peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
-| 7 | client: the move-vs-fork decision (§5.1), `/worktree add|merge|rm|close` (with `close` switching back to the origin), chip, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus; `close` asserts the switch-back target) |
+| 7 | client: the move-vs-fork decision (§5.1), `/worktree add` / `merge` / `rm` / `close` (with `close` switching back to the origin), chip, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus; `close` asserts the switch-back target) |
 | 8 | docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`, `sessionmeta.origin`, the merge notice kind), a refresh of [../WORKTREES-TUTORIAL.md](../WORKTREES-TUTORIAL.md) so Part 1 becomes Part 2, FEATURES, PLAN, then the zh/zh-TW refresh | docs | — |
 
 The user's own ordering is worth respecting over the dependency order: slice 5
@@ -912,11 +1116,13 @@ what make it *stay* true and be arbitrated. Slices 3–4 are the merge half; 7�
 are the surface, and 6 is the only slice that could be dropped without breaking
 a §5 promise beyond "the fork is supervised like a subagent".
 
-Effort, honestly: 0 ≈ 1 day, 1 ≈ 1 day, 2 ≈ ½ day, 3 ≈ 2–3 days, 4 ≈ 1–2 days,
-5 ≈ 1 day, 6 ≈ 1 day, 7 ≈ 1–2 days (the decision table plus four subcommands),
-8 ≈ 1 day. Slices 0–2 are ~2½ days and remove F1 and the arbitration hole on
-their own — worth doing even if nothing else lands. Slices 3–5 plus 7 are what
-the "friction-free" claim actually rests on.
+Effort, honestly: 0 ≈ 1 day, 1 ≈ 1 day, 2 ≈ ½ day, 3 ≈ 2½–3 days (it now carries
+the component's first stateful surface, the ledger's store-down fallback and the
+orientation rule — §4.3 steps 1 and 3), 4 ≈ 1–2 days, 5 ≈ 1 day, 6 ≈ 1 day,
+7 ≈ 1–2 days (the decision table plus four subcommands), 8 ≈ 1 day. Slices 0–2
+are ~2½ days and remove F1 and the arbitration hole on their own — worth doing
+even if nothing else lands. Slices 3–5 plus 7 are what the "friction-free" claim
+actually rests on.
 
 ## 9. Open questions, with a recommendation each
 
@@ -1028,3 +1234,37 @@ sandbox writable roots derived from the resolved checkout, the gate) consumes
 this proposal's outputs: `isolation` as a per-conversation key it can pass to a
 child, `checkout.primaryRoot` as the one answer about where a tree's primary is,
 and `__workspace` as the non-prefix context every component already reads.
+
+### §8.0 Slice 0 — implementation notes (shipped 2026-11-01)
+
+What the code does now, and the two findings that changed it while building.
+
+- **`sdk/checkout.nim`** (new, std-only): `checkoutShape(dir)` → `Checkout{kind,
+  root, gitDir, commonDir, primaryRoot, branch, superproject}`;
+  `worktrees(dir)` → parsed `git worktree list --porcelain` (locked reason,
+  prunable, bare, detached); `pathInRoots`/`containingRoot` for workspace-set
+  membership; `gitQuery`/`gitLines` shared best-effort helpers.
+- **`core/workspace.nim`** now delegates: `normalizeRoot` re-exported,
+  `pathInWorkspace` → `pathInRoots`, and the porcelain re-split replaced by
+  `worktrees()`. Public surface unchanged, so no call site moved.
+- **`components/systemprompt`**: the hand-rolled `.git`-file parse is gone; the
+  shadow rule asks `checkoutShape(root).kind == ckLinkedWorktree` and uses
+  `primaryRoot`.
+- **`components/lsp/roots.nim`**: `normalizeRoot` re-exported; new `treeRoot`
+  (git decides the TREE, language markers decide the project dir *inside* it)
+  replaces `deriveRootUnbounded` at the out-of-workspace call site. Imported
+  bare (`import checkout`) because `sdk/checkout.nim` is std-only — that module
+  must stay bus-free or `t_lsp`'s hermetic section would drag NATS in.
+- **Finding 1 — the submodule folklore is wrong on git 2.43.** The plan said a
+  submodule has `gitDir != commonDir` and therefore needs the superproject
+  guard. Measured: a submodule reports `git-dir == common-dir ==
+  .git/modules/<name>`, so it looks exactly like a plain clone. Classification
+  now decides `ckSubmodule` from `--show-superproject-working-tree` FIRST, and
+  the dir comparison only distinguishes clone from linked worktree. The guard
+  is kept as defence (an older git, or an exported `GIT_DIR`, can report the
+  pair differently — both re-measured), and `t_workspaces` asserts it.
+- **Finding 2 — `primaryRoot` is uniform, not "empty for the primary".** The
+  first version returned "" for a plain clone, which forced every caller to
+  special-case "am I already the primary?" — the same question `kind` already
+  answers. It now always answers the parent of `…/.git`; callers branch on
+  `kind`. `t_workspaces` asserts both directions.

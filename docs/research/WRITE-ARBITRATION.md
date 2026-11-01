@@ -2,7 +2,11 @@
 
 > Status: **A phases 1 and main phase-2 declarations implemented; B remains a proposal.**
 > Restart/outage/TTL contracts are implemented too; worktree ownership and OS
-> fencing are not. Two related holes, one ordering:
+> fencing are not. Worktree ownership is specified in
+> [WORKTREES.md](WORKTREES.md) (§4.3–§4.5, slices 2–3), which also records the
+> one place it disagrees with this document's phase 3 (§10: per-worktree
+> exclusivity was rejected in favour of path striping — "a second writer in the
+> SAME worktree is refused" is **not** shipped and is not planned). Two related holes, one ordering:
 > A is a correctness fix, B is what makes A's receipts useful, and the eval
 > harness (PLAN.md "Current priorities") is what stops either being asserted
 > rather than measured. Open work has one home — [../PLAN.md](../PLAN.md).
@@ -238,7 +242,7 @@ still run concurrently: their stripes do not overlap.
 |---|---|---|
 | 1 | `locks` component + dispatch gate + `edit`/`write` only | two sessions, one file: the second is refused and names the first; two sessions, different files of one repo: both succeed |
 | 2 | opaque writers (`bash`, builder, plugins, mcp, fabric) | an opaque writer excludes a path-bound one; disjoint conversations stay parallel |
-| 3 | crash/TTL + worktree claims | kill the holder → the lease expires → the next writer proceeds; a worktree root claims independently of the primary |
+| 3 | crash/TTL + worktree claims | kill the holder → the lease expires → the next writer proceeds; a worktree root claims independently of the primary. **Split, and partly re-scoped:** crash/TTL shipped; "the worktree root claims independently" is correct and is what the sibling `<repo>.wt/<name>` layout guarantees; a claim OVER a worktree root never existed (the opaque claim named the primary) and is fixed by [WORKTREES.md](WORKTREES.md) §4.4 |
 
 Effort: phase 1 ≈ 2–3 days (component ≈ 1, gate + schema ≈ 1, tests ≈ ½),
 phase 2 ≈ 1 day of declarations plus tests.

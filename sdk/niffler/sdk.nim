@@ -41,11 +41,13 @@ import natsnim
 import ../envelope
 import ../dotenv
 import ../subjects
+import ../checkout
 import procutil
 import jsonx
 
 export envelope
 export subjects  # session subject builders (wire spec, docs/WIRE.md)
+export checkout  # git checkout shape (worktree/submodule), local only
 export jsonx     # nil-safe JsonNode helpers (kind/iterate/$ on nil)
 export procutil  # runCmd/runArgv/capBytes/capLines/tailBytes
 export dotenv    # standalone clients (cli, console) import niffler/sdk only

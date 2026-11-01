@@ -1057,7 +1057,10 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   let conversationWorkspace = rootDir()
   let outsideWorkspace = not inside(conversationWorkspace, path)
   if not inside(workspaceRoot, path):
-    let derived = deriveRootUnbounded(path,
+    # treeRoot: the checkout decides the TREE, the language markers decide
+    # the project dir inside it (sdk/checkout.nim). Replaces a bare marker
+    # walk that could climb out of a worktree into a parent checkout.
+    let derived = treeRoot(path,
       rootMarkersForExt(splitFile(path).ext.toLowerAscii()))
     var derivedRoot = if derived.len == 0: "/" else: derived
     var home = getHomeDir()

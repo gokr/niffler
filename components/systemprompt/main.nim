@@ -237,31 +237,22 @@ proc main() =
       let cwd = toolArgs{"cwd"}.getStr(root).expandTilde()
 
       # --- worktree shadow rule -------------------------------------------
-      # When cwd is a linked worktree nested under the main repo, the main
-      # repo root's context file is shadowed by the worktree's own copy:
-      # the ancestor walk would apply the same logical repo scope twice.
-      # `git worktree add` writes a `gitdir: <path>` file into .git (an
-      # ordinary repo has a .git directory); the gitdir lives at
-      # <main>/.git/worktrees/<name>, so the main root is the prefix before
-      # "/.git/worktrees/".
+      # When the harness root is a linked worktree of another checkout (a
+      # bench worktree, a feature tree), the MAIN checkout's context file is
+      # shadowed by the worktree's own copy: the ancestor walk would otherwise
+      # apply the same logical repo scope twice. The shape comes from
+      # sdk/checkout.nim — the one place that answers "worktree of what?" —
+      # instead of re-deriving it from the `.git` file's text.
       var shadowed = ""
-      if cwd.startsWith(root & "/") and fileExists(root / ".git"):
-        try:
-          let gitline = readFile(root / ".git").strip()
-          if gitline.startsWith("gitdir: "):
-            let gitPath = gitline["gitdir: ".len .. ^1].strip()
-            let marker = "/.git/worktrees/"
-            let idx = gitPath.find(marker)
-            if idx > 0:
-              let mainRoot = gitPath[0 ..< idx]
-              if mainRoot.len > 0 and mainRoot != root:
-                let worktreeFile = loadContextFileFromDir(root)
-                if worktreeFile.path.len > 0:
-                  let cand = mainRoot / contextFileName(worktreeFile.path)
-                  if fileExists(cand):
-                    shadowed = cand
-        except CatchableError:
-          discard
+      if cwd.startsWith(root & "/"):
+        let shape = checkoutShape(root)
+        if shape.kind == ckLinkedWorktree and shape.primaryRoot.len > 0 and
+            shape.primaryRoot != normalizeRoot(root):
+          let worktreeFile = loadContextFileFromDir(root)
+          if worktreeFile.path.len > 0:
+            let cand = shape.primaryRoot / contextFileName(worktreeFile.path)
+            if fileExists(cand):
+              shadowed = cand
 
       # --- ancestor walk: cwd → the scope root (inclusive) ----------------
       # One file per directory, dedup by path. For workspaces inside the
