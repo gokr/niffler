@@ -1113,7 +1113,7 @@ order.
 | # | Slice | Touches | Test |
 |---|---|---|---|
 | 0 | ~~`sdk/checkout.nim` + three consumers~~ **SHIPPED** | sdk, core/workspace, systemprompt, lsp/roots | `t_workspaces` (checkout kind for clone/worktree/submodule/plain, `primaryRoot` from inside a worktree, `pathInRoots` boundary, `containingRoot`); `t_lsp` gains `treeRoot` (a worktree file resolves to the worktree, never the primary); `t_systemprompt` green on the delegated shadow rule |
-| 1 | live set: graph signature + `ev.worktree.changed` + `__workspace.primary/worktree` | core/dispatch, core/conversation, core/workspace | `t_workspaces` (pure) + a new `t_worktrees` (e2e, `newCoreSandbox` + `mock_llm` like `t_arbitration`: create mid-turn → next dispatch admits) |
+| 1 | ~~live set: graph signature + `__workspace.primary/worktree`~~ **SHIPPED** (the `ev.worktree.changed` event is folded into slice 3, where the component that publishes it lives) | core/dispatch | `t_liveset`: `graphSignature` moves on add/remove/last-removed and distinguishes two trees created in the SAME second; `workspaceRootsFor` admits a tree created after the first dispatch with no grant and no restart, notices its removal, and caches the conversation's checkout shape |
 | 2 | opaque claim follows resolved cwd (+ `roots: true`) | core/dispatch | `t_locks` (pure: claim root per cwd), `t_arbitration` (two roots, one lease) |
 | 3 | `git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards. **Includes** the component's first store use and `x-harness.sessionId` on the new verbs (§4.3 step 3) | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "merged/live-pin refusals", a store-down `add` that still creates and reports the ledger miss, git's own dirty refusal surfaced verbatim, and `add` landing a sibling that leaves `git status` clean with no ignore edit; plus `add` from *inside* a worktree landing in the primary's container) |
 | 4 | `git_merge_preview` + `git_merge {start,abort}` + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
@@ -1281,3 +1281,41 @@ What the code does now, and the two findings that changed it while building.
   special-case "am I already the primary?" — the same question `kind` already
   answers. It now always answers the parent of `…/.git`; callers branch on
   `kind`. `t_workspaces` asserts both directions.
+
+### §8.1 Slice 1 — implementation notes (shipped 2026-11-02)
+
+- **`graphSignature(primary)`** (`core/dispatch.nim`): `shape.commonDir` plus
+  the nanosecond mtime of `<commonDir>/worktrees`, or the literal `absent` when
+  git has removed it, or `nodir` outside a repository. One `stat` per dispatch.
+- **`workspaceRootsFor`** now rebuilds on `rootsKey != key OR graphSig != sig`
+  — two independent conditions, because a grant must rebuild when the graph is
+  unchanged and a new tree must rebuild when nothing was granted.
+- **`__workspace`** gains `primary` and `worktree {linked, branch, primaryRoot,
+  submodule}` alongside the untouched `root`/`roots`, fed from
+  `NestedState.checkoutCached` (computed with the set, so one staleness rule).
+- **`ev.worktree.changed` is not in this slice.** It belongs with the component
+  that publishes it (`git_worktree`, slice 3); the signature makes the event an
+  optimisation rather than the mechanism, so a worktree made by bash or by hand
+  in another terminal is picked up either way. Worth stating because the plan
+  originally listed it here.
+
+Two measurement corrections that changed the design, both now asserted:
+
+- **`st_size` is not a backstop.** The plan proposed `size` in the signature as
+  protection against coarse timestamps. Measured across adds and removes, the
+  directory's `st_size` stayed **4096** — it reflects the inode, not the entry
+  count. mtime alone carries the signal; `size` was dropped rather than left in
+  as false comfort.
+- **The e2e test had to be rewritten, and the reason is a lesson.** The first
+  version created a real worktree mid-conversation and asked the `locks`
+  component to admit a write — but it passed `roots` explicitly in the request,
+  so `locks` never consulted the conversation's cached set and the test PASSED
+  with the bug restored. A test that cannot fail is worse than no test. It now
+  drives `workspaceRootsFor` on a real `CoreTools`, which is the actual cache.
+
+Both mechanisms were verified by reverting each in turn:
+reverting the cache condition produces 4 failures ("the next dispatch sees the
+new tree WITHOUT a grant or restart — set = @[primary]"), and coarsening the
+signature to whole seconds produces 2 ("a SECOND worktree in the same second is
+still a new signature"). The second one is the sub-second trap the plan
+predicted, now demonstrated rather than assumed.

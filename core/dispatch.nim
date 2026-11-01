@@ -11,6 +11,7 @@ import yaml/tojson
 import natsnim
 import ../sdk/envelope
 import ../sdk/subjects
+import ../sdk/checkout
 import ../sdk/niffler/sandboxpolicy
 import approval
 import catalog
@@ -163,6 +164,21 @@ type
       ## cached list was built from. A grant appearing or being revoked must
       ## rebuild the set on the next call, but a store read on every dispatch
       ## is wasted work — compare this instead.
+    graphSig*: string
+      ## SECOND, independent invalidation condition (WORKTREES.md §4.2a): a
+      ## signature of the repository's checkout graph, so a worktree created
+      ## by `git worktree add` — by the new verb, by bash, or by hand in
+      ## another terminal — is admitted on the NEXT dispatch instead of
+      ## staying invisible for the runner's lifetime.
+      ##
+      ## Kept separate from rootsKey because the two answer different
+      ## questions: a grant must still rebuild when the graph is unchanged,
+      ## and a new tree must rebuild when nothing was granted.
+    checkoutCached*: Checkout
+      ## The workspace's own git shape, computed with the set so both share one
+      ## staleness rule. Feeds __workspace.worktree, so a component can tell
+      ## "a linked worktree of X" from "a plain checkout" without shelling git
+      ## itself (WORKTREES.md §4.2b).
     leases*: Table[string, NestedLease]
     ## Active session-context leases, KEYED BY LEASE ID (P2.5 B). One lease
     ## per in-flight session-context dispatch: each entry carries its own
@@ -1852,11 +1868,50 @@ proc saveGrantedRoots*(ct: CoreTools, session, workspace: string,
   except CatchableError:
     return false
 
+proc graphSignature*(primary: string): string =
+  ## A cheap signature of the checkout graph: if it changes, the workspace set
+  ## may have changed. One `stat`, not a git invocation, on the dispatch path.
+  ##
+  ## `git worktree add/remove` creates or deletes a directory under
+  ## `<commonDir>/worktrees/`, so that directory IS the signal. Three measured
+  ## facts (WORKTREES.md §4.2a), each load bearing:
+  ##
+  ## - **Sub-second precision is required.** Two `worktree add`s inside one
+  ##   second share `st_mtime` at SECOND granularity (measured:
+  ##   …0336904597 vs …0342904512 ns, same second). A seconds-based signature
+  ##   silently keeps the second tree invisible — exactly the bug this exists
+  ##   to kill. `getFileInfo().lastWriteTime.nanosecond` carries it.
+  ## - **Absence is a value.** git DELETES `<commonDir>/worktrees/` when the
+  ##   last worktree goes, so a failed stat must encode "no such directory"
+  ##   rather than leave the previous signature (and its stale set) in place.
+  ## - **`size` is NOT a usable backstop.** Measured: the directory's `st_size`
+  ##   stayed 4096 across adds and removes, because it reflects the directory
+  ##   inode, not its entry count. Counting entries would be correct but costs a
+  ##   `readdir` on every dispatch; mtime alone is enough, so that is what this
+  ##   uses. Do not re-add `size` believing it adds safety — it adds nothing.
+  if primary.len == 0: return ""
+  let shape = checkoutShape(primary)
+  if shape.kind == ckNone: return "nodir"
+  result = shape.commonDir
+  if shape.commonDir.len == 0: return result
+  try:
+    let info = getFileInfo(shape.commonDir / "worktrees")
+    let stamp = info.lastWriteTime
+    result.add "\n" & $stamp.toUnix & "." & $stamp.nanosecond
+  except CatchableError:
+    result.add "\nabsent"   # no worktrees, or git removed the directory
+
 proc workspaceRootsFor*(ct: CoreTools): seq[string] =
-  ## The conversation's workspace set, cached for the runner's lifetime: the
-  ## primary workspace plus the trees that belong to the same project
-  ## (core/workspace.nim). Recomputed only when the primary changes, so the git
-  ## calls happen once instead of on every tool call.
+  ## The conversation's workspace set: the primary workspace plus the trees
+  ## that belong to the same project (core/workspace.nim).
+  ##
+  ## Recomputed only when one of two INDEPENDENT things moved:
+  ## - `rootsKey` — the primary or the human-granted roots changed;
+  ## - `graphSig` — the repository's checkout graph changed, so a worktree
+  ##   created mid-conversation is admitted on the next dispatch without a
+  ##   grant and without a runner restart.
+  ## Neither replaces the other (a grant must rebuild when the graph is
+  ## unchanged; a new tree must rebuild when nothing was granted).
   let primary = if ct.nested != nil: ct.nested.workspace else: ""
   if primary.len == 0: return @[]
   # Human grants join the set the write fence and components both consult. The
@@ -1865,13 +1920,17 @@ proc workspaceRootsFor*(ct: CoreTools): seq[string] =
   var granted = grantedRootsFor(ct, if ct.nested != nil: ct.nested.session else: "")
   var key = normalizeRoot(primary)
   for g in granted: key.add "\n" & g
-  if ct.nested.workspaceRoots.len == 0 or ct.nested.rootsKey != key:
+  let sig = graphSignature(primary)
+  if ct.nested.workspaceRoots.len == 0 or ct.nested.rootsKey != key or
+      ct.nested.graphSig != sig:
     ct.nested.workspaceRoots = computeWorkspaceRoots(primary)
     for g in granted:
       let added = addWorkspaceRoot(ct.nested.workspaceRoots, g)
       if not added.ok:
         echo "core: granted root not added: " & added.error
     ct.nested.rootsKey = key
+    ct.nested.graphSig = sig
+    ct.nested.checkoutCached = checkoutShape(primary)
   ct.nested.workspaceRoots
 
 proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =
@@ -1891,7 +1950,23 @@ proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =
   if roots.len == 0: return
   var arr = newJArray()
   for r in roots: arr.add(%r)
-  callArgs["__workspace"] = %*{"root": roots[0], "roots": arr}
+  var ws = %*{"root": roots[0], "roots": arr}
+  # The git shape of the conversation's own tree (WORKTREES.md §4.2b). Purely
+  # additive: a component that only reads root/roots keeps working. It exists
+  # for the consumers that cannot infer it from a path — bash's guard (which
+  # tree the sandbox root really is, and that it is a linked worktree of
+  # another checkout) — and it is the same fact session_info reports, so the
+  # model and a component can never disagree about where the work is.
+  if ct.nested != nil and ct.nested.checkoutCached.kind != ckNone:
+    let co = ct.nested.checkoutCached
+    ws["primary"] = %(if co.primaryRoot.len > 0: co.primaryRoot
+                      else: roots[0])
+    ws["worktree"] = %*{
+      "linked": co.kind == ckLinkedWorktree,
+      "branch": co.branch,
+      "primaryRoot": co.primaryRoot,
+      "submodule": co.kind == ckSubmodule}
+  callArgs["__workspace"] = ws
 
 proc applyWorkspace(schema, args: JsonNode, workspace: string) =
   ## Resolve schema-declared path arguments against the active conversation's
