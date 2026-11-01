@@ -1114,7 +1114,7 @@ order.
 |---|---|---|---|
 | 0 | ~~`sdk/checkout.nim` + three consumers~~ **SHIPPED** | sdk, core/workspace, systemprompt, lsp/roots | `t_workspaces` (checkout kind for clone/worktree/submodule/plain, `primaryRoot` from inside a worktree, `pathInRoots` boundary, `containingRoot`); `t_lsp` gains `treeRoot` (a worktree file resolves to the worktree, never the primary); `t_systemprompt` green on the delegated shadow rule |
 | 1 | ~~live set: graph signature + `__workspace.primary/worktree`~~ **SHIPPED** (the `ev.worktree.changed` event is folded into slice 3, where the component that publishes it lives) | core/dispatch | `t_liveset`: `graphSignature` moves on add/remove/last-removed and distinguishes two trees created in the SAME second; `workspaceRootsFor` admits a tree created after the first dispatch with no grant and no restart, notices its removal, and caches the conversation's checkout shape |
-| 2 | opaque claim follows resolved cwd (+ `roots: true`) | core/dispatch | `t_locks` (pure: claim root per cwd), `t_arbitration` (two roots, one lease) |
+| 2 | ~~opaque claim follows resolved cwd (+ `roots: true`)~~ **SHIPPED** | core/dispatch | `t_locks` pure (claim root per cwd: primary, worktree, deep-inside, outside-set fail-safe, same-prefix sibling, `roots: true`, empty set); `t_arbitration` (a worktree `bash` and a primary `bash` hold leases in parallel, while two writers in the SAME tree still collide) |
 | 3 | `git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards. **Includes** the component's first store use and `x-harness.sessionId` on the new verbs (§4.3 step 3) | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "merged/live-pin refusals", a store-down `add` that still creates and reports the ledger miss, git's own dirty refusal surfaced verbatim, and `add` landing a sibling that leaves `git status` clean with no ignore edit; plus `add` from *inside* a worktree landing in the primary's container) |
 | 4 | `git_merge_preview` + `git_merge {start,abort}` + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
 | 5 | `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
@@ -1319,3 +1319,38 @@ new tree WITHOUT a grant or restart — set = @[primary]"), and coarsening the
 signature to whole seconds produces 2 ("a SECOND worktree in the same second is
 still a new signature"). The second one is the sub-second trap the plan
 predicted, now demonstrated rather than assumed.
+
+### §8.2 Slice 2 — implementation notes (shipped 2026-11-02)
+
+- **`opaqueClaimRoot(args, wsPolicy, roots, primary)`** (`core/dispatch.nim`):
+  the workspace-set root containing the resolved `cwdField`, deepest match
+  wins, else the primary. Used for both opaque spellings (`writes.root: true`
+  and an undeclared tool) and as the fallback for a path-bound declaration that
+  matched nothing. Cost is a normalized string comparison over the
+  already-cached set — no stat, no git.
+- **`writes: {"roots": true}`** claims every root. Nothing shipped needs it; it
+  exists so "I touch every tree" is a statement rather than the accident an
+  omitted declaration used to be.
+- **The call site passes the set** (`workspaceRootsFor(ct)`) into
+  `writePathsFor`, which is what makes the cwd resolvable against roots at all.
+
+Two things worth recording:
+
+- **A wrong-field bug the tests caught immediately.** My first version looked
+  for `cwdField` directly under `x-harness`; it is declared under
+  `x-harness.workspace` (the same node `applyWorkspace` reads). Three pure
+  checks failed with `@["/home/me/repo"]` where a worktree was expected. The
+  tests found it in one run — this is the case for writing the pure checks
+  before wiring the call site.
+- **The fail-safe direction is deliberate.** A cwd outside every root, an
+  absent `cwdField`, or an empty cached set all keep the coarse primary claim,
+  exactly as before. An oversized claim serializes too much; claiming nothing
+  guards nothing, which is strictly worse. Stated in the code so a future
+  reader does not "fix" it into a no-claim.
+
+Note on what the e2e test does and does not prove: `t_arbitration` now shows a
+worktree `bash` and a primary `bash` holding leases in PARALLEL while two
+writers in the same tree still collide. That is the arbitration outcome, at the
+locks contract level. The gate's own choice of root is covered by `t_locks`'
+pure checks, because a scripted turn cannot vary NIF_ROOT from the workspace in
+that sandbox — the same limitation the harness-state section above documents.

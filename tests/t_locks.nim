@@ -58,6 +58,72 @@ proc checkPure() =
           @["/ws"], "")
   check("an undeclared tool is treated as opaque",
         writePathsFor(%*{}, %*{}, "/ws") == @["/ws"], "")
+  # The opaque claim follows the RESOLVED cwd into the tree the call actually
+  # works in (WORKTREES.md §4.4). Before this, `bash` with cwd inside a
+  # worktree claimed the conversation PRIMARY and left the worktree it really
+  # wrote unguarded: the fence admitted the path (it is in the set) but no
+  # lease covered it, so another conversation could interleave freely.
+  let roots = @["/home/me/repo", "/home/me/repo.wt/feat"]
+  let bashSchema = %*{"x-harness": {"writes": {"root": true},
+                                    "workspace": {"cwdField": "cwd"}}}
+  check("an opaque writer with no cwd claims the primary",
+        writePathsFor(bashSchema, %*{}, "/home/me/repo", "",
+                      roots) == @["/home/me/repo"],
+        $writePathsFor(bashSchema, %*{}, "/home/me/repo", "", roots))
+  check("an opaque writer with a defaulted cwd claims the primary",
+        writePathsFor(bashSchema, %*{"cwd": "/home/me/repo"},
+                      "/home/me/repo", "", roots) == @["/home/me/repo"],
+        $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo"},
+                       "/home/me/repo", "", roots))
+  check("an opaque writer with cwd IN the worktree claims the WORKTREE",
+        writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat"},
+                      "/home/me/repo", "", roots) == @["/home/me/repo.wt/feat"],
+        $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat"},
+                       "/home/me/repo", "", roots))
+  check("a cwd DEEP inside the worktree still resolves to that tree",
+        writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat/src/deep"},
+                      "/home/me/repo", "", roots) == @["/home/me/repo.wt/feat"],
+        $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat/src/deep"},
+                       "/home/me/repo", "", roots))
+  check("the primary's own subdirectory still resolves to the primary",
+        writePathsFor(bashSchema, %*{"cwd": "/home/me/repo/src"},
+                      "/home/me/repo", "", roots) == @["/home/me/repo"],
+        $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo/src"},
+                       "/home/me/repo", "", roots))
+  check("a cwd OUTSIDE every root keeps the fail-safe primary claim",
+        writePathsFor(bashSchema, %*{"cwd": "/elsewhere/other"},
+                      "/home/me/repo", "", roots) == @["/home/me/repo"],
+        $writePathsFor(bashSchema, %*{"cwd": "/elsewhere/other"},
+                       "/home/me/repo", "", roots))
+  check("no cached set at all keeps the old behaviour",
+        writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat"},
+                      "/home/me/repo", "") == @["/home/me/repo"],
+        $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat"},
+                       "/home/me/repo", ""))
+  check("a same-prefix sibling is not swallowed by the primary's claim",
+        writePathsFor(bashSchema, %*{"cwd": "/home/me/repo2"},
+                      "/home/me/repo", "", @["/home/me/repo"]) ==
+          @["/home/me/repo"],
+        $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo2"},
+                       "/home/me/repo", "", @["/home/me/repo"]))
+  # `writes: {"roots": true}` — an explicit "I touch every tree" statement.
+  let allRootsSchema = %*{"x-harness": {"writes": {"roots": true}}}
+  check("a roots declaration claims every root of the set",
+        writePathsFor(allRootsSchema, %*{}, "/home/me/repo", "", roots) == roots,
+        $writePathsFor(allRootsSchema, %*{}, "/home/me/repo", "", roots))
+  check("a roots declaration with no set falls back to the workspace",
+        writePathsFor(allRootsSchema, %*{}, "/home/me/repo", "") ==
+          @["/home/me/repo"],
+        $writePathsFor(allRootsSchema, %*{}, "/home/me/repo", ""))
+  check("a path-bound declaration that matches nothing claims the CWD tree",
+        writePathsFor(%*{"x-harness": {"writes": {"paths": ["path"]},
+                                       "workspace": {"cwdField": "cwd"}}},
+                      %*{"cwd": "/home/me/repo.wt/feat"},
+                      "/home/me/repo", "", roots) == @["/home/me/repo.wt/feat"],
+        $writePathsFor(%*{"x-harness": {"writes": {"paths": ["path"]},
+                                        "workspace": {"cwdField": "cwd"}}},
+                       %*{"cwd": "/home/me/repo.wt/feat"},
+                       "/home/me/repo", "", roots))
   check("read tools take no claim",
         writePathsFor(%*{"x-harness": {"effect": "read"}}, %*{}, "/ws").len == 0)
   check("orchestrators defer claims to nested dispatch",

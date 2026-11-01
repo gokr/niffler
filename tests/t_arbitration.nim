@@ -375,6 +375,42 @@ proc main() =
   discard call(nc, "locks", "lock_release",
                %*{"leaseId": "conv-installer2:install-3"})
 
+  # Worktree arbitration (WORKTREES.md §4.4): the opaque claim follows the
+  # resolved cwd into the tree the call works in. Sibling layout, so the two
+  # trees are disjoint by separator boundary — which is exactly why a `bash`
+  # in the worktree must NOT claim the primary: doing so serialized every
+  # primary write against every worktree command.
+  #
+  # Two leases, one per tree, taken by DIFFERENT conversations: both must be
+  # admitted. Before the fix the worktree-bash claim would have been the
+  # primary root (what `writePathsFor` produced for any opaque writer), and the
+  # second acquire would have collided.
+  let wtRoot = root / "ws.wt" / "feat"
+  createDir(wtRoot)
+  let wtClaim = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "ws", "roots": [root / "ws", wtRoot],
+    "paths": [wtRoot], "sessionId": "conv-wt-bash", "tool": "bash",
+    "callId": "wt-1", "ttlMs": 120000}, 10000)
+  check("an opaque writer in the worktree claims the worktree",
+        wtClaim{"ok"}.getBool(false), $wtClaim)
+  let primaryClaim = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "ws", "roots": [root / "ws", wtRoot],
+    "paths": [root / "ws"], "sessionId": "conv-primary-bash", "tool": "bash",
+    "callId": "p-1", "ttlMs": 120000}, 10000)
+  check("a primary writer proceeds in PARALLEL with the worktree writer",
+        primaryClaim{"ok"}.getBool(false), $primaryClaim)
+  # And the exclusion that must still hold: a second writer into the SAME tree.
+  let sameTree = call(nc, "locks", "lock_acquire", %*{
+    "root": root / "ws", "roots": [root / "ws", wtRoot],
+    "paths": [wtRoot / "src"], "sessionId": "conv-rival-wt", "tool": "edit",
+    "callId": "wt-2"}, 10000)
+  check("a second writer inside the worktree IS excluded",
+        not sameTree{"ok"}.getBool(true) and
+        "E_WRITE_BUSY" in sameTree{"error"}.getStr(""), $sameTree)
+  discard call(nc, "locks", "lock_release", %*{"leaseId": "conv-wt-bash:wt-1"})
+  discard call(nc, "locks", "lock_release",
+               %*{"leaseId": "conv-primary-bash:p-1"})
+
   report("ARBITRATION TEST")
 
 main()

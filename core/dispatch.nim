@@ -2199,8 +2199,48 @@ proc harnessClaimsFor*(schema: JsonNode, harnessRoot: string): seq[string] =
       continue
     result.add(resolved)
 
+proc opaqueClaimRoot*(args, wsPolicy: JsonNode, roots: openArray[string],
+                      primary: string): string =
+  ## The tree an opaque writer REALLY writes: the workspace-set root that
+  ## contains its resolved `cwdField` (deepest match wins), else the primary.
+  ## (WORKTREES.md §4.4.)
+  ##
+  ## The defect this closes: an opaque writer's claim was always
+  ## `@[workspace]` — the conversation's PRIMARY — regardless of what the call
+  ## touched. A `bash` with `cwd: <sibling>` therefore wrote the sibling
+  ## unclaimed: the fence admitted the path (it is in the set) but no lease
+  ## covered it, so a concurrent writer in another conversation could interleave
+  ## with it freely. With worktrees that is the everyday case — the whole point
+  ## of a tree is running builds there.
+  ##
+  ## Fail-safe by design: no `cwdField`, an unresolved value, or a cwd outside
+  ## every root all keep the coarse primary claim, exactly as before. A
+  ## conservative oversized claim serializes too much; claiming nothing would
+  ## guard nothing, which is strictly worse.
+  ##
+  ## Cost: `containingRoot` is a normalized string comparison over the
+  ## already-cached, already-normalized set — no stat, no git.
+  if primary.len == 0: return ""
+  # `cwdField` is declared under x-harness.workspace (the same node
+  # applyWorkspace reads), NOT directly under x-harness.
+  if wsPolicy != nil:
+    let cwdField = wsPolicy{"cwdField"}.getStr("")
+    if cwdField.len > 0 and args != nil:
+      let v = args{cwdField}
+      if v != nil and v.kind == JString:
+        let cwd = v.getStr("")
+        # applyWorkspace already resolved a relative cwd against the
+        # conversation workspace, so this is normally absolute; a value that
+        # escaped that resolution is given a chance here anyway.
+        if cwd.len > 0 and cwd != ".":
+          let resolved = if cwd.isAbsolute(): cwd else: primary / cwd
+          let root = containingRoot(resolved, roots)
+          if root.len > 0: return root
+  primary
+
 proc writePathsFor*(schema, args: JsonNode, workspace: string,
-                    harnessRoot: string = ""): seq[string] =
+                    harnessRoot: string = "",
+                    roots: openArray[string] = []): seq[string] =
   ## The paths a call will write, from its `x-harness.writes` declaration
   ## (docs/research/WRITE-ARBITRATION.md). Path-bound writers name their file
   ## arguments — already workspace-resolved by applyWorkspace — and an opaque
@@ -2222,8 +2262,23 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string,
       (policy{"hidden"}.getBool(false) and policy{"runner"}.getBool(false))):
     return @[]
   let w = if schema != nil: schema{"x-harness"}{"writes"} else: nil
-  if w == nil or w.kind != JObject: return @[workspace]
-  if w{"root"}.getBool(false): return @[workspace]
+  # `writes: {"roots": true}` — this call legitimately touches EVERY root of the
+  # set (a whole-repo formatter, a cross-tree build). It exists so that
+  # "claim everything" is a statement rather than the accident an omitted
+  # declaration used to be. Nothing shipped needs it yet.
+  if w != nil and w.kind == JObject and w{"roots"}.getBool(false):
+    if roots.len == 0: return @[workspace]
+    var all: seq[string]
+    for r in roots:
+      if r notin all: all.add r
+    return all
+  # An opaque writer claims the tree it actually works in, not the conversation
+  # primary (opaqueClaimRoot / WORKTREES.md §4.4). Falls back to the primary
+  # whenever the cwd cannot be resolved, so this is never WEAKER than before.
+  let opaqueRoot = opaqueClaimRoot(args,
+    if policy != nil: policy{"workspace"} else: nil, roots, workspace)
+  if w == nil or w.kind != JObject: return @[opaqueRoot]
+  if w{"root"}.getBool(false): return @[opaqueRoot]
   # `{"none": true}` — this call takes NO write lease. It is the honest
   # statement for a tool that mutates no filesystem path at all, and it exists
   # because the alternative is a lie with a cost: the opaque default claims the
@@ -2271,7 +2326,7 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string,
           if it.kind == JString: add(it.getStr(""))
   # A path-bound declaration that matched nothing is still a write somewhere
   # in the workspace: fall back to the root rather than guard nothing.
-  if claimed.len == 0: claimed.add(workspace)
+  if claimed.len == 0: claimed.add(opaqueRoot)
   return claimed
 
 proc acquireWriteLease(ct: CoreTools, tool, callId: string,
@@ -2413,7 +2468,12 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # Acquire only after approval and timeout resolution: waiting for a human
   # must not consume the lease lifetime or prevent unrelated writers.
   let writePaths =
-    if ct.nested != nil: writePathsFor(schema, callArgs, ct.nested.workspace, ct.root)
+    if ct.nested != nil:
+      # The workspace SET is passed so an opaque writer's claim can follow its
+      # resolved cwd into a worktree (WORKTREES.md §4.4) instead of always
+      # claiming the conversation primary.
+      writePathsFor(schema, callArgs, ct.nested.workspace, ct.root,
+                    workspaceRootsFor(ct))
     else: @[]
   let lockCallId = if writePaths.len > 0: newId() else: ""
   if writePaths.len > 0:
