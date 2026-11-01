@@ -24,8 +24,16 @@ import (
 
 const (
 	searchListCap  = 1000 // limit cap, as `list` (listCap)
-	searchTextCap  = 16384
-	searchScanSize = 500 // rows read per scan batch
+	searchScanSize = 500  // rows read per scan batch
+	// The same per-kind budgets as store-sqlite: this engine has no index and
+	// scans, so the text it matches against must be identical or the two
+	// engines answer differently (they used to: reasoning was indexed on
+	// sqlite only). searchTextCap is the total; the rest are per-part so no
+	// single part can starve the others.
+	searchTextCap      = 65536
+	searchContentCap   = 49152 // message content (text, tool-result bodies)
+	searchReasoningCap = 8192  // prior-turn thinking ("what did I consider?")
+	searchToolCallCap  = 8192  // function names + arguments (paths, patterns, queries)
 )
 
 // searchTokens tokenizes text the way every engine does for `search`:
@@ -95,11 +103,16 @@ func appendIndexed(b *strings.Builder, s string) {
 }
 
 // indexedText builds the searchable text of one document — the documented,
-// per-kind field list (docs/WIRE.md "Store contract" / searchSchema):
+// per-kind field list (docs/WIRE.md "Store contract" / searchSchema), which
+// MUST match store-sqlite's byte for byte in effect:
 //
 //	conversation: id + value.title
-//	message:      id + every string under value.content (capped)
+//	message:      id + tool-call names/arguments + value.reasoning + every
+//	              string under value.content (each part capped)
 //	any other kind: id only
+//
+// Order matters: the structural parts are indexed FIRST so a huge tool result
+// cannot evict them (the old single 16KB budget did exactly that).
 func indexedText(kind, id string, value []byte) string {
 	var b strings.Builder
 	appendIndexed(&b, id)
@@ -113,33 +126,95 @@ func indexedText(kind, id string, value []byte) string {
 		}
 	case "message":
 		var doc map[string]json.RawMessage
-		if json.Unmarshal(value, &doc) == nil {
-			if content, ok := doc["content"]; ok {
+		if json.Unmarshal(value, &doc) != nil {
+			return b.String()
+		}
+		// Tool-call arguments name the files, symbols and commands a session
+		// touched, and a call message carries no text in `content` at all.
+		if calls, ok := doc["tool_calls"]; ok {
+			appendIndexed(&b, " ")
+			appendToolCalls(&b, calls, b.Len()+searchToolCallCap)
+		}
+		// Reasoning is canonical history: "what did I consider and reject".
+		// It used to be indexed on sqlite only, so the same query answered
+		// differently per engine.
+		if reasoning, ok := doc["reasoning"]; ok {
+			var s string
+			if json.Unmarshal(reasoning, &s) == nil && s != "" {
 				appendIndexed(&b, " ")
-				appendContentStrings(&b, content)
+				limit := b.Len() + searchReasoningCap
+				if limit > searchTextCap {
+					limit = searchTextCap
+				}
+				appendUpTo(&b, s, limit)
 			}
+		}
+		if content, ok := doc["content"]; ok {
+			appendIndexed(&b, " ")
+			limit := b.Len() + searchContentCap
+			if limit > searchTextCap {
+				limit = searchTextCap
+			}
+			appendContentStrings(&b, content, limit)
 		}
 	}
 	return b.String()
 }
 
+// appendToolCalls indexes each call's function name and `arguments` (a JSON
+// string in the OpenAI wire shape, sometimes an object). Ids are skipped.
+func appendToolCalls(b *strings.Builder, raw json.RawMessage, limit int) {
+	if b.Len() >= limit {
+		return
+	}
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) != nil {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) == nil {
+			arr = []json.RawMessage{raw}
+		} else {
+			return
+		}
+	}
+	for _, elem := range arr {
+		if b.Len() >= limit {
+			return
+		}
+		var call struct {
+			Function struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(elem, &call) != nil {
+			continue
+		}
+		appendIndexed(b, " "+call.Function.Name)
+		if call.Function.Arguments != nil {
+			appendIndexed(b, " ")
+			appendContentStrings(b, call.Function.Arguments, limit)
+		}
+	}
+}
+
 // appendContentStrings walks a message's `content` value collecting every
 // string scalar — content is either a string or an array of typed blocks
 // ({type, text, ...}), so a recursive walk covers both shapes.
-func appendContentStrings(b *strings.Builder, raw json.RawMessage) {
-	if b.Len() >= searchTextCap {
+func appendContentStrings(b *strings.Builder, raw json.RawMessage, limit int) {
+	if b.Len() >= limit {
 		return
 	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		appendIndexed(b, " "+s)
+		b.WriteString(" ")
+		appendUpTo(b, s, limit)
 		return
 	}
 	var arr []json.RawMessage
 	if json.Unmarshal(raw, &arr) == nil {
 		for _, elem := range arr {
-			appendContentStrings(b, elem)
-			if b.Len() >= searchTextCap {
+			appendContentStrings(b, elem, limit)
+			if b.Len() >= limit {
 				return
 			}
 		}
@@ -148,12 +223,31 @@ func appendContentStrings(b *strings.Builder, raw json.RawMessage) {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(raw, &obj) == nil {
 		for _, v := range obj {
-			appendContentStrings(b, v)
-			if b.Len() >= searchTextCap {
+			appendContentStrings(b, v, limit)
+			if b.Len() >= limit {
 				return
 			}
 		}
 	}
+}
+
+// appendUpTo appends s without crossing limit or splitting a rune.
+func appendUpTo(b *strings.Builder, s string, limit int) {
+	if s == "" {
+		return
+	}
+	room := limit - b.Len()
+	if room <= 0 {
+		return
+	}
+	if len(s) > room {
+		cut := room
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
+	}
+	b.WriteString(s)
 }
 
 // -----------------------------------------------------------------------
@@ -178,9 +272,10 @@ func searchSchema() map[string]any {
 		},
 		"required": []string{"kind"},
 		"description": "Search stored documents of a kind by text — the server-side filter for session browsers: " +
-			"finds conversations whose id or title matches, or messages whose content matches, without downloading " +
-			"the whole kind. Indexed fields per kind: conversation = id + title; message = id + content text " +
-			"(capped at 16KB); other kinds = id only. Matching: the query is split into words of letters/digits, " +
+			"finds conversations whose id or title matches, or messages whose content, tool-call arguments or " +
+			"reasoning match, without downloading the whole kind. Indexed fields per kind: conversation = id + " +
+			"title; message = id + tool-call names/arguments + reasoning + content text (per-part caps under a " +
+			"64KB document cap, structural parts first); other kinds = id only. Matching: the query is split into words of letters/digits, " +
 			"each must be a case-insensitive PREFIX of a word in the indexed text, all must match (AND); any other " +
 			"character is just a separator, so user input needs no escaping. Ordering is ascending id " +
 			"({items, hasMore, nextAfter?}, pass nextAfter back as `after` to page); the reply carries " +

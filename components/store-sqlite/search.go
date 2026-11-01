@@ -44,7 +44,15 @@ import (
 
 const (
 	searchListCap = 1000 // limit cap, as `list` (listCap)
-	searchTextCap = 16384
+	// searchTextCap bounds the indexed text of ONE document. It is a total, not
+	// a per-field figure, and each part below has its own budget so that no
+	// single part can starve the others: a 400KB tool result used to consume
+	// the whole allowance, which silently left the message's tool-call
+	// arguments and reasoning unindexed and unfindable.
+	searchTextCap      = 65536
+	searchContentCap   = 49152 // message content (text, tool-result bodies)
+	searchReasoningCap = 8192  // prior-turn thinking ("what did I consider?")
+	searchToolCallCap  = 8192  // function names + arguments (paths, patterns, queries)
 )
 
 // searchTokens tokenizes text the way every engine does for `search`:
@@ -94,8 +102,13 @@ func appendIndexed(b *strings.Builder, s string) {
 // per-kind field list (docs/WIRE.md "Store contract" / searchSchema):
 //
 //	conversation: id + value.title
-//	message:      id + every string under value.content (capped) + value.reasoning
+//	message:      id + tool-call names/arguments + value.reasoning + every
+//	              string under value.content (each part capped, see the consts)
 //	any other kind: id only
+//
+// Order matters: the structural parts (tool calls, reasoning) are small and
+// high-value, so they are indexed FIRST and cannot be evicted by a huge tool
+// result — which is exactly what the single 16KB budget used to do.
 //
 // Errors in the stored JSON degrade to indexing the id alone: the document
 // is still findable by id and the authority (`docs`) is untouched.
@@ -112,44 +125,106 @@ func indexedText(kind, id string, value []byte) string {
 		}
 	case "message":
 		var doc map[string]json.RawMessage
-		if json.Unmarshal(value, &doc) == nil {
-			if content, ok := doc["content"]; ok {
+		if json.Unmarshal(value, &doc) != nil {
+			return b.String()
+		}
+		// Tool-call arguments are session content too: `read {path: …}`,
+		// `grep {pattern: …}` and `bash {command: …}` name the files,
+		// symbols and commands a session actually touched, and they carry no
+		// text in `content` at all. Without them "which message looked at
+		// queue.nim?" is unanswerable from the store.
+		if calls, ok := doc["tool_calls"]; ok {
+			appendIndexed(&b, " ")
+			appendToolCalls(&b, calls, b.Len()+searchToolCallCap)
+		}
+		// Reasoning is canonical history too (the recall contract: search
+		// reaches everything the store keeps) — a message's thinking is what
+		// "what did I consider and reject" queries want.
+		if reasoning, ok := doc["reasoning"]; ok {
+			var s string
+			if json.Unmarshal(reasoning, &s) == nil && s != "" {
 				appendIndexed(&b, " ")
-				appendContentStrings(&b, content)
-			}
-			// Reasoning is canonical history too (the recall contract:
-			// search reaches everything the store keeps) — a message's
-			// thinking is exactly what "what did I consider and reject"
-			// queries want. The cap bounds it like any other text.
-			if reasoning, ok := doc["reasoning"]; ok {
-				var s string
-				if json.Unmarshal(reasoning, &s) == nil && s != "" {
-					appendIndexed(&b, " ")
-					appendIndexed(&b, s)
+				limit := b.Len() + searchReasoningCap
+				if limit > searchTextCap {
+					limit = searchTextCap
 				}
+				appendUpTo(&b, s, limit)
 			}
+		}
+		// Content last, and bounded by whichever is smaller: its own budget or
+		// what the total has left.
+		if content, ok := doc["content"]; ok {
+			appendIndexed(&b, " ")
+			limit := b.Len() + searchContentCap
+			if limit > searchTextCap {
+				limit = searchTextCap
+			}
+			appendContentStrings(&b, content, limit)
 		}
 	}
 	return b.String()
 }
 
+// appendToolCalls indexes a message's `tool_calls` array: each entry's
+// function name and its `arguments` string. Arguments are a JSON *string* in
+// the OpenAI wire shape (and sometimes an object in others), so both are
+// handled; ids are skipped, they are opaque and carry no searchable words.
+func appendToolCalls(b *strings.Builder, raw json.RawMessage, limit int) {
+	if b.Len() >= limit {
+		return
+	}
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) != nil {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) == nil { // a single call, not an array
+			arr = []json.RawMessage{raw}
+		} else {
+			return
+		}
+	}
+	for _, elem := range arr {
+		if b.Len() >= limit {
+			return
+		}
+		var call struct {
+			Function struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(elem, &call) != nil {
+			continue
+		}
+		appendIndexed(b, " "+call.Function.Name)
+		if call.Function.Arguments != nil {
+			appendIndexed(b, " ")
+			appendContentStringsLimit(b, call.Function.Arguments, limit)
+		}
+	}
+}
+
 // appendContentStrings walks a message's `content` value collecting every
 // string scalar — content is either a string or an array of typed blocks
 // ({type, text, ...}), so a recursive walk covers both shapes.
-func appendContentStrings(b *strings.Builder, raw json.RawMessage) {
-	if b.Len() >= searchTextCap {
+func appendContentStrings(b *strings.Builder, raw json.RawMessage, limit int) {
+	appendContentStringsLimit(b, raw, limit)
+}
+
+func appendContentStringsLimit(b *strings.Builder, raw json.RawMessage, limit int) {
+	if b.Len() >= limit {
 		return
 	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		appendIndexed(b, " "+s)
+		b.WriteString(" ")
+		appendUpTo(b, s, limit)
 		return
 	}
 	var arr []json.RawMessage
 	if json.Unmarshal(raw, &arr) == nil {
 		for _, elem := range arr {
-			appendContentStrings(b, elem)
-			if b.Len() >= searchTextCap {
+			appendContentStringsLimit(b, elem, limit)
+			if b.Len() >= limit {
 				return
 			}
 		}
@@ -158,12 +233,31 @@ func appendContentStrings(b *strings.Builder, raw json.RawMessage) {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(raw, &obj) == nil {
 		for _, v := range obj {
-			appendContentStrings(b, v)
-			if b.Len() >= searchTextCap {
+			appendContentStringsLimit(b, v, limit)
+			if b.Len() >= limit {
 				return
 			}
 		}
 	}
+}
+
+// appendUpTo appends s without crossing limit or splitting a rune.
+func appendUpTo(b *strings.Builder, s string, limit int) {
+	if s == "" {
+		return
+	}
+	room := limit - b.Len()
+	if room <= 0 {
+		return
+	}
+	if len(s) > room {
+		cut := room
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
+	}
+	b.WriteString(s)
 }
 
 // -----------------------------------------------------------------------
@@ -202,12 +296,64 @@ func unindexDocIn(tx *sql.Tx, rowid int64) error {
 	return nil
 }
 
+// searchIndexGeneration must be bumped whenever `indexedText` changes what it
+// produces. `docs_fts` is derived state, so the SCHEMA never changes — but
+// existing rows keep the old indexed TEXT forever, because put/del only
+// maintain the row being written and the cheap check below (count +
+// max(rowid)) cannot see stale text in unchanged documents. The upgrade path
+// relies on this number: a mismatch drops the index and re-derives it from
+// `docs`, which is the authority.
+//
+//	1 — id + title (conversation), id + content (message)
+//	2 — + reasoning on both engines; + tool-call names/arguments;
+//	    per-part budgets under a 64KB total, structural parts first
+const searchIndexGeneration = 2
+
+// searchIndexGenerationMoved reports whether the compiled-in generation is
+// newer than the one this database last derived its index at, and claims the
+// new value atomically so two concurrent starts rebuild once, not twice.
+func searchIndexGenerationMoved(db *sql.DB) (bool, error) {
+	var stored int64
+	err := db.QueryRow(`SELECT generation FROM search_index_meta WHERE id = 1`).
+		Scan(&stored)
+	switch {
+	case err == sql.ErrNoRows:
+		_, execErr := db.Exec(
+			`INSERT INTO search_index_meta(id, generation) VALUES (1, ?)`,
+			searchIndexGeneration)
+		return execErr == nil, execErr
+	case err != nil:
+		// A database built before this table existed (a legacy fixture, or a
+		// migration sequence a test drove by hand) has no marker: the
+		// generation is unknown, so the safe reading is "rebuild" — the index
+		// is derived and re-deriving it costs one pass at startup.
+		if strings.Contains(err.Error(), "no such table") {
+			return true, nil
+		}
+		return false, fmt.Errorf("read index generation: %w", err)
+	}
+	if stored >= searchIndexGeneration {
+		return false, nil
+	}
+	if _, err := db.Exec(
+		`UPDATE search_index_meta SET generation = ? WHERE id = 1`,
+		searchIndexGeneration); err != nil {
+		return false, fmt.Errorf("claim index generation: %w", err)
+	}
+	return true, nil
+}
+
 // syncSearchIndex rebuilds `docs_fts` from `docs` when the two disagree —
-// count or rowid high-water mark. Rebuilding only on disagreement keeps a
-// normal restart O(1) while still self-healing after a crash, a manual DB
-// edit, or rows written by code that bypassed put (the selftest probe).
-// Runs at startup before any traffic; returns whether a rebuild happened.
+// count or rowid high-water mark — or when the indexed-text generation moved.
+// Rebuilding only on disagreement keeps a normal restart O(1) while still
+// self-healing after a crash, a manual DB edit, or rows written by code that
+// bypassed put (the selftest probe). Runs at startup before any traffic;
+// returns whether a rebuild happened.
 func syncSearchIndex(db *sql.DB) (bool, error) {
+	generationMoved, err := searchIndexGenerationMoved(db)
+	if err != nil {
+		return false, err
+	}
 	var docsN, ftsN int64
 	if err := db.QueryRow(`SELECT count(*) FROM docs`).Scan(&docsN); err != nil {
 		return false, fmt.Errorf("count docs: %w", err)
@@ -222,7 +368,7 @@ func syncSearchIndex(db *sql.DB) (bool, error) {
 	if err := db.QueryRow(`SELECT max(rowid) FROM docs_fts`).Scan(&ftsMax); err != nil {
 		return false, fmt.Errorf("max docs_fts: %w", err)
 	}
-	if docsN == ftsN && docsMax == ftsMax {
+	if !generationMoved && docsN == ftsN && docsMax == ftsMax {
 		return false, nil
 	}
 
@@ -293,9 +439,10 @@ func searchSchema() map[string]any {
 		},
 		"required": []string{"kind"},
 		"description": "Search stored documents of a kind by text — the server-side filter for session browsers: " +
-			"finds conversations whose id or title matches, or messages whose content matches, without downloading " +
-			"the whole kind. Indexed fields per kind: conversation = id + title; message = id + content text " +
-			"(capped at 16KB); other kinds = id only. Matching: the query is split into words of letters/digits, " +
+			"finds conversations whose id or title matches, or messages whose content, tool-call arguments or " +
+			"reasoning match, without downloading the whole kind. Indexed fields per kind: conversation = id + " +
+			"title; message = id + tool-call names/arguments + reasoning + content text (per-part caps under a " +
+			"64KB document cap, structural parts first); other kinds = id only. Matching: the query is split into words of letters/digits, " +
 			"each must be a case-insensitive PREFIX of a word in the indexed text, all must match (AND); any other " +
 			"character is just a separator, so user input needs no escaping. Default ordering is ascending id " +
 			"({items, hasMore, nextAfter?}, pass nextAfter back as `after` to page); with `rank: true` results are " +

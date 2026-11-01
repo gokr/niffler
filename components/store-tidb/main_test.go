@@ -13,7 +13,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	sdk "niffler.dev/sdk"
 )
@@ -287,5 +289,75 @@ func TestSearchContract(t *testing.T) {
 	got = ids(`{"kind":"component","query":"spike"}`)
 	if len(got) != 0 {
 		t.Fatalf("kind filter leaked: %v", got)
+	}
+}
+
+// TestIndexedTextMatchesSqlite pins the cross-engine contract: the two engines
+// must build the SAME indexed text, because a query has to answer identically
+// whichever store a deployment runs. They drifted — reasoning was indexed on
+// sqlite only — so this asserts the parts directly, without needing a live
+// database.
+func TestIndexedTextMatchesSqlite(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{"appended reasoning text",
+			`{"content":"the decision","reasoning":"considered Postgres over SQLite"}`,
+			[]string{"decision", "Postgres"}},
+		{"content string", `{"content":"plain body"}`, []string{"plain body"}},
+		{"content blocks",
+			`{"content":[{"type":"text","text":"hello retry policy"},{"type":"tool_use","name":"bash"}]}`,
+			[]string{"hello", "retry policy"}},
+		{"tool-call arguments as a JSON string",
+			`{"role":"assistant","content":"","tool_calls":[{"function":{"name":"read",` +
+				`"arguments":"{\"path\":\"internal/store.nim\"}"}}]}`,
+			[]string{"read", "internal", "store", "nim"}},
+		{"tool-call arguments as an object",
+			`{"tool_calls":[{"function":{"name":"grep","arguments":{"pattern":"queueDepth"}}}]}`,
+			[]string{"grep", "queueDepth"}},
+		{"single non-array tool_call",
+			`{"tool_calls":{"function":{"name":"bash","arguments":"echo kangaroo"}}}`,
+			[]string{"bash", "kangaroo"}},
+		{"null reasoning is skipped", `{"content":"x","reasoning":null}`, []string{"x"}},
+	}
+	for _, c := range cases {
+		got := indexedText("message", "conv-1:000001", []byte(c.value))
+		for _, want := range c.want {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s: %q missing from %q", c.name, want, got)
+			}
+		}
+		if strings.Contains(got, "null") {
+			t.Fatalf("%s: null leaked into the index: %q", c.name, got)
+		}
+	}
+	// conversation: id + title, never the system prompt (boilerplate).
+	got := indexedText("conversation", "conv-1",
+		[]byte(`{"title":"Spike solution","systemPrompt":"frozen prefix"}`))
+	if !strings.Contains(got, "Spike") || strings.Contains(got, "frozen") {
+		t.Fatalf("conversation indexing = %q", got)
+	}
+	// another kind: id only.
+	if got := indexedText("component", "bash", []byte(`{"note":"spawn"}`)); got != "bash" {
+		t.Fatalf("non-indexed kind = %q", got)
+	}
+	// the starvation regression, same shape as the sqlite test.
+	huge := strings.Repeat("filler ", 60000)
+	doc := `{"reasoning":"considered the RETRYPOLICY carefully",` +
+		`"tool_calls":[{"function":{"name":"read","arguments":"{\"path\":\"QUEUEDEPTH.nim\"}"}}],` +
+		`"content":"` + huge + `"}`
+	got = indexedText("message", "conv-1:000100", []byte(doc))
+	if len(got) > searchTextCap+4 {
+		t.Fatalf("not capped: %d bytes", len(got))
+	}
+	for _, want := range []string{"RETRYPOLICY", "QUEUEDEPTH", "read"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q starved by a huge tool result: %d bytes", want, len(got))
+		}
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("capped text ends mid-rune")
 	}
 }

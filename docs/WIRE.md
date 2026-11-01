@@ -1722,9 +1722,23 @@ mode: search`, issue #51): `idPrefix` scopes to one conversation's
 messages, `rank` orders by relevance, `snippet` marks the matched span.
 
 - **Indexed fields** (documented, per kind): `conversation` = id +
-  `value.title`; `message` = id + every string under `value.content` +
-  `value.reasoning` (capped at 16KB per document in total); any other kind
-  = id only.
+  `value.title`; `message` = id + `tool_calls` (each call's function name and
+  its `arguments`, whether a JSON string or an object) + `value.reasoning` +
+  every string under `value.content`; any other kind = id only.
+
+  Budgets are per part, not one total, and the structural parts are indexed
+  FIRST so a large payload cannot evict them: `searchTextCap` 64KB per
+  document overall, of which content may take 48KB, reasoning 8KB and
+  tool-call names/arguments 8KB. The order is load-bearing — under the
+  previous single 16KB budget, one 400KB tool result consumed the whole
+  allowance, so a message's own tool-call arguments and reasoning were
+  silently unindexed and unfindable exactly in the long sessions that need
+  search. Tool-call arguments are indexed because a call message carries no
+  text in `content` at all: `read {path: …}`, `grep {pattern: …}` and
+  `bash {command: …}` are what name the files, symbols and commands a session
+  touched. Both engines implement this identically; they had drifted (reasoning
+  was indexed on sqlite only), which made the same query answer differently per
+  engine.
 - **Matching** is contract, identical in every engine: query and indexed
   text tokenize the same way — runs of unicode letters/digits are tokens,
   every other character is a separator — and *every* query token must

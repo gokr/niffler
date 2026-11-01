@@ -282,7 +282,7 @@ proc main() =
     "mode": {"type": "string", "enum": ["full", "match", "search"],
              "description": "full (default) returns the paged document for a ref; match greps ONE document's lines; search finds messages across the conversation history, ranked by relevance through the store's search index (falling back to a substring grep when the store cannot search)"},
     "query": {"type": "string",
-              "description": "match: return only the lines containing this. search: the words to find, matched as case-insensitive token prefixes, across every message — including messages a trim or compaction removed from your context"},
+              "description": "match: return only the lines containing this. search: the words to find, matched as case-insensitive token prefixes, across every message — including messages a trim or compaction removed from your context. The index covers message text, reasoning, and tool-call names/arguments (the paths, patterns and commands a session touched), so searching a filename or a pattern reaches the call that used it"},
     "session": {"type": "string",
                 "description": "search: which conversation to search (defaults to this one)"},
     "scope": {"type": "string", "enum": ["session", "all"],

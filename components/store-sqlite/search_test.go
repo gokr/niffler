@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -96,6 +97,65 @@ func TestIndexedTextFields(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Fatalf("capped text ends mid-rune: %q", got[len(got)-10:])
+	}
+}
+
+// TestIndexedToolCallArguments pins the gap that made full-text search miss
+// what a session actually touched: an assistant message carrying only a tool
+// call (the shape every `read`/`grep`/`bash` call has) was indexed by its id
+// alone, because only `content` and `reasoning` were walked.
+func TestIndexedToolCallArguments(t *testing.T) {
+	// OpenAI wire shape: `arguments` is a JSON STRING.
+	got := indexedText("message", "conv-1:000002", []byte(
+		`{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function",`+
+			`"function":{"name":"read","arguments":"{\"path\":\"internal/store.nim\"}"}}]}`))
+	for _, want := range []string{"read", "internal", "store", "nim"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("tool-call text missing %q: %q", want, got)
+		}
+	}
+	// An OBJECT arguments value (other providers) is walked too.
+	got = indexedText("message", "c:3", []byte(
+		`{"tool_calls":[{"function":{"name":"grep","arguments":{"pattern":"queueDepth"}}}]}`))
+	if !strings.Contains(got, "grep") || !strings.Contains(got, "queueDepth") {
+		t.Fatalf("object-shaped arguments not indexed: %q", got)
+	}
+	// A single (non-array) call is handled rather than dropped.
+	got = indexedText("message", "c:4", []byte(
+		`{"tool_calls":{"function":{"name":"bash","arguments":"echo kangaroo"}}}`))
+	if !strings.Contains(got, "bash") || !strings.Contains(got, "kangaroo") {
+		t.Fatalf("single tool_call not indexed: %q", got)
+	}
+	// Malformed calls never fail the document: the id is still there.
+	got = indexedText("message", "c:5", []byte(`{"tool_calls":"not-an-array"}`))
+	if !strings.Contains(got, "c:5") {
+		t.Fatalf("malformed tool_calls lost the id: %q", got)
+	}
+}
+
+// TestIndexedHugeResultDoesNotStarveStructure is the starvation regression.
+// Under the old single 16KB budget, a 400KB tool result consumed the whole
+// allowance and the message's tool-call arguments and reasoning were silently
+// dropped — so a session's own thinking and the paths it touched became
+// unfindable precisely in the big sessions that need search.
+func TestIndexedHugeResultDoesNotStarveStructure(t *testing.T) {
+	huge := strings.Repeat("filler ", 60000) // ~420KB of tool result
+	doc := fmt.Sprintf(
+		`{"role":"assistant","reasoning":"considered the RETRYPOLICY carefully",`+
+			`"tool_calls":[{"function":{"name":"read","arguments":"{\"path\":\"QUEUEDEPTH.nim\"}"}}],`+
+			`"content":%q}`, huge)
+	got := indexedText("message", "conv-1:000100", []byte(doc))
+	if len(got) > searchTextCap+4 {
+		t.Fatalf("indexed text not capped: %d bytes", len(got))
+	}
+	for _, want := range []string{"RETRYPOLICY", "QUEUEDEPTH", "read"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q was starved by a huge tool result: %d bytes, tail %q",
+				want, len(got), got[len(got)-40:])
+		}
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("capped text ends mid-rune")
 	}
 }
 
@@ -398,5 +458,56 @@ func TestSearchRankedPagingAndSnippets(t *testing.T) {
 	flat := mustOK(t, call(t, search, `{"kind":"message","query":"needle"}`))
 	if flat["ranked"] != false {
 		t.Fatalf("unranked reply mislabeled: %v", flat["ranked"])
+	}
+}
+
+// TestSearchIndexGenerationRebuildsOnUpgrade is the upgrade path: widening
+// indexedText (tool-call arguments, reasoning) cannot reach documents written
+// before it, because put/del only maintain the row being written and the cheap
+// count/max-rowid check sees nothing wrong. A generation bump must force one
+// rebuild from `docs`, which is the authority.
+func TestSearchIndexGenerationRebuildsOnUpgrade(t *testing.T) {
+	db := newTestDB(t)
+	put := putHandler(db.DB, db.owner)
+	search := searchHandler(db.DB, db.owner)
+
+	// A message whose ONLY searchable text is in tool-call arguments — the
+	// shape that used to index as an id and nothing else.
+	mustOK(t, call(t, put, `{"kind":"message","id":"conv-g:000001","value":{
+		"role":"assistant","content":"",
+		"tool_calls":[{"function":{"name":"read","arguments":"{\"path\":\"GENMARKER.nim\"}"}}]}}`))
+
+	// Simulate the pre-upgrade state: wrong indexed text, in-sync counts.
+	if _, err := db.DB.Exec(`DELETE FROM docs_fts`); err != nil {
+		t.Fatalf("clear index: %v", err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO docs_fts(rowid, kind, text)
+		SELECT rowid, kind, id FROM docs`); err != nil {
+		t.Fatalf("seed stale index: %v", err)
+	}
+	args, _ := json.Marshal(map[string]any{"kind": "message", "query": "genmarker"})
+	if got := searchIDs(t, call(t, search, string(args))); len(got) != 0 {
+		t.Fatalf("stale index should not match yet: %v", got)
+	}
+
+	// A stale generation must rebuild even though counts and rowids agree.
+	if _, err := db.DB.Exec(`UPDATE search_index_meta SET generation = 1 WHERE id = 1`); err != nil {
+		t.Fatalf("age the generation: %v", err)
+	}
+	rebuilt, err := syncSearchIndex(db.DB)
+	if err != nil {
+		t.Fatalf("syncSearchIndex: %v", err)
+	}
+	if !rebuilt {
+		t.Fatal("a stale generation must rebuild the index")
+	}
+	if got := searchIDs(t, call(t, search, string(args))); len(got) != 1 || got[0] != "conv-g:000001" {
+		t.Fatalf("after the generation rebuild, arguments must be findable: %v", got)
+	}
+
+	// And a second start at the current generation does NOT rebuild.
+	rebuilt, err = syncSearchIndex(db.DB)
+	if err != nil || rebuilt {
+		t.Fatalf("current generation must not rebuild: rebuilt=%v err=%v", rebuilt, err)
 	}
 }

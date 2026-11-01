@@ -159,6 +159,39 @@ proc main() =
   check("search finds message content",
         sMsg{"ok"}.getBool(false) and sMsg{"items"}.len == 1 and
         sMsg{"items"}[0]{"id"}.getStr("") == "conv-s1:000001", $sMsg)
+  # --- indexed fields beyond content: tool-call arguments and reasoning ----
+  # Pinned on BOTH engines: they had drifted (reasoning was indexed on sqlite
+  # only), so the same query answered differently per store. A call message
+  # carries no text in `content` at all, so without tool-call arguments
+  # "which message looked at queue.nim?" is unanswerable from the store.
+  discard call(nc, "store", "put",
+               %*{"kind": "message", "id": "conv-s1:000002",
+                  "value": %*{"role": "assistant", "content": "",
+                              "tool_calls": [
+                                {"id": "c1", "type": "function",
+                                 "function": {"name": "read",
+                                              "arguments": "{\"path\":\"internal/queueDepth.nim\"}"}}]}})
+  let sArg = call(nc, "store", "search",
+                  %*{"kind": "message", "query": "queueDepth"})
+  check("search finds tool-call ARGUMENTS (a call message has no content text)",
+        sArg{"ok"}.getBool(false) and sArg{"items"}.len == 1 and
+        sArg{"items"}[0]{"id"}.getStr("") == "conv-s1:000002", $sArg)
+  let sToolName = call(nc, "store", "search",
+                       %*{"kind": "message", "query": "read queueDepth",
+                          "idPrefix": "conv-s1:000002"})
+  check("search matches the tool name and its argument together",
+        sToolName{"ok"}.getBool(false) and sToolName{"items"}.len == 1,
+        $sToolName)
+  discard call(nc, "store", "put",
+               %*{"kind": "message", "id": "conv-s1:000003",
+                  "value": %*{"role": "assistant", "content": "the verdict",
+                              "reasoning": "weighed PostgreSQL against SQLite for the queue"}})
+  let sReason = call(nc, "store", "search",
+                     %*{"kind": "message", "query": "PostgreSQL"})
+  check("search finds REASONING in both engines (they had drifted)",
+        sReason{"ok"}.getBool(false) and sReason{"items"}.len == 1 and
+        sReason{"items"}[0]{"id"}.getStr("") == "conv-s1:000003", $sReason)
+
   let sKind = call(nc, "store", "search",
                    %*{"kind": "component", "query": "spike"})
   check("search never crosses kinds",
