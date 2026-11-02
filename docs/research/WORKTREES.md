@@ -1115,7 +1115,7 @@ order.
 | 0 | ~~`sdk/checkout.nim` + three consumers~~ **SHIPPED** | sdk, core/workspace, systemprompt, lsp/roots | `t_workspaces` (checkout kind for clone/worktree/submodule/plain, `primaryRoot` from inside a worktree, `pathInRoots` boundary, `containingRoot`); `t_lsp` gains `treeRoot` (a worktree file resolves to the worktree, never the primary); `t_systemprompt` green on the delegated shadow rule |
 | 1 | ~~live set: graph signature + `__workspace.primary/worktree`~~ **SHIPPED** (the `ev.worktree.changed` event is folded into slice 3, where the component that publishes it lives) | core/dispatch | `t_liveset`: `graphSignature` moves on add/remove/last-removed and distinguishes two trees created in the SAME second; `workspaceRootsFor` admits a tree created after the first dispatch with no grant and no restart, notices its removal, and caches the conversation's checkout shape |
 | 2 | ~~opaque claim follows resolved cwd (+ `roots: true`)~~ **SHIPPED** | core/dispatch | `t_locks` pure (claim root per cwd: primary, worktree, deep-inside, outside-set fail-safe, same-prefix sibling, `roots: true`, empty set); `t_arbitration` (a worktree `bash` and a primary `bash` hold leases in parallel, while two writers in the SAME tree still collide) |
-| 3 | `git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards. **Includes** the component's first store use and `x-harness.sessionId` on the new verbs (§4.3 step 3) | components/git, manifest | `t_git` (new ops against a throwaway repo, incl. "merged/live-pin refusals", a store-down `add` that still creates and reports the ledger miss, git's own dirty refusal surfaced verbatim, and `add` landing a sibling that leaves `git status` clean with no ignore edit; plus `add` from *inside* a worktree landing in the primary's container) |
+| 3 | ~~`git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards~~ **SHIPPED** | components/git | `t_git` (add lands a sibling that leaves `git status` clean with no ignore edit; orientation from INSIDE a worktree; collision/in-repo/nested refusals; unmerged-branch and primary refusals; force + branch-kept; prune of a hand-deleted tree; ledger owner in `list`) |
 | 4 | `git_merge_preview` + `git_merge {start,abort}` + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
 | 5 | `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
 | 6 | peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
@@ -1354,3 +1354,55 @@ writers in the same tree still collide. That is the arbitration outcome, at the
 locks contract level. The gate's own choice of root is covered by `t_locks`'
 pure checks, because a scripted turn cannot vary NIF_ROOT from the workspace in
 that sandbox — the same limitation the harness-state section above documents.
+
+### §8.3 Slice 3 — implementation notes (shipped 2026-11-02)
+
+Two tools added to `components/git`, both `onDemand`: `git_worktree_list`
+(read, no prompt) and `git_worktree {add, remove, prune}` (write,
+`approval: "always"`, `sessionId: true`, claiming `paths: ["repo", "path"]`).
+The mutation surface is gated by a declared setting (domain `git.mutations`,
+env fallback `NIF_GIT_MUTATIONS`, `application: component restart`); off means
+the verbs, the owner tool and the declaration are never registered.
+
+**Three bugs the tests found, each a real one:**
+
+1. **`git worktree prune` skips LOCKED trees.** Measured: with a locked tree
+   whose directory was deleted, `prune -v` exits 0 and leaves the record. Since
+   `add` locks every tree it creates, prune could never clean up one of ours —
+   the exact case it exists for. `prune` now unlocks records whose directory is
+   GONE and then prunes; a live tree keeps its lock, so prune still cannot touch
+   work that is really there.
+2. **`remove` had to unlock before removing.** git refuses to remove a locked
+   tree without `-f -f`, and passing `-f -f` unconditionally would also bulldoze
+   a DIRTY tree that git refuses on purpose. It now unlocks explicitly (we are
+   past the ownership guard, so the lock is ours to drop) and removes with only
+   the force the caller asked for — so a dirty tree's refusal is still surfaced
+   verbatim.
+3. **The lock reason was parsed by slicing a fixed prefix.** The reason is
+   `niffler <action> (<branch>) — conversation <id>`, so the marker's offset
+   varies with the branch name; slicing produced `tree (feat) — conversation x`
+   and then named a conversation that does not exist. It now searches for the
+   marker. `"unknown"` (what `add` writes when no session was injected, e.g.
+   from `cli`) is explicitly NOT treated as an owner to protect — otherwise
+   every scripted call is blocked by a phantom.
+
+**A test lesson worth keeping:** the liveness probe was wrong twice. `catalog
+{op: components}` never lists a component started with no spawn record, and
+`waitRegistered` only watches announcements that arrive AFTER it subscribes — a
+component that has already booted races both. It now probes functionally (does
+the read verb answer?), which is what the check actually meant.
+
+**Deliberate choices, stated so they are not "fixed" later:**
+
+- `add` refuses a `path` outside `<primary>.wt/`, and refuses a path inside an
+  existing worktree. Both are the layout's whole point: an in-repo tree sits
+  inside the primary's opaque claim and serializes every write.
+- `remove` keeps the branch unless `delete_branch` is set. Removing a tree and
+  discarding its commits are different decisions.
+- The ledger write is NOT fatal: the tree is created and git-locked (the
+  durable half, naming the conversation in its reason), the result reports the
+  ledger miss, and `remove` falls back to the lock reason. Failing closed would
+  cost a conversation the ability to start work over a metadata write.
+- The ledger is read with `storeListAll`, not `storeList`: a single list is a
+  PAGE, and a truncated view would report an owned tree as unowned — the one
+  answer this must never give.

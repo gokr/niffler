@@ -7,9 +7,16 @@
 ## uncommitted lines), argument validation (path escapes, absolute paths,
 ## option-looking and whitespace refs), and the not-a-repo behaviour.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, sequtils, strutils]
 import natsnim
 import helpers
+
+proc waitComponent(nc: NatsConnection, name: string, secs = 20): bool =
+  for i in 0 ..< secs * 5:
+    let snap = call(nc, "core", "catalog", %*{"op": "components"}, 5_000)
+    if snap{"components"}{name} != nil: return true
+    sleep(200)
+  false
 
 proc sh(cmd: string): tuple[output: string, exitCode: int] =
   execCmdEx(cmd)
@@ -206,6 +213,187 @@ proc main() =
   let n1 = call(nc, "git", "git_status", %*{})
   check("git_status not-a-repo", n1{"exit_code"}.getInt(-1) == 128 and
         n1{"text"}.getStr("").contains("no git repository"), $n1)
+
+  # =========================================================================
+  # Mutation surface: worktree ops (WORKTREES.md §4.3)
+  #
+  # Needs a REAL store (the ownership ledger) and a conversation identity, so
+  # this half runs against a core sandbox rather than the bare component above.
+  # =========================================================================
+  let sb = newCoreSandbox("gitwt", ["store"])
+  let sroot = sb.root
+  defer: removeDir(sroot)
+  createDir(sroot / "ws")
+  let repo = sroot / "ws"
+  doAssert sh("git -C " & quoteShell(repo) & " init -q -b main").exitCode == 0
+  doAssert sh("git -C " & quoteShell(repo) &
+              " config user.email t@example.com").exitCode == 0
+  doAssert sh("git -C " & quoteShell(repo) &
+              " config user.name \"Test User\"").exitCode == 0
+  writeFile(repo / "a.txt", "one\n")
+  doAssert sh("git -C " & quoteShell(repo) & " add -A && git -C " &
+              quoteShell(repo) & " commit -q -m init").exitCode == 0
+
+  let (server2, url2) = startNats()
+  defer: stopServer(server2)
+  let core2 = startComponent(sb.sandboxBin("niffler"), url2, root = sroot,
+                             extra = [("NIF_AUTO_APPROVE", "1")],
+                             logFile = sroot / "var" / "test-logs" / "core.log")
+  defer:
+    if core2.running(): core2.terminate()
+    discard core2.waitForExit(2000)
+  var wtProc = startComponent(root / "var" / "bin" / "git", url2,
+                              root = sroot,
+                              logFile = sroot / "var" / "test-logs" / "git.log")
+  defer:
+    if wtProc.running(): wtProc.terminate()
+    discard wtProc.waitForExit(2000)
+  var nc2 = waitConnect(url2)
+  defer: nc2.close()
+  check("store up for the ledger", waitComponent(nc2, "store", 30))
+  # Probe FUNCTIONALLY, not through reg.publish: a component started directly
+  # (no spawn record) is callable but never appears in `catalog {op:
+  # components}`, and `waitRegistered` only watches announcements that arrive
+  # AFTER it subscribes — so both those probes race a component that has
+  # already announced. "It answers its read verb" is the honest liveness test.
+  var gitUp = false
+  for _ in 0 ..< 100:
+    let probe = call(nc2, "git", "git_worktree_list", %*{"repo": repo}, 5_000)
+    if probe{"exit_code"}.getInt(-1) == 0:
+      gitUp = true
+      break
+    sleep(200)
+  check("git serves its worktree surface", gitUp)
+
+  # --- list: the primary is reported, the container is named --------------
+  let wtList0 = call(nc2, "git", "git_worktree_list", %*{"repo": repo}, 30_000)
+  check("git_worktree_list ok", wtList0{"exit_code"}.getInt(-1) == 0, $wtList0)
+  check("it names the primary", wtList0{"primary"}.getStr("") == repo, $wtList0)
+  check("it names the SIBLING container (<repo>.wt)",
+        wtList0{"container"}.getStr("") == repo & ".wt", $wtList0)
+  check("one tree (the primary) before any add",
+        wtList0{"trees"}.len == 1, $wtList0{"trees"})
+  check("the primary is marked as current",
+        wtList0{"trees"}[0]{"isCurrent"}.getBool(false), $wtList0{"trees"}[0])
+
+  # --- add: the sibling layout, no ignore rule, git-locked ---------------
+  let added = call(nc2, "git", "git_worktree",
+                   %*{"op": "add", "repo": repo, "name": "feat"}, 120_000)
+  check("add succeeds", added{"exit_code"}.getInt(-1) == 0, $added)
+  let wtPath = repo & ".wt" & "/" & "feat"
+  check("the tree lands in the PRIMARY's container, as a sibling",
+        added{"path"}.getStr("") == wtPath, $added{"path"})
+  check("the tree exists on disk", dirExists(wtPath))
+  check("it is NOT inside the repository",
+        not dirExists(repo / ".wt") and not wtPath.startsWith(repo & "/"))
+  check("the branch defaults to the name",
+        added{"branch"}.getStr("") == "feat", $added)
+  check("the tree is git-locked", added{"locked"}.getBool(false), $added)
+  # The status-clean check: an ignore rule must NOT have been needed.
+  let st = sh("git -C " & quoteShell(repo) & " status --porcelain")
+  check("the primary's git status stays clean (no ignore rule needed)",
+        st.output.strip().len == 0, st.output)
+  let excl = sh("git -C " & quoteShell(repo) & " check-ignore -v . || true")
+  check("no .gitignore/.git/info/exclude entry was added for the tree",
+        not excl.output.contains(".wt"), excl.output)
+
+  # git's own lock reason names the conversation, readable WITHOUT the store
+  let began = sh("git -C " & quoteShell(repo) & " worktree list --porcelain")
+  check("git records the lock and its reason",
+        began.output.contains("locked") and began.output.contains("niffler"),
+        began.output)
+
+  # --- add refuses the expensive mistakes --------------------------------
+  let twice = call(nc2, "git", "git_worktree",
+                   %*{"op": "add", "repo": repo, "name": "feat"}, 60_000)
+  check("adding over an existing path is refused",
+        twice{"exit_code"}.getInt(-1) != 0 and
+        twice{"text"}.getStr("").contains("already exists"), $twice)
+
+  # A path OUTSIDE the container (e.g. in-repo) is refused: that is the layout
+  # whose claims collide with the primary's opaque claim.
+  let inRepo = call(nc2, "git", "git_worktree",
+                    %*{"op": "add", "repo": repo, "name": "bad",
+                       "path": repo / "inner"}, 60_000)
+  check("a non-sibling path is refused",
+        inRepo{"exit_code"}.getInt(-1) != 0 and
+        inRepo{"text"}.getStr("").contains("worktree container"), $inRepo)
+
+  # Nesting inside an existing worktree is the orientation mistake.
+  let nested = call(nc2, "git", "git_worktree",
+                    %*{"op": "add", "repo": repo, "name": "nested",
+                       "path": wtPath / "deeper"}, 60_000)
+  check("a path inside an existing worktree is refused",
+        nested{"exit_code"}.getInt(-1) != 0, $nested)
+
+  # --- ORIENTATION: add from INSIDE a worktree uses the primary's container
+  let fromTree = call(nc2, "git", "git_worktree",
+                      %*{"op": "add", "repo": wtPath, "name": "second"}, 120_000)
+  check("add from inside a worktree succeeds",
+        fromTree{"exit_code"}.getInt(-1) == 0, $fromTree)
+  check("it lands in the PRIMARY's container, not <tree>.wt (no hop-wise nesting)",
+        fromTree{"path"}.getStr("") == repo & ".wt/second", $fromTree{"path"})
+  check("no bogus <tree>.wt container was created",
+        not dirExists(wtPath & ".wt"))
+
+  # --- list now reports both, with owners from the ledger -----------------
+  let wtList1 = call(nc2, "git", "git_worktree_list", %*{"repo": repo}, 30_000)
+  check("three trees now", wtList1{"trees"}.len == 3, $wtList1{"trees"})
+  var sawOwner = false
+  var sawFeat = false
+  for t in wtList1{"trees"}:
+    if t{"path"}.getStr("") == wtPath and t{"branch"}.getStr("") == "feat":
+      sawFeat = true
+      if t{"owner"} != nil and t{"owner"}{"state"}.getStr("") == "live":
+        sawOwner = true
+  check("the feat tree is listed with its branch", sawFeat, $wtList1{"trees"})
+  check("the ledger reports the owning conversation", sawOwner, $wtList1{"trees"})
+
+  # --- remove: refuses an unmerged branch, then succeeds with force -------
+  writeFile(wtPath / "a.txt", "tree change\n")
+  doAssert sh("git -C " & quoteShell(wtPath) & " add -A && git -C " &
+              quoteShell(wtPath) & " commit -q -m \"work in the tree\"").exitCode == 0
+  let unmerged = call(nc2, "git", "git_worktree",
+                      %*{"op": "remove", "repo": repo, "path": wtPath}, 60_000)
+  check("removing an UNMERGED tree is refused",
+        unmerged{"exit_code"}.getInt(-1) != 0 and
+        unmerged{"text"}.getStr("").contains("not merged"), $unmerged)
+  check("the refusal names the override flag",
+        unmerged{"text"}.getStr("").contains("force"), $unmerged)
+  check("the tree survives the refusal", dirExists(wtPath))
+
+  let forced = call(nc2, "git", "git_worktree",
+                    %*{"op": "remove", "repo": repo, "path": wtPath,
+                       "force": true}, 60_000)
+  check("force removes it", forced{"exit_code"}.getInt(-1) == 0, $forced)
+  check("the tree is gone", not dirExists(wtPath))
+  check("the branch is KEPT by default",
+        sh("git -C " & quoteShell(repo) & " rev-parse --verify feat").exitCode == 0)
+  let wtList2 = call(nc2, "git", "git_worktree_list", %*{"repo": repo}, 30_000)
+  check("it leaves the list", wtList2{"trees"}.len == 2, $wtList2{"trees"})
+
+  # --- remove refuses the primary ----------------------------------------
+  let rmPrimary = call(nc2, "git", "git_worktree",
+                       %*{"op": "remove", "repo": repo, "path": repo,
+                          "force": true}, 60_000)
+  check("the primary checkout cannot be removed",
+        rmPrimary{"exit_code"}.getInt(-1) != 0, $rmPrimary)
+
+  # --- prune: a tree deleted out from under git --------------------------
+  let secondPath = repo & ".wt/second"
+  if dirExists(secondPath):
+    removeDir(secondPath)              # exactly the case prune exists for
+    let pruned = call(nc2, "git", "git_worktree",
+                      %*{"op": "prune", "repo": repo}, 60_000)
+    check("prune succeeds", pruned{"exit_code"}.getInt(-1) == 0, $pruned)
+    let wtList3 = call(nc2, "git", "git_worktree_list", %*{"repo": repo}, 30_000)
+    check("the hand-deleted tree is gone from the list",
+          wtList3{"trees"}.len == 1, $wtList3{"trees"})
+
+  # --- op validation ------------------------------------------------------
+  let badOp = call(nc2, "git", "git_worktree", %*{"op": "frobnicate"})
+  check("an unknown op is refused",
+        badOp{"exit_code"}.getInt(-1) != 0, $badOp)
 
   # drain: component exits
   drain(nc)

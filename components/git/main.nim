@@ -19,6 +19,8 @@
 
 import std/[json, os, sequtils, strutils, times]
 import niffler/sdk
+import niffler/configowner
+import checkout
 
 proc toSHA256(s: string): string =
   ## Minimal SHA-256 for diff fingerprints (std/sha1 covers SHA-1 only).
@@ -442,6 +444,463 @@ comp.tool(%*{"timeoutMs": 45000, "onDemand": true}):
                 "detail": "diff changed since the latest review — re-review and write a fresh receipt"}
     else:
       refused("op must be \"write\" or \"check\"")
+
+
+# ===========================================================================
+# Mutation surface (WORKTREES.md §4.3)
+#
+# The read tools above stay exactly as they are and never prompt. These are a
+# second, separately declared surface: `onDemand: true` (not in a
+# conversation's frozen toolset — reachable through `discover` + `invoke`),
+# `effect: write`, and `approval: "always"` on every op that changes a tree.
+#
+# The gate: a declared SETTING (domain `git.mutations`, env fallback
+# `NIF_GIT_MUTATIONS`, application `component restart`). Off means the verbs
+# are never registered, which is the honest way to keep today's read-only
+# contract by configuration rather than by trust (CONFIG-CONTRACT.md: an env
+# var a component enforces is a setting; the env spelling stays only as the
+# migration fallback).
+#
+# One declaration per CLAIM SHAPE, not per taste: `x-harness.writes` is static
+# per tool, so the read half (`git_worktree_list`) cannot ride in the same
+# schema as `add`.
+# ===========================================================================
+
+let ownerStore* = OwnerStore(kind: "git-settings", id: "main")
+let gitSettings = newOwnerSnapshot(ownerStore)
+
+# The domain is declared, not just read: an env var a component enforces is a
+# setting (CONFIG-CONTRACT.md), and NIF_GIT_MUTATIONS stays only as the
+# migration fallback that settingBool consults behind a stored value.
+#
+# `application: component restart` is the honest floor: the verbs are
+# REGISTERED at boot, so flipping this off cannot unregister them in a running
+# process. Saying "immediate" would be a claim the component cannot keep.
+let gitDecl = declaration(
+  "git.mutations", "git", "git_config", "Git mutation verbs",
+  "Whether the git component registers its write verbs (worktrees, commit, " &
+  "merge). Off keeps the component read-only — the honest way to hold today's " &
+  "read-only contract by configuration rather than by trust.",
+  ownerStore.kind, appComponentRestart,
+  %*{"type": "object", "properties": {
+       "mutations": {"type": "boolean", "default": true, "x-config": {
+         "title": "Enable git write verbs",
+         "application": "component restart"}}},
+     "additionalProperties": false})
+
+proc mutationsEnabled(): bool =
+  ## Read from the config snapshot (refreshed by ev.config.updated), env as the
+  ## migration fallback, default ON — a harness that never configures this
+  ## keeps the full surface.
+  gitSettings.flag("mutations", "NIF_GIT_MUTATIONS", true)
+
+proc wtLedgerKind(): string = "worktree"
+
+proc ledgerGet(path: string): JsonNode =
+  ## The ledger document for one tree, or nil. The ledger is the fact git
+  ## cannot know: WHICH conversation owns a tree.
+  try:
+    return comp.storeGet(wtLedgerKind(), normalizeRoot(path), 5_000).value
+  except CatchableError:
+    return nil
+
+proc ledgerPut(path: string, doc: JsonNode): string =
+  ## Persist the ledger entry. Returns "" on success, else the failure text.
+  ## Deliberately NOT fatal: the git-level lock is the durable half, so a
+  ## conversation must not lose the ability to start work because a metadata
+  ## write failed (WORKTREES.md §4.3 step 3).
+  try:
+    discard comp.storePut(wtLedgerKind(), normalizeRoot(path), doc,
+                          timeoutMs = 10_000)
+    return ""
+  except CatchableError as e:
+    return e.msg
+
+proc ledgerAll(repo: string): seq[JsonNode] =
+  ## Every ledger doc for a repo. Best effort: a store outage yields none.
+  ##
+  ## storeListAll, not storeList: a single list is a PAGE (capped at 1000 with
+  ## a cursor), and the ledger is the authority for "whose tree is this" — a
+  ## silently truncated view would report an owned tree as unowned, which is
+  ## the one answer this must never give.
+  try:
+    for it in comp.storeListAll(wtLedgerKind()):
+      if it.value != nil and it.value{"repo"}.getStr("") == normalizeRoot(repo):
+        result.add it.value
+  except CatchableError:
+    discard
+
+proc combined(action: string, primary: string, branch: string): string =
+  ## The `git worktree lock --reason` text. git quotes it back in `remove`'s
+  ## refusal and in `worktree list --porcelain` as `locked <reason>`, so this
+  ## is how a human (and `remove` itself, when the store is down) learns whose
+  ## tree it is WITHOUT the store.
+  "niffler " & action & (if branch.len > 0: " (" & branch & ")" else: "") &
+    " — conversation " & primary
+
+proc worktreeContainer(primary: string): string =
+  ## The ONE container per repository: `<primary>.wt`, a sibling of the repo.
+  ##
+  ## Hangs off the PRIMARY, never off the current workspace. Measured why: a
+  ## conversation already in ~/git/repo.wt/feat that computed a sibling from
+  ## its own path would create ~/git/repo.wt/feat.wt/<name> — one level deeper
+  ## on every hop, a container per tree instead of one per repository, and a
+  ## path nobody can predict.
+  normalizeRoot(primary) & ".wt"
+
+proc ensureDir(path: string): bool =
+  try:
+    if not dirExists(path): createDir(path)
+    true
+  except CatchableError:
+    false
+
+proc publishWorktreeChanged(primary: string) =
+  ## Fire-and-forget notice that a repository's checkout graph moved, so a
+  ## client (and any future subscriber) can refresh without polling. Core's
+  ## dispatch cache does NOT depend on this: `graphSignature` notices the
+  ## change on its own, which is why a tree made by bash or by hand in another
+  ## terminal is picked up either way. This is the courtesy, not the mechanism.
+  comp.emit("ev.worktree.changed",
+            %*{"repo": normalizeRoot(primary), "at": epochTime()})
+
+# --- the read half ---------------------------------------------------------
+
+proc worktreeListImpl(repo: string): JsonNode =
+  let target = repoDir(repo)
+  let shape = checkoutShape(target)
+  if shape.kind == ckNone:
+    return %*{"exit_code": 128, "ok": false,
+              "detail": "[no git repository at the target directory]"}
+  var trees = newJArray()
+  let ledger = ledgerAll(if shape.primaryRoot.len > 0: shape.primaryRoot
+                         else: target)
+  let current = normalizeRoot(target)
+  for t in worktrees(target):
+    let p = normalizeRoot(t.path)
+    var entry = %*{"path": p, "branch": t.branch, "head": t.head,
+                   "locked": t.locked, "prunable": t.prunable,
+                   "bare": t.bare, "detached": t.detached,
+                   "isCurrent": p == current}
+    if t.lockReason.len > 0: entry["lockReason"] = %t.lockReason
+    for d in ledger:
+      if d{"path"} != nil and normalizeRoot(d{"path"}.getStr("")) == p:
+        entry["owner"] = %*{"sessionId": d{"sessionId"}.getStr(""),
+                            "state": d{"state"}.getStr(""),
+                            "createdAt": d{"createdAt"}.getFloat(0.0)}
+        break
+    trees.add entry
+  %*{"exit_code": 0, "ok": true,
+     "primary": (if shape.primaryRoot.len > 0: shape.primaryRoot else: current),
+     "container": worktreeContainer(
+        if shape.primaryRoot.len > 0: shape.primaryRoot else: current),
+     "trees": trees}
+
+# --- op: add ---------------------------------------------------------------
+
+proc worktreeAddImpl(repo, path, name, branch, base: string): JsonNode =
+  let start = repoDir(repo)
+  let shape = checkoutShape(start)
+  if shape.kind == ckNone:
+    return refused("not a git repository: " & start)
+  # Orientation: always the primary's container, from the primary OR from a
+  # worktree (so a conversation in a tree cuts the next tree beside itself
+  # rather than a container per hop).
+  let primary = if shape.primaryRoot.len > 0: shape.primaryRoot else: start
+  let container = worktreeContainer(primary)
+  var wtName = name.strip()
+  var target: string
+  if path.strip().len > 0:
+    target = normalizeRoot(path.strip())
+  else:
+    if wtName.len == 0:
+      return refused("add needs a name (or an explicit path)")
+    target = normalizeRoot(container / wtName)
+  if wtName.len == 0: wtName = target.lastPathPart()
+  # Refusals that exist because getting them wrong is expensive.
+  if not target.startsWith(normalizeRoot(container) & "/"):
+    return refused("a worktree must live in the repository's worktree container " &
+      container & " — got " & target & ". The sibling layout is what keeps a " &
+      "tree's write claims disjoint from the primary's (an in-repo tree would be " &
+      "inside the primary's opaque claim, serializing every write).")
+  if dirExists(target) or fileExists(target):
+    return refused("path already exists: " & target & " — refusing to adopt an " &
+      "existing directory (grafting a checkout into our git metadata is not " &
+      "reversible). Pick another name, or remove it yourself.")
+  # A path inside an EXISTING worktree of the same repo is the mistake the
+  # orientation rule exists to prevent.
+  for t in worktrees(primary):
+    let tp = normalizeRoot(t.path)
+    if tp.len > 0 and tp != normalizeRoot(primary) and
+        (target == tp or target.startsWith(tp & "/")):
+      return refused(target & " is inside the existing worktree " & tp &
+        " — a worktree is never nested in another")
+  if not ensureDir(container):
+    return refused("cannot create the worktree container " & container)
+  var gargs = @["worktree", "add"]
+  var br = branch.strip()
+  if br.len == 0: br = wtName
+  if not validRef(br):
+    return refused("invalid branch name: " & br)
+  var b = base.strip()
+  if b.len == 0:
+    let cur = runGit(repoArgs(primary) & gitBase & @["rev-parse",
+                                                     "--abbrev-ref", "HEAD"],
+                     15_000)
+    if cur.code != 0: return finish(cur.code, cur.output)
+    b = cur.output.splitLines()[0].strip()
+  if not validRef(b):
+    return refused("invalid base ref: " & b)
+  # -b refuses an existing branch (git errors); that is the right behaviour —
+  # silently attaching to someone else's branch is worse than an error.
+  gargs.add @["-b", br, target, b]
+  let r = runGit(repoArgs(primary) & gitBase & gargs, 120_000)
+  if r.code != 0: return finish(r.code, r.output)
+  # Ownership, in two layers: git's own lock (durable, readable without the
+  # store) and the ledger (which conversation, which base).
+  let session = comp.sessionContext
+  let reason = combined("worktree", if session.len > 0: session else: "unknown",
+                        br)
+  let lock = runGit(repoArgs(primary) & gitBase &
+                    @["worktree", "lock", "--reason", reason, target], 30_000)
+  let doc = %*{"repo": normalizeRoot(primary), "path": normalizeRoot(target),
+               "branch": br, "base": b,
+               "sessionId": session, "createdAt": epochTime(),
+               "state": "live"}
+  let ledgerErr = ledgerPut(target, doc)
+  var res = %*{"exit_code": 0, "ok": true, "path": normalizeRoot(target),
+               "branch": br, "base": b, "primary": normalizeRoot(primary),
+               "container": container,
+               "locked": lock.code == 0}
+  if lock.code != 0:
+    # The tree exists; say so rather than pretend the lock worked.
+    res["lockError"] = %capBytes(lock.output, 2000)
+  if ledgerErr.len > 0:
+    # Store down: the tree is created and git-locked (the durable half); the
+    # ledger miss is reported, and `remove` falls back to the lock reason.
+    res["ledgerError"] = %ledgerErr
+    res["detail"] = %("worktree created and git-locked, but the ownership " &
+      "ledger could not be written (" & ledgerErr & ") — removal will fall " &
+      "back to the git lock reason")
+  publishWorktreeChanged(primary)
+  let ignored = runGit(repoArgs(primary) & gitBase &
+                       @["status", "--porcelain"], 30_000)
+  if ignored.code == 0 and ignored.output.strip().len > 0:
+    res["statusClean"] = %false
+    res["detail"] = %("worktree created outside the repository — no ignore rule " &
+      "is needed (a sibling is not in the repo); the primary's own working " &
+      "tree was already dirty")
+  else:
+    res["statusClean"] = %true
+  res
+
+# --- op: remove ------------------------------------------------------------
+
+proc branchMergedInto(primary, branch, base: string): bool =
+  ## Is `branch` fully merged into `base`? Best effort: an error reads as NOT
+  ## merged, so the refusal stands and the override flag is the way through.
+  if branch.len == 0 or base.len == 0: return false
+  let r = runGit(repoArgs(primary) & gitBase &
+                 @["merge-base", "--is-ancestor", branch, base], 20_000)
+  r.code == 0
+
+proc worktreeRemoveImpl(repo, path: string, force,
+                        deleteBranch: bool): JsonNode =
+  let start = repoDir(repo)
+  let shape = checkoutShape(start)
+  if shape.kind == ckNone: return refused("not a git repository: " & start)
+  let primary = if shape.primaryRoot.len > 0: shape.primaryRoot else: start
+  var target = normalizeRoot(path.strip())
+  if target.len == 0:
+    return refused("remove needs the path of the worktree")
+  if target == normalizeRoot(primary):
+    return refused("that is the primary checkout, not a worktree — refusing to " &
+      "remove the repository itself")
+  # Find the git record: its branch and lock reason.
+  var found = false
+  var branch = ""
+  var lockReason = ""
+  for t in worktrees(primary):
+    if normalizeRoot(t.path) == target:
+      found = true
+      branch = t.branch
+      lockReason = t.lockReason
+      break
+  if not found:
+    return refused("no worktree of " & normalizeRoot(primary) & " at " & target &
+      " — `git_worktree {op: prune}` clears trees that were deleted by hand")
+  # (i) another LIVE conversation pinned here. git cannot know this; the
+  # ledger is the whole reason it exists. Fall back to the lock reason when
+  # the ledger is unreadable (a store-down `add` still wrote the lock).
+  let entry = ledgerGet(target)
+  let owner = if entry != nil: entry{"sessionId"}.getStr("") else: ""
+  let mine = comp.sessionContext
+  if owner.len > 0:
+    if owner != mine and not force:
+      return refused("the worktree " & target & " belongs to conversation " &
+        owner & " (ledger) — that conversation may still be working there. " &
+        "Pass force: true only if you know it is finished.")
+  elif lockReason.len > 0 and not force:
+    # The ledger is gone but git's lock names an owner: same guard, less detail.
+    # Parse by SEARCHING for the marker, not by slicing a fixed prefix — the
+    # reason is "<action> (<branch>) — conversation <id>", so the marker's
+    # offset varies with the branch name (slicing produced "tree (feat) —
+    # conversation x", which then named a conversation that does not exist).
+    let marker = "conversation "
+    let at = lockReason.find(marker)
+    let named = if at >= 0: lockReason[at + marker.len .. ^1].strip(chars = {'"'})
+                else: ""
+    # "unknown" is what `add` writes when no session was injected (a direct
+    # bus call, e.g. the cli). It is not an owner to protect: treating it as
+    # one would block every scripted call.
+    if named.len > 0 and named != "unknown" and named != mine:
+      return refused("the worktree " & target & " is locked for conversation " &
+        named & " (git lock) — pass force: true only if you know it is " &
+        "finished.")
+  # (ii) an unmerged branch.
+  if branch.len > 0 and not force:
+    let base = if entry != nil: entry{"base"}.getStr("") else: ""
+    let into = if base.len > 0: base else: "HEAD"
+    if not branchMergedInto(primary, branch, into):
+      return refused("branch " & branch & " has commits not merged into " & into &
+        " — the work would be lost. Merge it first, or pass force: true to " &
+        "remove the tree anyway (the branch itself is kept).")
+  # We are past the ownership guard, so the lock is ours to drop. It must be
+  # dropped explicitly: git refuses to remove a LOCKED tree without -f -f
+  # (measured), and passing -f -f unconditionally would also bulldoze a DIRTY
+  # tree — which git refuses on purpose ("contains modified or untracked
+  # files") and which the caller should see verbatim rather than have us
+  # override. Unlock first, then remove with the force the caller asked for.
+  if lockReason.len > 0:
+    discard runGit(repoArgs(primary) & gitBase &
+                   @["worktree", "unlock", target], 30_000)
+  # A dirty tree is git's own refusal (measured: exit 128, "contains modified
+  # or untracked files"); surface it verbatim rather than re-implementing it.
+  var gargs = @["worktree", "remove"]
+  if force: gargs.add @["--force", "--force"]
+  gargs.add target
+  let r = runGit(repoArgs(primary) & gitBase & gargs, 60_000)
+  if r.code != 0: return finish(r.code, r.output)
+  publishWorktreeChanged(primary)
+  var res = %*{"exit_code": 0, "ok": true, "path": target, "branch": branch}
+  if deleteBranch and branch.len > 0:
+    let d = runGit(repoArgs(primary) & gitBase & @["branch", "-D", branch], 30_000)
+    res["branchDeleted"] = %(d.code == 0)
+    if d.code != 0: res["branchDeleteError"] = %capBytes(d.output, 2000)
+  # Retire the ledger entry: the record survives as history (state), which is
+  # what makes "this conversation's tree was removed" answerable later.
+  if entry != nil:
+    var doc = entry
+    doc["state"] = %"removed"
+    doc["removedAt"] = %epochTime()
+    let err = ledgerPut(target, doc)
+    if err.len > 0: res["ledgerError"] = %err
+  res
+
+# --- op: prune -------------------------------------------------------------
+
+proc worktreePruneImpl(repo: string): JsonNode =
+  let start = repoDir(repo)
+  let shape = checkoutShape(start)
+  if shape.kind == ckNone: return refused("not a git repository: " & start)
+  let primary = if shape.primaryRoot.len > 0: shape.primaryRoot else: start
+  # `git worktree prune` SKIPS LOCKED trees (measured: it exits 0 and leaves
+  # the record in place). Every tree `add` creates is locked, so without this
+  # step prune could never clean up a tree of ours — the exact case it exists
+  # for. Unlock only records whose directory is GONE: a live tree keeps its
+  # lock, so prune still cannot touch work that is actually there.
+  var unlocked: seq[string]
+  for t in worktrees(primary):
+    let p = normalizeRoot(t.path)
+    if p.len == 0 or p == normalizeRoot(primary): continue
+    if t.locked and not dirExists(p):
+      let u = runGit(repoArgs(primary) & gitBase &
+                     @["worktree", "unlock", p], 30_000)
+      if u.code == 0: unlocked.add p
+  let r = runGit(repoArgs(primary) & gitBase & @["worktree", "prune", "-v"],
+                 60_000)
+  if r.code != 0: return finish(r.code, r.output)
+  # The signature the dispatch cache uses must move, or a pruned tree stays in
+  # the workspace set until the runner restarts.
+  publishWorktreeChanged(primary)
+  var res = %*{"exit_code": 0, "ok": true,
+               "pruned": %(r.output.strip().len > 0)}
+  if unlocked.len > 0:
+    var arr = newJArray()
+    for u in unlocked: arr.add(%u)
+    res["unlocked"] = arr
+  let detail = r.output.strip()
+  res["detail"] = %(if detail.len > 0: detail
+                   elif unlocked.len > 0:
+                     "removed the records of " & $unlocked.len &
+                     " hand-deleted tree(s)"
+                   else: "nothing to prune")
+  res
+
+comp.watchConfig(gitSettings, "git.mutations")
+
+if mutationsEnabled():
+  # The owner tool config_patch calls. Registered only with the surface it
+  # configures: an operator who disabled mutations has nothing to patch here.
+  discard comp.tool("git_config",
+    ownerToolSchema("git.mutations", "git write-verb enablement"),
+    proc(c: Component, args: JsonNode): JsonNode =
+      c.ownerOp(ownerStore, args))
+
+  comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+                "effect": "read",
+                "workspace": {"cwdField": "repo"},
+                "hint": "List this repository's git worktrees, including which conversation owns each one — use before creating or removing a tree, or to see whether your work should happen in a separate tree."}):
+    proc git_worktree_list(repo: string = ""): JsonNode =
+      ## List every worktree of this repository: path, branch, HEAD, whether
+      ## it is locked (and why), whether it is prunable, whether it is the
+      ## tree you are calling from, and — from the ownership ledger — which
+      ## conversation created it. Use it before `git_worktree add` to see the
+      ## container path and existing names, and before `remove` to confirm
+      ## nobody else is working in a tree.
+      ##
+      ## The worktree flow this belongs to: cut a tree for experimental or
+      ## parallel work, work there (its writes do not collide with the
+      ## primary's), then merge back with `git_merge` and retire it. A tree is
+      ## always a SIBLING of the repository (`<repo>.wt/<name>`), never inside
+      ## it.
+      worktreeListImpl(repo)
+
+  comp.tool(%*{"timeoutMs": 120_000, "onDemand": true, "effect": "write",
+                "approval": "always", "sessionId": true,
+                "workspace": {"cwdField": "repo"},
+                "writes": {"paths": ["repo", "path"]},
+                "hint": "Manage git worktrees: cut an isolated sibling tree for experimental or parallel work (add), retire one (remove), or clear records for trees deleted by hand (prune). A tree is a sibling of the repo (<repo>.wt/<name>), never inside it."}):
+    proc git_worktree(op: string, repo: string = "", name: string = "",
+                      path: string = "", branch: string = "", base: string = "",
+                      force: bool = false, delete_branch: bool = false): JsonNode =
+      ## Create, remove or prune git worktrees of this repository.
+      ##
+      ## `add` cuts an isolated SIBLING tree (`<repo>.wt/<name>`, branching
+      ## from `base`, default the primary's current branch). Work there when a
+      ## task is experimental, threatens uncommitted work, or should run in
+      ## parallel: writes in a tree never collide with the primary's, and the
+      ## tree leaves no ignore rule behind because it is outside the repo.
+      ## `remove` deletes a tree and refuses when another live conversation
+      ## owns it or its branch has unmerged commits — both refusals name the
+      ## flag that overrides them. The branch is KEPT unless delete_branch is
+      ## set. A dirty tree is refused by git itself (its message is surfaced
+      ## verbatim).
+      ##
+      ## To merge the work back, use `git_merge` (or `git_merge_preview`
+      ## first); removing a tree does not merge it.
+      if op == "add": return worktreeAddImpl(repo, path, name, branch, base)
+      if op == "remove":
+        return worktreeRemoveImpl(repo, path, force, delete_branch)
+      if op == "prune": return worktreePruneImpl(repo)
+      refused("op must be \"add\", \"remove\" or \"prune\"")
+
+# The declaration rides the idle seam, like every other owner: it must not
+# block boot, and it must survive a config component that is not up yet.
+var gitConfigDeclared = false
+discard comp.onIdle(1000) do (c: Component):
+  if not gitConfigDeclared:
+    gitConfigDeclared = c.declareConfig(gitDecl) or gitConfigDeclared
 
 resolveGit()
 comp.run()

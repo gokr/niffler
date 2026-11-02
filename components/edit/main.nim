@@ -979,8 +979,15 @@ const MAX_REPLACE_FILES = 512  # glob-accident circuit breaker, NOT an
                                # counts, not contents). The real bound is
                                # the undo pre-image budget below.
 const MAX_UNDO_BYTES = 32 * 1024 * 1024  # per-call undo pre-image budget
-const MAX_SELECT_FILES = 64    # read select scan cap (find | head parity;
-                               # the 512KB byte cap bounds the response)
+const MAX_SELECT_FILES = 64      # select: files a call answers for (find |
+                                 # head parity). Files past the cap are
+                                 # counted in a notice, never silently lost.
+const MAX_SELECT_FILE_SCAN = 512 # select: files ONE glob entry may inspect —
+                                 # the replace_across circuit breaker. A
+                                 # runaway "**" must not walk a whole tree to
+                                 # answer a question about a dozen matches.
+const MAX_SELECT_BYTES = 192 * 1024  # select: rendered-region budget per call
+                                     # (the 512KB reply cap still applies)
 
 proc isWordRune(r: char): bool =
   ## Word character for the `word` option (\b-style spans).
@@ -1048,28 +1055,59 @@ proc globMatch(name, pat: string): bool =
     inc pi
   result = pi == pat.len
 
-proc expandGlob(pattern: string): seq[string] =
+proc expandGlob(pattern: string, limit = 0):
+    tuple[files: seq[string], capped: bool] =
   ## File selection relative to the component root for standalone calls;
   ## core resolves conversation glob arguments to absolute workspace paths.
-  ## "f*.go" selects one directory, "**/name*" recursively. Sorted batches.
+  ## "f*.go" selects one directory, "**/name*" recursively, "dir/**" every
+  ## file below that directory. Sorted batches. A `limit` > 0 stops the walk
+  ## once that many files are collected and reports `capped`, so a caller
+  ## with a bounded budget never walks a whole tree first.
   let root = rootDir()
   let pat = pattern.replace("\\\\", "/")
   var files: seq[string] = @[]
+  var capped = false
   if "**" in pat:
     let idx = pat.find("**/")
-    let head = if idx > 0: pat[0 ..< idx] else: ""
-    let tail = if idx >= 0 and idx + 3 <= pat.high: pat[idx + 3 .. ^1] else: "*"
-    let base = if head.len > 0: followSymlink(toCwd(head, root)) else: root
-    if dirExists(base):
-      for p in walkDirRec(base):
-        if fileExists(p) and globMatch(p.extractFilename, tail):
-          files.add(p)
+    if idx >= 0:
+      let head = pat[0 ..< idx]
+      let tail = if idx + 3 <= pat.high: pat[idx + 3 .. ^1] else: "*"
+      let base = if head.len > 0: followSymlink(toCwd(head, root)) else: root
+      if dirExists(base):
+        for p in walkDirRec(base):
+          if fileExists(p) and globMatch(p.extractFilename, tail):
+            files.add(p)
+            if limit > 0 and files.len >= limit:
+              capped = true
+              break
+    else:
+      # "dir/**" — a trailing separator, not "/**/". The head IS the
+      # directory being asked about, so it must be kept: dropping it made
+      # every "tui/**" walk the whole NIF_ROOT instead, and a select then
+      # died on the first .git/index it met. A bare "**" still means every
+      # file under the root.
+      let head = pat[0 ..< pat.high]        # "dir/**" -> "dir/*"
+      let cut = head.rfind('/')
+      let dirPart = if cut >= 0: head[0 ..< cut] else: ""
+      let filePart = if cut >= 0: head[cut + 1 .. ^1] else: head
+      let base = if dirPart.len > 0: followSymlink(toCwd(dirPart, root))
+                 else: root
+      if dirExists(base):
+        for p in walkDirRec(base):
+          if fileExists(p) and globMatch(p.extractFilename, filePart):
+            files.add(p)
+            if limit > 0 and files.len >= limit:
+              capped = true
+              break
   else:
     for p in walkFiles(toCwd(pat, root)):
       if fileExists(p):
         files.add(p)
+        if limit > 0 and files.len >= limit:
+          capped = true
+          break
   files.sort()
-  result = files
+  result = (files: files, capped: capped)
 
 proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
   ## Handler for replace_across — see the section doc above. Two phases:
@@ -1094,7 +1132,7 @@ proc hReplaceAcross(c: Component, args: JsonNode): JsonNode =
     if globN.kind != JString or globN.getStr().len == 0:
       raise newException(ValueError,
         "[E_BAD_SHAPE] replace_across \"glob\" must be a non-empty pattern (f*.go, **/*.go).")
-    raw.add(expandGlob(globN.getStr()))
+    raw.add(expandGlob(globN.getStr()).files)
   if raw.len == 0:
     if globN != nil:
       raise newException(ValueError,
@@ -1803,6 +1841,15 @@ proc readSelectItems(args: JsonNode): seq[SelectItem] =
 proc hasSelectItem(args: JsonNode): bool =
   readSelectItems(args).len > 0
 
+proc regexishPattern(p: string): bool =
+  ## A pattern that looks like a regular expression rather than the literal
+  ## substring select actually matches. Only used to explain a zero-hit
+  ## answer, never to change matching.
+  if p.len == 0: return false
+  if p[0] in {'^', '.'} or p[^1] == '$': return true
+  if "\\b" in p or "\\s" in p or "\\d" in p or "\\w" in p: return true
+  p.contains({'|', '(', ')', '[', ']', '*', '+'})
+
 proc hReadSelect(c: Component, args: JsonNode): JsonNode =
   ## Select mode: locate + fetch in one call — the grep-then-cat move Pi
   ## does in bash. Line-based literal matching (grep semantics: a hit is a
@@ -1814,41 +1861,72 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       "[E_BAD_SHAPE] read select items need \"glob\" or \"pattern\".")
   let reads = args{"reads"}
   if reads != nil and reads.kind == JArray:
-    for n in reads:
+    var offenders: seq[string] = @[]
+    var copyable = newJArray()
+    for idx, n in reads:
       if n == nil or n.kind != JObject: continue
       if not n.hasKey("glob") and not n.hasKey("pattern"):
-        raise newException(ValueError,
-          "[E_BAD_SHAPE] a select call cannot mix {path, offset, limit} " &
-          "content reads with select items — split the call (content reads " &
-          "first, then the select).")
+        offenders.add("reads[" & $idx & "]")
+        copyable.add(n)
+    if offenders.len > 0:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] a select call cannot mix {path, offset, limit} " &
+        "content reads with select items: " & offenders.join(", ") &
+        " carry no \"glob\"/\"pattern\", so nothing was read. Retry with " &
+        "{\"reads\": " & $copyable & "} as one call and the select " &
+        "items as another.")
   var blocks: seq[string] = @[]
   var jsItems = newJArray()
-  var filesBudget = MAX_SELECT_FILES
+  var filesBudget = MAX_SELECT_FILES   # files that carry content/hits
   var totalHits = 0
-  var truncated = false
+  var truncated = 0
+  var scanned = 0
   var captureBytes = 0
+  var renderBytes = 0
   for it in items:
+    let label = if it.glob.len > 0: it.glob else: it.path
     var targets: seq[string] = @[]
+    var globCapped = false
+    var anyHits = false
     if it.glob.len > 0:
-      targets = expandGlob(it.glob)
+      let walked = expandGlob(it.glob, MAX_SELECT_FILE_SCAN)
+      targets = walked.files
+      globCapped = walked.capped
     else:
       targets.add(followSymlink(toCwd(it.path, rootDir())))
     if targets.len == 0:
-      blocks.add("### " & (if it.glob.len > 0: it.glob else: it.path) &
-                 "\n[no files match]")
+      blocks.add("### " & label & "\n[no files match]")
       continue
-    for abs in targets:
+    var tIdx = 0
+    while tIdx < targets.len:
+      let abs = targets[tIdx]
+      inc tIdx
+      inc scanned
       if filesBudget <= 0:
-        truncated = true
+        truncated += targets.len - tIdx + 1
         break
-      dec filesBudget
       if not fileExists(abs):
         jsItems.add(%*{"path": abs, "error": "not a file"})
+        blocks.add("### " & displayPath(args, abs) &
+                   "\n[skipped: not a file]")
+        inc filesBudget    # an unreadable target is not an answer
         continue
-      let file = loadText(abs)
-      let content = file.normalized
+      var content = ""
+      try:
+        content = loadText(abs).normalized
+      except CatchableError as e:
+        # One binary/directory target must not abort the batch: the content
+        # path (hReadBatch) is per-item tolerant, and a select over a real
+        # tree always meets an image, a binary or a subdirectory.
+        var msg = e.msg
+        if msg.startsWith("["): msg = msg[msg.find(']') + 1 .. ^1].strip()
+        jsItems.add(%*{"path": abs, "error": msg})
+        blocks.add("### " & displayPath(args, abs) & "\n[skipped: " & msg & "]")
+        inc filesBudget    # an unreadable target is not an answer
+        continue
       if it.pattern.len == 0:
         # inventory mode: paths only (the find/ls move)
+        dec filesBudget
         jsItems.add(%*{"path": abs, "listed": true})
         blocks.add(displayPath(args, abs))
         continue
@@ -1868,8 +1946,14 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
             off += ln.len + 1
         i = j + max(it.pattern.len, 1)
       if hitLines.len == 0:
+        # No hits here: the file is still reported (a zero-hit row is the
+        # answer "not in this file") but it does not consume the answer
+        # budget — otherwise a 400-file glob could exhaust the cap with
+        # files that matched nothing before the real hits were reached.
         jsItems.add(%*{"path": abs, "hits": 0})
         continue
+      dec filesBudget
+      anyHits = true
       hitLines.sort()
       var regions: seq[tuple[a, b: int]] = @[]
       for li in hitLines:
@@ -1880,8 +1964,14 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
         else:
           regions.add((a, b))
       var parts: seq[string] = @[]
+      var rendered = 0
       for r in regions:
-        parts.add(lines[r.a .. r.b].join("\n"))
+        let part = lines[r.a .. r.b].join("\n")
+        if renderBytes + part.len > MAX_SELECT_BYTES:
+          break
+        renderBytes += part.len
+        inc rendered
+        parts.add(part)
       totalHits += hitLines.len
       var selectedItem = %*{"path": abs, "hits": hitLines.len,
                              "regions": regions.len}
@@ -1902,10 +1992,28 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       blocks.add("### " & displayPath(args, abs) & " (" & $hitLines.len & " hit(s), " &
                  $regions.len & " region(s); lines are verbatim)\n" &
                  parts.join("\n\n"))
+      if rendered < regions.len:
+        blocks.add("[region skipped: byte budget " & $MAX_SELECT_BYTES &
+                   " reached — " & $(regions.len - rendered) &
+                   " more region(s) in this file were not rendered; narrow " &
+                   "the pattern or read the file with a \"limit\"]")
+    if it.pattern.len > 0 and it.glob.len == 0 and targets.len == 1 and
+        not anyHits and regexishPattern(it.pattern):
+      blocks.add("[hint: \"pattern\" is a literal substring match " &
+                 "(grep -F), not a regex — \"" & it.pattern &
+                 "\" was searched verbatim and may want plain text]")
+    if globCapped:
+      blocks.add("[read limit: glob \"" & it.glob & "\" stopped after " &
+                 $MAX_SELECT_FILE_SCAN & " files (scan cap) — narrow it]")
   var text = blocks.join("\n")
-  if truncated:
-    text.add("\n[read limit: file cap " & $MAX_SELECT_FILES &
-             " reached; select the rest in another call]")
+  if truncated > 0:
+    text.add("\n[read limit: answer cap " & $MAX_SELECT_FILES &
+             " files reached; " & $truncated & " more matched file(s) " &
+             "were not examined — narrow the glob or add a pattern]")
+  elif scanned >= MAX_SELECT_FILE_SCAN and filesBudget <= 0:
+    text.add("\n[read limit: answer cap " & $MAX_SELECT_FILES &
+             " files reached after examining " & $scanned &
+             " file(s) — narrow the glob or add a pattern]")
   if text.len > 512_000:
     text = text[0 .. 512_000] &
       "\n[read limit: output truncated at 512000 bytes]"
