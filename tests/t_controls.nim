@@ -832,6 +832,51 @@ proc main() =
           second != nil and second{"reply"}.getStr("").len > 0, $second)
 
   # -------------------------------------------------------------------------
+  # 8c. The reported sequence: ESC twice cancels a turn, and the "continue"
+  # the human types afterwards RUNS instead of dying on a stale control.
+  #
+  # The cancel must be published once the turn is genuinely WORKING
+  # (ev.session.<id>.toolcall), not on a blind sleep: a control published
+  # before the turn starts is, correctly, discarded as stale — so a test that
+  # publishes early tests the opposite of its name. The detailed end-to-end
+  # coverage (one 'continue', no second cancellation) lives in
+  # tests/t_esccancel.nim, which runs this sequence in isolation; here it is
+  # kept to the turn outcome so the suite's runtime stays bounded.
+  block escapeTwiceThenContinue:
+    var p = startProbe("esc2continue", @[("NIF_MOCK_ROUNDS", "3"),
+                                         ("NIF_MOCK_TOOLCMD", "sleep 4")])
+    defer: p.stopProbe()
+    let nc = p.nc
+    let sid = "esc2continue-" & $int(epochTime())
+    let toolSub = openSub(nc, "ev.session." & sid & ".toolcall")
+    defer: natsSubscription_Destroy(toolSub)
+    let inbox = "_INBOX.esc2." & newId()
+    let replies = openSub(nc, inbox)
+    defer: natsSubscription_Destroy(replies)
+    publishCall(nc, "svc.core.call", inbox,
+                callEnvelope("session", %*{"sessionId": sid,
+                                           "content": "work"}, "probe"))
+    var working = false
+    let startDeadline = epochTime() + 30.0
+    while not working and epochTime() < startDeadline:
+      working = pollEnv(toolSub, 50).found
+    check("esc twice: the turn reached a tool call (live for a cancel)",
+          working)
+    for i in 1 .. 2:
+      nc.publish("svc.session." & sid & ".steer",
+        Envelope(v: 1, id: "esc-" & $i, kind: ekEvent,
+                 payload: %*{"__cancel": true}).encode())
+      sleep(120)
+    var first: JsonNode = nil
+    let firstDeadline = epochTime() + 60.0
+    while first == nil and epochTime() < firstDeadline:
+      let polled = pollEnv(replies, 50)
+      if polled.found: first = callerOf(polled.env)
+    check("esc twice: the turn ends cancelled",
+          first != nil and first{"turnError"}.getStr("").contains("cancelled"),
+          $first)
+
+  # -------------------------------------------------------------------------
   # 9. `session {stop: true}` DURING a turn is accepted and stops it. This is
   # the one op that must not answer "busy": it is the only way a caller with
   # no bus subscription of its own (a Fleet requester across the country) can

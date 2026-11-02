@@ -3683,6 +3683,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # turn. Dropping pre-existing controls makes "a cancel applies to the turn
   # that is running when it arrives, or not at all" true.
   if ct.steerStream != nil:
+    # DISCARD anything already queued, then clear. A control sitting on the
+    # subscription when a turn begins belongs to a turn that is no longer
+    # running (or is a duplicate from ESC pressed twice) — honouring it would
+    # abort the turn the human just asked for, which is the reported "I must
+    # type continue twice". A cancel that arrives once this turn is visibly
+    # running is published later and raises the flag normally.
     pumpSteer(ct, discardControls = true)
     ct.steerStream.cancelRequested = false
   var rounds = 0
