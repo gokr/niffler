@@ -1116,7 +1116,7 @@ order.
 | 1 | ~~live set: graph signature + `__workspace.primary/worktree`~~ **SHIPPED** (the `ev.worktree.changed` event is folded into slice 3, where the component that publishes it lives) | core/dispatch | `t_liveset`: `graphSignature` moves on add/remove/last-removed and distinguishes two trees created in the SAME second; `workspaceRootsFor` admits a tree created after the first dispatch with no grant and no restart, notices its removal, and caches the conversation's checkout shape |
 | 2 | ~~opaque claim follows resolved cwd (+ `roots: true`)~~ **SHIPPED** | core/dispatch | `t_locks` pure (claim root per cwd: primary, worktree, deep-inside, outside-set fail-safe, same-prefix sibling, `roots: true`, empty set); `t_arbitration` (a worktree `bash` and a primary `bash` hold leases in parallel, while two writers in the SAME tree still collide) |
 | 3 | ~~`git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards~~ **SHIPPED** | components/git | `t_git` (add lands a sibling that leaves `git status` clean with no ignore edit; orientation from INSIDE a worktree; collision/in-repo/nested refusals; unmerged-branch and primary refusals; force + branch-kept; prune of a hand-deleted tree; ledger owner in `list`) |
-| 4 | `git_merge_preview` + `git_merge {start,abort}` + `git_commit` | components/git | `t_git` (clean, conflict-preview, dirty target, claim visible to `locks`) |
+| 4 | ~~`git_merge_preview` + `git_merge {start,abort}` + `git_commit`~~ **SHIPPED** | components/git | `t_git` (clean preview with divergence counts, conflict preview naming files, **a bad ref is an error and never a conflict list**, required `repo`, clean merge, dirty-target refusal naming paths, commit staging only named paths while leaving an unrelated untracked file alone, nothing-to-commit as a normal answer) |
 | 5 | `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
 | 6 | peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
 | 7 | client: the move-vs-fork decision (§5.1), `/worktree add` / `merge` / `rm` / `close` (with `close` switching back to the origin), chip, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus; `close` asserts the switch-back target) |
@@ -1406,3 +1406,48 @@ the read verb answer?), which is what the check actually meant.
 - The ledger is read with `storeListAll`, not `storeList`: a single list is a
   PAGE, and a truncated view would report an owned tree as unowned — the one
   answer this must never give.
+
+### §8.4 Slice 4 — implementation notes (shipped 2026-11-02)
+
+Three tools in `components/git`, alongside the worktree verbs and behind the
+same `git.mutations` gate: `git_merge_preview` (read, no prompt), `git_merge
+{start,abort}` and `git_commit` (write, `approval: "always"`, claiming
+`paths: ["repo", "paths"]`).
+
+**The exit-1 trap, re-measured before implementing.** `git merge-tree
+--write-tree --name-only` exits 1 for BOTH a real conflict and a ref that does
+not exist. Measured on git 2.43 here: a conflict prints the tree OID, the paths
+and the `CONFLICT` lines on stdout; a bad ref prints NOTHING on stdout and
+`merge-tree: <ref> - not something we can merge` on stderr. So
+`mergeTreeVerdict` requires a POSITIVE discriminator — the first output line
+must be a 40/64-hex tree OID — before it will claim a conflict, and otherwise
+returns an error carrying git's own message. `t_git` pins it: a preview against
+`nosuchbranch` must be an error naming the ref and must carry no `conflicts`
+array. Verified load bearing by reverting to `exit 1 → conflict`, which reports
+the bad ref as a *clean merge* (the OID check is what saves it) — a worse lie
+than a fabricated conflict list.
+
+**`runGit` combines stderr into stdout** (`runCmd` wraps with `2>&1`), so the
+streams cannot be told apart. The discriminator is therefore the CONTENT, which
+separates cleanly: a bad ref's first line is prose, a conflict's is hex.
+
+**`repo` is REQUIRED on all three**, not defaulted. `writePathsFor` derives the
+claim from ARGUMENT VALUES, so a component-side default would take the lease
+over one tree and write another — the F4 hole, measured in §4.3. The refusal
+names the tree it thinks you meant (the primary, when you are in a worktree), so
+the next call is unambiguous.
+
+**Findings from the tests, each a real one:**
+
+- `merge` requires the target branch to be CHECKED OUT; passing `into: main`
+  while `feat` is checked out is refused with the actual branch named rather
+  than silently retargeted. (My first test did exactly this and "failed" for a
+  correct reason.)
+- `commit` with neither `paths` nor `all` stages tracked modifications only
+  (`git add -u`), so an unrelated UNTRACKED file is not swept in — asserted,
+  because that is the verb's whole advantage over `bash git commit -a`.
+- git phrases "nothing to commit" several ways ("nothing to commit", "nothing
+  added to commit but untracked files present"); all are normal answers now,
+  not crashes.
+- a `nil` JsonNode indexed with `{"conflicts"}` is a SIGSEGV, not a false — the
+  bad-ref assertions inspect the node's kind first.

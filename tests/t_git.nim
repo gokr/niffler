@@ -395,6 +395,149 @@ proc main() =
   check("an unknown op is refused",
         badOp{"exit_code"}.getInt(-1) != 0, $badOp)
 
+  # =========================================================================
+  # Merge surface (WORKTREES.md §4.3): preview, merge, commit
+  # =========================================================================
+  # A fresh repo so the worktree assertions above cannot interfere.
+  let mrepo = sroot / "mrepo"
+  createDir(mrepo)
+  doAssert sh("git -C " & quoteShell(mrepo) & " init -q -b main").exitCode == 0
+  doAssert sh("git -C " & quoteShell(mrepo) &
+              " config user.email t@example.com").exitCode == 0
+  doAssert sh("git -C " & quoteShell(mrepo) &
+              " config user.name \"Test User\"").exitCode == 0
+  writeFile(mrepo / "f.txt", "base\n")
+  doAssert sh("git -C " & quoteShell(mrepo) & " add -A && git -C " &
+              quoteShell(mrepo) & " commit -q -m base").exitCode == 0
+  # A clean feature branch and a conflicting one, built with explicit steps so
+  # a failure names the step that broke rather than a chain.
+  proc mgit(args: string): void =
+    let r = sh("git -C " & quoteShell(mrepo) & " " & args)
+    if r.exitCode != 0:
+      fail("fixture git " & args & ": " & r.output)
+
+  # feat: a NEW file, so it merges cleanly.
+  mgit("checkout -q -b feat")
+  writeFile(mrepo / "g.txt", "feat\n")
+  mgit("add -A")
+  mgit("commit -q -m feat")
+  # conf: a conflicting f.txt, branched from the ORIGINAL main.
+  mgit("checkout -q main")
+  mgit("checkout -q -b conf")
+  writeFile(mrepo / "f.txt", "A\n")
+  mgit("add -A")
+  mgit("commit -q -m conf")
+  # main moves f.txt a different way.
+  mgit("checkout -q main")
+  writeFile(mrepo / "f.txt", "B\n")
+  mgit("add -A")
+  mgit("commit -q -m mainchange")
+  # Leave feat checked out: it is the clean merge this test starts with.
+  mgit("checkout -q feat")
+
+  # --- preview: clean ----------------------------------------------------
+  let pClean = call(nc2, "git", "git_merge_preview",
+                    %*{"repo": mrepo, "into": "main", "from_ref": "feat"},
+                    120_000)
+  check("preview of a clean merge says clean",
+        pClean{"ok"}.getBool(false) and pClean{"clean"}.getBool(false), $pClean)
+  check("it reports divergence counts",
+        pClean{"ahead"}.getInt(-1) >= 1, $pClean)
+
+  # --- preview: conflict names the files ---------------------------------
+  let pConf = call(nc2, "git", "git_merge_preview",
+                   %*{"repo": mrepo, "into": "main", "from_ref": "conf"},
+                   120_000)
+  check("preview of a conflicting merge says not clean",
+        pConf{"ok"}.getBool(false) and not pConf{"clean"}.getBool(true), $pConf)
+  check("and it names the conflicting file",
+        pConf{"conflicts"}.len == 1 and
+        pConf{"conflicts"}[0].getStr("") == "f.txt", $pConf{"conflicts"})
+
+  # --- THE EXIT-1 TRAP: a bad ref is an ERROR, never a conflict list -----
+  let pBad = call(nc2, "git", "git_merge_preview",
+                  %*{"repo": mrepo, "into": "main", "from_ref": "nosuchbranch"},
+                  120_000)
+  check("a nonexistent ref is an ERROR, not a conflict",
+        not pBad{"ok"}.getBool(true) and pBad{"conflicts"} == nil, $pBad)
+  check("and the error names the ref",
+        pBad{"error"}.getStr("").contains("nosuchbranch"), $pBad)
+  check("no fabricated conflict list is returned for a bad ref",
+        pBad{"conflicts"} == nil, $pBad)
+
+  # --- merge needs repo (required, not defaulted) ------------------------
+  let noRepo = call(nc2, "git", "git_merge",
+                    %*{"op": "start", "into": "main", "from_ref": "feat"},
+                    60_000)
+  check("merge refuses without repo, naming the tree it needs",
+        noRepo{"exit_code"}.getInt(-1) != 0 and
+        noRepo{"text"}.getStr("").contains("`repo`"), $noRepo)
+
+  # --- merge: start, clean ------------------------------------------------
+  # git merges into the branch that is CHECKED OUT, so the target must be
+  # current: switch to main (the tree this merge lands in).
+  doAssert sh("git -C " & quoteShell(mrepo) & " checkout -q main").exitCode == 0
+  let merged = call(nc2, "git", "git_merge",
+                    %*{"op": "start", "repo": mrepo, "into": "main",
+                       "from_ref": "feat"}, 180_000)
+  check("a clean merge succeeds",
+        merged{"ok"}.getBool(false) and merged{"merged"}.getBool(false), $merged)
+  check("it reports the new head", merged{"head"}.getStr("").len == 40, $merged)
+  check("and the files it brought in",
+        merged{"files"}.len >= 1, $merged{"files"})
+
+  # --- merge: a dirty target on a touched path is refused by NAME --------
+  # Make the conflict branch touch f.txt, dirty f.txt on main, then try.
+  doAssert sh("git -C " & quoteShell(mrepo) & " checkout -q main").exitCode == 0
+  writeFile(mrepo / "f.txt", "dirty local edit\n")
+  let dirtyMerge = call(nc2, "git", "git_merge",
+                        %*{"op": "start", "repo": mrepo, "into": "main",
+                           "from_ref": "conf"}, 120_000)
+  check("a merge it cannot complete is refused",
+        dirtyMerge{"ok"}.getBool(true) == false, $dirtyMerge)
+  # `conflicts` is absent on this refusal path, so it must be inspected by
+  # kind — indexing into a nil JsonNode is a SIGSEGV, not a false.
+  let dmConflicts = dirtyMerge{"conflicts"}
+  check("the refusal names the path or the conflict, not git's abort text",
+        dirtyMerge{"error"}.getStr("").contains("f.txt") or
+        (dmConflicts != nil and dmConflicts.kind == JArray and
+         dmConflicts.len > 0), $dirtyMerge)
+
+  # --- commit: stages only what is named --------------------------------
+  writeFile(mrepo / "named.txt", "N\n")
+  writeFile(mrepo / "stray.txt", "S\n")
+  let committed = call(nc2, "git", "git_commit",
+                       %*{"repo": mrepo, "message": "add named only",
+                          "paths": ["named.txt"]}, 120_000)
+  check("commit succeeds", committed{"ok"}.getBool(false), $committed)
+  check("it returns the commit id", committed{"commit"}.getStr("").len == 40,
+        $committed)
+  let staged = sh("git -C " & quoteShell(mrepo) & " show --name-only --format= HEAD")
+  check("the named path is IN the commit", staged.output.contains("named.txt"),
+        staged.output)
+  check("an unrelated untracked file is NOT swept in",
+        not staged.output.contains("stray.txt"), staged.output)
+  check("and it is still untracked",
+        sh("git -C " & quoteShell(mrepo) & " status --porcelain").
+          output.contains("?? stray.txt"))
+
+  # --- commit: nothing to commit is a normal answer ---------------------
+  # The tree must be CLEAN first, or "nothing to commit" would really mean
+  # "commit the dirty f.txt a previous step left behind" — which is exactly
+  # what the verb does (tracked modifications, like `git commit -u`).
+  doAssert sh("git -C " & quoteShell(mrepo) & " checkout -q -- .").exitCode == 0
+  # Tracked changes must be gone; the untracked stray.txt stays, and that is
+  # the point of `paths` — commit must not sweep it in.
+  check("no TRACKED changes remain before the empty-commit probe",
+        sh("git -C " & quoteShell(mrepo) & " status --porcelain").
+          output.strip() == "?? stray.txt",
+        sh("git -C " & quoteShell(mrepo) & " status --porcelain").output)
+  let nothing = call(nc2, "git", "git_commit",
+                     %*{"repo": mrepo, "message": "empty"}, 120_000)
+  check("an empty commit reports nothing-to-commit, not a crash",
+        not nothing{"ok"}.getBool(true) and
+        nothing{"detail"}.getStr("").contains("nothing to commit"), $nothing)
+
   # drain: component exits
   drain(nc)
   sleep(700)

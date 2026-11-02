@@ -839,6 +839,346 @@ proc worktreePruneImpl(repo: string): JsonNode =
 
 comp.watchConfig(gitSettings, "git.mutations")
 
+# ===========================================================================
+# Merge + commit (WORKTREES.md §4.3). The verbs that make a worktree flow a
+# flow: cut a tree, work, commit there, merge back — without dropping to bash,
+# which loses the message the conversation just spent a turn composing.
+# ===========================================================================
+
+proc isTreeOid(line: string): bool =
+  ## A 40- or 64-hex tree OID (SHA-1 / SHA-256 repositories).
+  if line.len != 40 and line.len != 64: return false
+  for ch in line:
+    if ch notin {'0'..'9', 'a'..'f', 'A'..'F'}: return false
+  true
+
+proc mergeTreeVerdict(code: int, output: string):
+    tuple[kind, detail: string, paths: seq[string], tree: string] =
+  ## Classify `git merge-tree --write-tree --name-only` output.
+  ##
+  ## exit 1 means TWO different things, and mapping it to one verdict is the
+  ## trap (WORKTREES.md §4.3, measured):
+  ##
+  ##   clean      exit 0, stdout = tree OID
+  ##   conflict   exit 1, stdout = tree OID, then paths, then CONFLICT lines
+  ##   bad ref    exit 1, stdout EMPTY, stderr "merge-tree: <ref> - not
+  ##              something we can merge"
+  ##
+  ## So a conflict is claimed only on a POSITIVE discriminator: the first line
+  ## must be a tree OID. Otherwise the answer is an error carrying git's own
+  ## message — never a fabricated conflict list, which would send the model off
+  ## to resolve conflicts in a branch that does not exist.
+  ##
+  ## runGit combines stderr into stdout (runCmd does `2>&1`), so the streams
+  ## cannot be told apart; the discriminator is therefore the CONTENT, which
+  ## separates cleanly: a bad ref's first line is prose, a conflict's is hex.
+  if code == 0:
+    let first = output.splitLines()[0].strip()
+    return (kind: "clean", detail: first, paths: @[], tree: first)
+  if code == 124:
+    return (kind: "timeout", detail: "merge-tree timed out", paths: @[],
+            tree: "")
+  if code == 127:
+    return (kind: "nogit", detail: output.strip(), paths: @[], tree: "")
+  if code == 1:
+    let lines = output.splitLines()
+    if lines.len > 0 and isTreeOid(lines[0].strip()):
+      var paths: seq[string]
+      var sawConflict = false
+      # Layout after the OID: one path per line, a blank line, then the
+      # informational messages (which include the CONFLICT lines).
+      for i in 1 ..< lines.len:
+        let line = lines[i].strip()
+        if line.len == 0: continue
+        if line.startsWith("CONFLICT") or line.startsWith("Auto-merging") or
+            line.startsWith("Auto-merging ") or line.contains("Merge conflict"):
+          sawConflict = true
+          continue
+        if line.contains(" "): continue      # prose, not a path
+        paths.add line
+      if sawConflict or paths.len > 0:
+        return (kind: "conflict", detail: lines[0].strip(), paths: paths,
+                tree: lines[0].strip())
+      # OID but nothing else: refs identical / already merged.
+      return (kind: "clean", detail: lines[0].strip(), paths: @[],
+              tree: lines[0].strip())
+    # exit 1 without a tree OID: git refused the request (a bad ref, usually).
+    return (kind: "error", detail: output.strip(), paths: @[], tree: "")
+  return (kind: "error", detail: output.strip(), paths: @[], tree: "")
+
+proc dirtyPaths(repo: string): seq[string] =
+  ## Paths with local changes in `repo` (porcelain, first field stripped).
+  let r = runGit(repoArgs(repo) & gitBase & @["status", "--porcelain"], 30_000)
+  if r.code != 0: return @[]
+  for line in r.output.splitLines():
+    if line.len < 4: continue
+    var path = line[3 .. ^1].strip()
+    # "R  old -> new" / "C  old -> new": the target is what matters.
+    let arrow = path.find(" -> ")
+    if arrow >= 0: path = path[arrow + 4 .. ^1]
+    if path.len > 0: result.add path
+
+proc mergePreviewImpl(repo, into, srcBranch: string): JsonNode =
+  ## What merging `from` into `into` would do, WITHOUT touching a working tree.
+  let start = repoDir(repo)
+  let shape = checkoutShape(start)
+  if shape.kind == ckNone: return refused("not a git repository: " & start)
+  let primary = if shape.primaryRoot.len > 0: shape.primaryRoot else: start
+  var intoRef = into.strip()
+  if intoRef.len == 0:
+    let cur = runGit(repoArgs(primary) & gitBase &
+                     @["rev-parse", "--abbrev-ref", "HEAD"], 15_000)
+    if cur.code != 0: return finish(cur.code, cur.output)
+    intoRef = cur.output.splitLines()[0].strip()
+  var fromRef = srcBranch.strip()
+  if fromRef.len == 0:
+    # "merge this back" from a worktree means its own branch.
+    fromRef = shape.branch
+  if fromRef.len == 0:
+    return refused("merge_preview needs `from` (no branch is checked out here)")
+  if not validRef(intoRef): return refused("invalid target ref: " & intoRef)
+  if not validRef(fromRef): return refused("invalid source ref: " & fromRef)
+  let mt = runGit(repoArgs(primary) & gitBase &
+                  @["merge-tree", "--write-tree", "--name-only", intoRef,
+                    fromRef], 120_000)
+  let v = mergeTreeVerdict(mt.code, mt.output)
+  case v.kind
+  of "clean":
+    # Divergence and the shape of the change, for the model's next decision.
+    let counts = runGit(repoArgs(primary) & gitBase &
+                        @["rev-list", "--left-right", "--count",
+                          intoRef & "..." & fromRef], 30_000)
+    var ahead, behind = 0
+    if counts.code == 0:
+      let parts = counts.output.strip().splitWhitespace()
+      if parts.len >= 2:
+        try:
+          behind = parseInt(parts[0])
+          ahead = parseInt(parts[1])
+        except ValueError: discard
+    let stat = runGit(repoArgs(primary) & gitBase &
+                      @["diff", "--stat", intoRef & "..." & fromRef], 30_000)
+    %*{"exit_code": 0, "ok": true, "clean": true, "into": intoRef,
+       "from": fromRef, "tree": v.tree, "ahead": ahead, "behind": behind,
+       "stat": capBytes(stat.output, 4000),
+       "detail": fromRef & " merges cleanly into " & intoRef}
+  of "conflict":
+    var arr = newJArray()
+    for p in v.paths: arr.add(%p)
+    %*{"exit_code": 0, "ok": true, "clean": false, "into": intoRef,
+       "from": fromRef, "tree": v.tree, "conflicts": arr,
+       "detail": "merging " & fromRef & " into " & intoRef & " conflicts in " &
+         $v.paths.len & " file(s) — resolve them, or merge differently"}
+  of "timeout":
+    %*{"exit_code": 124, "ok": false, "error": v.detail}
+  of "nogit":
+    %*{"exit_code": 127, "ok": false, "error": v.detail}
+  else:
+    # NEVER a conflict list here: git refused, it did not merge.
+    %*{"exit_code": 2, "ok": false,
+       "error": "cannot preview " & intoRef & "..." & fromRef & ": " & v.detail}
+
+proc mergeStartImpl(repo, into, srcBranch, strategy: string,
+                    allowDirty: bool): JsonNode =
+  # Required, not defaulted: writePathsFor derives the claim from ARGUMENT
+  # VALUES, so a component-side default would take the lease over one tree and
+  # write another (WORKTREES.md §4.3, measured). Checked BEFORE resolving the
+  # directory, so the refusal can still describe where you are.
+  if repo.strip().len == 0:
+    let here = getCurrentDir()
+    let shape = checkoutShape(here)
+    let hint = if shape.primaryRoot.len > 0 and shape.kind != ckRepo:
+                 " — you are in " & normalizeRoot(here) & "; the primary is " &
+                 shape.primaryRoot
+               else: ""
+    return refused("merge needs `repo` (the tree to merge INTO)" & hint)
+  let start = repoDir(repo)
+  let shape = checkoutShape(start)
+  if shape.kind == ckNone: return refused("not a git repository: " & start)
+  if not validRepo(repo): return refused("invalid repo: " & repo)
+  let primary = if shape.primaryRoot.len > 0: shape.primaryRoot else: start
+  # `into` defaults to the branch checked out in THIS tree (not the shape of
+  # the caller's directory, which may be a different tree entirely).
+  var intoRef = into.strip()
+  if intoRef.len == 0:
+    let cur = runGit(repoArgs(primary) & gitBase &
+                     @["rev-parse", "--abbrev-ref", "HEAD"], 15_000)
+    if cur.code != 0: return finish(cur.code, cur.output)
+    intoRef = cur.output.splitLines()[0].strip()
+  var fromRef = srcBranch.strip()
+  if fromRef.len == 0:
+    # No source named: the branch checked out WHERE THE CALLER IS, which for a
+    # worktree conversation is the branch it wants to merge back.
+    let callerShape = checkoutShape(getCurrentDir())
+    fromRef = if callerShape.branch.len > 0: callerShape.branch else: shape.branch
+  if fromRef.len == 0:
+    return refused("merge needs `from` (no branch is checked out in " &
+                   normalizeRoot(primary) & ")")
+  if not validRef(intoRef): return refused("invalid target ref: " & intoRef)
+  if not validRef(fromRef): return refused("invalid source ref: " & fromRef)
+  if intoRef != "HEAD":
+    let cur = runGit(repoArgs(primary) & gitBase &
+                     @["rev-parse", "--abbrev-ref", "HEAD"], 15_000)
+    if cur.code != 0: return finish(cur.code, cur.output)
+    let head = cur.output.splitLines()[0].strip()
+    if head != intoRef:
+      return refused("the tree at " & normalizeRoot(primary) & " has \"" & head &
+        "\" checked out, so it cannot merge INTO \"" & intoRef &
+        "\" — check that branch out first, or pass into: \"" & head & "\"")
+  # Refuse up front when the target has local changes to a path the merge
+  # touches, so the refusal NAMES the paths instead of quoting git's abort.
+  if not allowDirty:
+    let preview = mergePreviewImpl(primary, intoRef, fromRef)
+    if preview{"ok"}.getBool(false) and
+        not preview{"clean"}.getBool(true):
+      return %*{"exit_code": 2, "ok": false,
+                "error": "merging " & fromRef & " into " & intoRef &
+                  " would conflict in " & $preview{"conflicts"}.len &
+                  " file(s) — preview it with git_merge_preview and resolve " &
+                  "the overlap first",
+                "conflicts": preview{"conflicts"}}
+    var touching: seq[string]
+    if preview{"clean"}.getBool(false):
+      let changed = runGit(repoArgs(primary) & gitBase &
+                           @["diff", "--name-only", intoRef & "..." & fromRef],
+                           30_000)
+      if changed.code == 0:
+        for line in changed.output.splitLines():
+          let p = line.strip()
+          if p.len > 0: touching.add p
+    let dirty = dirtyPaths(primary)
+    var overlap: seq[string]
+    for p in dirty:
+      if p in touching: overlap.add p
+    if overlap.len > 0:
+      return %*{"exit_code": 2, "ok": false,
+                "error": "the target tree has local changes to " &
+                  $overlap.len & " path(s) this merge touches: " &
+                  overlap.join(", ") & " — commit or stash them, or pass " &
+                  "allow_dirty: true",
+                "paths": %overlap}
+  var gargs = @["merge", "--no-ff", "--no-edit"]
+  let st = strategy.strip()
+  if st == "ff" or st == "ff-only":
+    gargs = @["merge", "--ff-only", "--no-edit"]
+  elif st.len > 0 and st != "no-ff":
+    return refused("unknown strategy \"" & st & "\" (no-ff | ff | ff-only)")
+  gargs.add fromRef
+  let r = runGit(repoArgs(primary) & gitBase & gargs, 180_000)
+  if r.code != 0:
+    let conflicted = runGit(repoArgs(primary) & gitBase &
+                            @["diff", "--name-only", "--diff-filter=U"], 30_000)
+    var arr = newJArray()
+    if conflicted.code == 0:
+      for line in conflicted.output.splitLines():
+        let p = line.strip()
+        if p.len > 0: arr.add(%p)
+    if arr.len > 0:
+      return %*{"exit_code": 1, "ok": false, "merged": false,
+                "conflicts": arr,
+                "error": "merge of " & fromRef & " into " & intoRef &
+                  " stopped with conflicts in " & $arr.len & " file(s) — " &
+                  "resolve them and commit, or git_merge {op: abort}",
+                "detail": capBytes(r.output, 3000)}
+    return %*{"exit_code": r.code, "ok": false, "merged": false,
+              "error": capBytes(r.output, 3000)}
+  publishWorktreeChanged(primary)
+  let head = runGit(repoArgs(primary) & gitBase & @["rev-parse", "HEAD"],
+                    15_000)
+  let files = runGit(repoArgs(primary) & gitBase &
+                     @["diff", "--name-only", "HEAD@{1}", "HEAD"], 30_000)
+  var arr = newJArray()
+  if files.code == 0:
+    for line in files.output.splitLines():
+      let p = line.strip()
+      if p.len > 0: arr.add(%p)
+  %*{"exit_code": 0, "ok": true, "merged": true, "into": intoRef,
+     "from": fromRef,
+     "head": (if head.code == 0: head.output.strip() else: ""),
+     "files": arr}
+
+proc mergeAbortImpl(repo: string): JsonNode =
+  let start = repoDir(repo)
+  let shape = checkoutShape(start)
+  if shape.kind == ckNone: return refused("not a git repository: " & start)
+  if repo.strip().len == 0:
+    return refused("merge abort needs `repo` — refusing to guess which tree " &
+      "to unwind")
+  let primary = if shape.primaryRoot.len > 0: shape.primaryRoot else: start
+  # Is a merge actually in progress? git's own marker, not a guess.
+  let marker = runGit(repoArgs(primary) & gitBase &
+                      @["rev-parse", "--git-path", "MERGE_HEAD"], 15_000)
+  if marker.code == 0:
+    let path = marker.output.strip()
+    let abs = if path.isAbsolute(): path else: primary / path
+    if not fileExists(abs):
+      return %*{"exit_code": 2, "ok": false,
+                "error": "no merge is in progress in " &
+                  normalizeRoot(primary)}
+  let r = runGit(repoArgs(primary) & gitBase & @["merge", "--abort"], 60_000)
+  if r.code != 0: return finish(r.code, r.output)
+  %*{"exit_code": 0, "ok": true, "aborted": true,
+     "repo": normalizeRoot(primary), "detail": "the merge was unwound"}
+
+proc commitImpl(repo, message: string, paths: seq[string], all,
+                amend: bool): JsonNode =
+  let start = repoDir(repo)
+  let shape = checkoutShape(start)
+  if shape.kind == ckNone: return refused("not a git repository: " & start)
+  # Required for the same reason merge's is (see mergeStartImpl).
+  if repo.strip().len == 0:
+    return refused("commit needs `repo` (the tree to commit in)")
+  if not validRepo(repo): return refused("invalid repo: " & repo)
+  let primary = if shape.primaryRoot.len > 0: shape.primaryRoot else: start
+  let msg = message.strip()
+  if msg.len == 0: return refused("commit needs a message")
+  if msg.contains('\0'): return refused("invalid message")
+  # Stage exactly what was named. The point of the verb over `bash git commit`
+  # is that the model cannot silently commit an unrelated ignore edit it made
+  # an hour ago: unstaged paths OUTSIDE the named set are left alone.
+  if paths.len > 0:
+    var addArgs = @["add", "--"]
+    for p in paths:
+      if p.strip().len == 0: continue
+      addArgs.add p.strip()
+    if addArgs.len == 2: return refused("commit paths were all empty")
+    let a = runGit(repoArgs(primary) & gitBase & addArgs, 60_000)
+    if a.code != 0: return finish(a.code, a.output)
+  elif not all and not amend:
+    # Nothing named and not -a: stage tracked modifications only, which is
+    # git's own "-u" scope (no surprise untracked files).
+    let a = runGit(repoArgs(primary) & gitBase & @["add", "-u"], 60_000)
+    if a.code != 0: return finish(a.code, a.output)
+  if all and paths.len > 0:
+    return refused("pass either `paths` or `all`, not both")
+  if all:
+    let a = runGit(repoArgs(primary) & gitBase & @["add", "-A"], 60_000)
+    if a.code != 0: return finish(a.code, a.output)
+  var cargs = @["commit", "-m", msg]
+  if amend: cargs.add "--amend"
+  let c = runGit(repoArgs(primary) & gitBase & cargs, 180_000)
+  if c.code != 0:
+    # "nothing to commit" is a normal answer, not a failure to report as a
+    # crash. git phrases it several ways; all of them mean the same thing.
+    if c.output.contains("nothing to commit") or
+        c.output.contains("nothing added to commit") or
+        c.output.contains("no changes added"):
+      return %*{"exit_code": 1, "ok": false, "committed": false,
+                "detail": "nothing to commit"}
+    return %*{"exit_code": c.code, "ok": false, "committed": false,
+              "error": capBytes(c.output, 3000)}
+  let head = runGit(repoArgs(primary) & gitBase & @["rev-parse", "HEAD"],
+                    15_000)
+  # The receipt the merge step, review_receipt and activity can point at.
+  let stat = runGit(repoArgs(primary) & gitBase &
+                    @["show", "--stat", "--oneline", "--format=%H", "HEAD"],
+                    30_000)
+  %*{"exit_code": 0, "ok": true, "committed": true,
+     "commit": (if head.code == 0: head.output.strip() else: ""),
+     "repo": normalizeRoot(primary),
+     "branch": shape.branch,
+     "stat": capBytes(stat.output, 3000)}
+
 if mutationsEnabled():
   # The owner tool config_patch calls. Registered only with the surface it
   # configures: an operator who disabled mutations has nothing to patch here.
@@ -894,6 +1234,65 @@ if mutationsEnabled():
         return worktreeRemoveImpl(repo, path, force, delete_branch)
       if op == "prune": return worktreePruneImpl(repo)
       refused("op must be \"add\", \"remove\" or \"prune\"")
+
+  # --- merge + commit -----------------------------------------------------
+  # The read half is its own tool because x-harness.writes is static per tool.
+  comp.tool(%*{"timeoutMs": 120_000, "parallel": true, "onDemand": true,
+                "effect": "read",
+                "workspace": {"cwdField": "repo"},
+                "hint": "Preview what merging one branch into another would do — clean, or which files conflict — without touching any working tree. Use before git_merge."}):
+    proc git_merge_preview(repo: string = "", into: string = "",
+                           from_ref: string = ""): JsonNode =
+      ## What would merging `from` into `into` do? Answers clean/conflicting
+      ## and names the conflicting files, WITHOUT touching a working tree
+      ## (`git merge-tree`). Use it before `git_merge` to decide whether the
+      ## merge is safe, and to see which files need attention when it is not.
+      ##
+      ## `from` defaults to the branch checked out here (a worktree
+      ## conversation previews merging its own branch back); `into` defaults to
+      ## the primary's current branch. A bad ref is reported as an ERROR naming
+      ## it — never as a conflict list.
+      mergePreviewImpl(repo, into, from_ref)
+
+  comp.tool(%*{"timeoutMs": 300_000, "onDemand": true, "effect": "write",
+                "approval": "always", "sessionId": true,
+                "workspace": {"cwdField": "repo"},
+                "writes": {"paths": ["repo", "paths"]},
+                "hint": "Merge a branch into a tree (start), or unwind a conflicted merge (abort). Merges the branch you worked in back into the primary — run git_merge_preview first to see whether it conflicts."}):
+    proc git_merge(op: string, repo: string = "", into: string = "",
+                   from_ref: string = "", strategy: string = "",
+                   allow_dirty: bool = false): JsonNode =
+      ## Merge one branch into another: the step that brings a worktree's work
+      ## home. `repo` is REQUIRED — it is the tree the merge lands in, and the
+      ## write lease is taken over exactly what you name (a component-side
+      ## default would lock one tree and write another).
+      ##
+      ## `start` refuses up front when the target has local changes to a path
+      ## the merge touches, naming those paths instead of quoting git's abort;
+      ## it reports conflicts with the file list, leaving the merge in progress
+      ## so it can be resolved and committed. `abort` unwinds a conflicted
+      ## merge. Run `git_merge_preview` first when unsure.
+      if op == "start":
+        return mergeStartImpl(repo, into, from_ref, strategy, allow_dirty)
+      if op == "abort": return mergeAbortImpl(repo)
+      refused("op must be \"start\" or \"abort\"")
+
+  comp.tool(%*{"timeoutMs": 300_000, "onDemand": true, "effect": "write",
+                "approval": "always", "sessionId": true,
+                "workspace": {"cwdField": "repo"},
+                "writes": {"paths": ["repo", "paths"]},
+                "hint": "Commit in a tree with the message you already composed, staging only the paths you name. Prefer this over `bash git commit`: the conversation knows what changed and why, and naming paths keeps an unrelated edit out of the commit."}):
+    proc git_commit(repo: string, message: string, paths: seq[string] = @[],
+                    all: bool = false, amend: bool = false): JsonNode =
+      ## Commit work in a tree, with the message the conversation just
+      ## composed. `paths` stages exactly those files (so an unrelated edit you
+      ## made earlier is NOT swept in); with neither `paths` nor `all` it stages
+      ## tracked modifications only. `all` stages everything including
+      ## untracked files. Returns the commit id and a stat receipt, which the
+      ## merge step and review_receipt can point at.
+      ##
+      ## `repo` is REQUIRED: it is the tree the commit lands in.
+      commitImpl(repo, message, paths, all, amend)
 
 # The declaration rides the idle seam, like every other owner: it must not
 # block boot, and it must survive a config component that is not up yet.
