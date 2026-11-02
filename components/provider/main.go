@@ -503,7 +503,7 @@ func main() {
 			return nil, err
 		}
 		if rawProvider == nil || rev == nil {
-			return nil, fmt.Errorf("provider %q not found", args.Nickname)
+			return sdk.ErrCode(fmt.Sprintf("provider %q not found", args.Nickname), "not-found"), nil
 		}
 		var p Provider
 		if err := json.Unmarshal(rawProvider, &p); err != nil {
@@ -595,7 +595,7 @@ func main() {
 			return nil, err
 		}
 		if rev == nil {
-			return nil, fmt.Errorf("provider %q not found", args.Nickname)
+			return sdk.ErrCode(fmt.Sprintf("provider %q not found", args.Nickname), "not-found"), nil
 		}
 		ok, err := sc.del(kindProvider, args.Nickname)
 		if err != nil {
@@ -706,7 +706,7 @@ func main() {
 			return nil, err
 		}
 		if rev == nil {
-			return nil, fmt.Errorf("provider %q not found", args.Nickname)
+			return sdk.ErrCode(fmt.Sprintf("provider %q not found", args.Nickname), "not-found"), nil
 		}
 		if err := activateProvider(comp, sc, args.Nickname); err != nil {
 			return nil, err
@@ -759,7 +759,7 @@ func main() {
 			return nil, err
 		}
 		if rawProvider == nil || rev == nil {
-			return nil, fmt.Errorf("provider %q not found", args.Nickname)
+			return sdk.ErrCode(fmt.Sprintf("provider %q not found", args.Nickname), "not-found"), nil
 		}
 		var p Provider
 		if err := json.Unmarshal(rawProvider, &p); err != nil {
@@ -811,7 +811,7 @@ func main() {
 				return nil, err
 			}
 			if rawProvider == nil || rev == nil {
-				return nil, fmt.Errorf("provider %q not found", nickname)
+				return sdk.ErrCode(fmt.Sprintf("provider %q not found", nickname), "not-found"), nil
 			}
 			if err := json.Unmarshal(rawProvider, &p); err != nil {
 				return nil, fmt.Errorf("corrupt provider %q: %w", nickname, err)

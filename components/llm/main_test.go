@@ -223,18 +223,43 @@ func TestClassifyProviderReplySeparatesUnreachableFromUnknown(t *testing.T) {
 		t.Fatalf("found lookup = %+v", found)
 	}
 
-	// The provider component's not-found convention is an ok:false RESULT, so
-	// it is a verdict, not an outage.
-	for _, raw := range []string{`{"ok":false,"error":"provider \"synthetic\" not found"}`, `{"ok":true}`} {
+	// ONLY an ok:false carrying code "not-found" is a verdict on the name.
+	// That is the shape components/provider returns (sdk.ErrCode).
+	miss := classifyProviderReply(json.RawMessage(
+		`{"ok":false,"code":"not-found","error":"provider \"synthetic\" not found"}`), nil)
+	if miss.Found || miss.Unreachable != nil {
+		t.Fatalf("definitive miss = %+v (want Found=false, Unreachable=nil)", miss)
+	}
+
+	// An ok:false WITHOUT the not-found code is a failure, not a verdict: the
+	// live bug was a handler error surfacing as `unknown provider
+	// "synthetic"` for a record that existed. Also covers the old
+	// uncoded error payload, which callers used to read as definitive.
+	for _, raw := range []string{
+		`{"ok":false,"error":"provider \"synthetic\" not found"}`,
+		`{"ok":false,"code":"boom","error":"provider \"synthetic\" not found"}`,
+		`{"ok":true}`,
+	} {
 		lookup := classifyProviderReply(json.RawMessage(raw), nil)
-		if lookup.Found || lookup.Unreachable != nil {
-			t.Fatalf("definitive miss for %s = %+v", raw, lookup)
+		if lookup.Found || lookup.Unreachable == nil {
+			t.Fatalf("failure for %s = %+v (must be Unreachable, not a verdict)", raw, lookup)
 		}
 	}
 
-	timedOut := classifyProviderReply(nil, errors.New("context deadline exceeded"))
-	if timedOut.Found || timedOut.Unreachable == nil {
-		t.Fatalf("transport failure = %+v (must be Unreachable)", timedOut)
+	// A transport failure, a "boom" envelope surfaced as a Go error by
+	// Request(), and unreadable JSON are all Unreachable.
+	for name, tc := range map[string]struct {
+		raw json.RawMessage
+		err error
+	}{
+		"timeout": {nil, errors.New("context deadline exceeded")},
+		"boom":    {nil, errors.New(`provider "synthetic" not found`)},
+		"garbage": {json.RawMessage(`not json`), nil},
+	} {
+		lookup := classifyProviderReply(tc.raw, tc.err)
+		if lookup.Found || lookup.Unreachable == nil {
+			t.Fatalf("%s = %+v (must be Unreachable)", name, lookup)
+		}
 	}
 }
 

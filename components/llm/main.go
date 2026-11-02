@@ -577,8 +577,10 @@ func envProvider(name string) (provider, string, error) {
 }
 
 type registryResponse struct {
-	Ok       bool   `json:"ok"`
-	Source   string `json:"source"`
+	Ok     bool   `json:"ok"`
+	Code   string `json:"code"`
+	Error  string `json:"error"`
+	Source string `json:"source"`
 	Provider *struct {
 		Nickname string `json:"nickname"`
 		AuthType string `json:"authType"`
@@ -675,18 +677,48 @@ func providerRegistryRequest(c *sdk.Component, tool string, args map[string]any,
 	return c.RequestContext(ctx, "provider", tool, args)
 }
 
-// classifyProviderReply turns one registry answer into a lookup outcome. The
-// provider component reports "no such nickname" (and "no active provider") as
-// a RESULT with ok:false, its not-found convention, so an ok:false payload is
-// a definitive verdict while a transport error is not. Pure, so the split is
-// testable without a bus.
+// classifyProviderReply turns one registry answer into a lookup outcome.
+//
+// The split it MUST make is "the registry gave a verdict" vs "the registry did
+// not answer usefully", because only the first may fall back to another
+// source. Two things are load-bearing here and both were wrong:
+//
+//   - An ERROR envelope is not a verdict. A Go component reports a handler
+//     failure as code "boom" (sdk/go/component.go invokeTool), and Request()
+//     turns that into a plain Go error — so `err != nil` covers "provider_get
+//     raised" as well as "nobody answered". Treating it as a definitive
+//     not-found reported a transient as `unknown provider "synthetic"`, sending
+//     the reader hunting for a missing record that existed all along.
+//   - Not-found is now a RESULT carrying code "not-found" (components/provider
+//     returns sdk.ErrCode), which is the ONLY shape that means "this harness has
+//     no such nickname". An ok:false with any other code is a failure too.
+//
+// Pure, so the split is testable without a bus.
 func classifyProviderReply(raw json.RawMessage, err error) providerLookup {
 	if err != nil {
+		// Includes a "boom" envelope: the component was reachable but the call
+		// failed. Not a verdict on the name.
 		return providerLookup{Unreachable: err}
 	}
 	var resp registryResponse
-	if json.Unmarshal(raw, &resp) != nil || !resp.Ok || resp.Provider == nil {
-		return providerLookup{}
+	if json.Unmarshal(raw, &resp) != nil {
+		return providerLookup{Unreachable: fmt.Errorf(
+			"provider registry answered with unreadable JSON")}
+	}
+	if !resp.Ok {
+		if resp.Code == "not-found" {
+			return providerLookup{} // a definitive "no such nickname"
+		}
+		// ok:false without the not-found code is a failure, not a verdict.
+		msg := resp.Error
+		if msg == "" {
+			msg = "provider registry refused the lookup"
+		}
+		return providerLookup{Unreachable: errors.New(msg)}
+	}
+	if resp.Provider == nil {
+		return providerLookup{Unreachable: fmt.Errorf(
+			"provider registry answered ok without a provider")}
 	}
 	credential := resp.Provider.APIKey
 	accountID := ""
