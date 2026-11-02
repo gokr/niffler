@@ -1863,7 +1863,9 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
   if reads != nil and reads.kind == JArray:
     var offenders: seq[string] = @[]
     var copyable = newJArray()
-    for idx, n in reads:
+    var idx = -1
+    for n in reads:
+      inc idx            # JsonNode has no array pairs(); count items by hand
       if n == nil or n.kind != JObject: continue
       if not n.hasKey("glob") and not n.hasKey("pattern"):
         offenders.add("reads[" & $idx & "]")
@@ -1872,19 +1874,24 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       raise newException(ValueError,
         "[E_BAD_SHAPE] a select call cannot mix {path, offset, limit} " &
         "content reads with select items: " & offenders.join(", ") &
-        " carry no \"glob\"/\"pattern\", so nothing was read. Retry with " &
-        "{\"reads\": " & $copyable & "} as one call and the select " &
-        "items as another.")
+        " carry no \"glob\"/\"pattern\", so nothing was read. Retry " &
+        "with {\"reads\": " & $copyable &
+        "} as one call and the select items as another.")
   var blocks: seq[string] = @[]
   var jsItems = newJArray()
-  var filesBudget = MAX_SELECT_FILES   # files that carry content/hits
+  var filesBudget = MAX_SELECT_FILES   # files that carry an answer
   var totalHits = 0
-  var truncated = 0
+  var truncatedFiles = 0
+  var unexaminedItems = 0
   var scanned = 0
   var captureBytes = 0
   var renderBytes = 0
   for it in items:
     let label = if it.glob.len > 0: it.glob else: it.path
+    if filesBudget <= 0:
+      # Nothing left to answer with: walk nothing more, say so at the end.
+      inc unexaminedItems
+      continue
     var targets: seq[string] = @[]
     var globCapped = false
     var anyHits = false
@@ -1903,7 +1910,7 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       inc tIdx
       inc scanned
       if filesBudget <= 0:
-        truncated += targets.len - tIdx + 1
+        truncatedFiles += targets.len - tIdx + 1
         break
       if not fileExists(abs):
         jsItems.add(%*{"path": abs, "error": "not a file"})
@@ -1918,10 +1925,15 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
         # One binary/directory target must not abort the batch: the content
         # path (hReadBatch) is per-item tolerant, and a select over a real
         # tree always meets an image, a binary or a subdirectory.
+        var code = ""
         var msg = e.msg
-        if msg.startsWith("["): msg = msg[msg.find(']') + 1 .. ^1].strip()
-        jsItems.add(%*{"path": abs, "error": msg})
-        blocks.add("### " & displayPath(args, abs) & "\n[skipped: " & msg & "]")
+        if msg.startsWith("[") and ']' in msg:
+          let close = msg.find(']')
+          code = msg[1 ..< close]
+          msg = msg[close + 1 .. ^1].strip()
+        jsItems.add(%*{"path": abs, "error": e.msg})
+        blocks.add("### " & displayPath(args, abs) & "\n[skipped: " &
+                   (if code.len > 0: code else: "unreadable") & "] " & msg)
         inc filesBudget    # an unreadable target is not an answer
         continue
       if it.pattern.len == 0:
@@ -2006,14 +2018,13 @@ proc hReadSelect(c: Component, args: JsonNode): JsonNode =
       blocks.add("[read limit: glob \"" & it.glob & "\" stopped after " &
                  $MAX_SELECT_FILE_SCAN & " files (scan cap) — narrow it]")
   var text = blocks.join("\n")
-  if truncated > 0:
-    text.add("\n[read limit: answer cap " & $MAX_SELECT_FILES &
-             " files reached; " & $truncated & " more matched file(s) " &
-             "were not examined — narrow the glob or add a pattern]")
-  elif scanned >= MAX_SELECT_FILE_SCAN and filesBudget <= 0:
-    text.add("\n[read limit: answer cap " & $MAX_SELECT_FILES &
-             " files reached after examining " & $scanned &
-             " file(s) — narrow the glob or add a pattern]")
+  if truncatedFiles > 0 or unexaminedItems > 0:
+    text.add("\n[read limit: answer cap " & $MAX_SELECT_FILES & " files reached")
+    if truncatedFiles > 0:
+      text.add("; " & $truncatedFiles & " more matched file(s) were not read")
+    if unexaminedItems > 0:
+      text.add("; " & $unexaminedItems & " more select item(s) were not run")
+    text.add(" — narrow the glob or add a pattern]")
   if text.len > 512_000:
     text = text[0 .. 512_000] &
       "\n[read limit: output truncated at 512000 bytes]"

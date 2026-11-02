@@ -920,6 +920,9 @@ proc main() =
   check("mixed content/select call is refused as a shape error",
         rMix.hasKey("error") and
         rMix{"error"}.getStr("").contains("[E_BAD_SHAPE]"), $rMix)
+  check("mix refusal names the offending item and the retry that works",
+        rMix{"error"}.getStr("").contains("reads[0]") and
+        rMix{"error"}.getStr("").contains("\"path\":\"bulk/a.go\""), $rMix)
   let captureHugeRegion = call(nc, "edit", "read", %*{
     "reads": [{"path": "long-capture.txt", "pattern": "x", "context": 0}],
     "__capture": true})
@@ -938,6 +941,70 @@ proc main() =
   check("select with no hits answers zero without error",
         not rNone.hasKey("error") and
         rNone{"count"}.getInt(0) == 0, $rNone)
+
+  # --- select robustness: a "dir/**" glob keeps its head, one unreadable
+  # target never aborts the batch, the answer cap counts answers (not every
+  # file inspected), and the byte budget says what it skipped.
+  createDir(tmp / "head" / "sub")
+  writeFile(tmp / "head" / "sub" / "deep.txt", "needle in the deep file\n")
+  writeFile(tmp / "head" / "top.txt", "plain text\n")
+  writeFile(tmp / "outside-needle.txt", "needle outside the head\n")
+  let rDeep = call(nc, "edit", "read",
+             %*{"reads": [{"glob": "head/**", "pattern": "needle",
+                           "context": 0}]})
+  check("a dir/** glob keeps its head and stays inside that directory",
+        not rDeep.hasKey("error") and
+        rDeep{"count"}.getInt(0) == 1 and
+        rDeep{"text"}.getStr("").contains("deep.txt") and
+        not rDeep{"text"}.getStr("").contains("outside-needle"), $rDeep)
+  createDir(tmp / "mixed")
+  writeFile(tmp / "mixed" / "ok.txt", "needle here\n")
+  writeFile(tmp / "mixed" / "bin.dat", "needle\x00binary\n")
+  writeFile(tmp / "mixed" / "another.txt", "needle too\n")
+  let rBinBatch = call(nc, "edit", "read",
+                 %*{"reads": [{"glob": "mixed/*", "pattern": "needle",
+                               "context": 0}]})
+  check("one binary target does not abort the select batch",
+        not rBinBatch.hasKey("error") and
+        rBinBatch{"count"}.getInt(0) == 2 and
+        rBinBatch{"text"}.getStr("").contains("another.txt") and
+        rBinBatch{"text"}.getStr("").contains("[skipped: E_NOT_TEXT]") and
+        rBinBatch{"text"}.getStr("").contains("bin.dat") and
+        rBinBatch{"items"}[1]{"error"}.getStr("").startsWith("[E_NOT_TEXT]"),
+        $rBinBatch)
+  createDir(tmp / "cap")
+  for i in 0 .. 64:
+    writeFile(tmp / "cap" / ("a" & align($i, 2, '0') & ".txt"), "no hit\n")
+  for i in 0 .. 4:
+    writeFile(tmp / "cap" / ("z" & align($i, 2, '0') & ".txt"), "needle\n")
+  let rBudget = call(nc, "edit", "read",
+               %*{"reads": [{"glob": "cap/*.txt", "pattern": "needle",
+                             "context": 0}]})
+  check("zero-hit files do not spend the answer-file cap",
+        not rBudget.hasKey("error") and
+        rBudget{"count"}.getInt(0) == 5, $rBudget)
+  writeFile(tmp / "sink.txt",
+            "needle" & repeat("x", 100_000) & "\n" &
+            "needle" & repeat("x", 100_000) & "\n" &
+            "needle" & repeat("x", 100_000) & "\n")
+  let rSink = call(nc, "edit", "read",
+             %*{"reads": [{"path": "sink.txt", "pattern": "needle",
+                           "context": 0}]})
+  check("the rendered-region byte budget is announced, not silent",
+        not rSink.hasKey("error") and
+        rSink{"text"}.getStr("").contains("byte budget") and
+        rSink{"count"}.getInt(0) == 3, $rSink)
+  let rScan = call(nc, "edit", "read",
+             %*{"reads": [{"glob": "bulk/cap*.txt"}]})
+  check("a glob past the scan cap says so instead of truncating silently",
+        not rScan.hasKey("error") and
+        rScan{"text"}.getStr("").contains("scan cap"), $rScan)
+  let rRegex = call(nc, "edit", "read",
+              %*{"reads": [{"path": "mixed/ok.txt", "pattern": "^needle"}]})
+  check("a regex-shaped pattern that finds nothing gets a literal-match hint",
+        not rRegex.hasKey("error") and
+        rRegex{"count"}.getInt(0) == 0 and
+        rRegex{"text"}.getStr("").contains("literal substring match"), $rRegex)
 
   # drain: the outline-configured component exits
   drain(nc)
