@@ -174,6 +174,17 @@ type
       ## Kept separate from rootsKey because the two answer different
       ## questions: a grant must still rebuild when the graph is unchanged,
       ## and a new tree must rebuild when nothing was granted.
+    isolation*: string
+      ## Per-conversation write scope (WORKTREES.md §4.5): "shared" (default)
+      ## or "worktree". Human-only — never in the `session` tool schema, next
+      ## to `roots` — and mutable between calls like a grant, so it never
+      ## enters the prompt prefix.
+      ##
+      ## It narrows ONLY the claim path: workspaceRootsFor returns just the
+      ## conversation's own tree, so lock_acquire refuses a write anywhere
+      ## else. Reads stay unnarrowed on purpose (there is no read fence), which
+      ## is what keeps "compare against the primary" working — the whole reason
+      ## the primary stays in the set.
     checkoutCached*: Checkout
       ## The workspace's own git shape, computed with the set so both share one
       ## staleness rule. Feeds __workspace.worktree, so a component can tell
@@ -453,6 +464,19 @@ proc spawnWaitMs(): int =
   result = max(250, min(result, 120_000))
 
 proc awaitSpawnRegistration(ct: CoreTools, name: string, waitMs: int): bool
+
+proc claimRootsFor*(primary, isolation: string): seq[string] =
+  ## The ONE rule for "which trees may this conversation WRITE to". Both the
+  ## write fence (workspaceRootsFor, which feeds lock_acquire) and the model's
+  ## readback (session_info.workspace.writable) call it, so the fence a
+  ## conversation is TOLD about is the fence it actually has. Two independent
+  ## computations of the same policy is how a report starts lying.
+  ##
+  ## `shared` = the whole set (today's behaviour); `worktree` = the
+  ## conversation's own tree alone, which is the point of a worktree.
+  let set = computeWorkspaceRoots(primary)
+  if isolation == "worktree": return @[normalizeRoot(primary)]
+  set
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   # the self-extension / destructive tools change the harness — human gate first
@@ -1018,6 +1042,46 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           info["firstActivationAt"] = meta.value{"firstActivationAt"}
         if meta.value{"closed"}.getBool(false):
           info["closed"] = %true
+      # The model's view of where its work lives (WORKTREES.md §4.6). Until
+      # this existed the model had only `cwd` and had to shell git to learn it
+      # was in a linked worktree of a repository whose primary it may also
+      # reach — the exact fact that decides whether "commit" should land here
+      # or merge back.
+      #
+      # Computed from the STORED header cwd, not from this process's cwd: a
+      # runner may have been started without one, and session_info is also how
+      # a conversation inspects OTHER conversations.
+      let wsPath = header.value{"cwd"}.getStr("")
+      if wsPath.len > 0 and dirExists(wsPath):
+        let shape = checkoutShape(wsPath)
+        var ws = %*{"root": normalizeRoot(wsPath)}
+        var roots = newJArray()
+        # The full set this conversation considers its own — including the
+        # primary when it is a worktree, which is what makes a merge possible
+        # to reason about. `writable` below says which of them a WRITE may
+        # touch; reads are not fenced.
+        let set = computeWorkspaceRoots(wsPath)
+        for r in set: roots.add(%r)
+        ws["roots"] = roots
+        ws["linked"] = %(shape.kind == ckLinkedWorktree)
+        ws["primaryRoot"] = %(if shape.primaryRoot.len > 0: shape.primaryRoot
+                              else: "")
+        ws["branch"] = %shape.branch
+        ws["submodule"] = %(shape.kind == ckSubmodule)
+        # isolation narrows the CLAIM set (see workspaceRootsFor); report it in
+        # the same breath so "can I write to the primary?" is answerable from
+        # this one field rather than by inference.
+        #
+        # It is derived with THE SAME RULE as workspaceRootsFor rather than
+        # re-implemented: two independent computations of "what may I write"
+        # can disagree, and then the model is told a fence it does not have.
+        let scope = header.value{"isolation"}.getStr("")
+        let iso = if scope.len > 0: scope else: "shared"
+        ws["isolation"] = %iso
+        var writable = newJArray()
+        for r in claimRootsFor(wsPath, iso): writable.add(%r)
+        ws["writable"] = writable
+        info["workspace"] = ws
       # children are counted from the CHILDREN's records, not the caller's
       # own (a root parent has no sessionmeta of its own but still has
       # children) — a count, not the roster (agent_list is the roster tool)
@@ -1937,6 +2001,12 @@ proc workspaceRootsFor*(ct: CoreTools): seq[string] =
     ct.nested.rootsKey = key
     ct.nested.graphSig = sig
     ct.nested.checkoutCached = checkoutShape(primary)
+  if ct.nested.isolation == "worktree":
+    # The isolated conversation claims ONLY its own tree. Everything else in
+    # the set stays visible to reads (there is no read fence) and to components
+    # that use the set to ACCEPT work; this narrows the write claim alone.
+    # Same rule as session_info's readback (claimRootsFor).
+    return claimRootsFor(primary, ct.nested.isolation)
   ct.nested.workspaceRoots
 
 proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =

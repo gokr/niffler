@@ -1014,7 +1014,7 @@ proc childSessArgs(child, task, model, thinking: string,
     if personaName.len > 0:
       result["persona"] = %personaName
     if toolArgs != nil:
-      for key in ["toolset", "cwd", "agent", "provider"]:
+      for key in ["toolset", "cwd", "agent", "provider", "isolation"]:
         if toolArgs.hasKey(key): result[key] = toolArgs[key]
       # Resolved defaults are explicit in this first call, so core's resolver
       # cannot replace them with newer document defaults.
@@ -1189,6 +1189,8 @@ let runSchema = toolSchema(%*{
               "description": "Continue an EXISTING child instead of starting a fresh one: pass the sessionId that a previous agent_run/agent_spawn returned. The child keeps its conversation, so send only the new task — and model/modelTier/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (they were frozen at the child's first turn; the result reports the effective values). Fails if the session is not a child of this conversation, is closed, or if its runner is mid-turn (use agent_spawn for that)."},
   "cwd": {"type": "string",
           "description": "FRESH RUNS ONLY: the directory the child works in. Omit to inherit the parent conversation's workspace — the right default, and what keeps a child from landing in the harness root (a property of the machine, not the work). Pass an explicit path to place it elsewhere, including a worktree."},
+  "isolation": {"type": "string", "enum": ["shared", "worktree"],
+                "description": "FRESH RUNS ONLY: the child's write scope. `worktree` narrows its write fence to its own tree, so it cannot edit the primary in place — give it `cwd` inside a worktree to mean anything, and core refuses the combination otherwise. Human-set only: this key is intentionally absent from the model-facing schema and is honoured when a CLIENT sends it."},
   "close": {"type": "boolean",
             "description": "Mark this child finished after THIS turn completes, so it can no longer be continued (nothing is deleted). Works on a fresh run (one-shot child) or a continuation (last turn)."},
   "fork": {"type": ["boolean", "object"],
@@ -1358,6 +1360,8 @@ let spawnSchema = toolSchema(%*{
               "description": "Give an EXISTING child another turn in the background instead of starting a fresh one: pass the sessionId from a previous agent_run/agent_spawn. The child keeps its conversation, so send only the new task — model/modelTier/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (frozen at its first turn). Unlike agent_run this QUEUES if the child is mid-turn: a background job only promises the work happens. Fails if the session is not a child of this conversation or is closed."},
   "cwd": {"type": "string",
           "description": "FRESH RUNS ONLY: the directory the child works in. Omit to inherit the parent conversation's workspace — the right default, and what keeps a child from landing in the harness root (a property of the machine, not the work). Pass an explicit path to place it elsewhere, including a worktree."},
+  "isolation": {"type": "string", "enum": ["shared", "worktree"],
+                "description": "FRESH JOBS ONLY: the child's write scope. `worktree` narrows its write fence to its own tree, so it cannot edit the primary in place — give it `cwd` inside a worktree to mean anything, and core refuses the combination otherwise. Human-set only: this key is intentionally absent from the model-facing schema and is honoured when a CLIENT sends it."},
   "close": {"type": "boolean",
             "description": "Mark this child finished AFTER the queued/background turn settles, so it can no longer be continued (nothing is deleted). Applies via the job's completion, so it composes with session (queue the turn, then retire the child)."},
   "fork": {"type": ["boolean", "object"],

@@ -17,6 +17,7 @@ import std/[algorithm, json, math, monotimes, os, sequtils, sets, strutils,
 import checksums/sha2
 import natsnim
 import ../sdk/envelope
+import ../sdk/checkout
 import ../sdk/niffler/jsonx
 import ../sdk/niffler/agentdefs
 import catalog
@@ -279,6 +280,11 @@ type
                              ## "ask" gates every x-harness.approval tool,
                              ## "auto" grants them without asking, "" was
                              ## never decided (the instance default applies)
+    isolationScope*: string
+                             ## Per-conversation write scope (WORKTREES.md
+                             ## §4.5): "shared" (default) or "worktree".
+                             ## Human-only, persisted in the header, mutable
+                             ## between calls. Not a prompt contributor.
     grantedRoots*: seq[string]
                              ## Human-granted extra roots for this conversation
                              ## (session {roots: {add, remove}}). These join the
@@ -5013,6 +5019,12 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   # and a persistence failure refuses the change rather than activating a live
   # policy that would not survive a restart.
   let hasRoots = args.kind == JObject and args.hasKey("roots")
+  # Per-conversation write scope (WORKTREES.md §4.5). Human-only, exactly like
+  # `roots`: not in the `session` tool schema, so the model cannot widen or
+  # narrow its own scope through the control channel. "worktree" narrows the
+  # write fence to the conversation's own tree; "shared" (the default) is
+  # today's behaviour, unchanged.
+  let hasIsolation = args.kind == JObject and args.hasKey("isolation")
   # Manual compaction (/compact): the human's explicit request for the same
   # replaceable-compactor rung the automatic ladder runs at pressure. Rides a
   # content-less control call like the other conversation controls.
@@ -5104,6 +5116,33 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         headerUpdate["cwdPinned"] = %true
       if personaName.len > 0:
         headerUpdate["persona"] = %personaName
+      # Client-discovered checkout facts (WORKTREES.md §4.5 "Birth"): advisory
+      # only, recorded so a LATER runner — which may have been started without
+      # a cwd — can still answer "which primary owns me" without shelling git.
+      # Git stays the authority: a value that contradicts what the tree
+      # actually is gets recorded and ignored, with a warning, never trusted.
+      if args{"checkout"} != nil and args{"checkout"}.kind == JObject:
+        let co = args{"checkout"}
+        let claimedPrimary = co{"primaryRoot"}.getStr("").strip()
+        let claimedBranch = co{"branch"}.getStr("").strip()
+        let actual = checkoutShape(entry.workspace)
+        var stored = newJObject()
+        if claimedPrimary.len > 0:
+          if actual.primaryRoot.len > 0 and
+              normalizeRoot(claimedPrimary) != normalizeRoot(actual.primaryRoot):
+            echo "core: WARNING checkout.primaryRoot " & claimedPrimary &
+                 " contradicts git (" & actual.primaryRoot & ") for " &
+                 entry.workspace & " — ignoring the hint"
+          else:
+            stored["primaryRoot"] = %normalizeRoot(claimedPrimary)
+        if claimedBranch.len > 0:
+          if actual.branch.len > 0 and claimedBranch != actual.branch:
+            echo "core: WARNING checkout.branch " & claimedBranch &
+                 " contradicts git (" & actual.branch & ") for " &
+                 entry.workspace & " — ignoring the hint"
+          else:
+            stored["branch"] = %claimedBranch
+        if stored.len > 0: headerUpdate["checkout"] = stored
       # The birth identity goes to BOTH records: the lineage doc (compare-and-
       # set, hence race-proof) and the header (readable beside the frozen
       # prompt it produced). Either alone satisfies conversationAgent, so a
@@ -5172,6 +5211,13 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     entry.approvalMode = if storedMode.len > 0: storedMode
                          else: defaultApprovalMode()
     entry.grantedRoots = grantedRootsFor(ct, sessionId)
+    # Per-conversation write scope, restored from the header on every resume so
+    # a runner that was restarted (or a conversation opened fresh in another
+    # process) keeps the fence the human chose. "shared" is the default and is
+    # also what an empty/missing value means.
+    entry.isolationScope = header{"isolation"}.getStr("").strip().toLowerAscii()
+    if entry.isolationScope.len == 0: entry.isolationScope = "shared"
+    if ct.nested != nil: ct.nested.isolation = entry.isolationScope
     let storedLimits = header{"limits"}
     if storedLimits != nil and storedLimits.kind == JObject:
       entry.limitRounds = storedLimits{"rounds"}.getInt(0)
@@ -5738,6 +5784,38 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       return %*{"error": "thinking must be none, minimal, low, medium, high, xhigh or max (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})
+  # Isolation is a scope, so it is decided BEFORE the turn's dispatch context
+  # is built and never mid-turn: a turn already running keeps the set it
+  # started with, the documented between-calls guarantee (same rule as roots).
+  if hasIsolation:
+    let mode = args{"isolation"}.getStr("").strip().toLowerAscii()
+    if mode notin ["", "shared", "worktree"]:
+      return %*{"error": "isolation must be shared or worktree (empty clears to shared)"}
+    let effective = if mode.len > 0: mode else: "shared"
+    if effective == "worktree" and entry.workspace.len > 0:
+      # Refuse rather than pretend. A conversation born at the primary has
+      # nothing to isolate FROM — the tree it would narrow to is the one
+      # every other conversation shares, so the setting would read as
+      # protection while providing none. The fix is a worktree, and the
+      # refusal says so.
+      let own = checkoutShape(entry.workspace)
+      if own.kind != ckLinkedWorktree:
+        return %*{"error": "isolation: worktree needs this conversation to " &
+          "live in a linked git worktree, and its workspace is " &
+          normalizeRoot(entry.workspace) &
+          (if own.kind == ckSubmodule:
+             " (a submodule checkout — it has no worktrees of its own)"
+           else: " (a plain checkout)") &
+          " — start a conversation in a worktree first " &
+          "(git_worktree {op: add}), or leave isolation shared"}
+    entry.isolationScope = effective
+    if ct.nested != nil:
+      ct.nested.isolation = effective
+      # Rebuild the cached set on the next dispatch so the fence follows the
+      # change without a runner restart (the key is what the cache compares).
+      ct.nested.rootsKey = ""
+    ct.updateConversationHeader(sessionId, %*{"isolation": mode})
+
   # Conversation controls: presence of the key means set (an empty `approvals`
   # clears to ask, an all-zero `limits` object clears all three). They apply
   # from the NEXT turn on and are persisted before the turn runs, so a crash
@@ -6046,6 +6124,10 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       "model": entry.modelOverride,
       "thinkingEffort": entry.thinkingEffort,
       "approvals": entry.approvalMode,
+      # The write fence this conversation runs under ("shared" | "worktree"):
+      # a client shows it so the human can see the primary is protected.
+      "isolation": (if entry.isolationScope.len > 0: entry.isolationScope
+                    else: "shared"),
       "grantedRoots": entry.grantedRoots,
       "limits": %*{"rounds": entry.limitRounds, "tokens": entry.limitTokens,
                      "seconds": entry.limitSeconds},

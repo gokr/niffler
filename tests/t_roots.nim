@@ -150,6 +150,139 @@ proc main() =
   let removeAgain = sessionCall(p, sid, %*{"roots": {"remove": [sibling]}})
   check("removing an ungranted root is a no-op", removeAgain{"error"} == nil, $removeAgain)
 
+  # =========================================================================
+  # isolation: "worktree" (WORKTREES.md §4.5) — the write fence narrows to the
+  # conversation's own tree, and nothing else about the set changes.
+  # =========================================================================
+  let repo = root / "iso-repo"
+  createDir(repo)
+  doAssert execShellCmd("git -C " & quoteShell(repo) & " init -q -b main") == 0
+  doAssert execShellCmd("git -C " & quoteShell(repo) &
+    " config user.email t@example.com") == 0
+  doAssert execShellCmd("git -C " & quoteShell(repo) &
+    " config user.name T") == 0
+  writeFile(repo / "a.txt", "a\n")
+  doAssert execShellCmd("git -C " & quoteShell(repo) &
+    " add -A && git -C " & quoteShell(repo) & " commit -q -m base") == 0
+  let wt = repo & ".wt" / "iso"
+  doAssert execShellCmd("git -C " & quoteShell(repo) & " worktree add -q -b iso " &
+    quoteShell(wt)) == 0
+  writeFile(wt / "b.txt", "b\n")
+
+  let isid = "conv-iso"
+  let born = sessionCall(p, isid, %*{"cwd": wt}, 30000)
+  check("a conversation can be born inside a linked worktree",
+        born{"error"} == nil and born{"cwd"}.getStr("") == wt, $born)
+
+  proc isoFence(roots: seq[string], path, tag: string): JsonNode =
+    ## Claim `path` with an explicit root set, mirroring what core hands to
+    ## locks: the full workspace set when shared, the conversation's own tree
+    ## alone when isolated (workspaceRootsFor's narrowing). The status readback
+    ## does not expose that internal set, so the test states it.
+    var arr = newJArray()
+    for r in roots: arr.add(%r)
+    call(p.nc, "locks", "lock_acquire", %*{
+      "roots": arr, "root": roots[0], "paths": [path], "sessionId": isid,
+      "tool": "write", "callId": tag, "ttlMs": 600000}, 15000)
+
+  # Shared (the default): the whole set is claimable, so the PRIMARY is
+  # writable — the exact hole isolation exists to close.
+  let sharedPrimary = call(p.nc, "locks", "lock_acquire", %*{
+    "roots": [wt, repo], "root": wt, "paths": [repo / "a.txt"],
+    "sessionId": isid, "tool": "write", "callId": "shared-primary",
+    "ttlMs": 600000}, 15000)
+  check("shared: the primary is writable from a worktree conversation",
+        sharedPrimary{"ok"}.getBool(false), $sharedPrimary)
+  discard call(p.nc, "locks", "lock_release", %*{
+    "sessionId": isid, "callId": "shared-primary"}, 10000)
+
+  # Refuse to isolate a conversation that has nothing to isolate from.
+  let plainSid = "conv-plain"
+  discard sessionCall(p, plainSid, %*{"cwd": ws}, 30000)
+  let plainIso = sessionCall(p, plainSid, %*{"isolation": "worktree"})
+  check("isolation: worktree is REFUSED outside a linked worktree",
+        plainIso{"error"}.getStr("").contains("linked git worktree"), $plainIso)
+
+  # A bogus value is refused rather than silently treated as shared.
+  let bogus = sessionCall(p, isid, %*{"isolation": "nonsense"})
+  check("an unknown isolation value is refused",
+        bogus{"error"}.getStr("").contains("isolation"), $bogus)
+
+  # Now isolate for real.
+  let iso = sessionCall(p, isid, %*{"isolation": "worktree"})
+  check("isolation: worktree is accepted inside a worktree",
+        iso{"error"} == nil, $iso)
+  check("the status readback reports the isolation",
+        sessionCall(p, isid, %*{}){"isolation"}.getStr("") == "worktree")
+
+  # The fence now refuses the primary, and the refusal names both ways out.
+  # The narrowing core computes, read back through session_info: this is the
+  # SAME list workspaceRootsFor feeds the fence, so asserting on it is
+  # asserting the fence's input (and it is what a passing-but-vacuous version
+  # of this test missed — see the note below).
+  let isoInfo = call(p.nc, "core", "session_info", %*{"sessionId": isid}, 15000)
+  let isoWs = isoInfo{"workspace"}
+  check("isolated: the writable set narrows to the worktree alone",
+        isoWs != nil and isoWs{"writable"}.len == 1 and
+        isoWs{"writable"}[0].getStr("") == wt, $isoWs)
+  check("isolated: the primary is NOT in the writable set",
+        isoWs != nil and not ($isoWs{"writable"}).contains(repo & "\""), $isoWs)
+  check("isolated: reads still see the primary in roots",
+        isoWs != nil and ($isoWs{"roots"}).contains(repo & "\""), $isoWs)
+
+  # The fence itself, fed the narrowed set core would hand it. This is the
+  # behaviour; the writable readback above is the report of it. Both are
+  # asserted because they are derived from ONE rule now — the readback used to
+  # re-implement the policy, so it could claim a fence that did not exist.
+  let isoPrimary = isoFence(@[wt], repo / "a.txt", "iso-primary")
+  check("isolated: the fence refuses a claim on the PRIMARY",
+        not isoPrimary{"ok"}.getBool(true) and
+        isoPrimary{"error"}.getStr("").contains("E_WRITE_OUTSIDE"), $isoPrimary)
+  let sharedAgain = isoFence(@[wt, repo], repo / "a.txt", "iso-shared-probe")
+  check("shared: the fence admits the same claim on the primary",
+        sharedAgain{"ok"}.getBool(false), $sharedAgain)
+  discard call(p.nc, "locks", "lock_release", %*{
+    "sessionId": isid, "callId": "iso-shared-probe"}, 10000)
+
+  # Its own tree stays writable — isolation must not make the conversation
+  # unable to do its own work.
+  let isoOwn = call(p.nc, "locks", "lock_acquire", %*{
+    "roots": [wt], "root": wt, "paths": [wt / "b.txt"], "sessionId": isid,
+    "tool": "write", "callId": "iso-own", "ttlMs": 600000}, 15000)
+  check("isolated: its OWN tree is still writable",
+        isoOwn{"ok"}.getBool(false), $isoOwn)
+  discard call(p.nc, "locks", "lock_release", %*{
+    "sessionId": isid, "callId": "iso-own"}, 10000)
+
+  # session_info.workspace tells the model what the fence is doing.
+  let info = call(p.nc, "core", "session_info", %*{"sessionId": isid}, 15000)
+  let wsNode = info{"workspace"}
+  check("session_info reports a workspace block", wsNode != nil, $info)
+  check("it names the worktree as the root",
+        wsNode != nil and wsNode{"root"}.getStr("") == wt, $wsNode)
+  check("it reports linked = true",
+        wsNode != nil and wsNode{"linked"}.getBool(false), $wsNode)
+  check("it names the primary",
+        wsNode != nil and wsNode{"primaryRoot"}.getStr("") == repo, $wsNode)
+  check("it reports the branch",
+        wsNode != nil and wsNode{"branch"}.getStr("") == "iso", $wsNode)
+  check("it reports the isolation",
+        wsNode != nil and wsNode{"isolation"}.getStr("") == "worktree", $wsNode)
+  check("and writable is narrowed to the worktree alone",
+        wsNode != nil and wsNode{"writable"}.len == 1 and
+        wsNode{"writable"}[0].getStr("") == wt, $wsNode)
+
+  # Back to shared: the primary is writable again (no restart).
+  let back = sessionCall(p, isid, %*{"isolation": "shared"})
+  check("isolation can be cleared back to shared", back{"error"} == nil, $back)
+  let reshared = call(p.nc, "locks", "lock_acquire", %*{
+    "roots": [wt, repo], "root": wt, "paths": [repo / "a.txt"], "sessionId": isid,
+    "tool": "write", "callId": "reshared", "ttlMs": 600000}, 15000)
+  check("shared again: the primary is writable",
+        reshared{"ok"}.getBool(false), $reshared)
+  discard call(p.nc, "locks", "lock_release", %*{
+    "sessionId": isid, "callId": "reshared"}, 10000)
+
   report("ROOTS TEST")
 
 main()
