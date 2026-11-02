@@ -598,13 +598,27 @@ type registryResponse struct {
 	} `json:"provider"`
 }
 
-// providerLookupTimeout bounds one provider registry request; a failure is
-// retried once with providerLookupRetryTimeout. Resolution runs on every turn,
-// so the first attempt stays short, and the second is patient enough for a
-// store busy writing a transcript.
+// providerLookupTimeout bounds ONE provider registry request. A failure is
+// retried twice with providerLookupRetryTimeout, backing off, so a lookup can
+// wait ~30s before it is declared unreachable.
+//
+// The old shape (2s, one retry at 5s) was too impatient for the loaded case.
+// The registry answers from the store, whose request is 10s — and on a box
+// running several UIs the store is often busy writing transcripts, so a 2s
+// budget expires while the provider component is merely QUEUED behind the
+// store, not broken. The result was a handful of UIs all reporting
+// "cannot resolve this conversation's pinned provider" at once, which reads as
+// a dead provider component when it is really one slow answer.
+//
+// Why the timeouts live here and not in the provider component: that component
+// registers CONCURRENT handlers whose only dependency is the store's own 10s
+// request, so a healthy-but-loaded answer still arrives inside 10s. Lowering
+// its internal timeouts would invent a failure where patience resolves it —
+// the client's deadline is the right place to be generous.
 const (
-	providerLookupTimeout      = 2 * time.Second
-	providerLookupRetryTimeout = 5 * time.Second
+	providerLookupTimeout      = 5 * time.Second
+	providerLookupRetryTimeout = 10 * time.Second
+	providerLookupAttempts     = 3
 )
 
 // providerLookup is the outcome of asking the provider component for a record.
@@ -634,11 +648,14 @@ func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) p
 		return providerLookup{}
 	}
 	raw, err := providerRegistryRequest(c, tool, args, providerLookupTimeout)
-	if err != nil {
-		// One retry: the blip this replaces broke a whole turn of every
-		// conversation pinned to that provider. The retry costs nothing on the
-		// happy path — it runs only after a failure.
-		raw, err = providerRegistryRequest(c, tool, args, providerLookupRetryTimeout)
+	// Retry with backoff: the blip this replaces broke a whole turn of every
+	// conversation pinned to that provider, and on a busy store a single
+	// 2s-5s window was not enough to tell "queue" from "gone". Costs nothing on
+	// the happy path — it runs only after a failure.
+	for attempt := 1; err != nil && attempt < providerLookupAttempts; attempt++ {
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		raw, err = providerRegistryRequest(c, tool, args,
+			providerLookupRetryTimeout+time.Duration(attempt)*5*time.Second)
 	}
 	lookup := classifyProviderReply(raw, err)
 	// A record without its own nickname (a legacy doc) must still answer as the
