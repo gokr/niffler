@@ -13,6 +13,8 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 )
 
 func bindStoreOwner(db *sql.DB) (string, error) {
@@ -42,6 +44,27 @@ func bindStoreOwner(db *sql.DB) (string, error) {
 		// and a provisional ""-binding would lock the file against the real
 		// identity that appears on the next boot (core writes var/instance-id
 		// before it spawns components).
+		//
+		// REFUSE, though, when this file already holds documents owned by a
+		// real instance. Serving "" then answers every lookup `not-found` for
+		// rows that are sitting right there: the UI shows no providers, no
+		// conversations, no history — silently, hours after the fact, and only
+		// a restart that re-establishes an identity appears to "fix" it. A
+		// loud refusal at boot turns that into a one-line diagnosis. A truly
+		// unbound database (a fresh dev root, a test file) has no owned rows,
+		// so this cannot fire for it.
+		owned, err := instanceIDsWithRows(db)
+		if err != nil {
+			return "", fmt.Errorf("check for existing owners: %w", err)
+		}
+		if len(owned) > 0 {
+			return "", fmt.Errorf("this database holds documents owned by instance %s, "+
+				"but no instance identity was found (NIF_INSTANCE_ID or %s/var/instance-id) — "+
+				"refusing to serve it as the unbound legacy owner, which would report every "+
+				"one of those documents as not found. Restore var/instance-id, set "+
+				"NIF_INSTANCE_ID to that identity, or point this root at its own store",
+				strings.Join(owned, ", "), storeRoot())
+		}
 		return "", nil
 	}
 	owner := identity
@@ -67,6 +90,37 @@ func bindStoreOwner(db *sql.DB) (string, error) {
 			adopted, owner)
 	}
 	return owner, nil
+}
+
+// storeRoot mirrors the root resolveStoreIdentity reads the identity from, so a
+// refusal tells the operator where to look.
+func storeRoot() string {
+	if root := strings.TrimSpace(os.Getenv("NIF_ROOT")); root != "" {
+		return root
+	}
+	return "."
+}
+
+// instanceIDsWithRows lists the distinct non-empty owners present in `docs`.
+// Used only on the unbound path: it is the difference between "this file has no
+// owner yet" (fine, serve legacy) and "this file belongs to somebody, and I
+// just failed to learn who" (refuse — see bindStoreOwner).
+func instanceIDsWithRows(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(
+		`SELECT DISTINCT instance_id FROM docs WHERE instance_id <> '' LIMIT 8`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // adoptLegacyRows claims the unowned documents for owner. An unbound store

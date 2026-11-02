@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,5 +105,62 @@ func TestUnidentifiedStoreOnBoundFileKeepsBinding(t *testing.T) {
 	defer db.Close()
 	if db.owner != bindA {
 		t.Fatalf("owner = %q", db.owner)
+	}
+}
+
+// The silent-loss case, which is what a user actually hit: a database whose
+// rows belong to a real instance, opened with NO identity and NO binding row.
+// Serving "" then answers `not-found` for every lookup — the UI shows no
+// providers, no conversations, no history — while the rows sit in the file.
+// A restart that re-establishes an identity appears to "fix" it, which is why
+// the cause was so hard to see. Boot must refuse instead.
+func TestUnboundLegacyRefusesAFileOwnedByAnInstance(t *testing.T) {
+	root := newBoundRoot(t, bindA)
+	db, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO docs(instance_id,kind,id,rev,value) VALUES (?, 'provider','synthetic',1,'{"nickname":"synthetic"}')`, bindA); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	// Simulate the lost binding: rows keep their owner, the binding row is gone.
+	raw, err := sql.Open("sqlite3", filepath.Join(root, "var", "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DELETE FROM store_binding`); err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.Close()
+
+	// No identity, no binding, but owned rows present -> REFUSE, naming who owns it.
+	if err := os.Remove(filepath.Join(root, "var", "instance-id")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NIF_INSTANCE_ID", "")
+	_, err = openStore()
+	if err == nil {
+		t.Fatal("unbound store served a file owned by an instance (rows would read as not-found)")
+	}
+	for _, want := range []string{bindA, "not found", "NIF_INSTANCE_ID"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not mention %q", err, want)
+		}
+	}
+}
+
+// The same file WITH its identity still opens: the refusal must not cost a
+// legitimate deployment its history.
+func TestUnboundLegacyStillServesAGenuinelyUnownedFile(t *testing.T) {
+	newBoundRoot(t, "")
+	db, err := openStore()
+	if err != nil {
+		t.Fatalf("a fresh unbound database must still be served: %v", err)
+	}
+	defer db.Close()
+	if db.owner != "" {
+		t.Fatalf("owner = %q, want the legacy owner", db.owner)
 	}
 }
