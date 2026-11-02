@@ -3666,7 +3666,24 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # A control cancel that arrived while no turn ran is dropped here: only a
   # cancel published during THIS turn aborts it (agent_stop targets a live
   # child turn, never a future conversation turn).
+  #
+  # DRAIN FIRST, then clear. Clearing alone was a real bug with a specific
+  # shape, reported as "I press ESC twice, then type continue twice before
+  # anything happens": a cancel published while NO turn was running sits
+  # unread on the steer subscription AND raises no flag, so clearing the flag
+  # left it there. The first round's drainSteer then consumed it and set the
+  # flag mid-round — aborting a turn that had just started, with the client's
+  # "continue" already sent. So the user saw "cancelled", typed "continue"
+  # again, and THAT one worked: the stale control had finally been eaten.
+  #
+  # The drain must DISCARD controls, not raise them: pumpSteer is the only
+  # consumer of that subscription, so a plain drain here would set the very
+  # flag this code clears one line later — and a cancel arriving in the
+  # window between the entry drain and the first round would still kill the
+  # turn. Dropping pre-existing controls makes "a cancel applies to the turn
+  # that is running when it arrives, or not at all" true.
   if ct.steerStream != nil:
+    pumpSteer(ct, discardControls = true)
     ct.steerStream.cancelRequested = false
   var rounds = 0
   var emptyRounds = 0

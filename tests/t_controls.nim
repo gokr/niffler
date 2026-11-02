@@ -770,6 +770,68 @@ proc main() =
           "took " & $(epochTime() - cancelAt) & "s: " & $turnReply)
 
   # -------------------------------------------------------------------------
+  # 8b. A __cancel that arrives while the runner is IDLE must not abort the
+  # next turn. Reported shape: "I press ESC twice, then I must type continue
+  # twice before anything happens — the second continue gives me another
+  # cancelled".
+  #
+  # The stray control needs a SUBSCRIBER with no turn running, which is why
+  # this takes two turns on one session: the first turn creates the runner and
+  # its steer subscription; after it finishes the runner sits idle with the
+  # subscription live; the cancel then lands unread AND raises no flag; the
+  # second turn must still run.
+  #
+  # (An earlier version of this test published the cancel BEFORE any runner
+  # existed. NATS drops a message with no subscriber, so nothing was ever
+  # queued and the test passed with the bug present — a test that cannot fail.)
+  block staleCancelDoesNotAbortNextTurn:
+    var p = startProbe("stalecancel", @[("NIF_MOCK_ROUNDS", "2")])
+    defer: p.stopProbe()
+    let nc = p.nc
+    let sid = "stalecancel-" & $int(epochTime())
+
+    proc runTurn(content: string): JsonNode =
+      let inbox = "_INBOX.stalecancel." & newId()
+      let replies = openSub(nc, inbox)
+      defer: natsSubscription_Destroy(replies)
+      publishCall(nc, "svc.core.call", inbox,
+                  callEnvelope("session", %*{"sessionId": sid,
+                                             "content": content}, "probe"))
+      let deadline = epochTime() + 90.0
+      while epochTime() < deadline:
+        let polled = pollEnv(replies, 50)
+        if polled.found: return callerOf(polled.env)
+      nil
+
+    # Turn 1: creates the runner. The runner stays alive afterwards (idle
+    # retirement is 600s by default, far beyond this test).
+    let first = runTurn("first")
+    check("stale cancel: the first turn completes",
+          first != nil and first{"turnError"}.getStr("") == "", $first)
+
+    # The straggler: a cancel published while NO turn runs. Now the steer
+    # subscription EXISTS (the runner is alive), so this is genuinely queued.
+    # Wait until the runner is genuinely IDLE before publishing: its main loop
+    # does not pump the steer subscription while waiting for calls, so the
+    # control stays UNREAD in the subscription until the next turn starts.
+    # That is the deterministic shape of the bug — no race with the previous
+    # turn's tail. (With a short wait the message could be consumed by the
+    # tail's dispatch pumps instead, which is why an earlier version of this
+    # test passed with the bug present.)
+    sleep(1500)
+    nc.publish("svc.session." & sid & ".steer",
+      Envelope(v: 1, id: "stale-cancel", kind: ekEvent,
+               payload: %*{"__cancel": true}).encode())
+    sleep(1000)
+
+    # Turn 2 must run to completion, not die on the queued control.
+    let second = runTurn("second")
+    check("stale cancel: the NEXT turn runs to completion, not cancelled",
+          second != nil and second{"turnError"}.getStr("") == "", $second)
+    check("stale cancel: it produced an answer",
+          second != nil and second{"reply"}.getStr("").len > 0, $second)
+
+  # -------------------------------------------------------------------------
   # 9. `session {stop: true}` DURING a turn is accepted and stops it. This is
   # the one op that must not answer "busy": it is the only way a caller with
   # no bus subscription of its own (a Fleet requester across the country) can

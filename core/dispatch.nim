@@ -1468,7 +1468,7 @@ proc pumpTokenStream*(ct: CoreTools) =
                         p{"content"}.getStr(""),
                         p{"reasoning"}.getStr(""))
 
-proc pumpSteer*(ct: CoreTools) =
+proc pumpSteer*(ct: CoreTools, discardControls = false) =
   ## Drain svc.session.<id>.steer messages and enqueue each injected user
   ## message for runTurn to fold into the running turn. Steer is fire-and-forget
   ## from the client, so there is no reply; the queue is drained by runTurn at
@@ -1488,8 +1488,14 @@ proc pumpSteer*(ct: CoreTools) =
     let env = decode(data)
     if env.kind != ekEvent or env.payload == nil: continue
     if env.payload{"__cancel"}.getBool(false):
-      ct.steerStream.cancelRequested = true
-      ct.steerStream.cancelAt = epochTime()
+      # discardControls: this drain belongs to the START of a turn, so a
+      # queued control is a leftover from a turn that is no longer running
+      # (or a duplicate from the client pressing stop twice). Raising the flag
+      # here would cancel the turn that is just beginning — the reported
+      # "I must type continue twice" bug. It is dropped instead.
+      if not discardControls:
+        ct.steerStream.cancelRequested = true
+        ct.steerStream.cancelAt = epochTime()
       continue
     # A settlement notice rides the same subject but is NOT user content:
     # it is runtime machinery about a subagent, delivered structurally so the

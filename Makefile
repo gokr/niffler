@@ -751,6 +751,9 @@ test-cli: build var/bin/test_t_cli var/bin/test_t_cli_catalog
 	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_cli_catalog
 test-grep:    build var/bin/test_t_grep    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_grep
 test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_git
+test-stalecancel: build var/bin/test_t_stalecancel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_stalecancel
+test-liveset: build var/bin/test_t_liveset ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_liveset
+test-agentinherit: build var/bin/test_t_agentinherit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_agentinherit
 # The fixture MCP server (tests/fixtures/mcp_server.nim) is compiled by the
 # test itself into the sandbox; t_mcp needs the mcp manager + bridge binaries.
 test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
