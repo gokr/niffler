@@ -230,6 +230,37 @@ proc main() =
   check("isolated: reads still see the primary in roots",
         isoWs != nil and ($isoWs{"roots"}).contains(repo & "\""), $isoWs)
 
+  # --- a GRANT survives isolation -----------------------------------------
+  # Isolation narrows what git DISCOVERY hands the conversation (the primary
+  # and its siblings arrive automatically). A grant is the opposite: a human
+  # explicitly said "this tree too", in this conversation. Discarding it made
+  # /roots add silently stop working the moment isolation was on — found by a
+  # user whose granted TUI checkout became unwritable.
+  let grantTarget = root / "granted-elsewhere"
+  createDir(grantTarget)
+  let isoGrant = sessionCall(p, isid, %*{"roots": {"add": [grantTarget]}})
+  check("an isolated conversation can still be granted a root",
+        isoGrant{"error"} == nil, $isoGrant)
+  let isoAfterGrant = call(p.nc, "core", "session_info",
+                           %*{"sessionId": isid}, 15000)
+  let grantWs = isoAfterGrant{"workspace"}
+  check("the grant appears in the isolated writable set",
+        grantWs != nil and ($grantWs{"writable"}).contains(grantTarget & "\""),
+        $grantWs)
+  check("and the conversation's own tree is still first",
+        grantWs != nil and grantWs{"writable"}.len >= 2 and
+        grantWs{"writable"}[0].getStr("") == wt, $grantWs)
+  check("the primary is STILL excluded despite the grant",
+        grantWs != nil and not ($grantWs{"writable"}).contains(repo & "\""),
+        $grantWs)
+  let grantFence = isoFence(@[wt, grantTarget], grantTarget / "ok.txt",
+                            "iso-grant")
+  check("and the fence admits the granted tree", grantFence{"ok"}.getBool(false),
+        $grantFence)
+  discard call(p.nc, "locks", "lock_release", %*{
+    "sessionId": isid, "callId": "iso-grant"}, 10000)
+  discard sessionCall(p, isid, %*{"roots": {"remove": [grantTarget]}})
+
   # The fence itself, fed the narrowed set core would hand it. This is the
   # behaviour; the writable readback above is the report of it. Both are
   # asserted because they are derived from ONE rule now — the readback used to

@@ -14,7 +14,8 @@
 ## - release is idempotent (a retry never fails a turn);
 ## - re-claiming the same call id replaces rather than accumulates.
 
-import std/[algorithm, json, monotimes, os, osproc, strutils, times]
+import std/[algorithm, json, monotimes, os, osproc, sequtils, strutils,
+            times]
 import natsnim
 import helpers
 import ../core/dispatch
@@ -127,6 +128,32 @@ proc checkPure() =
         $writePathsFor(bashSchema, %*{}, "/home/me/repo.wt/feat", "",
                        @["/home/me/repo", "/home/me/repo.wt/feat"],
                        "worktree"))
+  # --- isolation keeps the human's GRANTS (pure, no bus) -------------------
+  # Isolation narrows what DISCOVERY contributes (the primary and its siblings
+  # arrive automatically). A grant is a human explicitly saying "this tree
+  # too". Dropping it made /roots add silently stop working the moment
+  # isolation was on.
+  block:
+    let repo = "/home/me/repo"
+    let wtree = "/home/me/repo.wt/feat"
+    let other = "/home/me/elsewhere"
+    let iso = claimRootsFor(wtree, "worktree", @[other])
+    check("isolation keeps the granted root",
+          other in iso, $iso)
+    check("isolation keeps the conversation's own tree FIRST",
+          iso.len >= 2 and iso[0] == wtree, $iso)
+    check("isolation still excludes the discovered primary",
+          repo notin iso, $iso)
+    let noGrant = claimRootsFor(wtree, "worktree")
+    check("isolation with no grants is the own tree alone",
+          noGrant == @[wtree], $noGrant)
+    let sharedG = claimRootsFor(repo, "shared", @[other])
+    check("shared keeps grants too, after the discovered set",
+          other in sharedG and repo in sharedG, $sharedG)
+    check("a grant equal to the own tree is not duplicated",
+          claimRootsFor(wtree, "worktree", @[wtree]).count(wtree) == 1,
+          $claimRootsFor(wtree, "worktree", @[wtree]))
+
   check("a same-prefix sibling is not swallowed by the primary's claim",
         writePathsFor(bashSchema, %*{"cwd": "/home/me/repo2"},
                       "/home/me/repo", "", @["/home/me/repo"]) ==

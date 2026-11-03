@@ -465,18 +465,41 @@ proc spawnWaitMs(): int =
 
 proc awaitSpawnRegistration(ct: CoreTools, name: string, waitMs: int): bool
 
-proc claimRootsFor*(primary, isolation: string): seq[string] =
+proc claimRootsFor*(primary, isolation: string,
+                    granted: openArray[string] = []): seq[string] =
   ## The ONE rule for "which trees may this conversation WRITE to". Both the
   ## write fence (workspaceRootsFor, which feeds lock_acquire) and the model's
   ## readback (session_info.workspace.writable) call it, so the fence a
   ## conversation is TOLD about is the fence it actually has. Two independent
   ## computations of the same policy is how a report starts lying.
   ##
-  ## `shared` = the whole set (today's behaviour); `worktree` = the
-  ## conversation's own tree alone, which is the point of a worktree.
-  let set = computeWorkspaceRoots(primary)
-  if isolation == "worktree": return @[normalizeRoot(primary)]
-  set
+  ## `shared` = the whole discovered set; `worktree` = the conversation's own
+  ## tree plus the human's GRANTS.
+  ##
+  ## Grants survive isolation on purpose. Isolation narrows what git
+  ## DISCOVERY hands the conversation — the primary and its siblings arrive
+  ## automatically, so a worktree conversation could edit `main` without
+  ## deciding to. A grant is the opposite kind of fact: a human said "this tree
+  ## too", explicitly, in this conversation. Dropping it made `/roots add`
+  ## silently stop working the moment isolation was on, and a fence that
+  ## discards deliberate human decisions to be conservative is not conservative
+  ## — it is just wrong about what the human asked for.
+  let own = normalizeRoot(primary)
+  var kept: seq[string]
+  if isolation != "worktree":
+    for r in computeWorkspaceRoots(primary):
+      if r notin kept: kept.add r
+  if own.len > 0 and own notin kept: kept.add own
+  for g in granted:
+    if g.len > 0 and g notin kept: kept.add g
+  # The conversation's own tree is first: it is the one every relative path
+  # resolves against and the one a caller means by "here". Built explicitly
+  # rather than reordered in place, so the rule stays readable.
+  if own.len == 0: return kept
+  var ordered = @[own]
+  for r in kept:
+    if r != own: ordered.add r
+  ordered
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   # the self-extension / destructive tools change the harness — human gate first
@@ -1080,8 +1103,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         let scope = header.value{"isolation"}.getStr("")
         let iso = if scope.len > 0: scope else: "shared"
         ws["isolation"] = %iso
+        var grants: seq[string]
+        let grantedDoc = header.value{"grantedRoots"}
+        if grantedDoc != nil and grantedDoc.kind == JArray:
+          for g in grantedDoc:
+            if g.kind == JString: grants.add g.getStr("")
         var writable = newJArray()
-        for r in claimRootsFor(wsPath, iso): writable.add(%r)
+        for r in claimRootsFor(wsPath, iso, grants): writable.add(%r)
         ws["writable"] = writable
         info["workspace"] = ws
       # children are counted from the CHILDREN's records, not the caller's
@@ -2013,11 +2041,12 @@ proc workspaceRootsFor*(ct: CoreTools): seq[string] =
     ct.nested.graphSig = sig
     ct.nested.checkoutCached = checkoutShape(primary)
   if ct.nested.isolation == "worktree":
-    # The isolated conversation claims ONLY its own tree. Everything else in
-    # the set stays visible to reads (there is no read fence) and to components
-    # that use the set to ACCEPT work; this narrows the write claim alone.
+    # Isolation narrows the CLAIM set to the conversation's own tree plus the
+    # human's grants — never the auto-discovered primary or its siblings.
+    # Everything else stays visible to reads (there is no read fence) and to
+    # components that use the set to ACCEPT work; only the write claim narrows.
     # Same rule as session_info's readback (claimRootsFor).
-    return claimRootsFor(primary, ct.nested.isolation)
+    return claimRootsFor(primary, ct.nested.isolation, granted)
   ct.nested.workspaceRoots
 
 proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =
