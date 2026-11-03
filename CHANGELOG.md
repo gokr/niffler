@@ -6,6 +6,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Canonical transcript writes are create-only: a stale continuation refuses
+  rather than overwriting an existing message. Full-kind reads reject malformed
+  pages and stalled cursors instead of accepting a partial transcript.
+- Conversation header updates use strict reads and compare-and-set retries,
+  preserving creation time, title and unrelated metadata across read failures
+  and concurrent updates. Header creation is also create-only.
+
 ### Changed
 
 - **The Chinese manuals (`docs/MANUAL.zh.md`, `docs/MANUAL.zh-TW.md`) are back

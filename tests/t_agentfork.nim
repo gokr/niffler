@@ -230,6 +230,10 @@ proc main() =
     discard call(nc, "store", "put",
       %*{"kind": "message",
          "id": "frk-cut:" & align($dn, 6, '0'), "value": d}, 10_000)
+  # The injected records simulate a crashed runner. Retire its live in-memory
+  # sequence before resuming; otherwise the next append correctly refuses a
+  # collision with the externally planted tail.
+  discard call(nc, "core", "kill", %*{"name": "session-frk-cut"}, 10_000)
   turn("frk-cut")             # stage 2: the lastK fork under test
   let cut = lastTool("frk-cut")
   let kchild = cut{"sessionId"}.getStr("")

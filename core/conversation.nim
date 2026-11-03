@@ -398,6 +398,8 @@ proc persistMsg*(p: var Persister, value: JsonNode,
   ## the node ledger (ctxAppend). Best-effort: on a store failure the id is
   ## still consumed and returned, but the record will not be there on
   ## resume (same semantics as before; the ledger just records intent).
+  ## Canonical writes are create-only. A stale continuation must refuse,
+  ## not overwrite history or silently append onto a partially loaded context.
   inc p.seqNo
   result = p.convId & ":" & align($p.seqNo, 6, '0')
   let stored = value.copy()
@@ -407,10 +409,13 @@ proc persistMsg*(p: var Persister, value: JsonNode,
     for key, fieldValue in telemetry:
       stored[key] = fieldValue
   try:
-    discard p.ct.storePutRev("message", result, stored)
+    discard p.ct.storePutRev("message", result, stored, expectRev = -1)
     if p.failing:
       p.failing = false
       echo "core: store reachable again — persistence resumed"
+  except StoreRevisionConflictError:
+    raise newException(IOError, "refusing to overwrite canonical message " & result &
+      " — continuation sequence is stale; reload the conversation")
   except CatchableError as e:
     inc p.persistenceFailures
     if not p.failing:
@@ -574,7 +579,7 @@ proc ensureConversationHeader*(ct: CoreTools, convId: string) =
     discard ct.storePutRev("conversation", convId,
       %*{"createdAt": epochTime(),
          "model": getEnv("NIF_OPENAI_MODEL", ""),
-         "providerOverride": "", "modelOverride": "", "title": ""})
+         "providerOverride": "", "modelOverride": "", "title": ""}, expectRev = -1)
   except CatchableError:
     discard
 
@@ -589,20 +594,33 @@ proc loadConversationHeader(ct: CoreTools, convId: string): JsonNode =
   except CatchableError:
     discard
 
-proc updateConversationHeader(ct: CoreTools, convId: string, fields: JsonNode) =
+proc updateConversationHeader*(ct: CoreTools, convId: string, fields: JsonNode) =
   ## Merge runtime/session metadata into the header without clobbering title
   ## or creation time. Persistence remains best-effort like message storage.
-  try:
-    var value = loadConversationHeader(ct, convId)
-    if value{"createdAt"} == nil:
-      value["createdAt"] = %epochTime()
-    if value{"title"} == nil:
-      value["title"] = %""
-    for key, fieldValue in fields:
-      value[key] = fieldValue
-    discard ct.storePutRev("conversation", convId, value)
-  except CatchableError as e:
-    echo "core: WARNING conversation metadata persistence failed: " & e.msg
+  ## Read strictly: an unavailable store must not look like an empty header.
+  ## Compare-and-set preserves concurrent metadata updates; retry conflicts
+  ## from a fresh read rather than writing a stale copy.
+  for attempt in 0 ..< 4:
+    try:
+      let current = ct.storeGetItem("conversation", convId)
+      var value = newJObject()
+      if current.value != nil and current.value.kind == JObject:
+        value = current.value
+      if value{"createdAt"} == nil:
+        value["createdAt"] = %epochTime()
+      if value{"title"} == nil:
+        value["title"] = %""
+      for key, fieldValue in fields:
+        value[key] = fieldValue
+      let expectRev = if current.value == nil: -1 else: current.rev
+      discard ct.storePutRev("conversation", convId, value, expectRev = expectRev)
+      return
+    except StoreRevisionConflictError as e:
+      if attempt == 3:
+        echo "core: WARNING conversation metadata persistence failed: " & e.msg
+    except CatchableError as e:
+      echo "core: WARNING conversation metadata persistence failed: " & e.msg
+      return
 
 proc conversationAgent*(ct: CoreTools, sessionId: string): string =
   ## The agent a conversation was BORN with, read from the two durable places

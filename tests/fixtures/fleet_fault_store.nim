@@ -22,6 +22,15 @@ for tool in ["get", "put", "list", "del"]:
             (fault{"message"}.getBool(false) and kind == "message") or
             (fault{"ack"}.getBool(false) and v{"delivered"}.getBool(false)):
           return %*{"ok": false, "error": "injected durable write failure"}
+        if fault{"headerRace"}.getBool(false) and kind == "conversation":
+          # A concurrent title change between the reader's get and put.
+          var item = docs[key].copy()
+          item["rev"] = %(item{"rev"}.getInt(0) + 1)
+          item["value"]["title"] = %"concurrent title"
+          docs[key] = item
+          save()
+          writeFile(control, "{}")
+          return %*{"ok": false, "code": "rev-conflict", "error": "conflict"}
         let rev = docs{key}{"rev"}.getInt(0)
         let expect = a{"expectRev"}.getInt(0)
         if (expect == -1 and rev > 0) or (expect > 0 and expect != rev):
@@ -30,9 +39,18 @@ for tool in ["get", "put", "list", "del"]:
         save()
         return %*{"ok": true, "rev": rev + 1}
       if name == "get":
+        if fault{"get"}.getBool(false):
+          return %*{"ok": false, "code": "unavailable", "error": "injected read failure"}
         if docs{key} == nil: return %*{"ok": false, "code": "not-found", "error": "missing"}
         result = docs[key].copy(); result["ok"] = %true
       elif name == "list":
+        let mode = fault{"list"}.getStr("")
+        if mode == "malformed":
+          return %*{"ok": true, "items": newJNull(), "hasMore": false}
+        if mode in ["missing-cursor", "stuck-cursor", "backward-cursor"]:
+          return %*{"ok": true, "items": [{"id": "c:000001"}],
+            "hasMore": true, "nextAfter": (if mode == "missing-cursor": ""
+              elif mode == "backward-cursor": "a" else: a{"after"}.getStr(""))}
         var keys: seq[string]
         for k, v in docs:
           if k.startsWith(kind & "/") and v["id"].getStr().startsWith(a{"idPrefix"}.getStr("")) and

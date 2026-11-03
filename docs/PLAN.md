@@ -25,6 +25,16 @@ changes were not used to mark work complete. The old fleet worktrees have been
 removed, and the `compact` worktree was merged and is likewise gone; their
 commits are included in `main`.
 
+## Transcript safety
+
+Canonical message appends are create-only, and full-kind reads refuse malformed
+pages or stalled cursors rather than silently resuming from partial history.
+Header merges use strict reads and compare-and-set retries; header creation is
+create-only. Regression coverage includes stale continuation collisions, header
+read failures and concurrent title updates. The existing durable tool-pair repair
+ledger is also checked across a real runner restart, without rewriting history
+or changing its byte-stable synthetic results.
+
 ## Larger features
 
 | Feature | Implemented on main | Still open |

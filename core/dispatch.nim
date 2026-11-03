@@ -258,6 +258,9 @@ proc storeGetItem*(ct: CoreTools, kind, id: string,
   if r{"code"}.getStr("") != "not-found":
     raise newException(IOError, r{"error"}.getStr("store get failed"))
 
+type StoreRevisionConflictError* = object of IOError
+  ## The store refused a conditional write; distinguish it from an outage.
+
 proc storePutRev*(ct: CoreTools, kind, id: string, value: JsonNode,
                   expectRev = 0, timeoutMs = 5000): int =
   ## Upsert a document into the store; returns the new revision. Refusals
@@ -267,6 +270,9 @@ proc storePutRev*(ct: CoreTools, kind, id: string, value: JsonNode,
     %*{"kind": kind, "id": id, "value": value, "expectRev": expectRev},
     timeoutMs)
   if not r{"ok"}.getBool(false):
+    if r{"code"}.getStr("") == "rev-conflict":
+      raise newException(StoreRevisionConflictError,
+        r{"error"}.getStr("store revision conflict"))
     raise newException(IOError, r{"error"}.getStr("store put failed"))
   return r{"rev"}.getInt(0)
 
@@ -294,13 +300,16 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
   ## it to read only the span its checkpoint does not already represent
   ## (docs/research/COMPACTION.md §6.2 reload step 4).
   ##
-  ## A single `list` is capped at 1000 items, so a long transcript used to
-  ## resume silently truncated and its next write could target an existing
-  ## id (overwriting history). The cursor makes completeness explicit; this
-  ## helper loops until the store reports no further page.
+  ## INCOMPLETE IS AN ERROR, never a short list: a store that claims more
+  ## pages and then hands back no cursor (or a cursor that does not advance)
+  ## used to end the loop quietly, and every caller treats the result as the
+  ## whole kind — for resume that meant a low high-water mark and the next
+  ## append OVERWROTE history. A caller that cannot tell "the kind ended" from
+  ## "the read stopped" cannot be allowed to guess, so this raises instead and
+  ## the resume refuses (fail closed) rather than picking a continuation id
+  ## from a partial view.
   ##
-  ## Null or non-array `items` is treated as end-of-data rather than an
-  ## error, matching storeListItems; an unreachable store still raises.
+  ## Malformed pages and non-advancing cursors raise, as do outages.
   var cursor = after
   var pages = 0
   while true:
@@ -311,16 +320,17 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
     if not r{"ok"}.getBool(false):
       raise newException(IOError, r{"error"}.getStr("store list failed"))
     let items = r{"items"}
-    if items != nil and items.kind == JArray:
-      for item in items:
-        result.add(item)
-    # Stop on: no further page, no cursor, or a cursor that failed to
-    # advance (a store that keeps handing back the same cursor must not
-    # spin forever).
-    let nextAfter = r{"nextAfter"}.getStr("")
-    if not r{"hasMore"}.getBool(false) or nextAfter.len == 0 or
-        nextAfter == cursor:
+    if items == nil or items.kind != JArray:
+      raise newException(IOError, "store list returned malformed items for kind " & kind)
+    for item in items:
+      result.add(item)
+    if not r{"hasMore"}.getBool(false):
       break
+    let nextAfter = r{"nextAfter"}.getStr("")
+    if items.len == 0 or nextAfter.len == 0 or nextAfter <= cursor:
+      raise newException(IOError, "store list of kind " & kind &
+        " reported more pages but no advancing cursor after " & $result.len &
+        " item(s) — refusing to treat a partial read as complete")
     cursor = nextAfter
     inc pages
     if pages > 10_000:

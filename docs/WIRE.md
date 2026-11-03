@@ -1765,7 +1765,11 @@ more documents follow, the reply carries `hasMore: true` and `nextAfter`
 strictly exclusive cursor — the id equal to `after` is never returned — and
 it advances by *key*, so a page whose documents are all tombstoned still
 moves forward rather than stranding the caller. A caller that needs the
-whole kind loops until `hasMore` is false or `nextAfter` is absent.
+whole kind loops until `hasMore` is false. A reply with `hasMore: true`
+requires an advancing `nextAfter`; a missing or stalled cursor is an incomplete
+read, not end-of-data. Core refuses that read rather than resuming a transcript
+from a partial view. Canonical message appends use create-only writes, so a
+stale continuation cannot overwrite an existing message.
 
 Core's own full-kind reads (session resume, `session_info`,
 `conversation_delete`) use `storeListAll` (core/dispatch.nim; the SDK

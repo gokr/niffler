@@ -630,6 +630,7 @@ var/bin/test_t_tool_images: core/conversation.nim core/attachments.nim \
 
 var/bin/test_t_context_drains: core/conversation.nim
 var/bin/test_t_toolpair_unit: core/conversation.nim
+var/bin/test_t_transcript_safety: var/bin/fixture-fleet-fault-store
 
 # The repair is core's (a projection rule) but its proof is end to end: a real
 # sandbox conversation whose stored transcript lost a tool result must run
