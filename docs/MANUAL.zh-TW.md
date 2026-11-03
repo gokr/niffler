@@ -33,7 +33,7 @@
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
-- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Background processes (`processes`)](#background-processes-processes)
+- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Worktrees](#worktrees) · [Background processes (`processes`)](#background-processes-processes)
 - [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
 - [Model catalog (`models`)](#model-catalog-models)
 - [System prompt (`systemprompt`)](#system-prompt-systemprompt)
@@ -1365,6 +1365,105 @@ git 工作流程的唯讀一半，作為一等工具；寫入的一半（add/com
 **審查收據。** `review_receipt` 是這裡唯一的寫入側工具，也是唯一沒有核准關卡的 git 工具：它只會寫入 `var/review-receipts/` 下的檔案。`op: "write"` 將工作樹 diff 的 SHA-256 指紋（加上選用的 `findings` 和 `model`）記錄為 `rr-<unix>-<fp8>.json`（`schema_id: "niffler.review-receipt/v1"`、`id`、`created_at`、`diff_fingerprint`、`note`）；`op: "check"` 將當前 diff 與最新收據比較——相符時退出碼 0 加上收據 id，diff 已變動時退出碼 1 並帶有 `receipt_fingerprint` 和 `current_fingerprint`，而沒有收據、全都無法解析或 diff 為空時退出碼 1 並帶有 `detail`。它絕不呼叫模型。
 
 **git 二進位檔。** `git` 必須能在 `PATH` 上解析，而命中元件自己的 `var/bin/git` 的 `PATH` 會被跳過（那會遞迴）；無法解析的 git 回傳退出碼 127 並附帶安裝提示。
+
+## Worktrees
+
+狀態：**已實現**（WORKTREES.md 切片 0–7；`tests/t_git.nim`、`tests/t_roots.nim`、
+`tests/t_locks.nim`，以及客戶端儲存庫中的測試）。
+
+git worktree 是同一儲存庫的第二個檢出。Niffler 將其視為一等公民的工作場所：可以建立、
+把對話移動或分叉進去、限制寫入、把分支合併回來並回收它 —— 不必退回 `bash`，
+也不必 `/roots` 授權。
+
+**佈局一律為同層目錄**：`<repo>.wt/<name>`，絕不在儲存庫內部。兩個實測原因：位於儲存庫內的
+工作樹會落在 primary 自身不透明的 `bash` 宣告範圍之內（於是每次 primary `bash` 都會與每次
+工作樹寫入序列化），而且除非加上忽略規則，它會弄髒 `git status` —— 同層目錄兩者都不需要。
+此佈局不可設定。
+
+以已宣告的設定 `git.mutations`（或 `NIF_GIT_MUTATIONS=1`）啟用變更動詞；
+未啟用時只註冊讀取工具：
+
+| 工具 | 審批 | 作用 |
+|---|---|---|
+| `git_worktree_list {repo?}` | 無（讀取） | 每個工作樹：路徑、分支、HEAD、鎖（及原因）、是否可清理、是否為呼叫來源樹，以及（來自歸屬帳本）哪個對話建立了它 |
+| `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | 一律 | `add` 從 `base`（預設為 primary 目前分支）切出 `<repo>.wt/<name>`、上鎖並記錄歸屬；`remove` 回收工作樹；`prune` 清除已手工刪除的工作樹記錄 |
+| `git_merge_preview {repo?, into?, from_ref?}` | 無（讀取） | 以 `git merge-tree` 計算合併結果而不觸碰工作樹：乾淨（含 `ahead`/`behind` 與 stat）或衝突路徑 |
+| `git_merge {op, repo, into?, from_ref?, strategy?, allow_dirty?}` | 一律 | `start` 合併至目前檢出的分支；`abort` 撤銷衝突中的合併 |
+| `git_commit {repo, message, paths?, all?, amend?}` | 一律 | 只暫存 `paths` 並提交；兩者皆未提供時只暫存已追蹤檔案的修改（`git add -u`），因此無關的未追蹤檔案絕不會被捲入 |
+
+每個變更工具都**要求** `repo`，絕不給預設值。寫入租約來自 core 所見的*參數值*，
+因此元件端的預設值會鎖住一棵樹卻寫另一棵。拒絕訊息會指出它認為你指的 primary，
+讓下一次呼叫沒有歧義。
+
+**兩點值得知道的語意：**
+
+- `merge-tree` 對**真實衝突**與**不存在的 ref** 都回傳離開碼 1，因此
+  `git_merge_preview` 要求正向判別（首行必須是 tree OID）才回報衝突。錯誤的 ref 是
+  指出該 ref 的錯誤 —— 絕不是憑空捏造的衝突清單，那會讓人去解決不存在的分支裡的衝突。
+- `git_merge {op: "start"}` 在目標樹中與本次合併相關的檔案有本機改動時先行拒絕並列出
+  這些路徑，而不是事後引用 git 的中止訊息。
+
+### 對話隔離（`isolation: "worktree"`）
+
+對話的*工作區集合*是它的 primary 加上屬於同一專案的各工作樹；寫入圍籬放行整個集合，
+因此預設情況下工作樹中的對話也能寫 primary。`isolation: "worktree"` 把**宣告**集合
+收窄為對話自身的工作樹，因此對 primary 的寫入會以既有的 `[E_WRITE_OUTSIDE]` 拒絕。
+
+- **僅限人類。** 與 `roots` 一樣不在 `session` 工具 schema 中，所以模型無法自行放寬或收窄範圍。
+- **沒有可隔離對象時拒絕。** 工作區是普通檢出或子模組的對話會被拒絕並說明原因，
+  而不是讓它看起來提供了並不存在的保護。
+- **讀取不收窄。** 沒有讀取圍籬；`read`、`grep`、`git_diff` 針對 primary 正是比較分支的方式，
+  拒絕它們會把工作樹變成牢籠。
+- **它是圍籬，不是互斥鎖。** 同一棵樹中的兩個對話仍可在不同檔案上並行 ——
+  `locks` 保持路徑分條。
+
+持久化於 header 中，恢復時還原，呼叫之間可變，並在對話狀態回讀與
+`session_info.workspace` 中回報為 `isolation`。
+
+`/workspace`（客戶端）顯示 `writable`，即推導出的宣告集合，因此被告知的與實際擁有的
+一致：圍籬與回讀由同一條規則（`claimRootsFor`）計算，因為同一策略的兩份獨立計算
+正是報告開始說謊的方式。
+
+### 模型被告知什麼
+
+`session_info` 帶有 `workspace` 區塊：`root`、`roots`、`linked`、`branch`、
+`primaryRoot`、`submodule`、`isolation`、`writable`。它來自**儲存的 header**，
+而不是行程 cwd，因為 runner 可能沒有 cwd，且 `session_info` 也會檢視其它對話。
+同樣的事實透過私有調度上下文（`__workspace`）傳給元件；兩者都不會進入凍結的系統提示，
+因此對話中途出現的工作樹絕不會造成提示快取重建。
+
+客戶端還可以在出生時送出 `checkout: {primaryRoot, branch}` —— 僅供提示。
+與 git 矛盾的值會被忽略並提出警告：git 是權威，客戶端只是捷徑。
+
+### 溯源（`origin`）與合併通知
+
+由另一對話歷史播種的對話會記錄 `sessionmeta.origin = {session, atSeq, reason, worktree?}`。
+它**只是溯源，絕非權限**：不授予續行權、不路由審批、不豁免深度、不做閒置退休。
+*受監督*的分叉（`agent_spawn {fork}`）同時帶有兩條邊 —— 監督用 `parent`、溯源用
+`origin`；**對等**分叉（`agent_fork`，隱藏的客戶端工具）只帶有 `origin`，
+因為沒有任何東西在監督它。
+
+`session_info` 向前回報 `origin`，向後回報 `descendants`（`{sessionId, supervised, origin?}`），
+所以「這次探索產生了什麼？」從起點出發只需一次呼叫。
+
+成功合併後，發起合併對話的 origin 會收到持久的 `worktreemerge` 記錄（來源、工作樹、
+分支、commit、檔案、目標分支）。它在父對話的下一個回合以機制訊息投遞 —— 父對話閒置時
+不會被打斷 —— 而且 runner 在確認*之前*先把通知寫入歷史，因此崩潰既不會重複也不會遺失。
+通知失敗會作為已成功合併上的 `warning` 回報，絕不是重放變更的理由。
+
+**已知缺口：** git 提交與通知寫入不是原子的 —— 兩者之間崩潰會留下成功合併但 origin
+從未被告知。下一次 `git_worktree_list` 或對話記錄仍會顯示該合併。
+
+### 客戶端介面（`niffler-tui`）
+
+`/worktree [add NAME [--fork]|merge|rm PATH|close]`，底部列顯示 `· isolated`，
+`/workspace` 顯示隔離列。
+
+`add` 建立工作樹並選擇結果，並說明是哪一個：對話全新或其工作區從未被選定、且樹乾淨時為
+**移動**；工作區已被選定時為**分叉**（探索保留為獨立記錄，新對話已*讀過*它）；
+舊樹骯髒時為**拒絕**，並提供 `--fork` 把那些改動留在原處。`close` 移除工作樹並切回 origin。
+客戶端的 git 操作走對話作用域的 `invoke` 控制而非直接元件呼叫，因此審批與對話歸屬
+與模型呼叫完全一致。
 
 ## Background processes (`processes`)
 

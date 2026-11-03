@@ -45,10 +45,12 @@ they are not all future phase-3 work.
 The guarantee is cooperative coordination at session dispatch, not OS fencing.
 Direct bus calls, autonomous jobs, native guest I/O and other instances remain
 outside it. A claim records declared reach, not proof that bytes changed.
-Existing worktree awareness is not automatic worktree-per-conversation ownership,
-and it is not even *live*: the workspace set is computed once per runner, so a
-worktree created mid-conversation stays outside the fence
-([WORKTREES.md](research/WORKTREES.md) — proposal, nothing implemented).
+Worktree ownership and liveness are now implemented: trees are recorded with
+their owning conversation, and the workspace set rebuilds when the checkout graph
+changes, so a tree created mid-conversation is inside the fence on the next
+dispatch ([WORKTREES.md](research/WORKTREES.md)). The remaining gap is the one
+this pillar names — automatic *allocation* (a conversation does not yet get a
+tree by policy, only by asking) — plus fencing for writers that outlive leases.
 See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md).
 
 ### Sandboxing: prototype shipped, conversation product unfinished
@@ -271,13 +273,19 @@ language (its Part 1 is what ships today). Prior art:
 §3.15. This section records only what 0.6.0 requires of it and why it is not
 optional.
 
-Worktree slices 0–5 are implemented: shared checkout parsing, live graph
-invalidation, checkout-aware write claims, recorded sibling worktrees,
-merge/commit verbs, isolation and workspace readback. Slice 6 adds peer
-`agent_fork`, immutable origin provenance, backward descendant readback and
-append-before-ack merge notices. Client move/fork/close commands and the complete
-localized documentation refresh remain slices 7–8. Path-stripe arbitration is
-unchanged: these features do not impose a worktree-wide mutex.
+**All eight slices are implemented.** Shared checkout parsing (`sdk/checkout`),
+live graph invalidation, checkout-aware write claims, recorded sibling worktrees,
+merge/commit verbs, `isolation: "worktree"` with the workspace readback, peer
+`agent_fork` with immutable `origin` provenance and append-before-ack merge
+notices, the client's `/worktree` commands, and this documentation pass.
+Path-stripe arbitration is unchanged: these features do not impose a
+worktree-wide mutex.
+
+What remains open from this pillar is stated rather than implied: automatic
+worktree *allocation* by policy (a conversation still asks for a tree rather than
+being given one), fencing or confirmed termination for writers that outlive their
+leases, and the single known delivery gap where a merge commits but a crash
+before the notice write leaves the origin untold.
 
 **The shape, adopted from WORKTREES.md:** a worktree is a first-class recorded
 object created at `<repo>.wt/<name>` — a sibling of the repo, so it sits outside

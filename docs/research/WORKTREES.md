@@ -1117,10 +1117,22 @@ order.
 | 2 | ~~opaque claim follows resolved cwd (+ `roots: true`)~~ **SHIPPED** | core/dispatch | `t_locks` pure (claim root per cwd: primary, worktree, deep-inside, outside-set fail-safe, same-prefix sibling, `roots: true`, empty set); `t_arbitration` (a worktree `bash` and a primary `bash` hold leases in parallel, while two writers in the SAME tree still collide) |
 | 3 | ~~`git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards~~ **SHIPPED** | components/git | `t_git` (add lands a sibling that leaves `git status` clean with no ignore edit; orientation from INSIDE a worktree; collision/in-repo/nested refusals; unmerged-branch and primary refusals; force + branch-kept; prune of a hand-deleted tree; ledger owner in `list`) |
 | 4 | ~~`git_merge_preview` + `git_merge {start,abort}` + `git_commit`~~ **SHIPPED** | components/git | `t_git` (clean preview with divergence counts, conflict preview naming files, **a bad ref is an error and never a conflict list**, required `repo`, clean merge, dirty-target refusal naming paths, commit staging only named paths while leaving an unrelated untracked file alone, nothing-to-commit as a normal answer) |
-| 5 | **IMPLEMENTED**: `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
-| 6 | **IMPLEMENTED**: peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
-| 7 | client: the move-vs-fork decision (§5.1), `/worktree add` / `merge` / `rm` / `close` (with `close` switching back to the origin), chip, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus; `close` asserts the switch-back target) |
-| 8 | docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`, `sessionmeta.origin`, the merge notice kind), a refresh of [../WORKTREES-TUTORIAL.md](../WORKTREES-TUTORIAL.md) so Part 1 becomes Part 2, FEATURES, PLAN, then the zh/zh-TW refresh | docs | — |
+| 5 | ~~`isolation: "worktree"` + `checkout` birth hint + `session_info.workspace`~~ **SHIPPED** | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
+| 6 | ~~peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane~~ **SHIPPED** | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
+| 7 | ~~client: the move-vs-fork decision (§5.1), `/worktree add` / `merge` / `rm` / `close` (with `close` switching back to the origin), chip, `/workspace` lines, nats-url fix~~ **SHIPPED** | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus; `close` asserts the switch-back target) |
+| 8 | ~~docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`, `sessionmeta.origin`, the merge notice kind), a refresh of [../WORKTREES-TUTORIAL.md](../WORKTREES-TUTORIAL.md) so Part 1 becomes Part 2, FEATURES, PLAN, then the zh/zh-TW refresh~~ **SHIPPED** | docs | — |
+
+**All eight slices are shipped.** The table above is kept as the plan's own record
+rather than deleted: it is what the implementation was checked against, and the
+per-slice test column is where each promise is actually enforced.
+
+One deviation from the plan as written is worth recording: slice 5 was specified
+to return just `roots[0]` from `workspaceRootsFor` when isolated. It returns the
+conversation's own normalized tree instead, and — found by slice 7's tests —
+`writePathsFor` must REFUSE an opaque writer whose `cwd` falls outside the
+narrowed set rather than falling back to the primary. That fallback meant an
+isolated conversation's `bash` could write the primary unleased, which defeats
+the whole point. Both directions are asserted in `t_locks` and `t_roots`.
 
 The user's own ordering is worth respecting over the dependency order: slice 5
 (one header key, one dispatch filter, one `session_info` block) is what makes

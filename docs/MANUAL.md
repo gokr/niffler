@@ -34,7 +34,7 @@ outcomes, crash windows and the session-ID reuse restriction.
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
-- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Background processes (`processes`)](#background-processes-processes)
+- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Worktrees](#worktrees) · [Background processes (`processes`)](#background-processes-processes)
 - [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
 - [Model catalog (`models`)](#model-catalog-models)
 - [System prompt (`systemprompt`)](#system-prompt-systemprompt)
@@ -2520,8 +2520,10 @@ than started.
 
 Status: **implemented** (Nim component; `tests/t_git.nim`).
 
-The read-only half of a git workflow, as first-class tools; the write half
-(add/commit/push/checkout/restore) stays in `bash`, which is approval-gated.
+The inspection half of a git workflow as first-class tools, plus a small,
+explicit mutation surface for the worktree flow (`git_worktree`, `git_commit`,
+`git_merge`; see "Worktrees"). Everything else that writes
+(add/checkout/push/restore) stays in `bash`, which is approval-gated.
 Every subcommand runs as a fixed argv (`--no-optional-locks -c color.ui=false
 -c core.quotepath=false --no-pager`), never through a shell, scoped with
 `-C <repo>` — flags, refs and paths travel byte-for-byte.
@@ -2557,8 +2559,8 @@ line cap — `git_status` 200 lines, `git_diff` 10 000 (500 with `stat`),
 `git_show` 10 000, `git_log` and `git_blame` at their count plus one — each
 with a "narrow the scope" hint.
 
-**Review receipts.** `review_receipt` is the one write-side tool here and the
-one git tool with no approval gate: it only ever writes a file under
+**Review receipts.** `review_receipt` is a write-side tool with no approval
+gate because: it only ever writes a file under
 `var/review-receipts/`. `op: "write"` records a SHA-256 fingerprint of the
 working-tree diff (plus optional `findings` and `model`) as
 `rr-<unix>-<fp8>.json` (`schema_id: "niffler.review-receipt/v1"`, `id`,
@@ -2571,6 +2573,131 @@ the diff is empty. It never calls a model.
 **The git binary.** `git` must resolve on `PATH`, and a `PATH` hit that is the
 component's own `var/bin/git` is skipped (that would recurse); unresolved git
 returns exit 127 with an install hint.
+
+
+## Worktrees
+
+Status: **implemented** (WORKTREES.md slices 0–7; `tests/t_git.nim`,
+`tests/t_roots.nim`, `tests/t_locks.nim`, tests in the client repo).
+
+A git worktree is a second checkout of one repository. Niffler treats it as a
+first-class place to work: it can create one, move or fork a conversation into
+it, fence writes to it, merge its branch back, and retire it — all without
+dropping to `bash` and without a `/roots` grant.
+
+**The layout is always a sibling**: `<repo>.wt/<name>`, never inside the
+repository. Two reasons, both measured: an in-repo tree sits inside the primary's
+own opaque `bash` claim (so every primary `bash` would serialize against every
+worktree write), and it dirties `git status` unless an ignore rule is added — a
+sibling needs neither. The layout is not configurable.
+
+Enable the mutation verbs with the declared setting `git.mutations` (or
+`NIF_GIT_MUTATIONS=1`); without it only the read tools register:
+
+| Tool | Approval | What it does |
+|---|---|---|
+| `git_worktree_list {repo?}` | none (read) | every worktree: path, branch, HEAD, lock (and reason), prunable, whether it is the tree you are calling from, and — from the ownership ledger — which conversation created it |
+| `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | always | `add` cuts `<repo>.wt/<name>` from `base` (default: the primary's current branch), locks it and records the owner; `remove` retires a tree; `prune` clears records for trees deleted by hand |
+| `git_merge_preview {repo?, into?, from_ref?}` | none (read) | what merging would do, computed by `git merge-tree` without touching a working tree: clean (with `ahead`/`behind` and a stat), or the conflicting paths |
+| `git_merge {op, repo, into?, from_ref?, strategy?, allow_dirty?}` | always | `start` merges into the checked-out branch; `abort` unwinds a conflicted merge |
+| `git_commit {repo, message, paths?, all?, amend?}` | always | stage exactly `paths` and commit; with neither `paths` nor `all` it stages tracked modifications only (`git add -u`), so an unrelated untracked file is never swept in |
+
+`repo` is **required** on every mutation, never defaulted. The write lease is
+derived from the *argument values* core sees, so a component-side default would
+take the lease over one tree and write another. The refusal names the primary it
+thinks you meant, so the next call is unambiguous.
+
+**Two semantics worth knowing:**
+
+- `merge-tree` exits 1 for **both** a real conflict and a ref that does not
+  exist, so `git_merge_preview` requires a positive discriminator (the first
+  output line must be a tree OID) before it reports a conflict. A bad ref is an
+  error naming the ref — never a fabricated conflict list, which would send you
+  off to resolve conflicts in a branch that is not there.
+- `git_merge {op: "start"}` refuses up front, naming the paths, when the target
+  has local changes to a file the merge would touch — instead of quoting git's
+  abort after the fact.
+
+### Conversation isolation (`isolation: "worktree"`)
+
+A conversation's *workspace set* is its primary plus the trees that belong to the
+same project; the write fence admits the whole set, so by default a conversation
+in a worktree can also write the primary. `isolation: "worktree"` narrows the
+**claim** set to the conversation's own tree, so a write to the primary is
+refused with the existing `[E_WRITE_OUTSIDE]`.
+
+- **Human-only.** It is not in the `session` tool's schema, exactly like `roots`,
+  so the model cannot widen or narrow its own scope.
+- **It refuses when there is nothing to isolate from.** A conversation whose
+  workspace is a plain checkout or a submodule is refused, naming the reason,
+  rather than reading as protection that provides none.
+- **Reads are not narrowed.** There is no read fence; `read`, `grep` and
+  `git_diff` against the primary are how you compare branches, and refusing them
+  would make the tree a cage.
+- **It is a fence, not a mutex.** Two conversations in one tree still proceed on
+  different files — `locks` keeps its path striping.
+- Persisted in the header, restored on resume, mutable between calls, and
+  reported as `isolation` on the session status readback and in
+  `session_info.workspace`.
+
+`/workspace` (client) shows `writable`, the derived claim set, so what you are
+told is what you have: the fence and the readback are computed by one rule
+(`claimRootsFor`), because two independent computations of one policy is how a
+report starts lying.
+
+### What the model is told
+
+`session_info` carries a `workspace` block: `root`, `roots`, `linked`, `branch`,
+`primaryRoot`, `submodule`, `isolation` and `writable`. This is reported from
+the **stored header**, not the process cwd, because a runner may have been
+started without one and `session_info` also inspects other conversations. The
+same facts ride private dispatch context (`__workspace`) for components; neither
+reaches the frozen system prompt, so a worktree appearing mid-conversation never
+costs a prompt-cache rebuild.
+
+A client may also send `checkout: {primaryRoot, branch}` at birth — advisory
+only. A value that contradicts git is ignored with a warning: git is the
+authority, the client is a shortcut.
+
+### Provenance (`origin`) and merge notices
+
+A conversation seeded from another's history records `sessionmeta.origin =
+{session, atSeq, reason, worktree?}`. It is **provenance, never authority**: it
+grants no continuation rights, no approval routing, no depth exemption and no
+idle retirement. A *supervised* fork (`agent_spawn {fork}`) carries both edges —
+`parent` for supervision and `origin` for provenance; a **peer** fork
+(`agent_fork`, a hidden client tool) carries only `origin`, because nothing is
+supervising it.
+
+`session_info` reports `origin` forward and `descendants` backward
+(`{sessionId, supervised, origin?}`), so "what came of this exploration?" is one
+call from where it started.
+
+After a successful merge, the merging conversation's origin receives a durable
+`worktreemerge` record (source, worktree, branch, commit, files, target branch).
+It is delivered on the parent's next turn as a machinery message — the parent is
+not interrupted mid-idle — and the runner records the notice in history *before*
+acknowledging it, so a crash cannot duplicate or lose it. A notification failure
+is reported as a `warning` on the already-successful merge, never as a reason to
+replay the mutation.
+
+**Known gap:** the git commit and the notice write are not atomic — a crash
+between them leaves a successful merge whose origin is never told. The next
+`git_worktree_list` or the transcript still shows the merge.
+
+### Client surface (`niffler-tui`)
+
+`/worktree [add NAME [--fork]|merge|rm PATH|close]`, plus `· isolated` in the
+bottom row and the isolation line in `/workspace`.
+
+`add` creates the tree and then picks an outcome, saying which: **move** when the
+conversation is pristine or its workspace was never chosen and the tree is clean;
+**fork** when a workspace was already chosen (the exploration stays its own
+record, and the new conversation has *read* it); **refuse** when the old tree is
+dirty, offering `--fork` to leave those edits where they are. `close` removes the
+tree and switches back to the origin. Client-side git work goes through the
+session-scoped `invoke` control rather than a direct component call, so approvals
+and session attribution behave exactly as they do for the model.
 
 ## Background processes (`processes`)
 

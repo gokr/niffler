@@ -26,6 +26,7 @@ addition to an existing row); a changed default or parameter does not.
 - [Approvals, trust and safety](#approvals-trust-and-safety)
 - [SDKs](#sdks)
 - [Self-extension, plugins and the ecosystem](#self-extension-plugins-and-the-ecosystem)
+- [Worktrees](#worktrees)
 - [Clients and UI surfaces](#clients-and-ui-surfaces)
 - [Configuration and state](#configuration-and-state)
 - [Operations: build, test, bench, docs](#operations-build-test-bench-docs)
@@ -399,6 +400,10 @@ See [WIRE.md](WIRE.md) (the single contract).
   server-side concurrency as separate, explicit choices.
 - Payload discipline: the bus cap the harness requires, and the boot check
   that warns on a smaller one.
+- Worktree provenance and notices: `sessionmeta.origin` (provenance only, never
+  supervision), `descendants` in `session_info`, the peer fork (hidden
+  `agent_fork`), and the durable `worktreemerge` inbox a runner folds into
+  history before acknowledging.
 
 ## Schema extensions (`x-harness.*`)
 
@@ -418,6 +423,30 @@ See [WIRE.md](WIRE.md) "x-harness schema extensions".
 - `runner` — runner-machinery exemption from a frozen tool allowlist.
 - `x-models-source` — the model catalog's plugin correction/discovery seam
   (a non-`x-harness` extension, listed for completeness).
+
+## Worktrees
+
+- Sibling layout (`<repo>.wt/<name>`), created and locked by `git_worktree add`,
+  with an ownership ledger in the store (which conversation, which base) beside
+  git's own durable lock.
+- `git_worktree_list` / `git_worktree {add,remove,prune}` and
+  `git_merge_preview` / `git_merge {start,abort}` / `git_commit`, all
+  approval-gated except the two read tools, and gated as a group by the declared
+  `git.mutations` setting.
+- Removal refuses on evidence — another live conversation owns the tree, or the
+  branch has unmerged commits — and names the flag that overrides it; a dirty
+  tree is git's own refusal, surfaced verbatim.
+- `isolation: "worktree"` narrows the write fence to the conversation's own tree
+  (human-only control; refuses outside a linked worktree; reads unnarrowed; not a
+  mutex — path striping is unchanged).
+- `session_info.workspace` reports root/roots/linked/branch/primaryRoot/
+  submodule/isolation/writable from the stored header; the same facts ride
+  private `__workspace` dispatch context. Neither enters the frozen prompt.
+- Live set invalidation: a tree created mid-conversation is admitted on the next
+  dispatch (a sub-second `stat` on the checkout graph), with no grant and no
+  restart.
+- Client: `/worktree add|merge|rm|close` with a move/fork/refuse decision, `close`
+  returning to the origin, and the merge notice waiting there.
 
 ## Approvals, trust and safety
 

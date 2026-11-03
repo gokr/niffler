@@ -33,7 +33,7 @@
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch) · [`grep` in detail](#grep-in-detail)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
-- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Background processes (`processes`)](#background-processes-processes)
+- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Worktrees](#worktrees) · [Background processes (`processes`)](#background-processes-processes)
 - [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
 - [Model catalog (`models`)](#model-catalog-models)
 - [System prompt (`systemprompt`)](#system-prompt-systemprompt)
@@ -1183,6 +1183,105 @@ git 工作流的只读部分，作为一等工具；写入部分（add/commit/pu
 **Review receipts.** `review_receipt` 是这里唯一的写入侧工具，也是唯一没有审批门的 git 工具：它只会写入 `var/review-receipts/` 下的文件。`op: "write"` 将工作树 diff 的 SHA-256 指纹（加上可选的 `findings` 和 `model`）记录为 `rr-<unix>-<fp8>.json`（`schema_id: "niffler.review-receipt/v1"`、`id`、`created_at`、`diff_fingerprint`、`note`）；`op: "check"` 将当前 diff 与最新回执比较 —— 匹配时退出 0 并给出回执 id，diff 变动时退出 1 并给出 `receipt_fingerprint` 和 `current_fingerprint`，没有回执、都无法解析或 diff 为空时退出 1 并给出 `detail`。它从不调用模型。
 
 **The git binary.** `git` 必须能在 `PATH` 上解析，并且命中组件自己的 `var/bin/git` 的 `PATH` 结果会被跳过（那会递归）；无法解析的 git 返回退出码 127 并附带安装提示。
+
+## Worktrees
+
+状态：**已实现**（WORKTREES.md 切片 0–7；`tests/t_git.nim`、`tests/t_roots.nim`、
+`tests/t_locks.nim` 以及客户端仓库中的测试）。
+
+git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公民的工作场所：可以创建、
+把会话移动或分叉进去、限制写入、把分支合并回来并回收它 —— 无需退回到 `bash`，
+也无需 `/roots` 授权。
+
+**布局始终是同级目录**：`<repo>.wt/<name>`，绝不在仓库内部。两个实测原因：位于仓库内的
+工作树落在 primary 自身不透明 `bash` 声明之内（于是每次 primary `bash` 都会与每次工作树
+写入串行化），并且除非添加忽略规则，它会弄脏 `git status` —— 同级目录两者都不需要。
+该布局不可配置。
+
+用已声明的设置 `git.mutations`（或 `NIF_GIT_MUTATIONS=1`）启用变更动词；
+没有它时只注册读取工具：
+
+| 工具 | 审批 | 作用 |
+|---|---|---|
+| `git_worktree_list {repo?}` | 无（读取） | 每个工作树：路径、分支、HEAD、锁（及原因）、是否可清理、是否为调用来源树，以及（来自归属账本）哪个会话创建了它 |
+| `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | 总是 | `add` 从 `base`（默认 primary 当前分支）切出 `<repo>.wt/<name>`，加锁并记录归属；`remove` 回收工作树；`prune` 清理已手工删除的工作树记录 |
+| `git_merge_preview {repo?, into?, from_ref?}` | 无（读取） | 用 `git merge-tree` 计算合并结果而不触碰工作树：干净（含 `ahead`/`behind` 与 stat）或冲突路径 |
+| `git_merge {op, repo, into?, from_ref?, strategy?, allow_dirty?}` | 总是 | `start` 合并到当前检出的分支；`abort` 撤销冲突中的合并 |
+| `git_commit {repo, message, paths?, all?, amend?}` | 总是 | 只暂存 `paths` 并提交；两者都不给时只暂存已跟踪文件的修改（`git add -u`），因此无关的未跟踪文件绝不会被卷入 |
+
+每个变更工具都**要求** `repo`，绝不设默认值。写租约来自 core 看到的*参数值*，
+因此组件侧的默认值会锁住一棵树却写另一棵。拒绝信息会指出它认为你指的是哪个 primary，
+让下一次调用无歧义。
+
+**两点值得知道的语义：**
+
+- `merge-tree` 对**真实冲突**和**不存在的 ref**都返回退出码 1，因此
+  `git_merge_preview` 要求正向判别（首行必须是 tree OID）才报告冲突。错误 ref 是
+  指出该 ref 的错误 —— 绝不是伪造的冲突列表，那会让人去解决不存在的分支里的冲突。
+- `git_merge {op: "start"}` 在目标树中与本次合并相关的文件有本地改动时先行拒绝并列出
+  这些路径，而不是在事后引用 git 的中止文本。
+
+### 会话隔离（`isolation: "worktree"`）
+
+会话的*工作区集合*是它的 primary 加上属于同一项目的各工作树；写围栏放行整个集合，
+所以默认情况下工作树中的会话也能写 primary。`isolation: "worktree"` 把**声明**集合
+收窄为会话自己的工作树，因此对 primary 的写入会以既有的 `[E_WRITE_OUTSIDE]` 拒绝。
+
+- **仅限人类。** 与 `roots` 一样不在 `session` 工具 schema 中，所以模型无法自己放宽或收窄范围。
+- **没有可隔离对象时拒绝。** 工作区是普通检出或子模块的会话会被拒绝并说明原因，
+  而不是让它看起来提供了并不存在的保护。
+- **读取不收窄。** 没有读围栏；`read`、`grep`、`git_diff` 针对 primary 正是比较分支的方式，
+  拒绝它们会把工作树变成牢笼。
+- **它是围栏，不是互斥锁。** 同一棵树中的两个会话仍可在不同文件上并行 ——
+  `locks` 保持路径分条。
+
+持久化在 header 中，恢复时还原，调用之间可变，并在会话状态回读和
+`session_info.workspace` 中报告为 `isolation`。
+
+`/workspace`（客户端）显示 `writable`，即推导出的声明集合，因此被告知的与实际拥有的
+一致：围栏与回读由同一条规则（`claimRootsFor`）计算，因为同一策略的两份独立计算
+正是报告开始说谎的方式。
+
+### 模型被告知什么
+
+`session_info` 带有 `workspace` 块：`root`、`roots`、`linked`、`branch`、
+`primaryRoot`、`submodule`、`isolation`、`writable`。它来自**存储的 header**，
+而不是进程 cwd，因为 runner 可能没有 cwd，且 `session_info` 也会检查其它会话。
+同样的事实通过私有调度上下文（`__workspace`）传给组件；两者都不会进入冻结的系统提示，
+因此会话中途出现的工作树绝不会造成提示缓存重建。
+
+客户端还可以在出生时发送 `checkout: {primaryRoot, branch}` —— 仅作提示。
+与 git 矛盾的值会被忽略并给出警告：git 是权威，客户端只是捷径。
+
+### 溯源（`origin`）与合并通知
+
+由另一会话历史播种的会话会记录 `sessionmeta.origin = {session, atSeq, reason, worktree?}`。
+它**只是溯源，绝非权限**：不授予继续权、不路由审批、不豁免深度、不做空闲退休。
+*受监督*的分叉（`agent_spawn {fork}`）同时携带两条边 —— 监督用 `parent`、溯源用
+`origin`；**对等**分叉（`agent_fork`，隐藏的客户端工具）只携带 `origin`，
+因为没有任何东西在监督它。
+
+`session_info` 向前报告 `origin`，向后报告 `descendants`（`{sessionId, supervised, origin?}`），
+所以"这次探索产生了什么？"从起点出发只需一次调用。
+
+成功合并后，发起合并会话的 origin 会收到持久的 `worktreemerge` 记录（来源、工作树、
+分支、commit、文件、目标分支）。它在父会话的下一个回合作为机制消息投递 —— 父会话空闲时
+不会被中断 —— 并且 runner 在确认*之前*先把通知写入历史，因此崩溃既不会重复也不会丢失。
+通知失败会作为已成功合并上的 `warning` 报告，绝不是重放变更的理由。
+
+**已知缺口：** git 提交与通知写入不是原子的 —— 二者之间崩溃会留下成功合并但 origin
+从未被告知。下一次 `git_worktree_list` 或对话记录仍会显示该合并。
+
+### 客户端界面（`niffler-tui`）
+
+`/worktree [add NAME [--fork]|merge|rm PATH|close]`，底部行显示 `· isolated`，
+`/workspace` 显示隔离行。
+
+`add` 创建工作树并选择结果，并说明是哪一个：会话全新或其工作区从未被选定、且树干净时为
+**移动**；工作区已被选定时为**分叉**（探索保留为独立记录，新会话已*读过*它）；
+旧树脏时为**拒绝**，并提供 `--fork` 把那些改动留在原处。`close` 移除工作树并切回 origin。
+客户端的 git 操作走会话作用域的 `invoke` 控制而非直接组件调用，因此审批与会话归属
+与模型调用完全一致。
 
 ## Background processes (`processes`)
 
