@@ -34,7 +34,7 @@
 
       "fast.kicker": "Fast &amp; cache-effective",
       "fast.h2": "Strict cache regime,<br><em>token efficient.</em>",
-      "fast.body": "The request prefix is tiny and stays byte-stable for the conversation's lifetime: a very small base prompt and a deliberately small frozen direct toolset, so provider caches stay hot turn after turn. Everything else is progressive discovery — one <code>discover</code>/<code>invoke</code> away, entering as history instead of prompt bloat. Fewer tokens per turn, quicker round trips — and the numbers are measured in <code>bench/</code> against pi, opencode and claudecode, not asserted.",
+      "fast.body": "The request prefix is tiny and stays byte-stable for the conversation's lifetime: a very small base prompt and a deliberately small frozen direct toolset, so provider caches stay hot turn after turn. Everything else is progressive discovery — one <code>discover</code>/<code>invoke</code> away, entering as history instead of prompt bloat. Fewer tokens per turn, quicker round trips — and the numbers are measured in <code>bench/</code> against Pi, Opencode, DeepSeek Harness, CodeWhale, Droid and Claude Code, not asserted.",
       "fast.legend1": "cache hit · 250.3k",
       "fast.legend2": "new this turn · 1.8k",
       "fast.legend3": "99.3% — printed in the UI, every turn",
@@ -193,7 +193,7 @@
 
       "fast.kicker": "快速且节省缓存",
       "fast.h2": "严格的缓存机制，<br><em>token 高效。</em>",
-      "fast.body": "请求前缀极小，并且在整个对话生命周期内逐字节不变：非常小的基础提示词，加上刻意精简、冻结的直接工具集，让供应商缓存一轮接一轮保持温热。其余能力都通过渐进式发现获得——一次 <code>discover</code>/<code>invoke</code> 之遥，以历史消息进入上下文，而不是膨胀提示词。每轮 token 更少、往返更快——数字来自 <code>bench/</code> 中与 pi、opencode、claudecode 的实测对比，而非口头断言。",
+      "fast.body": "请求前缀极小，并且在整个对话生命周期内逐字节不变：非常小的基础提示词，加上刻意精简、冻结的直接工具集，让供应商缓存一轮接一轮保持温热。其余能力都通过渐进式发现获得——一次 <code>discover</code>/<code>invoke</code> 之遥，以历史消息进入上下文，而不是膨胀提示词。每轮 token 更少、往返更快——数字来自 <code>bench/</code> 中与 Pi、Opencode、DeepSeek Harness、CodeWhale、Droid、Claude Code 的实测对比，而非口头断言。",
       "fast.legend1": "缓存命中 · 250.3k",
       "fast.legend2": "本轮新增 · 1.8k",
       "fast.legend3": "99.3% —— 每一轮都显示在界面上",
@@ -352,7 +352,7 @@
 
       "fast.kicker": "快速且節省快取",
       "fast.h2": "嚴格的快取機制，<br><em>token 高效。</em>",
-      "fast.body": "請求前綴極小，並且在整個對話生命週期內逐位元組不變：非常小的基礎提示詞，加上刻意精簡、凍結的直接工具集，讓供應商快取一輪接一輪保持溫熱。其餘能力都透過漸進式發現取得——一次 <code>discover</code>/<code>invoke</code> 之遙，以歷史訊息進入上下文，而不是讓提示詞膨脹。每輪 token 更少、往返更快——數字來自 <code>bench/</code> 中與 pi、opencode、claudecode 的實測對比，而非口頭斷言。",
+      "fast.body": "請求前綴極小，並且在整個對話生命週期內逐位元組不變：非常小的基礎提示詞，加上刻意精簡、凍結的直接工具集，讓供應商快取一輪接一輪保持溫熱。其餘能力都透過漸進式發現取得——一次 <code>discover</code>/<code>invoke</code> 之遙，以歷史訊息進入上下文，而不是讓提示詞膨脹。每輪 token 更少、往返更快——數字來自 <code>bench/</code> 中與 Pi、Opencode、DeepSeek Harness、CodeWhale、Droid、Claude Code 的實測對比，而非口頭斷言。",
       "fast.legend1": "快取命中 · 250.3k",
       "fast.legend2": "本輪新增 · 1.8k",
       "fast.legend3": "99.3% —— 每一輪都顯示在介面上",
