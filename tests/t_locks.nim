@@ -100,6 +100,33 @@ proc checkPure() =
                       "/home/me/repo", "") == @["/home/me/repo"],
         $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat"},
                        "/home/me/repo", ""))
+  # Isolation narrows the claim set to the conversation's own tree, so a cwd
+  # OUTSIDE it must be REFUSED, never silently re-routed to the primary: that
+  # fallback admitted an unleased write in a tree the conversation is not
+  # allowed to touch at all.
+  check("an isolated conversation still claims cwd inside its own tree",
+        writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat"},
+                      "/home/me/repo.wt/feat", "", @["/home/me/repo.wt/feat"],
+                      "worktree") == @["/home/me/repo.wt/feat"],
+        $writePathsFor(bashSchema, %*{"cwd": "/home/me/repo.wt/feat"},
+                       "/home/me/repo.wt/feat", "", @["/home/me/repo.wt/feat"],
+                       "worktree"))
+  var isolatedRefused = false
+  try:
+    discard writePathsFor(bashSchema, %*{"cwd": "/home/me/repo"},
+                          "/home/me/repo.wt/feat", "",
+                          @["/home/me/repo.wt/feat"], "worktree")
+  except CatchableError as e:
+    isolatedRefused = e.msg.contains("E_WRITE_OUTSIDE")
+  check("an isolated conversation REFUSES a cwd outside its tree",
+        isolatedRefused)
+  check("roots:true is narrowed to the own tree when isolated",
+        writePathsFor(bashSchema, %*{}, "/home/me/repo.wt/feat", "",
+                      @["/home/me/repo", "/home/me/repo.wt/feat"],
+                      "worktree") == @["/home/me/repo.wt/feat"],
+        $writePathsFor(bashSchema, %*{}, "/home/me/repo.wt/feat", "",
+                       @["/home/me/repo", "/home/me/repo.wt/feat"],
+                       "worktree"))
   check("a same-prefix sibling is not swallowed by the primary's claim",
         writePathsFor(bashSchema, %*{"cwd": "/home/me/repo2"},
                       "/home/me/repo", "", @["/home/me/repo"]) ==

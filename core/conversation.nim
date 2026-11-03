@@ -6160,6 +6160,36 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         request["reasoning_effort"] = %entry.thinkingEffort
       sessions[sessionId] = entry
       return %*{"ok": true, "sessionId": sessionId, "request": request}
+    # Human client control call: run one ordinary tool through THIS runner's
+    # dispatch gate without inference. Not in the model-facing session schema.
+    # This preserves workspace fences, approvals and session attribution; a
+    # direct core.invoke has no conversation context and cannot do that.
+    if args{"invoke"} != nil:
+      if entry.taskPolicy != nil:
+        return %*{"error": "client tool controls are unavailable in unattended task sessions"}
+      let request = args{"invoke"}
+      if request.kind != JObject or request{"arguments"} == nil or
+          request{"arguments"}.kind != JObject:
+        return %*{"error": "invoke needs tool and object arguments"}
+      let previousSession = ct.nested.session
+      let previousWorkspace = ct.nested.workspace
+      let previousCaller = ct.approval.caller
+      let previousMode = if ct.approval != nil: ct.approval.approvalMode else: ""
+      let previousIsolation = ct.nested.isolation
+      sessions[sessionId] = entry
+      ct.nested.session = sessionId
+      ct.nested.workspace = entry.workspace
+      if ct.approval != nil:
+        ct.approval.caller = caller
+        ct.approval.approvalMode = entry.approvalMode
+      ct.nested.isolation = entry.isolationScope
+      defer:
+        if ct.approval != nil: ct.approval.approvalMode = previousMode
+        ct.nested.isolation = previousIsolation
+        ct.nested.session = previousSession
+        ct.nested.workspace = previousWorkspace
+        if ct.approval != nil: ct.approval.caller = previousCaller
+      return %*{"ok": true, "result": ct.dispatchToolCall("invoke", request)}
     var status = %*{
       "sessionId": sessionId,
       "model": entry.modelOverride,

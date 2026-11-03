@@ -283,6 +283,26 @@ proc main() =
   discard call(p.nc, "locks", "lock_release", %*{
     "sessionId": isid, "callId": "reshared"}, 10000)
 
+  discard sessionCall(p, isid, %*{"isolation": "worktree", "approvals": "auto"})
+  let outsideControl = sessionCall(p, isid, %*{"invoke": {
+    "tool": "bash", "arguments": {"command": "touch must-not-exist", "cwd": repo}}})
+  check("client control preserves isolated write fence",
+    ($outsideControl).contains("E_WRITE_OUTSIDE") and
+    not fileExists(repo / "must-not-exist"), $outsideControl)
+  let insideControl = sessionCall(p, isid, %*{"invoke": {
+    "tool": "bash", "arguments": {"command": "touch inside-ok", "cwd": wt}}})
+  check("client control still writes inside its own isolated tree",
+    insideControl{"result"}{"exit_code"}.getInt(-1) == 0 and
+    fileExists(wt / "inside-ok"), $insideControl)
+  let controlRead = sessionCall(p, isid, %*{"invoke": {
+    "tool": "session_info", "arguments": {}}})
+  check("client tool control carries the runner session without inference",
+    controlRead{"result"}{"sessionId"}.getStr("") == isid, $controlRead)
+  let hiddenControl = sessionCall(p, isid, %*{"invoke": {
+    "tool": "session", "arguments": {"sessionId": "forbidden"}}})
+  check("client tool control cannot invoke hidden tools",
+    ($hiddenControl).contains("not available"), $hiddenControl)
+
   report("ROOTS TEST")
 
 main()

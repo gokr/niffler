@@ -2287,7 +2287,7 @@ proc harnessClaimsFor*(schema: JsonNode, harnessRoot: string): seq[string] =
     result.add(resolved)
 
 proc opaqueClaimRoot*(args, wsPolicy: JsonNode, roots: openArray[string],
-                      primary: string): string =
+                      primary: string, isolation = ""): string =
   ## The tree an opaque writer REALLY writes: the workspace-set root that
   ## contains its resolved `cwdField` (deepest match wins), else the primary.
   ## (WORKTREES.md §4.4.)
@@ -2323,11 +2323,17 @@ proc opaqueClaimRoot*(args, wsPolicy: JsonNode, roots: openArray[string],
           let resolved = if cwd.isAbsolute(): cwd else: primary / cwd
           let root = containingRoot(resolved, roots)
           if root.len > 0: return root
+          # Isolation narrows the claim set to this tree alone, so a cwd
+          # OUTSIDE that set must never fall back to the primary: doing so
+          # claims a tree we are forbidden to write and let an isolated
+          # conversation's bash run against the primary unleased.
+          if isolation == "worktree": return ""
   primary
 
 proc writePathsFor*(schema, args: JsonNode, workspace: string,
                     harnessRoot: string = "",
-                    roots: openArray[string] = []): seq[string] =
+                    roots: openArray[string] = [],
+                    isolation = ""): seq[string] =
   ## The paths a call will write, from its `x-harness.writes` declaration
   ## (docs/research/WRITE-ARBITRATION.md). Path-bound writers name their file
   ## arguments — already workspace-resolved by applyWorkspace — and an opaque
@@ -2354,6 +2360,7 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string,
   # "claim everything" is a statement rather than the accident an omitted
   # declaration used to be. Nothing shipped needs it yet.
   if w != nil and w.kind == JObject and w{"roots"}.getBool(false):
+    if isolation == "worktree": return @[workspace]
     if roots.len == 0: return @[workspace]
     var all: seq[string]
     for r in roots:
@@ -2363,7 +2370,11 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string,
   # primary (opaqueClaimRoot / WORKTREES.md §4.4). Falls back to the primary
   # whenever the cwd cannot be resolved, so this is never WEAKER than before.
   let opaqueRoot = opaqueClaimRoot(args,
-    if policy != nil: policy{"workspace"} else: nil, roots, workspace)
+    if policy != nil: policy{"workspace"} else: nil, roots, workspace,
+    isolation)
+  if opaqueRoot.len == 0:
+    raise newException(ValueError, "[E_WRITE_OUTSIDE] " &
+      "the declared cwd is outside this isolated conversation's workspace")
   if w == nil or w.kind != JObject: return @[opaqueRoot]
   if w{"root"}.getBool(false): return @[opaqueRoot]
   # `{"none": true}` — this call takes NO write lease. It is the honest
@@ -2560,7 +2571,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       # resolved cwd into a worktree (WORKTREES.md §4.4) instead of always
       # claiming the conversation primary.
       writePathsFor(schema, callArgs, ct.nested.workspace, ct.root,
-                    workspaceRootsFor(ct))
+                    workspaceRootsFor(ct),
+                    if ct.nested != nil: ct.nested.isolation else: "")
     else: @[]
   let lockCallId = if writePaths.len > 0: newId() else: ""
   if writePaths.len > 0:
