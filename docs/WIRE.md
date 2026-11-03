@@ -1216,6 +1216,36 @@ exists:
 Continuations (`agent_run {session}`) send content only and inherit nothing —
 their workspace and grants were fixed at birth (see "Subagent continuation").
 
+## Peer fork and origin provenance
+
+Hidden client tool `agent_fork {source, cwd, fork?}` copies completed history
+using the same balanced cut as a supervised fork, prepares a conversation and
+pins its workspace without starting a turn. It returns `sessionId`, `cwd`,
+`origin`, and `checkpointCopied:false`: compaction checkpoints are not copied;
+the new conversation receives raw completed history. It inherits neither the
+source's grants nor its provider/model selection. Hidden tools are unavailable
+through model discovery/invoke and nested session calls.
+
+Both peer and supervised forks record immutable `sessionmeta.origin`:
+`{session, atSeq, reason:"fork"|"worktree", worktree?:{path,branch,primary}}`.
+`atSeq` is the source message id at the balanced cut. Only supervised forks
+also record `parent`. Origin is provenance, never authority: it grants no
+continuation, approval routing, depth or idle-retirement relationship.
+`session_info` reports `origin` forward and a deduplicated `descendants` array
+backward (`{sessionId,supervised,origin?,fork?,closed?}`). `children` retains its
+supervision-only meaning.
+
+After a successful `git_merge`, the caller's origin receives a durable
+`worktreemerge` outbox record containing the source, worktree, branch, commit,
+files and target branch. Busy origins receive a best-effort steer copy; idle
+origins pull it on their next turn (no autonomous wake). Hidden runner tool
+`git_merge_notices {session,ack?}` reads pending records without consuming them.
+The runner appends a structurally marked machinery message before ack, checking
+canonical history for its id to deduplicate push/pull delivery and replay after
+compaction. A notification failure is a warning on the already-successful merge,
+never a reason to replay the mutation. This changes append-only history, not
+any frozen prompt or tool prefix.
+
 ## Subagent fork (`fork: true | {lastK} | {maxChars}`)
 
 On fresh spawns only — a fork is a birth, not a continuation (`fork` +

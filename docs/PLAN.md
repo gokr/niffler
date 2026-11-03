@@ -263,7 +263,7 @@ four things a user hits first.
 
 ### Pillar 2 — Worktrees: the substrate both other pillars need
 
-The authoritative plan is [WORKTREES.md](research/WORKTREES.md) (proposal, basis
+The authoritative plan is [WORKTREES.md](research/WORKTREES.md) (basis
 `v0.5.0`): nine independently shippable slices with their tests, plus
 [WORKTREES-TUTORIAL.md](WORKTREES-TUTORIAL.md) for the workflows in operator
 language (its Part 1 is what ships today). Prior art:
@@ -271,10 +271,13 @@ language (its Part 1 is what ships today). Prior art:
 §3.15. This section records only what 0.6.0 requires of it and why it is not
 optional.
 
-Today `core/workspace.nim` discovers worktrees it did not create, the set is
-cached so a tree created mid-conversation stays invisible (`workspaceRootsFor`,
-and only a *grant* invalidates it), and nothing owns a tree — two conversations
-in one tree is a live footgun.
+Worktree slices 0–5 are implemented: shared checkout parsing, live graph
+invalidation, checkout-aware write claims, recorded sibling worktrees,
+merge/commit verbs, isolation and workspace readback. Slice 6 adds peer
+`agent_fork`, immutable origin provenance, backward descendant readback and
+append-before-ack merge notices. Client move/fork/close commands and the complete
+localized documentation refresh remain slices 7–8. Path-stripe arbitration is
+unchanged: these features do not impose a worktree-wide mutex.
 
 **The shape, adopted from WORKTREES.md:** a worktree is a first-class recorded
 object created at `<repo>.wt/<name>` — a sibling of the repo, so it sits outside

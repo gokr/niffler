@@ -38,6 +38,7 @@ import std/[json, monotimes, os, sequtils, sets, strutils, tables, times]
 import natsnim
 import niffler/sdk
 import niffler/agentdefs
+import checkout
 
 let comp = newComponent("agent", "0.1.0")
 
@@ -650,7 +651,8 @@ proc lineageDepth(session: string; cap: int): int =
   return depth
 
 proc prepareChild(parentSession, task, model: string;
-                  forkMode = "", forkK = 0, forkChars = 0): tuple[
+                  forkMode = "", forkK = 0, forkChars = 0;
+                  supervised = true, workspace = ""): tuple[
     ok: bool, error: string, subject: string, child: string,
     forkCopied: int, forkUpto: string] =
   ## Depth-guarded child-runner preparation + fail-closed lineage.
@@ -659,7 +661,7 @@ proc prepareChild(parentSession, task, model: string;
   ## trust boundary with the same configurable rule.
   let cap = agentMaxDepth()
   let depth = lineageDepth(parentSession, cap)
-  if depth >= cap:
+  if supervised and depth >= cap:
     return (false, "subagent depth " & $depth & " exceeds NIF_AGENT_MAX_DEPTH=" &
                    $cap & " (subagents cannot spawn subagents)", "",
             "", 0, "")
@@ -689,10 +691,20 @@ proc prepareChild(parentSession, task, model: string;
     return (false, "session_prepare returned no subject", "", "", 0, "")
   # lineage before the turn, fail closed: an unrecorded child would pass
   # its own depth guard and could spawn grandchildren
-  var meta = %*{"parent": parentSession}
+  var meta = newJObject()
+  if supervised: meta["parent"] = %parentSession
   if forkCopied > 0:
     meta["fork"] = %*{"source": parentSession, "uptoId": forkUpto,
                       "copied": forkCopied}
+    # Provenance grants NO supervision authority. A supervised fork carries
+    # both edges; a human's peer fork carries origin only. Never rewrite it.
+    let tree = checkoutShape(workspace)
+    var origin = %*{"session": parentSession, "atSeq": forkUpto,
+      "reason": (if tree.kind == ckLinkedWorktree: "worktree" else: "fork")}
+    if tree.kind == ckLinkedWorktree:
+      origin["worktree"] = %*{"path": normalizeRoot(workspace),
+        "branch": tree.branch, "primary": tree.primaryRoot}
+    meta["origin"] = origin
   try:
     discard comp.storePut("sessionmeta", child, meta, timeoutMs = 10_000)
   except CatchableError as e:
@@ -705,7 +717,7 @@ proc prepareChild(parentSession, task, model: string;
   # child, and the child's set is exactly the parent's set at birth.
   # Best effort: a store hiccup leaves the child with no grants (fail closed
   # toward its workspace) rather than refusing to start it.
-  let parentPolicy = parentGrants(parentSession)
+  let parentPolicy = if supervised: parentGrants(parentSession) else: nil
   if parentPolicy != nil:
     try:
       discard comp.storePut("grantedroot", child & ":roots", parentPolicy,
@@ -1263,7 +1275,9 @@ discard comp.tool("agent_run", runSchema,
     var forkUpto = ""
     if isFresh:
       let prep = prepareChild(parentSession, task, resolvedModel.model,
-                              forkMode, forkK, forkChars)
+                              forkMode, forkK, forkChars,
+                              workspace = parentWorkspace(parentSession,
+                                toolArgs{"cwd"}.getStr("")))
       (ok, failure, subject, child, forkCopied, forkUpto) = prep
     else:
       let cont = continuable(target, parentSession)
@@ -1431,7 +1445,9 @@ discard comp.tool("agent_spawn", spawnSchema,
     var forkUpto = ""
     if isFresh:
       let prep = prepareChild(parentSession, task, resolvedModel.model,
-                              forkMode, forkK, forkChars)
+                              forkMode, forkK, forkChars,
+                              workspace = parentWorkspace(parentSession,
+                                toolArgs{"cwd"}.getStr("")))
       (ok, failure, subject, child, forkCopied, forkUpto) = prep
     else:
       let cont = continuable(target, parentSession)
@@ -1983,6 +1999,42 @@ discard comp.tap("ev.session.*.turn",
     of "start": liveTurns.incl(sessionId)
     of "done": liveTurns.excl(sessionId)
     else: discard)
+
+# Client-only peer fork. It seeds history but starts NO turn and creates no
+# job/parent edge: the interactive client opens it and owns future approvals.
+# Keeping this separate from agent_spawn prevents a model's delegation from
+# silently escaping the depth guard or child continuation authorization.
+let peerForkSchema = toolSchema(%*{
+  "source": {"type": "string"},
+  "cwd": {"type": "string"},
+  "fork": {"type": ["boolean", "object"]}
+}, required = @["source", "cwd"],
+   description = "Client-only: seed a peer conversation from completed history, without running a turn or supervising it. Open the returned session with its cwd next.")
+peerForkSchema["x-harness"] = %*{"hidden": true, "effect": "write"}
+discard comp.tool("agent_fork", peerForkSchema,
+  proc(c: Component, args: JsonNode): JsonNode =
+    let source = args{"source"}.getStr("").strip()
+    let cwd = args{"cwd"}.getStr("").strip()
+    if source.len == 0 or not cwd.isAbsolute() or not dirExists(cwd):
+      return errResult("agent_fork needs source and an existing absolute cwd")
+    var spec = args.copy()
+    if spec{"fork"} == nil: spec["fork"] = %true
+    let (ok, error, mode, k, chars) = parseForkSpec(spec)
+    if not ok or mode.len == 0: return errResult("agent_fork needs a history cut: " & error)
+    let prep = prepareChild(source, "", "", mode, k, chars,
+                            supervised = false, workspace = cwd)
+    if not prep.ok: return errResult(prep.error)
+    # Initialize the peer's own constitution and pin its workspace, without
+    # running inference. No source selection or supervision is inherited.
+    try:
+      let pinned = c.request("core", "session",
+        %*{"sessionId": prep.child, "cwd": cwd}, 60_000)
+      if pinned{"error"} != nil: return errResult($pinned{"error"})
+    except CatchableError as e: return errResult(e.msg)
+    return okResult(%*{"sessionId": prep.child, "cwd": cwd,
+      "origin": c.storeGet("sessionmeta", prep.child).value{"origin"},
+      "checkpointCopied": false,
+      "detail": "Completed raw history copied; compaction checkpoints are not copied."}))
 
 reconcileAll()
 comp.run()

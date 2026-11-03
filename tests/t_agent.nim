@@ -496,7 +496,14 @@ proc main() =
   let midJob = fetchJobId(midParent)
   check("mid-tool spawn returned a jobId", midJob.startsWith("job-"),
         midJob)
-  sleep(800)  # let the child enter its bash round
+  # Wait for evidence from the command itself, not a fixed delay: preparing
+  # a child (provider/prompt resolution included) can exceed 800ms. A stop
+  # sent before runTurn starts is correctly discarded as stale.
+  let liveDeadline = epochTime() + 30.0
+  while not processExists(slowMarker) and epochTime() < liveDeadline:
+    sleep(50)
+  check("mid-tool child actually entered bash before stop",
+        processExists(slowMarker))
   let midStart = epochTime()
   discard call(nc, "agent", "agent_stop", %*{"jobId": midJob}, 10_000)
   let midWait = call(nc, "agent", "agent_wait",
@@ -507,7 +514,7 @@ proc main() =
         $midWait & " secs=" & $midSecs.int)
   sleep(400)  # give an orphaned command the chance to show itself
   check("mid-tool stop killed the bash command tree (no orphan)",
-        not processExists("slowbash-marker"))
+        not processExists(slowMarker))
   check("cancelled command never finished (marker untouched)",
         not fileExists(slowMarker))
 

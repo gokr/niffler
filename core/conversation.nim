@@ -2241,6 +2241,25 @@ proc drainNotices*(ct: CoreTools, p: var Persister,
       if notices != nil and notices.kind == JArray:
         for n in notices: inbound.add(n)
     except CatchableError: discard
+  if ct.cat.toolSchema("git_merge_notices") != nil:
+    try:
+      let pending = ct.dispatchToolCall("git_merge_notices",
+        %*{"session": sessionId}, 5_000)
+      let notices = pending{"notices"}
+      if notices != nil and notices.kind == JArray:
+        for n in notices: inbound.add(n)
+    except CatchableError: discard
+  var seenMerges = initHashSet[string]()
+  var mergeHistoryKnown = true
+  for n in inbound:
+    if n{"kind"}.getStr("") != "worktreemerge": continue
+    try:
+      for item in ct.storeListAll("message", sessionId & ":"):
+        let notice = item{"value"}{"notice"}
+        if notice{"kind"}.getStr("") == "worktreemerge":
+          seenMerges.incl(notice{"id"}.getStr(""))
+    except CatchableError: mergeHistoryKnown = false
+    break
   var seenFleet = initHashSet[string]()
   # Scan canonical history too: compaction may have removed a notice from
   # the current projection after append committed but before its ack arrived.
@@ -2259,6 +2278,28 @@ proc drainNotices*(ct: CoreTools, p: var Persister,
     if m{"notice"}{"kind"}.getStr("") == "process-exited":
       seenProcesses.incl(m{"notice"}{"processId"}.getStr(""))
   for n in inbound:
+    if n{"kind"}.getStr("") == "worktreemerge":
+      if not mergeHistoryKnown: continue
+      let id = n{"id"}.getStr("")
+      if id.len == 0: continue
+      if id notin seenMerges:
+        let content = "[worktree " & n{"branch"}.getStr("") &
+          " merged into " & n{"into"}.getStr("") & " as " &
+          n{"commit"}.getStr("") & "]\n" & $n{"files"}
+        let failures = p.persistenceFailures
+        ctxAppend(p, messages, %*{"role": "user", "content": content,
+                                  "notice": n})
+        if p.failing or p.persistenceFailures != failures: continue
+        seenMerges.incl(id)
+        if onEvent != nil:
+          onEvent("notice", %*{"sessionId": sessionId, "turnId": turnId,
+            "kind": "worktreemerge", "id": id, "content": content})
+        inc result
+      try:
+        discard ct.dispatchToolCall("git_merge_notices",
+          %*{"session": sessionId, "ack": id}, 5_000)
+      except CatchableError: discard
+      continue
     if n{"kind"}.getStr("") == "fleet-settled":
       if not hasFleet: continue
       let id = n{"jobId"}.getStr("")

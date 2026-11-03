@@ -1117,8 +1117,8 @@ order.
 | 2 | ~~opaque claim follows resolved cwd (+ `roots: true`)~~ **SHIPPED** | core/dispatch | `t_locks` pure (claim root per cwd: primary, worktree, deep-inside, outside-set fail-safe, same-prefix sibling, `roots: true`, empty set); `t_arbitration` (a worktree `bash` and a primary `bash` hold leases in parallel, while two writers in the SAME tree still collide) |
 | 3 | ~~`git_worktree_list` + `git_worktree {add,remove,prune}` + layout + lock + store ledger + remove guards~~ **SHIPPED** | components/git | `t_git` (add lands a sibling that leaves `git status` clean with no ignore edit; orientation from INSIDE a worktree; collision/in-repo/nested refusals; unmerged-branch and primary refusals; force + branch-kept; prune of a hand-deleted tree; ledger owner in `list`) |
 | 4 | ~~`git_merge_preview` + `git_merge {start,abort}` + `git_commit`~~ **SHIPPED** | components/git | `t_git` (clean preview with divergence counts, conflict preview naming files, **a bad ref is an error and never a conflict list**, required `repo`, clean merge, dirty-target refusal naming paths, commit staging only named paths while leaving an unrelated untracked file alone, nothing-to-commit as a normal answer) |
-| 5 | `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
-| 6 | peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
+| 5 | **IMPLEMENTED**: `isolation: "worktree"` + `checkout` birth hint + `session_info.workspace` | core/conversation, core/dispatch, core/catalog | `t_roots` (isolation refuses the primary, grant escapes it), `t_controls` / `t_core_requests` (status readback) |
+| 6 | **IMPLEMENTED**: peer `origin`: `sessionmeta.origin` (+ the `worktree` block), `session_info` forward+backward, `descendants`, depth/approval exemption for an origin-only fork, and the merge notice into the origin's `drainNotices` lane | components/agent, core/dispatch, components/git | `t_agentfork` (an origin-only fork is a peer, not a supervised child; a supervised fork keeps both edges), `t_core_requests` (descendants include forks; the merge notice reaches the origin), `t_git` (merge writes the notice) |
 | 7 | client: the move-vs-fork decision (§5.1), `/worktree add` / `merge` / `rm` / `close` (with `close` switching back to the origin), chip, `/workspace` lines, nats-url fix | niffler-tui repo | its own Go tests (the decision table is pure and testable without a bus; `close` asserts the switch-back target) |
 | 8 | docs: MANUAL ("Worktrees"), WIRE (`ev.worktree.changed`, `__workspace` fields, `isolation`, `checkout`, `sessionmeta.origin`, the merge notice kind), a refresh of [../WORKTREES-TUTORIAL.md](../WORKTREES-TUTORIAL.md) so Part 1 becomes Part 2, FEATURES, PLAN, then the zh/zh-TW refresh | docs | — |
 
@@ -1451,3 +1451,28 @@ the next call is unambiguous.
   not crashes.
 - a `nil` JsonNode indexed with `{"conflicts"}` is a SIGSEGV, not a false — the
   bad-ref assertions inspect the node's kind first.
+
+### Slice 6 implementation
+
+The peer path is a separate hidden client tool, `agent_fork {source,cwd,fork?}`,
+not an option for making a model's `agent_spawn` unsupervised. This preserves
+existing delegation approval/depth guards. It uses the same balanced history
+copy, records `origin` without `parent`, initializes the peer without inference,
+and explicitly reports `checkpointCopied:false` (raw history, not the parent's
+compaction projection). Supervised forks retain both edges. `atSeq` uses the
+source message id, matching the existing `fork.uptoId` cut.
+
+Successful merges write a `worktreemerge` outbox record before a best-effort
+steer push. Hidden runner tool `git_merge_notices` reads without consuming;
+`drainNotices` scans canonical history, appends machinery, then acknowledges.
+Origins that are idle consume on their next turn, without autonomous wake.
+A post-merge delivery failure is reported as a warning on success, never as a
+failed mutation that should be replayed. The local git commit and the bus
+outbox are not atomic: a crash between them remains a notification gap.
+
+Focused contracts: `t_agentfork` covers supervised dual edges, a peer fork from
+a depth-1 source, forward/backward readback, durable notice delivery and
+append-before-ack replay with a pushed duplicate. `t_git` checks the merge
+receipt in the origin outbox and pending removal after acknowledgement.
+Neither origin metadata nor notice delivery rewrites a frozen request prefix;
+notices enter append-only history.

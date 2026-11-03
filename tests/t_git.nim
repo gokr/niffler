@@ -477,9 +477,29 @@ proc main() =
   # git merges into the branch that is CHECKED OUT, so the target must be
   # current: switch to main (the tree this merge lands in).
   doAssert sh("git -C " & quoteShell(mrepo) & " checkout -q main").exitCode == 0
+  discard call(nc2, "store", "put", %*{"kind": "sessionmeta",
+    "id": "merge-fork", "value": {"origin": {"session": "merge-origin",
+      "worktree": {"path": mrepo & ".wt/feat", "branch": "feat",
+                   "primary": mrepo}}}}, 10_000)
   let merged = call(nc2, "git", "git_merge",
                     %*{"op": "start", "repo": mrepo, "into": "main",
-                       "from_ref": "feat"}, 180_000)
+                       "from_ref": "feat",
+                       "__session": {"session": "merge-fork"}}, 180_000)
+  let inbox = call(nc2, "git", "git_merge_notices",
+    %*{"session": "merge-origin"}, 10_000)
+  check("merge records a durable origin notice", inbox{"count"}.getInt(0) == 1,
+        $inbox)
+  if inbox{"count"}.getInt(0) == 1:
+    let notice = inbox["notices"][0]
+    check("origin notice carries the merge receipt",
+      notice{"commit"}.getStr("") == merged{"head"}.getStr("") and
+      notice{"branch"}.getStr("") == "feat", $notice)
+    discard call(nc2, "git", "git_merge_notices",
+      %*{"session": "merge-origin", "ack": notice{"id"}.getStr("")}, 10_000)
+    let afterAck = call(nc2, "git", "git_merge_notices",
+      %*{"session": "merge-origin"}, 10_000)
+    check("ack removes the notice from pending delivery",
+      afterAck{"count"}.getInt(-1) == 0, $afterAck)
   check("a clean merge succeeds",
         merged{"ok"}.getBool(false) and merged{"merged"}.getBool(false), $merged)
   check("it reports the new head", merged{"head"}.getStr("").len == 40, $merged)

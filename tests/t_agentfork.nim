@@ -341,6 +341,67 @@ proc main() =
   check("forked child is depth-1 lineage like any child",
         metaOf(ochild){"parent"}.getStr("") == "frk-second", $metaOf(ochild))
 
+  check("supervised fork carries provenance alongside supervision",
+        metaOf(ochild){"origin"}{"session"}.getStr("") == "frk-second",
+        $metaOf(ochild))
+  # A peer may fork from a depth-1 child: provenance is not delegation.
+  let peer = call(nc, "agent", "agent_fork",
+    %*{"source": ochild, "cwd": root}, 90_000)
+  let peerId = peer{"sessionId"}.getStr("")
+  check("peer fork succeeds from a supervised child", peerId.len > 0, $peer)
+  if peerId.len > 0:
+    let pm = metaOf(peerId)
+    check("peer has origin but NO parent",
+      pm{"origin"}{"session"}.getStr("") == ochild and
+      pm{"parent"} == nil, $pm)
+    check("peer reports raw-history checkpoint limitation",
+      peer{"checkpointCopied"} != nil and
+      not peer{"checkpointCopied"}.getBool(true), $peer)
+    let peerInfo = call(nc, "core", "session_info",
+      %*{"sessionId": peerId}, 15_000)
+    check("session_info exposes peer origin without supervision",
+      peerInfo{"origin"}{"session"}.getStr("") == ochild and
+      peerInfo{"parent"} == nil, $peerInfo)
+    let originInfo = call(nc, "core", "session_info",
+      %*{"sessionId": ochild}, 15_000)
+    var listed = false
+    let descendants = originInfo{"descendants"}
+    if descendants != nil and descendants.kind == JArray:
+      for d in descendants:
+        if d{"sessionId"}.getStr("") == peerId:
+          listed = not d{"supervised"}.getBool(true)
+    check("origin lists its unsupervised descendant", listed, $originInfo)
+
+  # A runner consumes the durable merge inbox as append-only machinery.
+  let gitProc = startComponent(repoRoot / "var/bin/git", url, root = root,
+                               extra = [("NIF_GIT_MUTATIONS", "1")])
+  defer:
+    if gitProc.running(): gitProc.terminate()
+    gitProc.close()
+  sleep(800)
+  let notice = %*{"kind": "worktreemerge", "id": "origin-merge:receipt",
+    "session": "origin-merge", "branch": "feat", "commit": "abc123",
+    "into": "main", "files": ["file.txt"]}
+  discard call(nc, "store", "put", %*{"kind": "worktreemerge",
+    "id": "origin-merge:receipt", "value": notice}, 10_000)
+  turn("origin-merge")
+  proc mergeMessages(): int =
+    for m in msgs("origin-merge"):
+      if m{"value"}{"notice"}{"kind"}.getStr("") == "worktreemerge": inc result
+  check("origin turn folds the durable merge notice", mergeMessages() == 1)
+  # Simulate append-before-ack crash, plus the pushed duplicate after resume.
+  discard call(nc, "store", "put", %*{"kind": "worktreemerge",
+    "id": "origin-merge:receipt", "value": notice}, 10_000)
+  nc.publish("svc.session.origin-merge.steer", Envelope(v: 1, id: "duplicate",
+    kind: ekEvent, payload: %*{"notice": notice}).encode())
+  turn("origin-merge")
+  check("push/pull replay does not duplicate canonical history",
+        mergeMessages() == 1)
+  let pendingMerge = call(nc, "git", "git_merge_notices",
+    %*{"session": "origin-merge"}, 10_000)
+  check("persisted merge notice is acknowledged",
+        pendingMerge{"count"}.getInt(-1) == 0, $pendingMerge)
+
   report("agentfork")
 
 when isMainModule:

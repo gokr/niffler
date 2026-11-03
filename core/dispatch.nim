@@ -1030,6 +1030,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       let meta = ct.storeGetItem("sessionmeta", sessionId)
       if meta.value != nil and meta.value{"parent"} != nil:
         info["parent"] = meta.value{"parent"}
+      if meta.value != nil and meta.value{"origin"} != nil:
+        info["origin"] = meta.value{"origin"}
       if meta.value != nil and meta.value{"fork"} != nil:
         # fork provenance (P1.4): where this conversation's history came from
         info["fork"] = meta.value{"fork"}
@@ -1086,9 +1088,18 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       # own (a root parent has no sessionmeta of its own but still has
       # children) — a count, not the roster (agent_list is the roster tool)
       var children = 0
+      var descendants = newJArray()
       for item in ct.storeListAll("sessionmeta", ""):
-        if item{"value"}{"parent"}.getStr("") == sessionId:
-          inc children
+        let value = item{"value"}
+        let supervised = value{"parent"}.getStr("") == sessionId
+        if supervised: inc children
+        if supervised or value{"origin"}{"session"}.getStr("") == sessionId:
+          var descendant = %*{"sessionId": item{"id"}.getStr(""),
+                              "supervised": supervised}
+          for field in ["origin", "fork", "closed"]:
+            if value{field} != nil: descendant[field] = value[field]
+          descendants.add descendant
+      info["descendants"] = descendants
       if children > 0:
         info["children"] = %children
       # role counts from the message log (zero-padded ids → store key order

@@ -979,7 +979,7 @@ proc mergePreviewImpl(repo, into, srcBranch: string): JsonNode =
        "error": "cannot preview " & intoRef & "..." & fromRef & ": " & v.detail}
 
 proc mergeStartImpl(repo, into, srcBranch, strategy: string,
-                    allowDirty: bool): JsonNode =
+                    allowDirty: bool, sessionId = ""): JsonNode =
   # Required, not defaulted: writePathsFor derives the claim from ARGUMENT
   # VALUES, so a component-side default would take the lease over one tree and
   # write another (WORKTREES.md §4.3, measured). Checked BEFORE resolving the
@@ -1092,10 +1092,32 @@ proc mergeStartImpl(repo, into, srcBranch, strategy: string,
     for line in files.output.splitLines():
       let p = line.strip()
       if p.len > 0: arr.add(%p)
-  %*{"exit_code": 0, "ok": true, "merged": true, "into": intoRef,
+  result = %*{"exit_code": 0, "ok": true, "merged": true, "into": intoRef,
      "from": fromRef,
      "head": (if head.code == 0: head.output.strip() else: ""),
      "files": arr}
+  # A merge is already committed: notification failure must never invite a
+  # replay of the mutation. Report a warning in its receipt instead.
+  if sessionId.len > 0:
+    try:
+      let meta = comp.storeGet("sessionmeta", sessionId).value
+      let origin = if meta != nil: meta{"origin"} else: nil
+      let target = if origin != nil: origin{"session"}.getStr("") else: ""
+      if target.len > 0 and head.code == 0:
+        let id = target & ":" & sessionId & ":" & head.output.strip()
+        let notice = %*{"kind": "worktreemerge", "id": id,
+          "session": target, "source": sessionId,
+          "worktree": origin{"worktree"}, "branch": fromRef,
+          "commit": head.output.strip(), "files": arr, "into": intoRef}
+        discard comp.storePut("worktreemerge", id, notice)
+        # Busy origins fold the pushed copy; idle ones pull the same durable
+        # outbox on their next turn. No autonomous inference is requested.
+        var token = ""
+        for ch in target:
+          token.add(if ch in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: ch else: '-')
+        comp.emit("svc.session." & token & ".steer", %*{"notice": notice})
+    except CatchableError as e:
+      result["warning"] = %("Merge committed, but origin notice failed: " & e.msg)
 
 proc mergeAbortImpl(repo: string): JsonNode =
   let start = repoDir(repo)
@@ -1235,6 +1257,27 @@ if mutationsEnabled():
       if op == "prune": return worktreePruneImpl(repo)
       refused("op must be \"add\", \"remove\" or \"prune\"")
 
+  # Runner-owned durable inbox. Reads do not consume; acknowledgement follows
+  # canonical message persistence, so crashes/compaction cannot duplicate it.
+  discard comp.tool("git_merge_notices", %*{
+    "type": "object", "properties": {"session": {"type": "string"},
+      "ack": {"type": "string"}}, "required": ["session"],
+    "x-harness": {"hidden": true, "runner": true, "effect": "read"}},
+    proc(c: Component, args: JsonNode): JsonNode =
+      let session = args{"session"}.getStr("")
+      let ack = args{"ack"}.getStr("")
+      if session.len == 0: return refused("session required")
+      var notices = newJArray()
+      for item in c.storeListAll("worktreemerge", session & ":"):
+        let value = item.value
+        if value{"session"}.getStr("") != session: continue
+        if ack.len > 0 and item.id == ack:
+          var delivered = value.copy()
+          delivered["delivered"] = %true
+          discard c.storePut("worktreemerge", item.id, delivered)
+        elif not value{"delivered"}.getBool(false): notices.add(value)
+      %*{"notices": notices, "count": notices.len})
+
   # --- merge + commit -----------------------------------------------------
   # The read half is its own tool because x-harness.writes is static per tool.
   comp.tool(%*{"timeoutMs": 120_000, "parallel": true, "onDemand": true,
@@ -1273,7 +1316,8 @@ if mutationsEnabled():
       ## so it can be resolved and committed. `abort` unwinds a conflicted
       ## merge. Run `git_merge_preview` first when unsure.
       if op == "start":
-        return mergeStartImpl(repo, into, from_ref, strategy, allow_dirty)
+        return mergeStartImpl(repo, into, from_ref, strategy, allow_dirty,
+                              comp.sessionContext)
       if op == "abort": return mergeAbortImpl(repo)
       refused("op must be \"start\" or \"abort\"")
 
