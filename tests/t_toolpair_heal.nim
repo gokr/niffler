@@ -168,11 +168,18 @@ proc main() =
   check("context_status surfaces the durable repair",
         health{"toolPairRepair"}{"count"}.getInt(0) == 2, $health)
 
-  # --- idempotent: a second turn repairs nothing new --------------------
+  # Retire the runner so this is a real resume, not its repaired in-memory
+  # projection. The durable ledger must survive without rewriting canonical
+  # results or inventing a second repair on the next load.
+  discard call(nc, "core", "kill", %*{"name": "session-" & damaged}, 10_000)
   let r2 = turn(nc, damaged, "again")
   check("a later turn still runs", r2{"error"}.getStr("").len == 0, $r2)
-  check("the ledger does not grow on every load",
-        getDoc(nc, "toolpairrepair", damaged){"value"}{"count"}.getInt(0) == 2)
+  let resumedLedger = getDoc(nc, "toolpairrepair", damaged){"value"}
+  check("the ledger does not grow on resume", resumedLedger{"count"}.getInt(0) == 2)
+  check("resume preserves the original repair entries verbatim",
+        $resumedLedger{"repaired"} == $ledger{"value"}{"repaired"})
+  check("resume still leaves canonical history unchanged",
+        $snapshot(nc, damaged, seeded) == $before)
   check("every request core sent stayed pairing-valid", block:
     var ok = true
     for line in logLines(mockLog):
