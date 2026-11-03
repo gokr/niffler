@@ -2055,7 +2055,7 @@ proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =
       "submodule": co.kind == ckSubmodule}
   callArgs["__workspace"] = ws
 
-proc applyWorkspace(schema, args: JsonNode, workspace: string) =
+proc applyWorkspace*(schema, args: JsonNode, workspace: string) =
   ## Resolve schema-declared path arguments against the active conversation's
   ## workspace. Core knows no component names: components opt in with
   ## x-harness.workspace {pathFields, defaultPathFields, pathArrayFields
@@ -2086,6 +2086,26 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
       let name = field.getStr("")
       if name.len > 0 and (args{name} == nil or args{name}.getStr("") in ["", "."]):
         args[name] = %workspace
+  # Fields declared as WRITE paths (x-harness.writes.paths) are path-shaped too,
+  # and an array-valued one (git_commit's `paths`) holds files the tool will
+  # write. Without this, a relative entry reaches the component unresolved, the
+  # write fence evaluates it against the wrong base, and an isolated
+  # conversation is refused for a path that IS inside its tree. `pathArrayFields`
+  # is the equivalent declaration for read/target paths; this covers the write
+  # fields that were never declared either way.
+  let writePaths = schema{"x-harness"}{"writes"}{"paths"}
+  if writePaths != nil and writePaths.kind == JArray:
+    for field in writePaths:
+      let name = field.getStr("")
+      if name.len == 0 or args{name} == nil: continue
+      if args{name}.kind == JString:
+        args[name] = %resolve(args{name}.getStr(""))
+      elif args{name}.kind == JArray:
+        var arr = args{name}
+        for item in mitems arr:
+          if item.kind == JString:
+            item = %resolve(item.getStr(""))
+
   let arrays = policy{"pathArrayFields"}
   if arrays != nil and arrays.kind == JArray:
     for field in arrays:

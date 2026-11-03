@@ -486,6 +486,9 @@ discipline forbids.
 - [PLAN.md](PLAN.md) pillar 2 — what the release requires of it and why.
 - [MANUAL.md](MANUAL.md) — the operating reference for what ships (this
   tutorial's Part 1 duplicates the *workflow*, not the reference).
+- [WORKTREES-ACCEPTANCE.md](WORKTREES-ACCEPTANCE.md) — the live run that verifies
+  the pieces still fit together in a real harness, and which half of it needs a
+  human at a terminal.
 - [research/SANDBOX-BASH-STATUS.md](research/SANDBOX-BASH-STATUS.md) — what the
   bash guard does today, including the single-writable-root rule from §1.3.
 - [WIRE.md](WIRE.md) — the exact contract: `__workspace`, `isolation`,

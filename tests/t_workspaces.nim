@@ -7,9 +7,10 @@
 ## is deliberately data only — never rendered into the frozen prompt, so a new
 ## worktree cannot invalidate a conversation's cache.
 
-import std/[os, osproc, sequtils, strutils]
+import std/[json, os, osproc, sequtils, strutils]
 import helpers
 import ../core/workspace
+import ../core/dispatch
 import ../sdk/checkout
 
 proc git(dir: string, args: varargs[string]): string =
@@ -167,6 +168,33 @@ proc main() =
   let capped = computeWorkspaceRoots(primary, 2)
   check("the set is capped", capped.len == 2, $capped)
   check("the cap keeps the primary first", capped[0] == prim, $capped)
+
+  # --- write-path resolution (found by the live acceptance run) -------------
+  # x-harness.writes.paths names argument FIELDS holding files a tool will
+  # write. A string field was resolved against the workspace; an ARRAY field was
+  # not, so a relative entry reached the component unresolved and the write
+  # fence judged it against the wrong base. In a worktree conversation that
+  # surfaced as [E_WRITE_OUTSIDE] for a file that was inside its own tree —
+  # git_commit's `paths` is exactly this shape.
+  block:
+    let schema = %*{"x-harness": {"workspace": {"cwdField": "repo"},
+                                  "writes": {"paths": ["repo", "paths"]}}}
+    var args = %*{"repo": prim, "paths": ["a.txt", "sub/b.txt", "/abs/c.txt"]}
+    applyWorkspace(schema, args, prim)
+    check("an ARRAY write-path field resolves relative entries",
+          args{"paths"}[0].getStr("") == prim / "a.txt" and
+          args{"paths"}[1].getStr("") == prim / "sub/b.txt",
+          $args{"paths"})
+    check("an absolute write path is left alone",
+          args{"paths"}[2].getStr("") == "/abs/c.txt", $args{"paths"})
+    check("and the cwdField is untouched when already absolute",
+          args{"repo"}.getStr("") == prim, $args{"repo"})
+    var scalar = %*{"repo": prim, "path": "one.txt"}
+    applyWorkspace(%*{"x-harness": {"workspace": {"cwdField": "repo"},
+                                    "writes": {"paths": ["path"]}}},
+                   scalar, prim)
+    check("a STRING write-path field still resolves",
+          scalar{"path"}.getStr("") == prim / "one.txt", $scalar)
 
   report("WORKSPACES TEST")
 
