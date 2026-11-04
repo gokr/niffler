@@ -231,7 +231,7 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是会话 UI：它只�
 
 基于文件的引擎（`sqlite`）以相同方式强制单写入者：一个进程拥有该文件（flock；进程崩溃时由内核释放），其他所有进程只讲 envelope。`tidb` 没有可锁的文件——集群按设计就是共享状态，行锁加上 rev 计数器在多个 harness 之间仲裁。
 
-`list` 是一个**页**，不是完整视图：`limit` 默认为 100，并被钳制到 1000，回复携带 `hasMore` 以及 `nextAfter` id 游标。将 `nextAfter` 作为 `after` 传回以遍历其余部分——`after` 是排他的，当 `hasMore` 为 false 时 `nextAfter` 不存在。存储保留完整历史，因此一段长对话无法在一次调用中装下；core 自身的全 kind 读取（resume、`session_info`、`conversation_delete`）会自动分页。
+`list` 是一个**页**，不是完整视图：`limit` 默认为 100，并被钳制到 1000，回复携带 `hasMore` 以及 `nextAfter` id 游标。将 `nextAfter` 作为 `after` 传回以遍历其余部分——`after` 是排他的，当 `hasMore` 为 false 时 `nextAfter` 不存在。存储保留完整历史，因此一段长对话无法在一次调用中装下；core 自身的全 kind 读取（resume、`session_info`、`conversation_delete`）会自动分页，并在读取不完整时失败关闭：`hasMore: true` 却没有前进的游标是错误，绝不是数据结束。
 
 存储契约是对每个引擎运行同一套测试：`make test-store`（默认引擎）、`make test-store-tidb`（需要 `NIF_STORE_TIDB_DSN`，否则打印 SKIP）；`t_store_paging` 固定了 resume 和迁移所依赖的 `after`/`hasMore`/`nextAfter` 游标语义。
 
@@ -1225,7 +1225,9 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
 
 会话的*工作区集合*是它的 primary 加上属于同一项目的各工作树；写围栏放行整个集合，
 所以默认情况下工作树中的会话也能写 primary。`isolation: "worktree"` 把**声明**集合
-收窄为会话自己的工作树，因此对 primary 的写入会以既有的 `[E_WRITE_OUTSIDE]` 拒绝。
+收窄为会话自己的工作树加上任何显式的 `/roots` 授权，因此对 primary 之类的自动发现树的
+写入会以既有的 `[E_WRITE_OUTSIDE]` 拒绝。授权在隔离下保留，因为这两类根是不同的事实：
+发现是自动的，而授权是本次会话中人类的明确决定。
 
 - **仅限人类。** 与 `roots` 一样不在 `session` 工具 schema 中，所以模型无法自己放宽或收窄范围。
 - **没有可隔离对象时拒绝。** 工作区是普通检出或子模块的会话会被拒绝并说明原因，
@@ -1261,7 +1263,7 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
 `origin`；**对等**分叉（`agent_fork`，隐藏的客户端工具）只携带 `origin`，
 因为没有任何东西在监督它。
 
-`session_info` 向前报告 `origin`，向后报告 `descendants`（`{sessionId, supervised, origin?}`），
+`session_info` 向前报告 `origin`，向后报告 `descendants`（`{sessionId, supervised, origin?, fork?, closed?}`），
 所以"这次探索产生了什么？"从起点出发只需一次调用。
 
 成功合并后，发起合并会话的 origin 会收到持久的 `worktreemerge` 记录（来源、工作树、

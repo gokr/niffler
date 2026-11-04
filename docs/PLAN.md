@@ -316,8 +316,8 @@ What 0.6.0 adds on top of that proposal, because the other pillars need it:
    claim and a worktree's writes are disjoint by construction, and **`locks`'
    "disjoint stays parallel" striping is unchanged** — two conversations in ONE
    tree still proceed on different files. `isolation: "worktree"` is therefore a
-   per-conversation FENCE (writes outside the tree refuse), not a mutex around the
-   tree. WORKTREES.md §10 records why the stricter reading ("a second writer in
+   per-conversation FENCE (writes outside the tree refuse, absent an explicit
+   `/roots` grant), not a mutex around the tree. WORKTREES.md §10 records why the stricter reading ("a second writer in
    the same worktree is refused") was rejected: it would reverse a shipped design
    rule and invalidate two `t_locks.nim` assertions without a decision record.
 2. **Sandbox executable roots (pillar 3 item 4).** The bwrap reachable set and
