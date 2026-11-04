@@ -6,14 +6,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- Canonical transcript writes are create-only: a stale continuation refuses
-  rather than overwriting an existing message. Full-kind reads reject malformed
-  pages and stalled cursors instead of accepting a partial transcript.
-- Conversation header updates use strict reads and compare-and-set retries,
-  preserving creation time, title and unrelated metadata across read failures
-  and concurrent updates. Header creation is also create-only.
+- **Worktree provenance, a peer fork, and durable merge notices.** Hidden
+  client tool `agent_fork {source, cwd, fork?}` copies completed history at the
+  same balanced cut as a supervised fork, without a parent/job edge or a turn,
+  and reports `checkpointCopied: false` because compaction checkpoints are not
+  copied. Peer and supervised forks record immutable `sessionmeta.origin`
+  provenance; `session_info` reports `origin` forward and a deduplicated
+  `descendants` list backward, while `children` keeps its supervision-only
+  meaning. A successful `git_merge` leaves the caller's origin a durable
+  `worktreemerge` inbox, read through hidden `git_merge_notices {session,
+  ack?}`, pushed to a busy origin and pulled on an idle origin's next turn,
+  and deduplicated against canonical history; a notification failure is a
+  warning on the already-successful merge, never a reason to replay it.
+
+- **Client tool controls run through the runner's dispatch gate.**
+  `session {invoke: {tool, arguments}}` runs one ordinary tool with the
+  conversation's workspace, approval mode and isolation applied for the call
+  and restored afterwards, preserving write fences, approvals and session
+  attribution that a direct `core.invoke` cannot. It is human-only: absent from
+  the model-facing schema, refused in task-scoped sessions, and hidden tools
+  stay unreachable.
+
+- **A live worktree acceptance run.** `scripts/worktree-acceptance.sh` drives
+  the workflow against a live harness the way a client does — seeded
+  conversation, add, repin, isolate, fence both directions, commit, preview,
+  merge — and refuses to run against a core older than the source (exit 3).
+  `docs/WORKTREES-ACCEPTANCE.md` documents the scripted run, the six-step human
+  run for the client surface, and what each failure means.
 
 ### Changed
 
@@ -30,6 +51,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "Embeddings" section and five Simplified lines in the GitHub-token section
   are Traditional again.
 
+- **The worktree documentation now describes shipped behavior.** The tutorial's
+  Part 2 is rewritten as the primary workflow, with Part 1 reframed as the
+  manual fallback; the MANUAL gains a Worktrees section covering the verb table
+  and approval classes, the isolation fence, origin as provenance rather than
+  authority, the merge notice's commit/outbox gap, and the client surface.
+  `docs/FEATURES.md`, `docs/PLAN.md` and `docs/research/WORKTREES.md` record
+  all eight slices shipped, and the `zh`/`zh-TW` manuals are refreshed.
+
 - **The website now describes the 0.5.0 surface.** The feature section gained a
   Fleet card covering goal delegation to an Incus container, Lima VM or SSH
   host in `delegate` mode under the operator's ceiling; trust and safety gained
@@ -38,12 +67,39 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per-component settings surface. All of it is localized in `en`, `zh` and
   `zh-TW`.
 
+- **The website's bench section names the full harness set.** It now lists Pi,
+  Opencode, DeepSeek Harness, CodeWhale, Droid and Claude Code in `en`, `zh` and
+  `zh-TW`, instead of only three.
+
 - **The READMEs no longer claim `make test` runs the bench adapter suite.**
   `make test` is documented as the complete code gate (bus-contract suite plus
   Go unit tests), with `make test-bench` as the separate, opt-in Node bench
   adapter suite that skips when Node is absent. The bench comparison list in
   `README.md`, `README.zh.md`, `README.zh-TW.md` and `bench/README.md` now
   names DeepSeek Harness and Droid.
+
+### Fixed
+
+- Canonical transcript writes are create-only: a stale continuation refuses
+  rather than overwriting an existing message. Full-kind reads reject malformed
+  pages and stalled cursors instead of accepting a partial transcript.
+- Conversation header updates use strict reads and compare-and-set retries,
+  preserving creation time, title and unrelated metadata across read failures
+  and concurrent updates. Header creation is also create-only.
+- **Write-path fields declared through `x-harness.writes.paths` are resolved
+  against the conversation workspace.** Both string and array forms (including
+  `git_commit`'s `paths`) now reach the component resolved, so an isolated
+  conversation is no longer refused `E_WRITE_OUTSIDE` for a file inside its own
+  tree — the documented `/worktree` merge flow would otherwise have broken for
+  every user.
+- **An isolated opaque writer outside its tree refuses instead of falling back
+  to the primary claim.** `roots: true` narrows to the conversation's own tree
+  and answers `E_WRITE_OUTSIDE`; an isolated bash with a cwd inside its tree
+  still works.
+- **Worktree isolation keeps the human's grants.** Isolation now drops only
+  automatically discovered roots, not `/roots add` grants, with the
+  conversation's own tree first; `session_info.workspace.writable` uses the same
+  rule as the write fence.
 
 ## [0.5.0] — 2026-10-29
 
