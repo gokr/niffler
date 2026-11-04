@@ -8,6 +8,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- New independent peer forks (including `/worktree add` forks) use `conv-…`
+  identifiers instead of the supervised subagent's `agent-…` prefix. Existing
+  conversations are not renamed.
 - Isolated worktree merge/close calls can lease their own primary checkout via
   the declarative `writes.primary` flag, without widening bash/edit or root
   grants. Peer forks can retire the exact origin-created tree recorded in their

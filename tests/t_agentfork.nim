@@ -353,6 +353,10 @@ proc main() =
     %*{"source": ochild, "cwd": root}, 90_000)
   let peerId = peer{"sessionId"}.getStr("")
   check("peer fork succeeds from a supervised child", peerId.len > 0, $peer)
+  check("independent peer fork has a normal conversation id",
+    peerId.startsWith("conv-"), $peer)
+  check("supervised forks retain the agent id prefix",
+    ochild.startsWith("agent-"), ochild)
   if peerId.len > 0:
     let pm = metaOf(peerId)
     check("peer has origin but NO parent",

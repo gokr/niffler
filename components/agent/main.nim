@@ -665,7 +665,9 @@ proc prepareChild(parentSession, task, model: string;
     return (false, "subagent depth " & $depth & " exceeds NIF_AGENT_MAX_DEPTH=" &
                    $cap & " (subagents cannot spawn subagents)", "",
             "", 0, "")
-  let child = "agent-" & newId()
+  # Peer forks are independent conversations, not supervised subagents.
+  # Existing ids remain valid; only newly created peers use the normal prefix.
+  let child = (if supervised: "agent-" else: "conv-") & newId()
   # The fork copy happens BEFORE the runner exists: the child's runner (and
   # its conversation header) are created around the seeded history —
   # ensureConversationHeader is idempotent, so messages-before-header is the
