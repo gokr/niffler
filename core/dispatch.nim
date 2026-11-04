@@ -2392,7 +2392,7 @@ proc opaqueClaimRoot*(args, wsPolicy: JsonNode, roots: openArray[string],
 proc writePathsFor*(schema, args: JsonNode, workspace: string,
                     harnessRoot: string = "",
                     roots: openArray[string] = [],
-                    isolation = ""): seq[string] =
+                    isolation = "", primaryRoot = ""): seq[string] =
   ## The paths a call will write, from its `x-harness.writes` declaration
   ## (docs/research/WRITE-ARBITRATION.md). Path-bound writers name their file
   ## arguments — already workspace-resolved by applyWorkspace — and an opaque
@@ -2428,8 +2428,18 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string,
   # An opaque writer claims the tree it actually works in, not the conversation
   # primary (opaqueClaimRoot / WORKTREES.md §4.4). Falls back to the primary
   # whenever the cwd cannot be resolved, so this is never WEAKER than before.
+  var claimRoots = @roots
+  # Explicit per-call primary target, never a persistent grant. Only the
+  # runner's checkout-derived primary is eligible, and only an exact cwd match
+  # (not an arbitrary sibling or a directory beneath the primary).
+  if w != nil and w{"primary"}.getBool(false) and primaryRoot.len > 0:
+    let cwdField = policy{"workspace"}{"cwdField"}.getStr("")
+    let target = if cwdField.len > 0 and args != nil:
+                   args{cwdField}.getStr("") else: ""
+    if target.len > 0 and normalizeRoot(target) == normalizeRoot(primaryRoot):
+      claimRoots.add(normalizeRoot(primaryRoot))
   let opaqueRoot = opaqueClaimRoot(args,
-    if policy != nil: policy{"workspace"} else: nil, roots, workspace,
+    if policy != nil: policy{"workspace"} else: nil, claimRoots, workspace,
     isolation)
   if opaqueRoot.len == 0:
     raise newException(ValueError, "[E_WRITE_OUTSIDE] " &
@@ -2487,7 +2497,8 @@ proc writePathsFor*(schema, args: JsonNode, workspace: string,
   return claimed
 
 proc acquireWriteLease(ct: CoreTools, tool, callId: string,
-                       paths: seq[string], timeoutMs: int): bool =
+                       paths: seq[string], timeoutMs: int,
+                       primaryClaim = ""): bool =
   ## Ask the locks component for a write lease before dispatching. Returns
   ## true when the call may proceed.
   ##
@@ -2506,6 +2517,7 @@ proc acquireWriteLease(ct: CoreTools, tool, callId: string,
   for p in paths: arr.add(%p)
   var roots = newJArray()
   for r in workspaceRootsFor(ct): roots.add(%r)
+  if primaryClaim.len > 0: roots.add(%primaryClaim)
   # A harness-state claim lives outside the conversation's working set, so the
   # fence would refuse it as [E_WRITE_OUTSIDE]. It is accepted here only
   # because the call DECLARED harness paths (harnessClaimsFor already proved
@@ -2624,6 +2636,16 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
 
   # Acquire only after approval and timeout resolution: waiting for a human
   # must not consume the lease lifetime or prevent unrelated writers.
+  var primaryClaim = ""
+  if ct.nested != nil and schema{"x-harness"}{"writes"}{"primary"}.getBool(false):
+    # Refresh checkout facts via the existing graph cache, not caller context.
+    discard workspaceRootsFor(ct)
+    let shape = ct.nested.checkoutCached
+    let cwdField = schema{"x-harness"}{"workspace"}{"cwdField"}.getStr("")
+    let target = if cwdField.len > 0: callArgs{cwdField}.getStr("") else: ""
+    if shape.kind == ckLinkedWorktree and shape.primaryRoot.len > 0 and
+        target.len > 0 and normalizeRoot(target) == normalizeRoot(shape.primaryRoot):
+      primaryClaim = normalizeRoot(shape.primaryRoot)
   let writePaths =
     if ct.nested != nil:
       # The workspace SET is passed so an opaque writer's claim can follow its
@@ -2631,11 +2653,12 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       # claiming the conversation primary.
       writePathsFor(schema, callArgs, ct.nested.workspace, ct.root,
                     workspaceRootsFor(ct),
-                    if ct.nested != nil: ct.nested.isolation else: "")
+                    if ct.nested != nil: ct.nested.isolation else: "",
+                    primaryRoot = primaryClaim)
     else: @[]
   let lockCallId = if writePaths.len > 0: newId() else: ""
   if writePaths.len > 0:
-    discard acquireWriteLease(ct, tool, lockCallId, writePaths, timeoutMs)
+    discard acquireWriteLease(ct, tool, lockCallId, writePaths, timeoutMs, primaryClaim)
   var writeCompleted = false
   var writeCancelled = false
   defer:

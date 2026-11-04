@@ -401,6 +401,10 @@ And then you go back:
 conversation that forked you there**. It refuses — via git's own rule — while the
 tree is dirty, and via the harness's guard while the branch is unmerged or
 another live conversation owns the tree; each refusal names the override.
+A peer fork may retire the exact tree its recorded origin created for it:
+core still leases the primary and the tree, and git still refuses dirty or
+unmerged work. Merge and close need no permanent primary root grant; only
+these declared lifecycle calls receive a per-call primary claim.
 
 *Can't I just `/session` back to the parent myself?* Yes, and that is most of
 what `close` does — but the parent would then have no idea any of this happened,

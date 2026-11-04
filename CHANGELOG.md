@@ -8,6 +8,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Isolated worktree merge/close calls can lease their own primary checkout via
+  the declarative `writes.primary` flag, without widening bash/edit or root
+  grants. Peer forks can retire the exact origin-created tree recorded in their
+  durable lineage; foreign ownership, dirty-tree and unmerged-work guards remain.
+
 - Canonical transcript writes are create-only: a stale continuation refuses
   rather than overwriting an existing message. Full-kind reads reject malformed
   pages and stalled cursors instead of accepting a partial transcript.

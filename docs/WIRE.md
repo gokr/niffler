@@ -1610,7 +1610,14 @@ keys:
   values are already workspace-resolved by `workspace.pathFields`;
   `{"root": true}` claims the conversation workspace root for a tool whose
   reach is opaque (`bash`, `builder`), which conflicts with any claim beneath
-  it; `{"harness": ["var/plugins"]}` names paths **relative to `$NIF_ROOT`**
+  it. `{"paths": ["repo"], "primary": true}` additionally permits a per-call
+  primary-checkout target under worktree isolation: the resolved `workspace.cwdField`
+  must equal the linked conversation's checkout-derived `primaryRoot` exactly.
+  Core admits that root only for this lease; it never changes root grants or
+  isolation, and approval and lock contention still apply. Other repositories,
+  sibling trees and primary subdirectories do not receive this exception.
+  `git_merge` and `git_worktree` declare it for merging and retiring a tree.
+  `{"harness": ["var/plugins"]}` names paths **relative to `$NIF_ROOT`**
   for a tool that mutates harness state rather than conversation files
   (`plugins` writes `var/plugins` and `var/bin`) — the claim is confined to
   `$NIF_ROOT/var` and every entry outside it is refused with a core warning,
