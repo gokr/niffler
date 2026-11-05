@@ -6,6 +6,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **A `claudecode` bench lane measured, twice, across a Claude Code upgrade.**
+  The full31 suite on Synthetic DeepSeek V4.1 Flash (`/anthropic` gateway, low
+  effort, `jobs 1`) is 31/31 in round 1 with no invalid or leaked cells on both
+  Claude Code 2.1.286 and 2.1.318, so the suite is saturated for this model
+  through this harness and the numbers measure shape: **14.1 LLM messages per
+  task at ~0.5 tool calls each**, against Droid's 1.9 messages at ~4.4 — the
+  busiest caller in the set, and the most expensive lane on both cost bases
+  ($0.0231/task on Synthetic's catalog, $0.2208/run at first-party list
+  prices). The upgrade itself is a **prefix** saving, not a capability or speed
+  one: the first call's prompt fell 10 855 → 9 222 tokens (a deterministic
+  55-token spread across all 31 tasks) and per-task cost fell 15%
+  ($0.0271 → $0.0231) at identical wall clock (33.7 s), because Synthetic's
+  Anthropic endpoint bills every prompt token as a cache write at the prompt
+  rate, so cost tracks prefix size × calls. The newer build ships two *more*
+  tools (`Monitor`, `ToolSearch`) in a prefix 15% smaller. Reports in
+  `bench/reports/full31-syn-ds41-claudecode-{2318,j1}-report.*` and
+  `full31-syn-ds41-claudecode-analysis.md`.
+
 ### Fixed
 
 - New independent peer forks (including `/worktree add` forks) use `conv-…`
