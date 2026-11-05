@@ -116,9 +116,10 @@ roots) is separate 0.6.0 work (PLAN.md pillar 3) rather than part of this one.
 
 `isolation: "worktree"` is a *different* fence from that one, and worth keeping
 apart: isolation narrows what the harness will **claim and admit** (so a guarded
-or unguarded write to the primary is refused with `[E_WRITE_OUTSIDE]`); the bash
-guard narrows what the *process* can see. Turning one on does not turn on the
-other.
+or unguarded write to the primary is refused with `[E_WRITE_OUTSIDE]`, except
+the declared `git_merge`/`git_worktree remove` lifecycle calls, which lease it
+per call); the bash guard narrows what the *process* can see. Turning one on
+does not turn on the other.
 Note also what the guard does *not* do: it does not pass `/roots` grants to the
 launcher, so a granted extra root is writable by the tools and read-only to a
 guarded command.

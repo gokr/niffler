@@ -400,10 +400,11 @@ See [WIRE.md](WIRE.md) (the single contract).
   server-side concurrency as separate, explicit choices.
 - Payload discipline: the bus cap the harness requires, and the boot check
   that warns on a smaller one.
-- Worktree provenance and notices: `sessionmeta.origin` (provenance only, never
-  supervision), `descendants` in `session_info`, the peer fork (hidden
-  `agent_fork`), and the durable `worktreemerge` inbox a runner folds into
-  history before acknowledging.
+- Worktree provenance and notices: `sessionmeta.origin` (provenance, never
+  supervision — it authorizes only retiring the exact tree it records),
+  `descendants` in `session_info`, the peer fork (hidden `agent_fork`), and the
+  durable `worktreemerge` inbox a runner folds into history before
+  acknowledging.
 
 ## Schema extensions (`x-harness.*`)
 
@@ -435,10 +436,14 @@ See [WIRE.md](WIRE.md) "x-harness schema extensions".
   `git.mutations` setting.
 - Removal refuses on evidence — another live conversation owns the tree, or the
   branch has unmerged commits — and names the flag that overrides it; a dirty
-  tree is git's own refusal, surfaced verbatim.
+  tree is git's own refusal, surfaced verbatim. A peer fork is the exception for
+  its own origin-created tree, verified from durable lineage; dirty and unmerged
+  guards still apply.
 - `isolation: "worktree"` narrows the write fence to the conversation's own tree
   (human-only control; refuses outside a linked worktree; reads unnarrowed; not a
-  mutex — path striping is unchanged).
+  mutex — path striping is unchanged). `git_merge` and `git_worktree remove`
+  declare a per-call `writes.primary` claim for exactly the linked primary, with
+  no persistent root grant.
 - `session_info.workspace` reports root/roots/linked/branch/primaryRoot/
   submodule/isolation/writable from the stored header; the same facts ride
   private `__workspace` dispatch context. Neither enters the frozen prompt.

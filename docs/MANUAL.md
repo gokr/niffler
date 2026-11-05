@@ -2597,7 +2597,7 @@ Enable the mutation verbs with the declared setting `git.mutations` (or
 | Tool | Approval | What it does |
 |---|---|---|
 | `git_worktree_list {repo?}` | none (read) | every worktree: path, branch, HEAD, lock (and reason), prunable, whether it is the tree you are calling from, and — from the ownership ledger — which conversation created it |
-| `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | always | `add` cuts `<repo>.wt/<name>` from `base` (default: the primary's current branch), locks it and records the owner; `remove` retires a tree; `prune` clears records for trees deleted by hand |
+| `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | always | `add` cuts `<repo>.wt/<name>` from `base` (default: the primary's current branch), locks it and records the owner; `remove` retires a tree (a peer fork may retire the exact tree its origin created, without `force`); `prune` clears records for trees deleted by hand |
 | `git_merge_preview {repo?, into?, from_ref?}` | none (read) | what merging would do, computed by `git merge-tree` without touching a working tree: clean (with `ahead`/`behind` and a stat), or the conflicting paths |
 | `git_merge {op, repo, into?, from_ref?, strategy?, allow_dirty?}` | always | `start` merges into the checked-out branch; `abort` unwinds a conflicted merge |
 | `git_commit {repo, message, paths?, all?, amend?}` | always | stage exactly `paths` and commit; with neither `paths` nor `all` it stages tracked modifications only (`git add -u`), so an unrelated untracked file is never swept in |
@@ -2624,7 +2624,8 @@ A conversation's *workspace set* is its primary plus the trees that belong to th
 same project; the write fence admits the whole set, so by default a conversation
 in a worktree can also write the primary. `isolation: "worktree"` narrows the
 **claim** set to the conversation's own tree, so a write to the primary is
-refused with the existing `[E_WRITE_OUTSIDE]`.
+refused with the existing `[E_WRITE_OUTSIDE]` — except the two declared
+lifecycle calls described below.
 
 - **Human-only.** It is not in the `session` tool's schema, exactly like `roots`,
   so the model cannot widen or narrow its own scope.
@@ -2636,6 +2637,13 @@ refused with the existing `[E_WRITE_OUTSIDE]`.
   would make the tree a cage.
 - **It is a fence, not a mutex.** Two conversations in one tree still proceed on
   different files — `locks` keeps its path striping.
+- **Two lifecycle calls get a per-call primary claim.** `git_merge` and
+  `git_worktree {op: "remove"}` declare `writes: {"primary": true}`: when the
+  call's `repo` resolves to exactly the conversation's linked primary checkout,
+  core leases that root for this call only. It changes no root grant, no
+  `isolation` state and no bash/edit fence, and approval plus lock contention
+  still apply. Other repositories, sibling trees and primary subdirectories are
+  still refused.
 - Persisted in the header, restored on resume, mutable between calls, and
   reported as `isolation` on the session status readback and in
   `session_info.workspace`.
@@ -2662,12 +2670,16 @@ authority, the client is a shortcut.
 ### Provenance (`origin`) and merge notices
 
 A conversation seeded from another's history records `sessionmeta.origin =
-{session, atSeq, reason, worktree?}`. It is **provenance, never authority**: it
+{session, atSeq, reason, worktree?}`. It is **provenance, not supervision**: it
 grants no continuation rights, no approval routing, no depth exemption and no
-idle retirement. A *supervised* fork (`agent_spawn {fork}`) carries both edges —
+idle retirement. The one exception is tree retirement: a peer fork may remove
+the exact tree its `origin` recorded creating, verified from the store rather
+than a tool argument; unrelated conversations and sibling trees are still
+refused. A *supervised* fork (`agent_spawn {fork}`) carries both edges —
 `parent` for supervision and `origin` for provenance; a **peer** fork
 (`agent_fork`, a hidden client tool) carries only `origin`, because nothing is
-supervising it.
+supervising it. New peer forks receive a normal `conv-…` session id; newly
+created supervised forks keep `agent-…`. Existing ids are not renamed.
 
 `session_info` reports `origin` forward and `descendants` backward
 (`{sessionId, supervised, origin?}`), so "what came of this exploration?" is one
