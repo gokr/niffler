@@ -655,7 +655,7 @@ h2 em {
 
 /* Wide technical content scrolls locally, never the whole page. */
 .table-scroll, .diagram-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
-.table-scroll table.bench { width: 820px; font-size: .82rem; }
+.table-scroll table.bench { font-size: .82rem; table-layout: auto; }
 #cost-table table.bench, #tools-table table.bench { width: 100%; }
 .table-scroll table.bench th, .table-scroll table.bench td { padding: .8rem .7rem; }
 .table-scroll table.bench td.tools { min-width: 18rem; }
@@ -716,6 +716,7 @@ h2 em {
         .bench-copy{border-left:3px solid var(--accent,#4a5);padding:.8em 1em;margin:1.4em 0;background:rgba(127,127,127,.06);font-size:.92em;line-height:1.55}
         table.bench{border-collapse:collapse;margin:1.2em 0 .4em;font-size:.92em}
         table.bench caption{text-align:left;font-weight:600;padding:.4em 0}
+        table.bench thead th { text-wrap: nowrap; }
         table.bench th,table.bench td{border-bottom:1px solid rgba(127,127,127,.28);padding:.45em .6em;text-align:right;vertical-align:top}
         table.bench th:first-child,table.bench td.bench-id,table.bench td.tools{text-align:left}
         table.bench tbody tr:hover{background:rgba(127,127,127,.07)}
@@ -788,17 +789,19 @@ h2 em {
   .nav-links { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
+#tools-table table.bench { table-layout: auto; }
+#tools-table th.bench-harness, #tools-table td.bench-harness { min-width: 105px; }
+#tools-table .bench-count { min-width: 110px; }
+#tools-table .bench-base { min-width: 110px; }
+#tools-table .bench-total { min-width: 140px; }
+#tools-table td.tools { min-width: 500px; }
+
 @media (max-width: 760px) {
-  #tools-table table.bench { width: 1100px; min-width: 1100px; table-layout: fixed; }
-  /* Keep the harness identity in view without sacrificing the narrow
-     viewport to a second pinned header/column. */
+  #tools-table table.bench { width: max-content; min-width: 760px; }
+  #tools-table td.tools { min-width: 364px; }
   #tools-table .bench-harness {
     position: sticky; left: 0; z-index: 2; background: var(--paper);
-    width: 88px; min-width: 88px; max-width: 88px;
+    box-shadow: 1px 0 var(--line);
   }
-  #tools-table .bench-count { width: 110px; }
-  #tools-table .bench-base { width: 120px; }
-  #tools-table .bench-total { width: 140px; }
-  #tools-table td.tools { width: 642px; min-width: 642px; }
   #tools-table tr.us td.bench-harness { background: #e2f5e9; }
 }
