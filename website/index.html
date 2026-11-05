@@ -130,6 +130,33 @@
       <div class="bench-frame" id="tools-table">
       <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
       <table class="bench">
+        <caption>Benchmark full31 — the same 31 tasks through a hosted gateway (DeepSeek V4.1 Flash, low effort, Nov 2026)</caption>
+        <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Turns</th><th>Tool calls</th><th>Tokens / task (in / cache / out)</th><th class="sortcol">Cost / task</th><th>Cache hit</th></tr></thead>
+        <tbody>
+          <tr><td>Pi</td><td>31/31</td><td>24.4s</td><td>5.3</td><td>5.0</td><td>3.8k / 17.4k / 2.1k</td><td class="sortcol">$0.0083</td><td>82%</td></tr>
+          <tr class="us"><td>Niffler</td><td>31/31</td><td>29.5s</td><td>6.5</td><td>7.6</td><td>7.0k / 31.3k / 2.3k</td><td class="sortcol">$0.0134</td><td>82%</td></tr>
+          <tr><td>Droid v0.251.0 (BYOK)</td><td>31/31</td><td>30.2s</td><td>1.9</td><td>8.3</td><td>3.4k / 65.6k / 2.4k</td><td class="sortcol">$0.0161</td><td>95%</td></tr>
+          <tr><td>Claude Code 2.1.318</td><td>31/31</td><td>33.7s</td><td>14.1</td><td>7.0</td><td>0 / 45.0k <span class="bench-note">(+18.1k w)</span> / 1.2k</td><td class="sortcol">$0.0231</td><td>100%</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
+      <p class="bench-note">A second gateway, so a second table: these rows are <strong>not</strong>
+        comparable with the first-party numbers above. Claude Code is one uncontended run
+        (2.1.318, 5&nbsp;Nov&nbsp;2026; 2.1.286 measured the same suite at $0.0271/task and a
+        10&nbsp;855-token first call), Pi/Niffler/Droid come from the 29&nbsp;Oct&nbsp;2026
+        three&#8209;lane run; every cell in either set passed in round 1.
+        <strong>Read “in” with care:</strong> Synthetic's Anthropic endpoint reports each prompt
+        token as a cache <em>write</em> (18.1k per task here — the <code>w</code> figure) and none as fresh input, which is why
+        the hit column reads 100% while the lane is the most expensive — writes bill at the prompt
+        rate. Claude Code is also the busiest caller (14.1 messages per task, ~0.5 tool calls each,
+        against Droid's 1.9 messages at ~4.4 calls), so it re-bills its prefix seven times as often:
+        prefix size sets the per-call price, round trips set how often you pay it.</p>
+      </div>
+
+      <div class="bench-frame">
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
+      <table class="bench">
         <caption>Direct tools &amp; fixed prompt — what each harness puts in front of the model</caption>
         <thead><tr><th class="bench-harness">Harness</th><th class="bench-count">Direct tools</th><th class="tools">Which</th><th class="bench-base">Base prompt</th><th class="sortcol bench-total">Base prompt + tools</th></tr></thead>
         <tbody>
@@ -152,7 +179,11 @@
         not exposed) — a probe run outside a git root silently adds the enclosing repo's AGENTS.md chain
         (~8.4k tokens) to the request, which is where an earlier ≈15.9k figure came from. OpenHands generates its
         system prompt at request time (not stored server&#8209;side); the range is the observed first&#8209;request
-        budget including its tool schemas.</p>
+        budget including its tool schemas. Claude Code's row lists the interactive tool surface; the
+        bench lane drives headless <code>claude -p</code>, whose <code>system/init</code> frame names a
+        different set (<code>Task</code>, <code>Monitor</code>, <code>ToolSearch</code> in place of
+        <code>Agent</code>, <code>DesignSync</code>, <code>PushNotification</code>), and whose measured
+        first call on these tasks is ≈9.2k tokens — the figure the gateway table above reports.</p>
       </div>
     </section>
 
