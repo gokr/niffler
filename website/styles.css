@@ -655,7 +655,8 @@ h2 em {
 
 /* Wide technical content scrolls locally, never the whole page. */
 .table-scroll, .diagram-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
-.table-scroll table.bench { min-width: 820px; font-size: .82rem; }
+.table-scroll table.bench { font-size: .82rem; table-layout: auto; }
+#cost-table table.bench, #tools-table table.bench { width: 100%; }
 .table-scroll table.bench th, .table-scroll table.bench td { padding: .8rem .7rem; }
 .table-scroll table.bench td.tools { min-width: 18rem; }
 .scroll-hint { display: none; font-family: var(--mono); font-size: .75rem; color: var(--mint-deep); margin: .6rem 0 1rem; }
@@ -708,4 +709,99 @@ h2 em {
 @media (max-width: 360px) {
   .top nav .nav-gh { font-size: .75rem; padding: .5rem .6rem; }
   .top nav .locales button { padding: .45rem .4rem; }
+}
+
+
+/* ─── readability pass: spacious, but not a stack of same-weight walls ─── */
+        .bench-copy{border-left:3px solid var(--accent,#4a5);padding:.8em 1em;margin:1.4em 0;background:rgba(127,127,127,.06);font-size:.92em;line-height:1.55}
+        table.bench{border-collapse:collapse;margin:1.2em 0 .4em;font-size:.92em}
+        table.bench caption{text-align:left;font-weight:600;padding:.4em 0}
+        table.bench thead th { text-wrap: nowrap; }
+        table.bench th,table.bench td{border-bottom:1px solid rgba(127,127,127,.28);padding:.45em .6em;text-align:right;vertical-align:top}
+        table.bench th:first-child,table.bench td.bench-id,table.bench td.tools{text-align:left}
+        table.bench tbody tr:hover{background:rgba(127,127,127,.07)}
+        table.bench .us{font-weight:600}
+        table.bench th.sortcol{color:var(--accent,#4a5)}
+        table.bench th.sortcol::after{content:" ↑";font-weight:400;opacity:.85}
+        table.bench th.sortcol,table.bench td.sortcol{background:color-mix(in srgb,var(--accent,#4a5) 8%,transparent)}
+        table.bench td.sortcol{font-variant-numeric:tabular-nums}
+        .bench-note{font-size:.85em;opacity:.8;line-height:1.5}
+        .bench-frame{position:relative;margin:2em 0;padding:1.3em 1.5em 1.1em;border:1px solid rgba(127,127,127,.25);border-radius:14px;
+          background:linear-gradient(180deg,rgba(127,127,127,.055),rgba(127,127,127,.015));
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 6px 20px rgba(0,0,0,.055)}
+        .bench-frame::before{content:"";position:absolute;left:1.5em;top:-.28em;width:2.4em;height:.42em;border-radius:99px;
+          background:var(--accent,#4a5);box-shadow:0 0 0 3px rgba(127,127,127,.08)}
+        .bench-frame table.bench{margin:.2em 0 .5em}
+        .bench-frame table.bench caption{font-size:.78em;letter-spacing:.08em;text-transform:uppercase;opacity:.75;padding:.2em 0 .7em}
+        .bench-frame table.bench th{border-bottom:1.5px solid rgba(127,127,127,.4)}
+        table.bench tr.us{background:rgba(74,170,85,.10);background:color-mix(in srgb,var(--accent,#4a5) 11%,transparent);
+          box-shadow:inset 3px 0 0 var(--accent,#4a5)}
+        table.bench tr.us td:first-child{font-weight:700}
+        table.bench tr.us:hover{background:color-mix(in srgb,var(--accent,#4a5) 16%,transparent)}
+#features .grid article:nth-child(3n+2) { position: relative; }
+#features .grid article:nth-child(3n+2)::before {
+  content: ""; position: absolute; left: 1.75rem; right: 1.75rem; top: 0; height: 2px;
+  background: var(--mint);
+}
+.grid h3 { line-height: 1.3; }
+.grid p { line-height: 1.65; }
+.body { line-height: 1.75; }
+.bench-copy { max-width: 56rem; }
+.bench-frame { margin-top: 2.5rem; }
+.fineprint { line-height: 1.7; }
+.fineprint a, .wire-notes a { text-underline-offset: .2em; }
+.feat-group + .feat-group { border-top: 1px solid var(--line); padding-top: 2.2rem; }
+.inv-k { text-transform: none; letter-spacing: .06em; }
+.arch svg { max-width: 100%; }
+
+@media (min-width: 1201px) {
+  .top { max-width: 88rem; padding-top: 1.65rem; padding-bottom: 1.35rem; }
+  .top nav { flex: 1; }
+  .nav-links { justify-content: space-between; flex: 1; gap: .75rem 1.5rem; }
+  .nav-actions { gap: .65rem; }
+  .top nav a { font-size: .875rem; }
+  .hero { max-width: 72rem; padding-top: 5.5rem; padding-bottom: 5rem; }
+  .sec { max-width: 72rem; padding-top: 5.5rem; }
+  .sec-wide { max-width: 80rem; }
+  .hero-shot.wide { max-width: 64rem; margin-left: auto; margin-right: auto; }
+  #features .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.2rem; }
+  #everyday .grid.grid-3 { gap: 1.2rem; }
+  .features { max-width: none; column-gap: 4rem; }
+  .inv-row { grid-template-columns: 13rem 1fr; gap: 2rem; }
+}
+@media (max-width: 900px) and (min-width: 761px) {
+  .top:not(.footer) { max-width: 60rem; }
+  .top nav { align-items: flex-start; flex-wrap: wrap; }
+}
+@media (max-width: 760px) {
+  .top nav { display: flex; }
+  .nav-links { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 .5rem; overflow: visible; padding-bottom: 0; }
+  .nav-links a { justify-content: center; font-size: .82rem; text-align: center; border-bottom: 1px solid var(--line); }
+  .diagram-scroll svg { width: 800px; min-width: 800px; }
+  .hero-command { flex-direction: column; }
+  .hero-command .copy { align-self: center; }
+  .hero-shot img { border-radius: 10px; }
+  .grid p { font-size: 1rem; }
+  .bench-frame table.bench { font-size: .86rem; }
+  .inv-v { line-height: 1.65; }
+}
+@media (max-width: 360px) {
+  .nav-links { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+#tools-table table.bench { table-layout: auto; }
+#tools-table th.bench-harness, #tools-table td.bench-harness { min-width: 105px; }
+#tools-table .bench-count { min-width: 110px; }
+#tools-table .bench-base { min-width: 110px; }
+#tools-table .bench-total { min-width: 140px; }
+#tools-table td.tools { min-width: 500px; }
+
+@media (max-width: 760px) {
+  #tools-table table.bench { width: max-content; min-width: 760px; }
+  #tools-table td.tools { min-width: 364px; }
+  #tools-table .bench-harness {
+    position: sticky; left: 0; z-index: 2; background: var(--paper);
+    box-shadow: 1px 0 var(--line);
+  }
+  #tools-table tr.us td.bench-harness { background: #e2f5e9; }
 }

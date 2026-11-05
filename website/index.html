@@ -65,7 +65,7 @@
       </div>
       <p class="release-line"><a href="https://github.com/gokr/niffler/releases/tag/v0.5.0" target="_blank" rel="noopener">v0.5.0</a><span> — <span data-i18n="hero.release">Fleet, one settings surface, vector search</span></span></p>
 
-      <figure class="hero-shot">
+      <figure class="hero-shot wide">
         <a href="img/niffler-tui.png" target="_blank" rel="noopener">
           <img src="img/niffler-tui.png" alt="niffler-tui, the terminal chat client: a conversation with tool calls, an approval prompt and per-turn cache statistics" width="1198" height="686">
         </a>
@@ -96,32 +96,6 @@
           <span class="legend-dim" data-i18n="fast.legend3">99.3% — printed in the UI, every turn</span>
         </div>
       </div>
-      <style>
-        .bench-copy{border-left:3px solid var(--accent,#4a5);padding:.8em 1em;margin:1.4em 0;background:rgba(127,127,127,.06);font-size:.92em;line-height:1.55}
-        table.bench{width:100%;border-collapse:collapse;margin:1.2em 0 .4em;font-size:.92em}
-        table.bench caption{text-align:left;font-weight:600;padding:.4em 0}
-        table.bench th,table.bench td{border-bottom:1px solid rgba(127,127,127,.28);padding:.45em .6em;text-align:right;vertical-align:top}
-        table.bench th:first-child,table.bench td:first-child,table.bench td.tools{text-align:left}
-        table.bench tbody tr:hover{background:rgba(127,127,127,.07)}
-        table.bench .us{font-weight:600}
-        table.bench th.sortcol{color:var(--accent,#4a5)}
-        table.bench th.sortcol::after{content:" ↑";font-weight:400;opacity:.85}
-        table.bench th.sortcol,table.bench td.sortcol{background:color-mix(in srgb,var(--accent,#4a5) 8%,transparent)}
-        table.bench td.sortcol{font-variant-numeric:tabular-nums}
-        .bench-note{font-size:.85em;opacity:.8;line-height:1.5}
-        .bench-frame{position:relative;margin:2em 0;padding:1.3em 1.5em 1.1em;border:1px solid rgba(127,127,127,.25);border-radius:14px;
-          background:linear-gradient(180deg,rgba(127,127,127,.055),rgba(127,127,127,.015));
-          box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 6px 20px rgba(0,0,0,.055)}
-        .bench-frame::before{content:"";position:absolute;left:1.5em;top:-.28em;width:2.4em;height:.42em;border-radius:99px;
-          background:var(--accent,#4a5);box-shadow:0 0 0 3px rgba(127,127,127,.08)}
-        .bench-frame table.bench{margin:.2em 0 .5em}
-        .bench-frame table.bench caption{font-size:.78em;letter-spacing:.08em;text-transform:uppercase;opacity:.75;padding:.2em 0 .7em}
-        .bench-frame table.bench th{border-bottom:1.5px solid rgba(127,127,127,.4)}
-        table.bench tr.us{background:rgba(74,170,85,.10);background:color-mix(in srgb,var(--accent,#4a5) 11%,transparent);
-          box-shadow:inset 3px 0 0 var(--accent,#4a5)}
-        table.bench tr.us td:first-child{font-weight:700}
-        table.bench tr.us:hover{background:color-mix(in srgb,var(--accent,#4a5) 16%,transparent)}
-      </style>
       <p class="bench-copy"><strong>What this measures.</strong> Numbers gathered with
         <strong>DeepSeek&#8209;V4.1&#8209;Flash</strong> (<code>deepseek-v4-flash</code>) at
         <strong>low thinking effort</strong>, called <strong>directly through DeepSeek's
@@ -135,7 +109,7 @@
       <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
       <table class="bench">
         <caption>Benchmark full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026)</caption>
-        <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Turns</th><th>Tool calls</th><th>Tokens / task (in / cache / out)</th><th class="sortcol">Cost / task</th><th>Cache hit</th></tr></thead>
+        <thead><tr><th class="bench-harness">Harness</th><th class="bench-n">Pass</th><th class="bench-n">Wall / task</th><th class="bench-n">Turns</th><th class="bench-n">Tool calls</th><th>Tokens / task (in / cache / out)</th><th class="sortcol">Cost / task</th><th>Cache hit</th></tr></thead>
         <tbody>
           <tr><td>Pi 1.1.0</td><td>31/31</td><td>13.4s</td><td>5.3</td><td>5.5</td><td>3.7k / 18.1k / 2.0k</td><td class="sortcol">$0.0037</td><td>83%</td></tr>
           <tr class="us"><td>Niffler 0.4.0</td><td>31/31</td><td>15.4s</td><td>6.1</td><td>7.8</td><td>4.0k / 31.6k / 2.1k</td><td class="sortcol">$0.0039</td><td>89%</td></tr>
@@ -153,19 +127,19 @@
         Niffler = the average of two runs.</p>
       </div>
 
-      <div class="bench-frame">
+      <div class="bench-frame" id="tools-table">
       <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
       <table class="bench">
         <caption>Direct tools &amp; fixed prompt — what each harness puts in front of the model</caption>
-        <thead><tr><th>Harness</th><th>Direct tools</th><th class="tools">Which</th><th>Base prompt</th><th class="sortcol">Base prompt + tools</th></tr></thead>
+        <thead><tr><th class="bench-harness">Harness</th><th class="bench-count">Direct tools</th><th class="tools">Which</th><th class="bench-base">Base prompt</th><th class="sortcol bench-total">Base prompt + tools</th></tr></thead>
         <tbody>
-          <tr><td>Pi</td><td>4 (+3 optional)</td><td class="tools">read · bash · edit · write <span class="bench-note">(grep · find · ls off by default)</span></td><td>≈0.68k</td><td class="sortcol">≈1.4k</td></tr>
-          <tr class="us"><td>Niffler</td><td>8</td><td class="tools">discover · invoke · bash · read · write · edit · replace_across · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td>≈0.28k</td><td class="sortcol">≈2.1k</td></tr>
-          <tr><td>Maki</td><td>19</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td>—</td><td class="sortcol">≈7.4k</td></tr>
-          <tr><td>DSH (out of the box)</td><td>25</td><td class="tools">bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</td><td>≈6.5k</td><td class="sortcol">≈11.7k</td></tr>
-          <tr><td>OpenHands</td><td>3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td>generated per request</td><td class="sortcol">≈12–16k</td></tr>
-          <tr><td>Opencode</td><td>10</td><td class="tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</td><td>≈10.7k</td><td class="sortcol">≈16k</td></tr>
-          <tr><td>Claude Code</td><td>23</td><td class="tools">Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</td><td>≈1.5k</td><td class="sortcol">≈18k</td></tr>
+          <tr><td class="bench-harness">Pi</td><td class="bench-count">4 (+3 optional)</td><td class="tools">read · bash · edit · write <span class="bench-note">(grep · find · ls off by default)</span></td><td class="bench-base">≈0.68k</td><td class="sortcol">≈1.4k</td></tr>
+          <tr class="us"><td class="bench-harness">Niffler</td><td class="bench-count">8</td><td class="tools">discover · invoke · bash · read · write · edit · replace_across · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td class="bench-base">≈0.28k</td><td class="sortcol">≈2.1k</td></tr>
+          <tr><td class="bench-harness">Maki</td><td class="bench-count">19</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td class="bench-base">—</td><td class="sortcol">≈7.4k</td></tr>
+          <tr><td class="bench-harness">DSH (out of the box)</td><td class="bench-count">25</td><td class="tools">bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</td><td class="bench-base">≈6.5k</td><td class="sortcol">≈11.7k</td></tr>
+          <tr><td class="bench-harness">OpenHands</td><td class="bench-count">3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td class="bench-base">generated per request</td><td class="sortcol">≈12–16k</td></tr>
+          <tr><td class="bench-harness">Opencode</td><td class="bench-count">10</td><td class="tools">bash · edit · glob · grep · read · skill · task · todowrite · webfetch · write</td><td class="bench-base">≈10.7k</td><td class="sortcol">≈16k</td></tr>
+          <tr><td class="bench-harness">Claude Code</td><td class="bench-count">23</td><td class="tools">Agent · Bash · CronCreate · CronDelete · CronList · DesignSync · Edit · EnterWorktree · ExitWorktree · ListAgents · Monitor · NotebookEdit · PushNotification · Read · ReportFindings · ScheduleWakeup · SendMessage · Skill · TaskStop · WebFetch · WebSearch · Workflow · Write</td><td class="bench-base">≈1.5k</td><td class="sortcol">≈18k</td></tr>
         </tbody>
       </table>
       </div>
@@ -183,7 +157,7 @@
     </section>
 
     <!-- ═══ FEATURES ═══ -->
-    <section class="sec" id="features">
+    <section class="sec sec-wide" id="features">
       <header class="sec-head">
         <p class="kicker"><span class="num">02</span> <span data-i18n="feat.kicker">Interesting features, relatively rare</span></p>
         <h2 data-i18n-html="feat.h2">Not one of a kind —<br><em>rarely all together.</em></h2>
@@ -205,7 +179,27 @@
             steps under the ceiling its operator set for that machine: tools,
             roots and round/call/token budgets, off until enabled. Containers
             and VMs run the worker in a separate guest; a human inbox lists
-            settled work with its artifact.</p>
+            settled work with its artifact. Continue delegated work in the
+            same worker conversation, inspect its receipts or cancel it;
+            durable admission stops a retry from blindly replaying the job.</p>
+        </article>
+        <article>
+          <h3 data-i18n="f.worktree.h">Isolated Git worktrees</h3>
+          <p data-i18n-html="f.worktree.p">Give an agent its own checkout for risky or parallel work.
+            With git mutations enabled, <code>/worktree add NAME [--fork]</code>
+            starts a branch beside the primary — optionally with a peer
+            conversation that has its own permissions. Review the work and use
+            <code>/worktree merge</code> to merge it back cleanly; removal
+            guards foreign trees, dirty work and unmerged changes.</p>
+        </article>
+        <article>
+          <h3 data-i18n="f.writes.h">Write arbitration</h3>
+          <p data-i18n-html="f.writes.p">Two conversations can share a checkout without silently
+            overwriting each other. Declared writes take bounded leases:
+            overlapping writes refuse with <code>E_WRITE_BUSY</code> and name
+            the holder, disjoint files stay parallel, and cancellation or
+            lease expiry recovers after a writer dies. Cooperative
+            coordination, not OS fencing.</p>
         </article>
         <article>
           <h3 data-i18n="f.bg.h">Background processes</h3>
@@ -260,7 +254,7 @@
     </section>
 
     <!-- ═══ EVERYDAY ═══ -->
-    <section class="sec" id="everyday">
+    <section class="sec sec-wide" id="everyday">
       <header class="sec-head">
         <p class="kicker"><span class="num">03</span> <span data-i18n="ed.kicker">Everything you take for granted</span></p>
         <h2 data-i18n-html="ed.h2">The table stakes,<br><em>all of them.</em></h2>
@@ -322,6 +316,7 @@
         <ul class="features">
           <li><strong data-i18n="ed.approvals.h">Approvals everywhere</strong><span data-i18n="ed.approvals.p">any gated caller, sub-agents included — routed to the human driving the turn; denied when none is reachable, with an opt-in per-conversation default for unattended instances</span></li>
           <li><strong data-i18n="ed.limits.h">Sub-agent limits</strong><span data-i18n="ed.limits.p">hard budgets that cannot be talked around; soft limits negotiate over the approval channel</span></li>
+          <li><strong data-i18n="ed.writes.h">Concurrent-write conflicts</strong><span data-i18n="ed.writes.p">overlapping writes refuse and name the holder; cancellation releases a confirmed-stopped writer's claim, leases bound crash recovery, and disjoint paths stay parallel — coordination, not filesystem fencing</span></li>
           <li><strong data-i18n="ed.grants.h">Remembered grants</strong><span data-i18n="ed.grants.p">per-tool “don't ask again”, digest-keyed for program-shaped calls</span></li>
           <li><strong data-i18n="ed.failclosed.h">Fail closed</strong><span data-i18n="ed.failclosed.p">timeouts deny, unknown limits refuse, a missing component degrades explicitly — never silently</span></li>
           <li><strong data-i18n="ed.leastpriv.h">Least privilege</strong><span data-i18n="ed.leastpriv.p">MCP environment allowlists and guard processes, no bus access or secrets in fabric's executor, redacted listings</span></li>
@@ -369,7 +364,7 @@
     </section>
 
     <!-- ═══ UNIX ═══ -->
-    <section class="sec" id="unix">
+    <section class="sec sec-wide" id="unix">
       <header class="sec-head">
         <p class="kicker"><span class="num">05</span> <span data-i18n="un.kicker">Unix-style architecture</span></p>
         <h2 data-i18n-html="un.h2">Small programs,<br><em>one wire.</em></h2>
@@ -379,28 +374,21 @@
         wire connects them all: JSON envelopes over NATS. So the agent can write,
         compile and spawn a new tool <em>mid-conversation</em>, and teardown is
         just <code>exit()</code>. The OS is the disposer.</p>
-      <figure class="arch" role="img" aria-label="Process anatomy of a Niffler instance: optional clients connect to one NATS bus (nats-server, one process); core (one process) supervises child component processes — store, bash, llm and systemprompt in the minimal profile, twenty-one more in a stock boot — and every conversation gets its own ephemeral session runner process.">
+      <figure class="arch" role="img" aria-label="Process anatomy of a Niffler instance: optional clients connect to one NATS bus (nats-server, one process); core (one process) supervises child component processes — store, bash, llm and systemprompt in the minimal profile, twenty-three more in a stock boot — and every conversation gets its own ephemeral session runner process.">
         <div class="diagram-scroll" tabindex="0" role="region" aria-label="Architecture diagram">
-        <svg viewBox="0 0 920 540" aria-hidden="true" focusable="false">
+        <svg viewBox="0 0 920 560" aria-hidden="true" focusable="false">
           <text class="a-tag" x="40" y="24">CLIENTS — THIN ATTACHERS, ANY NUMBER AT ONCE</text>
           <g class="a-client"><rect x="180" y="36" width="170" height="40" rx="8"/><text x="265" y="61">niffler-tui</text></g>
           <g class="a-client"><rect x="380" y="36" width="170" height="40" rx="8"/><text x="465" y="61">cli · console</text></g>
           <g class="a-client"><rect x="580" y="36" width="170" height="40" rx="8"/><text x="665" y="61">desktop UI · exp.</text></g>
           <path class="a-drop" d="M265 76v34M465 76v34M665 76v34"/>
-
           <text class="a-bus-label" x="880" y="102">NATS — ONE JSON ENVELOPE · NATS-SERVER · 1 PROCESS</text>
           <path class="a-bus" d="M40 110h840"/>
           <circle class="a-pulse" cy="110" r="4"><animate attributeName="cx" values="48;872" dur="5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.08;.92;1" dur="5s" repeatCount="indefinite"/></circle>
-
           <path class="a-drop" d="M155 110v50"/>
-          <g class="a-box a-min">
-            <rect x="40" y="160" width="230" height="64" rx="8"/>
-            <text class="a-t" x="55" y="187">core · 1 process</text>
-            <text class="a-sub" x="55" y="207">supervisor · dispatch · catalog</text>
-          </g>
-
+          <g class="a-box a-min"><rect x="40" y="160" width="230" height="64" rx="8"/><text class="a-t" x="55" y="187">core · 1 process</text><text class="a-sub" x="55" y="207">supervisor · dispatch · catalog</text></g>
           <path class="a-drop" d="M600 110v40"/>
-          <rect class="a-frame" x="320" y="150" width="560" height="330" rx="10"/>
+          <rect class="a-frame" x="320" y="150" width="560" height="370" rx="10"/>
           <text class="a-tag" x="336" y="176">COMPONENTS — CHILD PROCESSES OF CORE</text>
           <g class="a-chip a-min"><rect x="336" y="188" width="123" height="32" rx="6"/><text x="397.5" y="209">store</text></g>
           <g class="a-chip a-min"><rect x="467" y="188" width="123" height="32" rx="6"/><text x="528.5" y="209">bash</text></g>
@@ -409,27 +397,30 @@
           <g class="a-chip"><rect x="336" y="232" width="99" height="32" rx="6"/><text x="385.5" y="253">agent</text></g>
           <g class="a-chip"><rect x="443" y="232" width="99" height="32" rx="6"/><text x="492.5" y="253">builder</text></g>
           <g class="a-chip"><rect x="550" y="232" width="99" height="32" rx="6"/><text x="599.5" y="253">compaction</text></g>
-          <g class="a-chip"><rect x="657" y="232" width="99" height="32" rx="6"/><text x="706.5" y="253">edit</text></g>
-          <g class="a-chip"><rect x="764" y="232" width="99" height="32" rx="6"/><text x="813.5" y="253">expert</text></g>
-          <g class="a-chip"><rect x="336" y="276" width="99" height="32" rx="6"/><text x="385.5" y="297">fabric</text></g>
-          <g class="a-chip"><rect x="443" y="276" width="99" height="32" rx="6"/><text x="492.5" y="297">fetch</text></g>
-          <g class="a-chip"><rect x="550" y="276" width="99" height="32" rx="6"/><text x="599.5" y="297">git</text></g>
-          <g class="a-chip"><rect x="657" y="276" width="99" height="32" rx="6"/><text x="706.5" y="297">grep ×4</text></g>
-          <g class="a-chip"><rect x="764" y="276" width="99" height="32" rx="6"/><text x="813.5" y="297">jev</text></g>
-          <g class="a-chip"><rect x="336" y="320" width="99" height="32" rx="6"/><text x="385.5" y="341">lsp</text></g>
-          <g class="a-chip"><rect x="443" y="320" width="99" height="32" rx="6"/><text x="492.5" y="341">logfile</text></g>
-          <g class="a-chip"><rect x="550" y="320" width="99" height="32" rx="6"/><text x="599.5" y="341">mcp</text></g>
-          <g class="a-chip"><rect x="657" y="320" width="99" height="32" rx="6"/><text x="706.5" y="341">models</text></g>
-          <g class="a-chip"><rect x="764" y="320" width="99" height="32" rx="6"/><text x="813.5" y="341">observe</text></g>
-          <g class="a-chip"><rect x="336" y="364" width="99" height="32" rx="6"/><text x="385.5" y="385">plugins</text></g>
-          <g class="a-chip"><rect x="443" y="364" width="99" height="32" rx="6"/><text x="492.5" y="385">processes</text></g>
-          <g class="a-chip"><rect x="550" y="364" width="99" height="32" rx="6"/><text x="599.5" y="385">provider</text></g>
-          <g class="a-chip"><rect x="657" y="364" width="99" height="32" rx="6"/><text x="706.5" y="385">recall</text></g>
-          <g class="a-chip"><rect x="764" y="364" width="99" height="32" rx="6"/><text x="813.5" y="385">repomap</text></g>
-          <g class="a-chip"><rect x="336" y="408" width="99" height="32" rx="6"/><text x="385.5" y="429">skills</text></g>
-          <g class="a-chip a-more"><rect x="443" y="408" width="420" height="32" rx="6"/><text x="653" y="429">your tool — write → build → spawn (any language)</text></g>
-          <text class="a-note" x="336" y="462">25 components · 28 processes in a stock boot — one process per capability, a crash kills nothing but itself</text>
-
+          <g class="a-chip"><rect x="657" y="232" width="99" height="32" rx="6"/><text x="706.5" y="253">config</text></g>
+          <g class="a-chip"><rect x="764" y="232" width="99" height="32" rx="6"/><text x="813.5" y="253">edit</text></g>
+          <g class="a-chip"><rect x="336" y="276" width="99" height="32" rx="6"/><text x="385.5" y="297">expert</text></g>
+          <g class="a-chip"><rect x="443" y="276" width="99" height="32" rx="6"/><text x="492.5" y="297">fabric</text></g>
+          <g class="a-chip"><rect x="550" y="276" width="99" height="32" rx="6"/><text x="599.5" y="297">fetch</text></g>
+          <g class="a-chip"><rect x="657" y="276" width="99" height="32" rx="6"/><text x="706.5" y="297">git</text></g>
+          <g class="a-chip"><rect x="764" y="276" width="99" height="32" rx="6"/><text x="813.5" y="297">grep ×4</text></g>
+          <g class="a-chip"><rect x="336" y="320" width="99" height="32" rx="6"/><text x="385.5" y="341">jev</text></g>
+          <g class="a-chip"><rect x="443" y="320" width="99" height="32" rx="6"/><text x="492.5" y="341">locks</text></g>
+          <g class="a-chip"><rect x="550" y="320" width="99" height="32" rx="6"/><text x="599.5" y="341">logfile</text></g>
+          <g class="a-chip"><rect x="657" y="320" width="99" height="32" rx="6"/><text x="706.5" y="341">lsp</text></g>
+          <g class="a-chip"><rect x="764" y="320" width="99" height="32" rx="6"/><text x="813.5" y="341">mcp</text></g>
+          <g class="a-chip"><rect x="336" y="364" width="99" height="32" rx="6"/><text x="385.5" y="385">models</text></g>
+          <g class="a-chip"><rect x="443" y="364" width="99" height="32" rx="6"/><text x="492.5" y="385">observe</text></g>
+          <g class="a-chip"><rect x="550" y="364" width="99" height="32" rx="6"/><text x="599.5" y="385">plugins</text></g>
+          <g class="a-chip"><rect x="657" y="364" width="99" height="32" rx="6"/><text x="706.5" y="385">processes</text></g>
+          <g class="a-chip"><rect x="764" y="364" width="99" height="32" rx="6"/><text x="813.5" y="385">provider</text></g>
+          <g class="a-chip"><rect x="336" y="408" width="99" height="32" rx="6"/><text x="385.5" y="429">recall</text></g>
+          <g class="a-chip"><rect x="443" y="408" width="99" height="32" rx="6"/><text x="492.5" y="429">repomap</text></g>
+          <g class="a-chip"><rect x="550" y="408" width="99" height="32" rx="6"/><text x="599.5" y="429">skills</text></g>
+          <g class="a-chip a-more"><rect x="657" y="408" width="206" height="32" rx="6"/><text x="760" y="429">your tool → spawn</text></g>
+          <g class="a-chip a-more"><rect x="336" y="463" width="99" height="32" rx="6"/><text x="385.5" y="484">fleet</text></g>
+          <g class="a-chip a-more"><rect x="443" y="463" width="99" height="32" rx="6"/><text x="492.5" y="484">hooks</text></g>
+          <text class="a-note" x="550" y="485">opt in (dashed), not a stock boot</text>
           <rect class="a-frame" x="40" y="286" width="230" height="136" rx="10"/>
           <text class="a-tag" x="56" y="312">SESSION RUNNERS · EPHEMERAL</text>
           <g class="a-chip"><rect x="56" y="324" width="198" height="26" rx="6"/><text x="155" y="342">session conv-a4f…</text></g>
@@ -437,8 +428,8 @@
           <g class="a-chip"><rect x="56" y="388" width="198" height="26" rx="6"/><text x="155" y="406">session conv-77b…</text></g>
           <path class="a-sup" d="M155 224v62"/>
           <path class="a-drop a-dash" d="M40 354h-14V110"/>
-
-          <text class="a-note a-totals" x="40" y="510">a minimal boot: 6 processes · a stock boot: 30 · +1 session runner per active conversation</text>
+          <text class="a-note" x="336" y="527">27 components · 30 processes · dashed: Fleet + hooks opt in</text>
+          <text class="a-note a-totals" x="40" y="550">minimal: 6 processes · stock: 32 (nats + core + 30) · +1 runner per conversation</text>
         </svg>
         </div>
         <figcaption class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</figcaption>
@@ -450,12 +441,12 @@
           <span class="inv-v">nats-server · core · store · bash · llm · systemprompt</span>
         </div>
         <div class="inv-row">
-          <span class="inv-k" data-i18n="un.inv2">stock boot · +21 components</span>
-          <span class="inv-v">agent · builder · compaction · edit · expert · fabric · fetch · git · grep ×4 · jev · lsp · logfile · mcp · models · observe · plugins · processes · provider · recall · repomap · skills</span>
+          <span class="inv-k" data-i18n="un.inv2">stock boot · +23 above minimal</span>
+          <span class="inv-v">builder · plugins · config · skills · recall · compaction · fetch · jev · models · provider · grep ×4 · mcp · edit · locks · lsp · repomap · processes · git · observe · logfile · agent · expert · fabric</span>
         </div>
         <div class="inv-row">
-          <span class="inv-k" data-i18n="un.inv3">+9 more ship in the box</span>
-          <span class="inv-v">store-tidb <em>· alternate store engine</em> — llm-openai <em>· example adapter</em> — mcp-bridge <em>· one per MCP server</em> — fabric-exec <em>· fabric's executor</em> — hooks <em>· event hooks, off by default</em> — von <em>· optional decision-runtime launcher</em> — cli · console <em>· scripting · live bus viewer</em> — dialog <em>· SDK-free bash demo, now in examples/dialog</em></span>
+          <span class="inv-k" data-i18n="un.inv3">+10 more ship in the box</span>
+          <span class="inv-v">fleet <em>· remote workers, opt-in</em> — store-tidb <em>· alternate store engine</em> — llm-openai <em>· example adapter</em> — mcp-bridge <em>· one per MCP server</em> — fabric-exec <em>· fabric's executor</em> — hooks <em>· event hooks, off by default</em> — von <em>· optional decision-runtime launcher</em> — cli · console <em>· scripting · live bus viewer</em> — dialog <em>· SDK-free bash demo, now in examples/dialog</em></span>
         </div>
       </div>
 
