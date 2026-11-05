@@ -35,6 +35,14 @@ read failures and concurrent title updates. The existing durable tool-pair repai
 ledger is also checked across a real runner restart, without rewriting history
 or changing its byte-stable synthetic results.
 
+## Isolated worktree lifecycle
+
+`writes.primary` admits only the linked conversation's checkout-derived primary
+as an explicit per-call target; merge/close take real leases without changing
+root grants or the bash/edit fence. Peer close checks durable origin metadata
+for the exact tree, preserving unrelated-owner, dirty and unmerged guards.
+The git contract covers the isolated client-control path and primary contention.
+
 ## Larger features
 
 | Feature | Implemented on main | Still open |

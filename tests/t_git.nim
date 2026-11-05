@@ -220,7 +220,7 @@ proc main() =
   # Needs a REAL store (the ownership ledger) and a conversation identity, so
   # this half runs against a core sandbox rather than the bare component above.
   # =========================================================================
-  let sb = newCoreSandbox("gitwt", ["store"])
+  let sb = newCoreSandbox("gitwt", ["store", "locks", "bash", "edit", "git"])
   let sroot = sb.root
   defer: removeDir(sroot)
   createDir(sroot / "ws")
@@ -242,12 +242,6 @@ proc main() =
   defer:
     if core2.running(): core2.terminate()
     discard core2.waitForExit(2000)
-  var wtProc = startComponent(root / "var" / "bin" / "git", url2,
-                              root = sroot,
-                              logFile = sroot / "var" / "test-logs" / "git.log")
-  defer:
-    if wtProc.running(): wtProc.terminate()
-    discard wtProc.waitForExit(2000)
   var nc2 = waitConnect(url2)
   defer: nc2.close()
   check("store up for the ledger", waitComponent(nc2, "store", 30))
@@ -557,6 +551,85 @@ proc main() =
   check("an empty commit reports nothing-to-commit, not a crash",
         not nothing{"ok"}.getBool(true) and
         nothing{"detail"}.getStr("").contains("nothing to commit"), $nothing)
+
+  # Isolated client controls traverse runner -> dispatch -> real locks -> git.
+  mgit("clean -fd")
+  let isoTree = mrepo & ".wt/isolated"
+  let isoAdd = call(nc2, "git", "git_worktree", %*{"op": "add",
+    "repo": mrepo, "name": "isolated", "base": "main",
+    "__session": {"session": "iso-origin"}}, 120_000)
+  check("isolated fixture tree created", isoAdd{"ok"}.getBool(false), $isoAdd)
+  writeFile(isoTree / "isolated.txt", "merged from isolation\n")
+  doAssert sh("git -C " & quoteShell(isoTree) &
+    " add -A && git -C " & quoteShell(isoTree) & " commit -q -m isolated").exitCode == 0
+  discard call(nc2, "store", "put", %*{"kind": "sessionmeta", "id": "iso-child",
+    "value": {"origin": {"session": "iso-origin", "worktree": {
+      "path": isoTree, "primary": mrepo, "branch": "isolated"}}}}, 10_000)
+  let isoSelect = call(nc2, "core", "session", %*{"sessionId": "iso-child",
+    "cwd": isoTree, "isolation": "worktree", "approvals": "auto"}, 60_000)
+  check("isolated session prepared", isoSelect{"error"} == nil, $isoSelect)
+  proc isolated(tool: string, arguments: JsonNode): JsonNode =
+    call(nc2, "core", "session", %*{"sessionId": "iso-child",
+      "invoke": {"tool": tool, "arguments": arguments}}, 180_000)
+  let fence = isolated("bash", %*{"cwd": mrepo, "command": "touch escaped"})
+  check("primary remains forbidden to bash", ($fence).contains("E_WRITE_OUTSIDE") and
+    not fileExists(mrepo / "escaped"), $fence)
+  let badTarget = isolated("git_merge", %*{"op": "start", "repo": repo,
+    "from_ref": "isolated"})
+  check("primary declaration does not admit another repository",
+    ($badTarget).contains("E_WRITE_OUTSIDE"), $badTarget)
+  let subTarget = isolated("git_merge", %*{"op": "start", "repo": mrepo / "subdir",
+    "from_ref": "isolated"})
+  check("primary exception requires the exact checkout root",
+    ($subTarget).contains("E_WRITE_OUTSIDE"), $subTarget)
+  let unmergedClose = isolated("git_worktree", %*{"op": "remove", "repo": mrepo,
+    "path": isoTree})
+  check("lineage does not bypass unmerged-work protection",
+    ($unmergedClose).contains("not merged") and dirExists(isoTree), $unmergedClose)
+  let hold = call(nc2, "locks", "lock_acquire", %*{"root": mrepo,
+    "roots": [mrepo], "paths": [mrepo], "sessionId": "other-writer",
+    "tool": "test", "callId": "primary-held", "ttlMs": 600000}, 10_000)
+  check("primary lease held by another writer", hold{"ok"}.getBool(false), $hold)
+  let busyMerge = isolated("git_merge", %*{"op": "start", "repo": mrepo,
+    "from_ref": "isolated"})
+  check("isolated merge contends for the real primary lease",
+    ($busyMerge).contains("E_WRITE_BUSY") and not fileExists(mrepo / "isolated.txt"), $busyMerge)
+  discard call(nc2, "locks", "lock_release", %*{"sessionId": "other-writer",
+    "callId": "primary-held"}, 10_000)
+  let isoMerge = isolated("git_merge", %*{"op": "start", "repo": mrepo,
+    "from_ref": "isolated"})
+  check("isolated merge succeeds without a root grant",
+    isoMerge{"result"}{"merged"}.getBool(false) and fileExists(mrepo / "isolated.txt"), $isoMerge)
+  let infoAfter = call(nc2, "core", "session_info", %*{"sessionId": "iso-child"})
+  check("merge leaves persistent isolation and writable roots unchanged",
+    infoAfter{"workspace"}{"isolation"}.getStr("") == "worktree" and
+    infoAfter{"workspace"}{"writable"}.len == 1 and
+    infoAfter{"workspace"}{"writable"}[0].getStr("") == isoTree, $infoAfter)
+  let editFence = isolated("edit", %*{"path": mrepo / "isolated.txt",
+    "edits": [{"old_string": "merged", "new_string": "escaped"}]})
+  check("primary remains forbidden to edit after merge",
+    ($editFence).contains("E_WRITE_OUTSIDE"), $editFence)
+  discard call(nc2, "store", "put", %*{"kind": "sessionmeta", "id": "wrong-peer",
+    "value": {"origin": {"session": "iso-origin", "worktree": {
+      "path": isoTree & "-other", "primary": mrepo}}}}, 10_000)
+  let wrongPeer = call(nc2, "git", "git_worktree", %*{"op": "remove", "repo": mrepo,
+    "path": isoTree, "__session": {"session": "wrong-peer"}}, 60_000)
+  check("origin alone cannot authorize removal of a different tree",
+    wrongPeer{"exit_code"}.getInt(-1) != 0 and dirExists(isoTree), $wrongPeer)
+  let stranger = call(nc2, "git", "git_worktree", %*{"op": "remove", "repo": mrepo,
+    "path": isoTree, "__session": {"session": "stranger"}}, 60_000)
+  check("unrelated conversation cannot retire the origin's tree",
+    stranger{"exit_code"}.getInt(-1) != 0 and dirExists(isoTree), $stranger)
+  writeFile(isoTree / "dirty.txt", "keep this\n")
+  let dirtyClose = isolated("git_worktree", %*{"op": "remove", "repo": mrepo, "path": isoTree})
+  check("lineage does not bypass dirty-tree protection",
+    dirtyClose{"result"}{"exit_code"}.getInt(-1) != 0 and dirExists(isoTree), $dirtyClose)
+  removeFile(isoTree / "dirty.txt")
+  let isoClose = isolated("git_worktree", %*{"op": "remove", "repo": mrepo, "path": isoTree})
+  check("peer may close its origin-created tree without force or grants",
+    isoClose{"result"}{"ok"}.getBool(false) and not dirExists(isoTree), $isoClose)
+  check("close keeps the merged branch", sh("git -C " & quoteShell(mrepo) &
+    " rev-parse --verify isolated").exitCode == 0)
 
   # drain: component exits
   drain(nc)

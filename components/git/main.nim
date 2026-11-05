@@ -704,6 +704,22 @@ proc branchMergedInto(primary, branch, base: string): bool =
                  @["merge-base", "--is-ancestor", branch, base], 20_000)
   r.code == 0
 
+proc originOwnsWorktree(session, owner, target, primary: string): bool =
+  ## A peer fork may retire the exact tree its origin created for it. Lineage
+  ## comes from the store, never a tool argument; unrelated children and
+  ## siblings do not inherit the origin's authority over other trees.
+  if session.len == 0 or owner.len == 0: return false
+  try:
+    let meta = comp.storeGet("sessionmeta", session, 5_000).value
+    let origin = meta{"origin"}
+    let tree = origin{"worktree"}
+    result = origin{"session"}.getStr("") == owner and
+      tree{"path"}.getStr("").len > 0 and
+      normalizeRoot(tree{"path"}.getStr("")) == target and
+      normalizeRoot(tree{"primary"}.getStr("")) == normalizeRoot(primary)
+  except CatchableError:
+    result = false
+
 proc worktreeRemoveImpl(repo, path: string, force,
                         deleteBranch: bool): JsonNode =
   let start = repoDir(repo)
@@ -736,7 +752,8 @@ proc worktreeRemoveImpl(repo, path: string, force,
   let owner = if entry != nil: entry{"sessionId"}.getStr("") else: ""
   let mine = comp.sessionContext
   if owner.len > 0:
-    if owner != mine and not force:
+    if owner != mine and not force and
+        not originOwnsWorktree(mine, owner, target, primary):
       return refused("the worktree " & target & " belongs to conversation " &
         owner & " (ledger) — that conversation may still be working there. " &
         "Pass force: true only if you know it is finished.")
@@ -753,7 +770,8 @@ proc worktreeRemoveImpl(repo, path: string, force,
     # "unknown" is what `add` writes when no session was injected (a direct
     # bus call, e.g. the cli). It is not an owner to protect: treating it as
     # one would block every scripted call.
-    if named.len > 0 and named != "unknown" and named != mine:
+    if named.len > 0 and named != "unknown" and named != mine and
+        not originOwnsWorktree(mine, named, target, primary):
       return refused("the worktree " & target & " is locked for conversation " &
         named & " (git lock) — pass force: true only if you know it is " &
         "finished.")
@@ -1231,7 +1249,7 @@ if mutationsEnabled():
   comp.tool(%*{"timeoutMs": 120_000, "onDemand": true, "effect": "write",
                 "approval": "always", "sessionId": true,
                 "workspace": {"cwdField": "repo"},
-                "writes": {"paths": ["repo", "path"]},
+                "writes": {"paths": ["repo", "path"], "primary": true},
                 "hint": "Manage git worktrees: cut an isolated sibling tree for experimental or parallel work (add), retire one (remove), or clear records for trees deleted by hand (prune). A tree is a sibling of the repo (<repo>.wt/<name>), never inside it."}):
     proc git_worktree(op: string, repo: string = "", name: string = "",
                       path: string = "", branch: string = "", base: string = "",
@@ -1300,7 +1318,7 @@ if mutationsEnabled():
   comp.tool(%*{"timeoutMs": 300_000, "onDemand": true, "effect": "write",
                 "approval": "always", "sessionId": true,
                 "workspace": {"cwdField": "repo"},
-                "writes": {"paths": ["repo", "paths"]},
+                "writes": {"paths": ["repo"], "primary": true},
                 "hint": "Merge a branch into a tree (start), or unwind a conflicted merge (abort). Merges the branch you worked in back into the primary — run git_merge_preview first to see whether it conflicts."}):
     proc git_merge(op: string, repo: string = "", into: string = "",
                    from_ref: string = "", strategy: string = "",
