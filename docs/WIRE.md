@@ -539,7 +539,7 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, provider?, model?,
                        #   thinking?, title?, cwd?, profile?, discovery?, tools?,
                        #   maxRounds?, maxCalls?, maxTokens?, stop?, approvals?,
-                       #   limits?, compact?, export?, wake?};
+                       #   limits?, compact?, export?, wake?, invoke?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
                        #   the conversation override. provider pins the conversation
@@ -557,6 +557,8 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   approvals?/limits? are the human's mutable conversation
                        #   controls; compact? runs the compactor now (no turn);
                        #   export? returns the exact provider request (no turn);
+                       #   invoke? runs one tool through the runner's own gate
+                       #   (no turn — see "Client tool controls");
                        #   wake? runs a notice-only turn — see "Autonomous wake".
                        #   attachments? is a turn's dropped images — see
                        #   "Attachments (images in a turn)".
@@ -1411,6 +1413,22 @@ header (`approvals`, `limits`), so a resumed runner re-applies exactly what
 the human last chose, and both are echoed by the status readback and the turn
 result (`approvals`, `limits`) for UIs. Invalid values are refused with a
 clear error (unknown mode, unknown limit key, out-of-range value).
+
+### Client tool controls
+
+`session {invoke: {tool, arguments}}` runs one ordinary tool through this
+conversation's runner gate, with no LLM turn. It exists for client actions that
+must carry conversation context — the TUI's `/worktree` verbs — because a direct
+`core.invoke` has no conversation context: worktree ownership would be recorded
+as unknown and a merge notice would have no origin to name.
+
+Workspace, approval mode and isolation are taken from the conversation for the
+duration of the call and restored afterwards, so approvals, write fences and
+session attribution behave exactly as they do for a model dispatch. The control
+is human-only: it is absent from the model-facing session schema, refused in a
+task-scoped (unattended) session, and hidden tools stay unreachable through the
+inner invoke. The reply is `{ok: true, result: <tool result>}`; malformed
+arguments answer `invoke needs tool and object arguments`.
 
 ### Attachments (images in a turn)
 

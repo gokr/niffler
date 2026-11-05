@@ -237,7 +237,7 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 檔案型引擎（`sqlite`）以相同方式強制單一寫入者：一個行程擁有該檔案（flock；行程崩潰時由核心釋放），其他所有行程只講 envelope。`tidb` 沒有可鎖的檔案——叢集按設計就是共享狀態，列鎖加上 rev 計數器在多個 harness 之間仲裁。
 
-`list` 是**一頁**，不是完整檢視：`limit` 預設為 100，並被限制在 1000 以內，回覆帶有 `hasMore` 以及 `nextAfter` id 游標。將 `nextAfter` 作為 `after` 傳回以走完其餘部分——`after` 為排他性，而當 `hasMore` 為 false 時 `nextAfter` 不存在。儲存保留完整歷史，因此一段長對話無法容納於單次呼叫；core 自身的全 kind 讀取（resume、`session_info`、`conversation_delete`）會自動分頁。
+`list` 是**一頁**，不是完整檢視：`limit` 預設為 100，並被限制在 1000 以內，回覆帶有 `hasMore` 以及 `nextAfter` id 游標。將 `nextAfter` 作為 `after` 傳回以走完其餘部分——`after` 為排他性，而當 `hasMore` 為 false 時 `nextAfter` 不存在。儲存保留完整歷史，因此一段長對話無法容納於單次呼叫；core 自身的全 kind 讀取（resume、`session_info`、`conversation_delete`）會自動分頁，並在讀取不完整時失敗關閉：`hasMore: true` 卻沒有前進的游標是錯誤，絕不是資料結束。
 
 儲存契約是對每個引擎執行同一套測試：`make test-store`（預設引擎）、`make test-store-tidb`（需要 `NIF_STORE_TIDB_DSN`，否則印出 SKIP）；`t_store_paging` 釘住 resume 與 migration 所依賴的 `after`/`hasMore`/`nextAfter` 游標語意。
 
@@ -1407,7 +1407,9 @@ git worktree 是同一儲存庫的第二個檢出。Niffler 將其視為一等�
 
 對話的*工作區集合*是它的 primary 加上屬於同一專案的各工作樹；寫入圍籬放行整個集合，
 因此預設情況下工作樹中的對話也能寫 primary。`isolation: "worktree"` 把**宣告**集合
-收窄為對話自身的工作樹，因此對 primary 的寫入會以既有的 `[E_WRITE_OUTSIDE]` 拒絕。
+收窄為對話自身的工作樹加上任何明確的 `/roots` 授權，因此對 primary 之類的自動發現樹的
+寫入會以既有的 `[E_WRITE_OUTSIDE]` 拒絕。授權在隔離下保留，因為這兩類根是不同的實事：
+發現是自動的，而授權是本次對話中人類的明確決定。
 
 - **僅限人類。** 與 `roots` 一樣不在 `session` 工具 schema 中，所以模型無法自行放寬或收窄範圍。
 - **沒有可隔離對象時拒絕。** 工作區是普通檢出或子模組的對話會被拒絕並說明原因，
@@ -1443,7 +1445,7 @@ git worktree 是同一儲存庫的第二個檢出。Niffler 將其視為一等�
 `origin`；**對等**分叉（`agent_fork`，隱藏的客戶端工具）只帶有 `origin`，
 因為沒有任何東西在監督它。
 
-`session_info` 向前回報 `origin`，向後回報 `descendants`（`{sessionId, supervised, origin?}`），
+`session_info` 向前回報 `origin`，向後回報 `descendants`（`{sessionId, supervised, origin?, fork?, closed?}`），
 所以「這次探索產生了什麼？」從起點出發只需一次呼叫。
 
 成功合併後，發起合併對話的 origin 會收到持久的 `worktreemerge` 記錄（來源、工作樹、

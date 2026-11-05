@@ -580,7 +580,9 @@ clamped to 1000, and the reply carries `hasMore` plus a `nextAfter` id cursor.
 Pass `nextAfter` back as `after` to walk the rest — `after` is exclusive, and
 `nextAfter` is absent when `hasMore` is false. The store keeps full histories,
 so a long conversation does not fit in one call; core's own full-kind reads
-(resume, `session_info`, `conversation_delete`) page automatically.
+(resume, `session_info`, `conversation_delete`) page automatically and fail
+closed on a partial read — `hasMore: true` without an advancing cursor is an
+error, never end-of-data.
 
 The store contract is one test run against every engine: `make test-store`
 (the default engine), `make test-store-tidb`
@@ -2623,8 +2625,11 @@ thinks you meant, so the next call is unambiguous.
 A conversation's *workspace set* is its primary plus the trees that belong to the
 same project; the write fence admits the whole set, so by default a conversation
 in a worktree can also write the primary. `isolation: "worktree"` narrows the
-**claim** set to the conversation's own tree, so a write to the primary is
-refused with the existing `[E_WRITE_OUTSIDE]`.
+**claim** set to the conversation's own tree plus any explicit `/roots` grants,
+so a write to a discovered tree such as the primary is refused with the existing
+`[E_WRITE_OUTSIDE]`. Grants survive isolation because the two kinds of root are
+different facts: discovery is automatic, while a grant was a human's deliberate
+decision in this conversation.
 
 - **Human-only.** It is not in the `session` tool's schema, exactly like `roots`,
   so the model cannot widen or narrow its own scope.
@@ -2670,8 +2675,8 @@ idle retirement. A *supervised* fork (`agent_spawn {fork}`) carries both edges �
 supervising it.
 
 `session_info` reports `origin` forward and `descendants` backward
-(`{sessionId, supervised, origin?}`), so "what came of this exploration?" is one
-call from where it started.
+(`{sessionId, supervised, origin?, fork?, closed?}`), so "what came of this
+exploration?" is one call from where it started.
 
 After a successful merge, the merging conversation's origin receives a durable
 `worktreemerge` record (source, worktree, branch, commit, files, target branch).

@@ -437,8 +437,8 @@ See [WIRE.md](WIRE.md) "x-harness schema extensions".
   branch has unmerged commits — and names the flag that overrides it; a dirty
   tree is git's own refusal, surfaced verbatim.
 - `isolation: "worktree"` narrows the write fence to the conversation's own tree
-  (human-only control; refuses outside a linked worktree; reads unnarrowed; not a
-  mutex — path striping is unchanged).
+  plus explicit `/roots` grants (human-only control; refuses outside a linked
+  worktree; reads unnarrowed; not a mutex — path striping is unchanged).
 - `session_info.workspace` reports root/roots/linked/branch/primaryRoot/
   submodule/isolation/writable from the stored header; the same facts ride
   private `__workspace` dispatch context. Neither enters the frozen prompt.

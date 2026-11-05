@@ -99,7 +99,8 @@ So a conversation started in a worktree can:
   cage;
 - write the `main` checkout **too**, because the set is about reach, not about
   isolation — unless the conversation is `isolation: "worktree"`, which narrows
-  the *write* fence to its own tree while leaving the primary readable (§2.1).
+  the *write* fence to its own tree plus explicit `/roots` grants while leaving
+  the primary readable (§2.1).
 
 ### One exception, and it happens to point the right way
 
@@ -116,9 +117,10 @@ roots) is separate 0.6.0 work (PLAN.md pillar 3) rather than part of this one.
 
 `isolation: "worktree"` is a *different* fence from that one, and worth keeping
 apart: isolation narrows what the harness will **claim and admit** (so a guarded
-or unguarded write to the primary is refused with `[E_WRITE_OUTSIDE]`); the bash
-guard narrows what the *process* can see. Turning one on does not turn on the
-other.
+or unguarded write to a discovered tree such as the primary is refused with
+`[E_WRITE_OUTSIDE]`; explicit `/roots` grants survive, because only automatic
+discovery is narrowed); the bash guard narrows what the *process* can see.
+Turning one on does not turn on the other.
 Note also what the guard does *not* do: it does not pass `/roots` grants to the
 launcher, so a granted extra root is writable by the tools and read-only to a
 guarded command.
@@ -246,7 +248,7 @@ work in 0.6.0 is what turns "the set" into a boundary (PLAN.md pillar 3).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `[E_WRITE_OUTSIDE] …` for a path you believe is in the set | either the path really is outside it, or the conversation is `isolation: worktree` and you named a `cwd`/path in the PRIMARY (isolation refuses, by design) | `/workspace` shows `writable`; `/roots add` grants an extra tree, or set `isolation` back to `shared` |
+| `[E_WRITE_OUTSIDE] …` for a path you believe is in the set | either the path really is outside it, or the conversation is `isolation: worktree` and you named a `cwd`/path in a discovered tree such as the PRIMARY (isolation refuses, by design) | `/workspace` shows `writable`; `/roots add` grants an extra tree (grants survive isolation), or set `isolation` back to `shared` |
 | `conversation cwd is immutable once turns exist` | `/workspace <path>` after a chosen workspace | start a conversation *in* the target directory, or grant it as an extra root |
 | A worktree's files show up twice in search or the repo map | both trees are in the set, so both are searched | expected; `isolation` (§2.1) and the census hint in §2.2 reduce it |
 | `git worktree remove` refuses | dirty tree, or the branch is unmerged | commit/discard, then merge or use `-D` |
@@ -458,7 +460,8 @@ rewritten.
 
 A fork's `session_info` says *"seeded from `conv-abc123` at message 84; working
 tree `../myrepo.wt/fix-race` (branch `fix-race`, primary `../myrepo`)"*, and the
-originating conversation lists its descendants (`{sessionId, supervised}`). That
+originating conversation lists its descendants
+(`{sessionId, supervised, origin?, fork?, closed?}`). That
 is what makes the exploration → worktree → merge trail readable instead of three
 unrelated transcripts. Provenance grants no authority: an origin-only fork may
 spawn its own children and keeps its own approvals.
