@@ -12,3 +12,20 @@ document.querySelectorAll("[data-copy-target]").forEach((btn) => {
     window.setTimeout(() => { btn.textContent = "copy"; }, 1600);
   });
 });
+
+// Wide tables and the application diagram overflow only inside their frame.
+// Let a keyboard user inspect them without forcing the whole page sideways.
+document.querySelectorAll("[data-i18n-scroll]").forEach((scroller) => {
+  const scrollHorizontally = (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    let delta = 0;
+    if (event.key === "ArrowRight") delta = 80;
+    else if (event.key === "ArrowLeft") delta = -80;
+    else if (event.key === "Home") delta = -scroller.scrollWidth;
+    else if (event.key === "End") delta = scroller.scrollWidth;
+    else return;
+    event.preventDefault();
+    scroller.scrollBy({ left: delta, behavior: "smooth" });
+  };
+  scroller.addEventListener("keydown", scrollHorizontally);
+});
