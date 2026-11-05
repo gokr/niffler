@@ -1229,8 +1229,12 @@ through model discovery/invoke and nested session calls.
 Both peer and supervised forks record immutable `sessionmeta.origin`:
 `{session, atSeq, reason:"fork"|"worktree", worktree?:{path,branch,primary}}`.
 `atSeq` is the source message id at the balanced cut. Only supervised forks
-also record `parent`. Origin is provenance, never authority: it grants no
-continuation, approval routing, depth or idle-retirement relationship.
+also record `parent`. Origin is provenance, not supervision: it grants no
+continuation, approval routing, depth or idle-retirement relationship. Its sole
+authority is worktree retirement — a peer fork may remove only the exact tree
+its `origin.worktree` recorded creating, and core verifies that lineage from the
+store, never from a tool argument. New peer forks use a `conv-…` session id;
+supervised forks keep `agent-…`, and existing ids are not renamed.
 `session_info` reports `origin` forward and a deduplicated `descendants` array
 backward (`{sessionId,supervised,origin?,fork?,closed?}`). `children` retains its
 supervision-only meaning.
