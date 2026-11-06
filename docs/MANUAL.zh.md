@@ -1234,6 +1234,10 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
   拒绝它们会把工作树变成牢笼。
 - **它是围栏，不是互斥锁。** 同一棵树中的两个会话仍可在不同文件上并行 ——
   `locks` 保持路径分条。
+- **两个生命周期调用可以触及 primary。** `git_merge` 与
+  `git_worktree remove` 声明一次性 primary 目标；只有当 `repo` 恰为链接会话的
+  `primaryRoot` 时 core 才放行。该声明仅限本次调用，不改变 `isolation` 或
+  `writable`，因此针对 primary 的 `bash` 和 `edit` 仍被拒绝。
 
 持久化在 header 中，恢复时还原，调用之间可变，并在会话状态回读和
 `session_info.workspace` 中报告为 `isolation`。
@@ -1259,7 +1263,12 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
 它**只是溯源，绝非权限**：不授予继续权、不路由审批、不豁免深度、不做空闲退休。
 *受监督*的分叉（`agent_spawn {fork}`）同时携带两条边 —— 监督用 `parent`、溯源用
 `origin`；**对等**分叉（`agent_fork`，隐藏的客户端工具）只携带 `origin`，
-因为没有任何东西在监督它。
+因为没有任何东西在监督它。新的对等分叉使用普通的 `conv-…` id —— `agent-…`
+仍是新建受监督子代理的前缀 —— 既有 id 不会被重命名。
+
+它唯一的狭窄用途是退休：对等分叉可以移除其记录中的 origin 为它创建的那棵确切
+工作树，依据 `sessionmeta.origin` 而非工具参数校验。无关会话、同级树、脏树与
+未合并的工作仍会被拒绝。
 
 `session_info` 向前报告 `origin`，向后报告 `descendants`（`{sessionId, supervised, origin?}`），
 所以"这次探索产生了什么？"从起点出发只需一次调用。

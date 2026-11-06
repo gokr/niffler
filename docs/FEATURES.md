@@ -435,7 +435,14 @@ See [WIRE.md](WIRE.md) "x-harness schema extensions".
   `git.mutations` setting.
 - Removal refuses on evidence — another live conversation owns the tree, or the
   branch has unmerged commits — and names the flag that overrides it; a dirty
-  tree is git's own refusal, surfaced verbatim.
+  tree is git's own refusal, surfaced verbatim. A peer may retire the exact tree
+  its origin created for it, checked against durable lineage; unrelated
+  conversations, sibling trees, dirty trees and unmerged branches are still
+  refused.
+- `git_merge` and `git_worktree` declare a per-call `writes.primary` target,
+  admitted only when `repo` is exactly the linked conversation's `primaryRoot`.
+  The claim does not change root grants or isolation, so `bash`/`edit` against
+  the primary stay fenced.
 - `isolation: "worktree"` narrows the write fence to the conversation's own tree
   (human-only control; refuses outside a linked worktree; reads unnarrowed; not a
   mutex — path striping is unchanged).
