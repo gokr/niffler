@@ -432,7 +432,7 @@ See [WIRE.md](WIRE.md) "x-harness schema extensions".
 - `git_worktree_list` / `git_worktree {add,remove,prune}` and
   `git_merge_preview` / `git_merge {start,abort}` / `git_commit`, all
   approval-gated except the two read tools, and gated as a group by the declared
-  `git.mutations` setting.
+  `git.mutations` setting (on by default; off keeps the component read-only).
 - Removal refuses on evidence — another live conversation owns the tree, or the
   branch has unmerged commits — and names the flag that overrides it; a dirty
   tree is git's own refusal, surfaced verbatim.
