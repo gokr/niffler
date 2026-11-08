@@ -4795,7 +4795,16 @@ proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
   # read as "no request", which is the rule a client must not have to know —
   # omit the key to leave the workspace alone.
   if not explicit: return refusal
-  if resolved.path == entry.workspace: return ""  # nothing to do
+  if resolved.path == entry.workspace:
+    # Explicitly choosing the default is still a choice, even though there is
+    # no path change. Persist it so a later resume cannot silently move it.
+    if not workspaceChosen(ct, sessionId):
+      try:
+        ct.updateConversationHeader(sessionId,
+          %*{"cwd": entry.workspace, "cwdPinned": true})
+      except CatchableError as e:
+        return "cannot persist workspace: " & e.msg
+    return ""
   let hasTurns = conversationHasTurns(ct, sessionId)
   let pristine = not hasTurns and
     (entry.messages.len == 0 or
