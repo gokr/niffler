@@ -6193,6 +6193,11 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       let previousWorkspace = ct.nested.workspace
       let previousCaller = ct.approval.caller
       let previousMode = if ct.approval != nil: ct.approval.approvalMode else: ""
+      # Client controls run outside a turn. A previous stop must not poison
+      # their approval; queued controls are also ignored by the live-turn guard.
+      if ct.steerStream != nil:
+        pumpSteer(ct, discardControls = true)
+        ct.steerStream.cancelRequested = false
       let previousIsolation = ct.nested.isolation
       sessions[sessionId] = entry
       ct.nested.session = sessionId

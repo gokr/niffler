@@ -1015,6 +1015,13 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   work is not stopped. A generic `ev.cancel.<call-id>` subject remains a
   possible future addition.
 
+A stop applies to a turn that is running when it arrives, or not at all. A
+session call carrying `invoke` (a client tool control, not a turn) therefore
+never consumes one: a stale `__cancel` left on the steer channel is discarded
+at the control's entry, and a control arriving while its approval waits is
+ignored rather than read as the human's verdict. Live turns keep the whole
+contract above, and a denial a human actually made still refuses the tool.
+
 ## Settlement notices
 
 A background subagent (`agent_spawn`) that reaches a terminal state writes a
