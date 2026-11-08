@@ -45,6 +45,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   preserving creation time, title and unrelated metadata across read failures
   and concurrent updates. Header creation is also create-only.
 
+### Added
+
+- `git_worktree_list {status: true}` reports each tree's cleanliness
+  (`clean`, `changed`, `untracked`) and its divergence from the primary's
+  current branch (`ahead`/`behind`, the compared ref named once as `compare`),
+  measured by running git in that tree. Opt-in because it costs two extra git
+  calls per tree; the default listing stays metadata-only.
+
 ### Changed
 
 - **The Chinese manuals (`docs/MANUAL.zh.md`, `docs/MANUAL.zh-TW.md`) are back
