@@ -286,7 +286,7 @@ four things a user hits first.
 The authoritative plan is [WORKTREES.md](research/WORKTREES.md) (basis
 `v0.5.0`): nine independently shippable slices with their tests, plus
 [WORKTREES-TUTORIAL.md](WORKTREES-TUTORIAL.md) for the workflows in operator
-language (its Part 1 is what ships today). Prior art:
+language (both parts document shipped behaviour). Prior art:
 [CODEWHALE.md](research/CODEWHALE.md) D1, [OPENHANDS.md](research/OPENHANDS.md)
 §3.15. This section records only what 0.6.0 requires of it and why it is not
 optional.
