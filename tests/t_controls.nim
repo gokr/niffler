@@ -787,6 +787,8 @@ proc main() =
       check("client invoke: approval still required after stop",
             question != nil, $question)
       if question != nil:
+        check("client invoke: approval carries conversation identity",
+              question{"sessionId"}.getStr("") == sid, $question)
         nc.publish("svc.session." & sid & ".steer",
           Envelope(v: 1, id: newId(), kind: ekEvent,
                    payload: %*{"__cancel": true}).encode())

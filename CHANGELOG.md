@@ -27,8 +27,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Stale stop controls no longer deny `/worktree` and other client tool
-  approvals after a cancelled turn; live-turn cancellation and explicit human
-  denials remain enforced.
+  approvals after a cancelled turn. Client tool approvals carry the conversation
+  identity, preserving per-conversation grants; live-turn cancellation and
+  explicit human denials remain enforced.
 - New independent peer forks (including `/worktree add` forks) use `conv-…`
   identifiers instead of the supervised subagent's `agent-…` prefix. Existing
   conversations are not renamed.

@@ -42,9 +42,9 @@ as an explicit per-call target; merge/close take real leases without changing
 root grants or the bash/edit fence. Peer close checks durable origin metadata
 for the exact tree, preserving unrelated-owner, dirty and unmerged guards.
 The git contract covers the isolated client-control path and primary contention.
-Client-control approvals now ignore stale turn stops; the controls contract
-covers post-cancel approval, denial and stops arriving during a non-turn
-approval.
+Client-control approvals now ignore stale turn stops and retain conversation
+identity; the controls contract covers post-cancel approval, denial and stops
+arriving during a non-turn approval.
 
 ## Larger features
 
