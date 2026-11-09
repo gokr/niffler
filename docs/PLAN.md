@@ -268,13 +268,47 @@ Ordering rule for everything below: **a boundary is not shipped until a test
 proves the refusal, and the refusal text says which layer refused.**
 Availability is never enforcement; a skipped Mac test is not a pass.
 
-### P0. Mid-turn stop — fixed locally, remote acceptance open
+### P0. Mid-turn stop — implemented; remote acceptance remains
 
-`session {stop: true}` is served by the busy pump instead of being refused
-mid-turn; `t_controls` block 9 covers a running turn. The stale idle-steer
-cancellation and post-stop client-control approval fixes also landed. Fleet's
-queued and dispatched cancellation paths have contracts, but a stop against a
-real running peer and its observed settlement remain an open acceptance gate.
+`pumpBusyCall` (`core/dispatch.nim`) now serves `session {stop: true}` before
+its ordinary `busy` refusal. It publishes the cancel control without re-entering
+`handleSessionCall`; the reply says `stopped: "requested"`, not that execution
+has stopped. `tests/t_controls.nim` block 9 waits for a real bash dispatch,
+requests stop through `svc.core.call`, checks the immediate reply, then observes
+the running turn end as cancelled.
+
+This closes the local hotfix, not Fleet acceptance. Still open: run
+`fleet_task_cancel` against a dispatched turn on a real peer and observe the
+durable settlement at the requester (pillar 1, F2). No fresh runtime test is
+claimed by this source-status reconciliation.
+
+### Reliability prerequisite — diagnose and settle session request timeouts
+
+Reported TUI symptom: `session turn: request svc.core.call: nats: timeout`.
+Current client source waits 31 minutes in `sessionRequest`; the Go SDK wraps a
+NATS request timeout with that exact subject. It means no terminal reply arrived,
+not proof that the turn stopped or that a particular component failed.
+
+Source findings to fix before the next large feature:
+
+- `routeSessionCall` sets `deadline: epochTime() + 1800.0 * 1000.0`, while
+  `pumpSessionForwards` compares it to `epochTime()` in seconds. The intended
+  30-minute forwarding deadline is about 21 days, so the TUI can time out first
+  instead of receiving core's named forwarding error.
+- The TUI's first-turn path retries any `sessionRequest` error after removing
+  `cwd`. Restrict retry to a proven safe refusal; a transport timeout has an
+  unknown execution outcome and must not resubmit content blindly.
+- Correlate request/session/runner identity and elapsed time across client and
+  core, and reconcile live/stored turn state after a lost reply. Never present a
+  transport timeout as confirmed cancellation. Check runner death, bus recovery
+  and lost reply separately from an actually long turn or approval wait.
+
+Gate: deterministic short-deadline forwarding expiry (no 31-minute sleep),
+runner loss/lost-reply coverage, no second content submission after an unknown
+outcome, and preservation of separate-conversation concurrency and mid-turn
+stop. Match the installed client's version and incident timestamp/session before
+claiming these source findings explain a particular occurrence. No runtime fix
+or live reproduction is claimed by this planning update.
 
 ### Pillar 1 — Fleet: from "works" to "trusted"
 
@@ -399,8 +433,14 @@ slices 1–3, plus the hardening bundle from [STEAL-WAVE-2](research/STEAL-WAVE-
 #7. Current behavior is [SANDBOX-BASH-STATUS.md](research/SANDBOX-BASH-STATUS.md);
 the backend argument is [SANDBOX-MATRIX.md](research/SANDBOX-MATRIX.md) §5.
 
+Next engineering task: [Sandbox next slice](research/SANDBOX-NEXT-SLICE.md).
+Stage persistence and propagation first, then a strict Linux bash reachable
+set (items 1 → 2 → 4). This is not a whole-conversation sandbox until filesystem
+and escape-tool paths are covered too; item 3 remains a release gate.
+
 1. **Persist the policy.** Off/on, read roots, write roots, deny rules — per
-   conversation, operator default via a `config` domain, human-only update seam,
+   conversation, instance-scoped operator default with an authoritative owner
+   (not a bash-owned mirror of core policy), human-only update seam,
    subagent inheritance. A running command settles or is cancelled before a
    change takes effect.
 2. **Propagate uniformly.** One decision through serial, parallel, `invoke` and
@@ -411,8 +451,9 @@ the backend argument is [SANDBOX-MATRIX.md](research/SANDBOX-MATRIX.md) §5.
    previews, undo data and lazy instructions, and the parent chain of new files
    rather than a lexical prefix.
 4. **Kill the readable host root in bwrap.** Bind only reviewed runtime and data
-   roots so the promise becomes "this command can only SEE and WRITE its
-   workspace". Per SANDBOX-MATRIX §5 this requirement, not write protection, is
+   roots so reads reach only approved data plus reviewed runtime roots, and
+   writes reach only approved writable data and private scratch. Per
+   SANDBOX-MATRIX §5 this requirement, not write protection, is
    what selects the backend; keep an explicit, honestly-labelled compat mode for
    toolchains.
 5. **Seatbelt** — generate `.sbpl` profiles, spawn via `sandbox-exec`, same policy
@@ -437,15 +478,17 @@ the backend argument is [SANDBOX-MATRIX.md](research/SANDBOX-MATRIX.md) §5.
 
 ### Pillar 4 — Mid-turn is a first-class state
 
-The client has historically refused 18 commands while a turn runs, in several
-styles; core's busy pump refuses most session operations but now serves `stop`.
-Typed text steers and ESC cancels. Recheck the current client surface, then
-classify every session op once, in one table, and make each class's behavior
-explicit:
+**Status: proposed work, not implemented controls or a shipped queue.** Core's
+busy pump serves `stop` (P0 above) and otherwise refuses session calls with
+`busy`; the broader answer-now class below is a target, not current behavior.
+`context_status` is an existing separate read surface, not proof that session
+readbacks already work mid-turn. The client has multiple local busy refusals;
+typed text steers and ESC cancels. No `sessionqueue` implementation exists yet.
+Classify every session op once, in one table, and implement each class explicitly:
 
 | Class | Ops | Mid-turn behavior |
 |---|---|---|
-| Answer now | bare status readback, `export`, `approvals` read, `stop` | served from a SNAPSHOT in the busy pump — never by re-entering `handleSessionCall`. `context_status` and `svc.core.call` already answer mid-turn this way, so the machinery is proven |
+| Answer now | bare status readback, `export`, `approvals` read, `stop` | target: snapshot replies in the busy pump, never re-entering `handleSessionCall`. Only `stop` is served there today; it needs no session-state snapshot |
 | Queue, apply at the boundary | `compact`, `model`, `thinking`, `approvals` set, `limits`, `title`, `cwd` repin, `roots`, `profile`/`toolset` (next render) | accepted, persisted, applied when the turn settles, with a visible notice |
 | Refuse precisely | a second `content` turn | stays refused in 0.6.0. **Decided:** queueing turns is deferred to 0.6.1 — the controls are safe and clearly right, a second turn changes what typing mid-turn means |
 
@@ -453,7 +496,7 @@ explicit:
 policy updates apply BETWEEN TOOL CALLS, never retroactively to a running
 command. That is a finer seam than the queue's and is named as such.
 
-**The queue.** Store-backed in core (`sessionqueue` records, monotonic sequence),
+**The proposed queue.** To be built store-backed in core (`sessionqueue` records, monotonic sequence),
 not client-side: a client queue dies with the TUI process and a resume would
 show nothing.
 

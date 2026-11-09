@@ -1,9 +1,12 @@
 # Conversation sandbox — agreed contract and implementation sequence
 
-Status: agreed design; implementation has started with the pure versioned
-snapshot model (`sdk/niffler/sandboxpolicy.nim`) and its contract tests. It is
-not yet connected to session persistence, controls, dispatch or enforcement.
-Defaults, inheritance and configured/not-enforced status are model-level only.
+Status: agreed design; the pure versioned snapshot model
+(`sdk/niffler/sandboxpolicy.nim`) and its contract tests exist. `/roots` already
+uses this codec for durable granted-root records, with agent grant inheritance;
+that is not persisted effective sandbox enablement or deny-rule enforcement.
+The full policy is not yet wired through session controls and uniform dispatch.
+Defaults and configured/not-enforced sandbox status remain model-level only.
+The next staged implementation task is [SANDBOX-NEXT-SLICE.md](SANDBOX-NEXT-SLICE.md).
 This supersedes conflicting policy
 choices in SANDBOX-PLAN.md and the experimental sandbox branch. The existing
 implementation status is recorded in SANDBOX-BASH-STATUS.md; it must not be
@@ -398,6 +401,13 @@ rules hide in the working tree. A writable root that contains the harness's own
 source remains a deployment risk the policy cannot fix.
 
 ## Implementation slices
+
+These enumerate the target, not completed work. The immediate delivery order in
+[SANDBOX-NEXT-SLICE.md](SANDBOX-NEXT-SLICE.md) splits policy propagation out of
+slice 2, then stages strict Linux bash before full filesystem enforcement.
+Partial delivery must report configured/not-enforced or shell-only scope; it
+must not claim whole-conversation confinement. Runtime roots and continued-child
+revocation semantics still need explicit review before their implementation.
 
 1. Persisted conversation policy, operator default and human update seam;
    inherited subagent policy; tests of off/on/off, resume and cross-session
