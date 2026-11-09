@@ -343,6 +343,46 @@ proc main() =
   check("the feat tree is listed with its branch", sawFeat, $wtList1{"trees"})
   check("the ledger reports the owning conversation", sawOwner, $wtList1{"trees"})
 
+  # --- status: true — the dirt and divergence a human needs to decide ------
+  # The listing above is git's metadata only (cheap, default). Asking for
+  # status adds the two facts a reader cannot derive from it: is THIS tree
+  # clean, and how far is it from the branch it was cut from.
+  doAssert sh("git -C " & quoteShell(wtPath) &
+              " rm -q a.txt && git -C " & quoteShell(wtPath) &
+              " commit -q -m \"tree work\"").exitCode == 0
+  writeFile(repo / "untracked.txt", "scratch\n")
+  let wtStatus = call(nc2, "git", "git_worktree_list",
+                      %*{"repo": repo, "status": true}, 60_000)
+  check("status:true still lists every tree",
+        wtStatus{"trees"}.len == 3, $wtStatus{"trees"})
+  check("status:true names the ref it compared against",
+        wtStatus{"compare"}.getStr("") == "main", $wtStatus{"compare"})
+  var featOk, primaryOk = false
+  for t in wtStatus{"trees"}:
+    let p = t{"path"}.getStr("")
+    if p == wtPath:
+      # The tree committed its own work: one commit main does not have, and a
+      # clean working directory.
+      featOk = t{"clean"}.getBool(false) and t{"ahead"}.getInt(-1) == 1 and
+               t{"behind"}.getInt(-1) == 0
+    elif p == repo:
+      # The primary has a scratch file: dirty, and untracked is called out
+      # separately from tracked changes.
+      primaryOk = not t{"clean"}.getBool(true) and
+                  t{"untracked"}.getInt(-1) == 1 and
+                  t{"changed"}.getInt(-1) == 0
+  check("status:true reports a tree's cleanliness and commits ahead",
+        featOk, $wtStatus{"trees"})
+  check("status:true separates untracked from tracked changes",
+        primaryOk, $wtStatus{"trees"})
+  # Default stays cheap: no status keys at all when it was not asked for.
+  let plainListing = call(nc2, "git", "git_worktree_list",
+                          %*{"repo": repo}, 30_000)
+  check("without status the listing carries no dirt fields",
+        plainListing{"trees"}[0]{"clean"} == nil and
+        plainListing{"compare"} == nil, $plainListing)
+  removeFile(repo / "untracked.txt")
+
   # --- remove: refuses an unmerged branch, then succeeds with force -------
   writeFile(wtPath / "a.txt", "tree change\n")
   doAssert sh("git -C " & quoteShell(wtPath) & " add -A && git -C " &

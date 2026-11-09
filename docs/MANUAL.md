@@ -2596,7 +2596,7 @@ Enable the mutation verbs with the declared setting `git.mutations` (or
 
 | Tool | Approval | What it does |
 |---|---|---|
-| `git_worktree_list {repo?}` | none (read) | every worktree: path, branch, HEAD, lock (and reason), prunable, whether it is the tree you are calling from, and — from the ownership ledger — which conversation created it |
+| `git_worktree_list {repo?, status?}` | none (read) | every worktree: path, branch, HEAD, lock (and reason), prunable, whether it is the tree you are calling from, and — from the ownership ledger — which conversation created it. `status: true` adds each tree's `clean`/`changed`/`untracked` and its `ahead`/`behind` against the primary's current branch (named once as `compare`), at two extra git calls per tree |
 | `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | always | `add` cuts `<repo>.wt/<name>` from `base` (default: the primary's current branch), locks it and records the owner; `remove` retires a tree; `prune` clears records for trees deleted by hand |
 | `git_merge_preview {repo?, into?, from_ref?}` | none (read) | what merging would do, computed by `git merge-tree` without touching a working tree: clean (with `ahead`/`behind` and a stat), or the conflicting paths |
 | `git_merge {op, repo, into?, from_ref?, strategy?, allow_dirty?}` | always | `start` merges into the checked-out branch; `abort` unwinds a conflicted merge |
@@ -2689,6 +2689,17 @@ between them leaves a successful merge whose origin is never told. The next
 
 `/worktree [add NAME [--fork]|merge|rm PATH|close]`, plus `· isolated` in the
 bottom row and the isolation line in `/workspace`.
+
+A bare `/worktree` is the status view, and it answers the question a human opens
+it for rather than dumping the tool's JSON: the conversation's workspace (and
+whether it is the primary or a linked tree), the primary, the isolation scope,
+the origin of a fork, the roots granted on top of the workspace, and one row per
+tree with `*` marking this conversation's. Each row carries the dirt and the
+divergence the next decision needs — `clean` or `dirty (2 changed, 1 untracked)`,
+`3 ahead of main`, `prunable (directory gone — rm or prune)`, the owning
+conversation — so `close`/`rm`/`merge` can be chosen without opening another
+command. It asks git for `status: true`, which is why the view is a report and
+the tool's default listing stays cheap.
 
 `add` creates the tree and then picks an outcome, saying which: **move** when the
 conversation is pristine or its workspace was never chosen and the tree is clean;

@@ -26,6 +26,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Stale stop controls no longer deny `/worktree` and other client tool
+  approvals after a cancelled turn. Client tool approvals carry the conversation
+  identity, preserving per-conversation grants; live-turn cancellation and
+  explicit human denials remain enforced.
 - New independent peer forks (including `/worktree add` forks) use `conv-…`
   identifiers instead of the supervised subagent's `agent-…` prefix. Existing
   conversations are not renamed.
@@ -40,6 +44,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Conversation header updates use strict reads and compare-and-set retries,
   preserving creation time, title and unrelated metadata across read failures
   and concurrent updates. Header creation is also create-only.
+
+### Added
+
+- `git_worktree_list {status: true}` reports each tree's cleanliness
+  (`clean`, `changed`, `untracked`) and its divergence from the primary's
+  current branch (`ahead`/`behind`, the compared ref named once as `compare`),
+  measured by running git in that tree. Opt-in because it costs two extra git
+  calls per tree; the default listing stays metadata-only.
 
 ### Changed
 

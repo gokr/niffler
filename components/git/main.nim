@@ -566,7 +566,57 @@ proc publishWorktreeChanged(primary: string) =
 
 # --- the read half ---------------------------------------------------------
 
-proc worktreeListImpl(repo: string): JsonNode =
+proc treeCompareRef(primary: string): string =
+  ## The ref every tree's divergence is measured against: the branch the PRIMARY
+  ## checkout has out. That is the same default `add` branches from, so "2 ahead"
+  ## means "two commits this tree has that the tree it was cut from does not".
+  ## "" when the primary is on a detached HEAD — there is nothing to compare to,
+  ## and inventing one (a remote HEAD, a guess) would report a number nobody
+  ## can act on.
+  let r = runGit(repoArgs(primary) & gitBase &
+                 @["rev-parse", "--abbrev-ref", "HEAD"], 15_000)
+  if r.code != 0: return ""
+  let name = r.output.splitLines()[0].strip()
+  if name.len == 0 or name == "HEAD": "" else: name
+
+proc worktreeFacts(path, compare: string): JsonNode =
+  ## Cleanliness and divergence for ONE tree, from git run IN that tree (the
+  ## whole point: `git -C <tree> status` answers about the tree, not the caller).
+  ##
+  ## Best effort by design. A prunable record (the directory was deleted by
+  ## hand) or a tree git cannot read reports nothing rather than failing the
+  ## listing — one broken tree must not blind a human to the others.
+  ##
+  ## `changed` and `untracked` are separate because they mean different things
+  ## to a reader: tracked changes are work in progress, untracked entries are
+  ## often build output. `clean` is git's own convention (neither present), so a
+  ## tree cannot be called clean while `status --porcelain` prints something.
+  if not dirExists(path): return nil
+  result = newJObject()
+  let st = runGit(repoArgs(path) & gitBase &
+                  @["status", "--porcelain=v1"], 30_000)
+  if st.code == 0:
+    var changed = 0
+    var untracked = 0
+    for line in st.output.splitLines():
+      if line.strip().len == 0: continue
+      if line.startsWith("??"): inc untracked else: inc changed
+    result["clean"] = %(changed == 0 and untracked == 0)
+    result["changed"] = %changed
+    result["untracked"] = %untracked
+  if compare.len > 0:
+    let counts = runGit(repoArgs(path) & gitBase &
+                        @["rev-list", "--left-right", "--count",
+                          compare & "...HEAD"], 30_000)
+    if counts.code == 0:
+      let parts = counts.output.strip().splitWhitespace()
+      if parts.len >= 2:
+        try:
+          result["behind"] = %parseInt(parts[0])
+          result["ahead"] = %parseInt(parts[1])
+        except ValueError: discard
+
+proc worktreeListImpl(repo: string, withStatus = false): JsonNode =
   let target = repoDir(repo)
   let shape = checkoutShape(target)
   if shape.kind == ckNone:
@@ -576,6 +626,10 @@ proc worktreeListImpl(repo: string): JsonNode =
   let ledger = ledgerAll(if shape.primaryRoot.len > 0: shape.primaryRoot
                          else: target)
   let current = normalizeRoot(target)
+  let primaryRoot = if shape.primaryRoot.len > 0: shape.primaryRoot else: current
+  # One lookup, shared by every tree: all of them are compared against the same
+  # branch, and asking git once keeps the listing to one extra call per tree.
+  let compare = if withStatus: treeCompareRef(primaryRoot) else: ""
   for t in worktrees(target):
     let p = normalizeRoot(t.path)
     var entry = %*{"path": p, "branch": t.branch, "head": t.head,
@@ -589,12 +643,19 @@ proc worktreeListImpl(repo: string): JsonNode =
                             "state": d{"state"}.getStr(""),
                             "createdAt": d{"createdAt"}.getFloat(0.0)}
         break
+    if withStatus:
+      let facts = worktreeFacts(p, compare)
+      if facts != nil:
+        for key, value in facts: entry[key] = value
     trees.add entry
-  %*{"exit_code": 0, "ok": true,
-     "primary": (if shape.primaryRoot.len > 0: shape.primaryRoot else: current),
-     "container": worktreeContainer(
-        if shape.primaryRoot.len > 0: shape.primaryRoot else: current),
-     "trees": trees}
+  result = %*{"exit_code": 0, "ok": true,
+              "primary": primaryRoot,
+              "container": worktreeContainer(primaryRoot),
+              "trees": trees}
+  if withStatus:
+    result["compare"] = %compare
+    result["comparedAgainst"] = %(if compare.len > 0: compare
+                                 else: "(primary has a detached HEAD)")
 
 # --- op: add ---------------------------------------------------------------
 
@@ -1231,7 +1292,7 @@ if mutationsEnabled():
                 "effect": "read",
                 "workspace": {"cwdField": "repo"},
                 "hint": "List this repository's git worktrees, including which conversation owns each one — use before creating or removing a tree, or to see whether your work should happen in a separate tree."}):
-    proc git_worktree_list(repo: string = ""): JsonNode =
+    proc git_worktree_list(repo: string = "", status: bool = false): JsonNode =
       ## List every worktree of this repository: path, branch, HEAD, whether
       ## it is locked (and why), whether it is prunable, whether it is the
       ## tree you are calling from, and — from the ownership ledger — which
@@ -1239,12 +1300,24 @@ if mutationsEnabled():
       ## container path and existing names, and before `remove` to confirm
       ## nobody else is working in a tree.
       ##
+      ## Pass `status: true` when the DIRT of the trees matters — deciding
+      ## whether a tree can be retired, checking what a sibling conversation
+      ## has already changed, or before merging back. Each tree then also
+      ## reports `clean`, `changed` (tracked files) and `untracked`, plus
+      ## `ahead`/`behind` against the primary's current branch (the branch a
+      ## tree is cut from, named once as `compare`). It costs two extra git
+      ## calls per tree, which is why it is opt-in.
+      ##
       ## The worktree flow this belongs to: cut a tree for experimental or
       ## parallel work, work there (its writes do not collide with the
       ## primary's), then merge back with `git_merge` and retire it. A tree is
       ## always a SIBLING of the repository (`<repo>.wt/<name>`), never inside
       ## it.
-      worktreeListImpl(repo)
+      ## - repo: Repository directory (defaults to the active conversation
+      ##   workspace; relative paths resolve against the harness root)
+      ## - status: also report each tree's cleanliness and divergence from the
+      ##   primary's current branch (default false)
+      worktreeListImpl(repo, status)
 
   comp.tool(%*{"timeoutMs": 120_000, "onDemand": true, "effect": "write",
                 "approval": "always", "sessionId": true,

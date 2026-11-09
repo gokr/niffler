@@ -6200,14 +6200,21 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         return %*{"error": "invoke needs tool and object arguments"}
       let previousSession = ct.nested.session
       let previousWorkspace = ct.nested.workspace
-      let previousCaller = ct.approval.caller
+      let previousCaller = if ct.approval != nil: ct.approval.caller else: ""
+      let previousApprovalSession = if ct.approval != nil: ct.approval.session else: ""
       let previousMode = if ct.approval != nil: ct.approval.approvalMode else: ""
+      # Client controls run outside a turn. A previous stop must not poison
+      # their approval; queued controls are also ignored by the live-turn guard.
+      if ct.steerStream != nil:
+        pumpSteer(ct, discardControls = true)
+        ct.steerStream.cancelRequested = false
       let previousIsolation = ct.nested.isolation
       sessions[sessionId] = entry
       ct.nested.session = sessionId
       ct.nested.workspace = entry.workspace
       if ct.approval != nil:
         ct.approval.caller = caller
+        ct.approval.session = sessionId
         ct.approval.approvalMode = entry.approvalMode
       ct.nested.isolation = entry.isolationScope
       defer:
@@ -6215,7 +6222,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         ct.nested.isolation = previousIsolation
         ct.nested.session = previousSession
         ct.nested.workspace = previousWorkspace
-        if ct.approval != nil: ct.approval.caller = previousCaller
+        if ct.approval != nil:
+          ct.approval.caller = previousCaller
+          ct.approval.session = previousApprovalSession
       return %*{"ok": true, "result": ct.dispatchToolCall("invoke", request)}
     var status = %*{
       "sessionId": sessionId,

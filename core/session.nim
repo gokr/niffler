@@ -168,7 +168,9 @@ proc main() =
     pumpAdvise(ct)
     pumpNested(ct)
   approval.cancelled = proc(): bool =
-    ct.steerStream != nil and ct.steerStream.cancelRequested
+    # Stop controls belong to a live turn, not a later client tool control.
+    ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
+      ct.steerStream != nil and ct.steerStream.cancelRequested
   # Readiness signal for the system's ensureRunner: presence in the catalog.
   let reg = %*{"name": name, "version": "0.1.0", "pid": getCurrentProcessId(),
                "tools": newJArray()}
