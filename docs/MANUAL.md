@@ -1447,15 +1447,18 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   `/workspace` repin — and the header records that decision (`cwdPinned`); a
   control call (a status readback, a model pin) that merely creates the header
   does not write one. A workspace that was never chosen — the header still
-  names the harness-root default — stays repinnable even after turns have run,
-  which is the way out of a conversation anchored at the wrong tree by that
-  fallback. Once a workspace IS chosen it is immutable after the first turn,
-  because a resume must resolve context and paths exactly as the original turn
-  did. While the conversation is still pristine (no turn anywhere — asked of
-  the store, not of the runner's memory) an explicit `cwd` also re-resolves the
-  constitution: nothing has reached a provider, so there is no cached prompt
-  prefix to invalidate. An empty `cwd` is not a choice — it is refused rather
-  than read as the harness root, so omit the key to leave the workspace alone.
+  names the harness-root default and carries no pin — stays repinnable even
+  after turns have run, which is the way out of a conversation anchored at the
+  wrong tree by that fallback. An explicit request for the path already in
+  force is still a choice: it persists the pin, so the default becomes chosen
+  like any other workspace. Once a workspace IS chosen it is immutable after
+  the first turn, because a resume must resolve context and paths exactly as
+  the original turn did. While the conversation is still pristine (no turn
+  anywhere — asked of the store, not of the runner's memory) an explicit `cwd`
+  also re-resolves the constitution: nothing has reached a provider, so there
+  is no cached prompt prefix to invalidate. An empty `cwd` is not a choice — it
+  is refused rather than read as the harness root, so omit the key to leave the
+  workspace alone.
   The `session` status readback reports `cwd` and `cwdPinned`, so a client can
   say which case applies before hitting the refusal. Session runners rewrite
   path-shaped tool arguments at dispatch: bash runs with `cwd` set to the
@@ -2596,7 +2599,7 @@ Enable the mutation verbs with the declared setting `git.mutations` (or
 
 | Tool | Approval | What it does |
 |---|---|---|
-| `git_worktree_list {repo?, status?}` | none (read) | every worktree: path, branch, HEAD, lock (and reason), prunable, whether it is the tree you are calling from, and — from the ownership ledger — which conversation created it. `status: true` adds each tree's `clean`/`changed`/`untracked` and its `ahead`/`behind` against the primary's current branch (named once as `compare`), at two extra git calls per tree |
+| `git_worktree_list {repo?, status?}` | none (read) | every worktree: path, branch, HEAD, lock (and reason), prunable, whether it is the tree you are calling from, and — from the ownership ledger — which conversation created it. `status: true` adds each tree's `clean`/`changed`/`untracked` and its `ahead`/`behind` against the primary's current branch (named once as `compare`, with `comparedAgainst` explaining an empty compare), at two extra git calls per tree |
 | `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | always | `add` cuts `<repo>.wt/<name>` from `base` (default: the primary's current branch), locks it and records the owner; `remove` retires a tree; `prune` clears records for trees deleted by hand |
 | `git_merge_preview {repo?, into?, from_ref?}` | none (read) | what merging would do, computed by `git merge-tree` without touching a working tree: clean (with `ahead`/`behind` and a stat), or the conflicting paths |
 | `git_merge {op, repo, into?, from_ref?, strategy?, allow_dirty?}` | always | `start` merges into the checked-out branch; `abort` unwinds a conflicted merge |

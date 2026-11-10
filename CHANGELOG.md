@@ -26,6 +26,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Explicitly choosing the default workspace now pins it in the header, so a
+  resumed conversation cannot silently move elsewhere; the immutability rule
+  after turns then applies as for any other choice.
 - Stale stop controls no longer deny `/worktree` and other client tool
   approvals after a cancelled turn. Client tool approvals carry the conversation
   identity, preserving per-conversation grants; live-turn cancellation and
