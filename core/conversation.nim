@@ -22,12 +22,18 @@ import ../sdk/niffler/jsonx
 import ../sdk/niffler/agentdefs
 import catalog
 import compaction
+import notices
 import dispatch
 import admission
 import taskpolicy
 import ../sdk/niffler/codingartifact
 import attachments
 import approval
+# The wake/notice rules live in a leaf module so `dispatch` (which publishes
+# the wake budget as an instance fact) can read the same one copy this loop
+# enforces; re-exported here because tests and components resolve them through
+# this module.
+export notices
 import supervisor
 import retry
 import workspace
@@ -871,39 +877,6 @@ proc outputReserve*(p: Persister): int =
   ## admission actually enforces; this is the Persister-shaped wrapper.
   outputReserveFor(p.ctxOutput)
 
-proc wakeBudget*(): int =
-  ## Consecutive autonomous wake turns a conversation may run before a real
-  ## user message must reset the budget (dsh's maxConsecutiveWakes). A wake
-  ## turn is a session call with `wake: true` that exists only to fold
-  ## pending background-settlement notices into an idle conversation. 0
-  ## disables wakes entirely. Exported for tests.
-  try: result = max(0, getEnv("NIF_AGENT_WAKES", "3").parseInt())
-  except CatchableError: result = 3
-
-proc noticeHoldEnabled*(): bool =
-  ## Whether a settlement that lands during a live turn holds that turn open
-  ## for one more step (docs/WIRE.md "Busy-parent inbox"): the would-stop
-  ## point drains notices exactly as it drains steer and advisories, so the
-  ## turn cannot close over a child that just finished. On by default;
-  ## `NIF_AGENT_NOTICE_HOLD=0` restores the plain next-turn pull (the
-  ## scripted bus-contract suites pin it off for deterministic round counts).
-  ## Exported for tests.
-  case getEnv("NIF_AGENT_NOTICE_HOLD", "1").strip()
-  of "0", "false", "no": false
-  else: true
-
-proc consecutiveWakeTurns*(messages: seq[JsonNode]): int =
-  ## How many wake-marked user messages trail the last real user input.
-  ## Machinery (subagent/process notices, mails) is skipped; the first
-  ## user message without a notice marker resets the count. Derived from
-  ## history rather than stored state, so it survives runner restarts and
-  ## needs no counter to lose. Exported for tests.
-  for i in countdown(messages.high, 0):
-    let m = messages[i]
-    if m{"role"}.getStr("") != "user": continue
-    if m{"notice"} == nil: return result
-    if m{"notice"}{"kind"}.getStr("") == "wake": inc result
-
 proc heartbeatMaxPerDay*(): int =
   ## Autonomous turns one heartbeat record may run per day. 0 disables
   ## heartbeats entirely (a scheduled-turn kill switch that leaves records and
@@ -938,6 +911,10 @@ proc consecutiveWakeTurnsFromStore(ct: CoreTools, sessionId: string): int =
   ## asked whether a message was a wake. One bounded store page is enough
   ## for the trailing run; an overflowing page only ever undercounts
   ## (conservative: at worst one extra wake is admitted).
+  ##
+  ## The rule itself is notices.consecutiveWakeTurns (one copy, shared with
+  ## the catalog fact a client reads); only this store read is conversation-
+  ## side, because it needs CoreTools.
   try:
     var records: seq[JsonNode] = @[]
     for item in ct.storeListItems("message", sessionId & ":", 1000, 10_000):
@@ -6332,6 +6309,15 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       # can say so beside the workspace row (and know that `session {cwd}` will
       # be refused once it IS a decision).
       "cwdPinned": workspaceChosen(ct, sessionId),
+      # Will a background settlement start a turn of its own? The answer is a
+      # FACT about this conversation, not a client guess: the budget is derived
+      # from stored history (notices.consecutiveWakeTurns), so a client cannot
+      # recompute it without paging the transcript, and a client that guessed
+      # would promise a wake the runner then declines. `used` counts trailing
+      # wake turns since the human's last message; `max` is 0 when wakes are
+      # disabled outright.
+      "wake": %*{"max": wakeBudget(),
+                 "used": consecutiveWakeTurnsFromStore(ct, sessionId)},
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
       "usedTokens": entry.persister.contextUsed

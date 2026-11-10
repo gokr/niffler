@@ -552,6 +552,19 @@ after the turn, once, with a notice; a duplicate retry applies zero extra times;
 stopped turn settles**; the `answerNow` class answers mid-turn without entering
 `runTurn` (asserted by a counter, not by absence of an error).
 
+### Shipped: the wake answer is visible
+
+A background completion wakes its owning conversation (bounded by
+`NIF_AGENT_WAKES`), and a human could not tell whether the job they were about
+to walk away from would do so. `catalog {op: list}` now carries `maxWakes`, the
+session status readback carries `wake: {max, used}`, and `process_list` rows
+carry `session`/`notifies`; `niffler-tui` renders the answer beside its
+background badge and on every `/processes` row. The rule lives once in
+`core/notices.nim`, shared by the loop that enforces it and the reply that
+publishes it. Contract: `tests/t_agentwake.nim` (readback agrees with
+enforcement, in both directions) and `tests/t_processes.nim` (ownership on the
+listing).
+
 ### Other larger areas, ranked
 
 Cheap, measured, and independent — each rides along any week of the above.

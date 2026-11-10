@@ -2843,7 +2843,7 @@ different contract: start once, poll incremental output, kill explicitly.
 | `process_start {command, label?, workdir?}` | Spawn the command detached (own process group, stdin from /dev/null, stdout/stderr appended to spool files under `var/processes/`) and return its id immediately. Approval-gated. A background start through the `bash` tool's `run_in_background` is approved once, on the `bash` call itself — the internal `process_start` goes straight over NATS and never passes core's approval gate, while a direct `process_start` issued through core (the model, or any tool reached via `svc.core.call`) is gated — a bus client that addresses `svc.processes.call` itself (the `cli`, a script) is not gated at all |
 | `process_poll {id, waitMs?, filter?, tail?}` | Drain output appended since the last poll — incremental, never re-injects old bytes; `waitMs` blocks until new output or exit (25 s cap); `filter` is a regex over the new lines (the drain cursor still advances past all of them); any non-empty `tail` re-reads the last ~64 KB of raw output. Use it for output, not to discover completion — that is pushed. Read-effect |
 | `process_kill {id}` | Terminate the whole process group — SIGTERM, 300 ms grace, then SIGKILL. Approval-gated |
-| `process_list {}` | Show the registry — running and recently finished entries with exit codes. Read-effect |
+| `process_list {}` | Show the registry — running and recently finished entries with exit codes, plus each entry's owning `session` and whether it will `notifies` that conversation on exit. Read-effect |
 
 Details:
 
@@ -2855,6 +2855,16 @@ Details:
   `tail: "1"` re-reads recent raw output without advancing cursors. An empty
   nonwaiting poll of a still-running process gives one waiting hint per
   process. Drain semantics are unchanged.
+- **Will it wake me?** A completion is pushed to the owning conversation and,
+  when that conversation is idle, admitted as a bounded wake turn. Two
+  readbacks say whether that will happen, so a human can decide to walk away:
+  `catalog {op: list}` reports `maxWakes` (0 = wakes disabled) and the session
+  status readback reports `wake: {max, used}` — the trailing wake turns since
+  the human's last message. `niffler-tui` renders both next to its background
+  badge (`bg 2 · wake 1/3`, or `completion waits for your next message` once
+  the budget is spent) and marks each `/processes` row with its owner. A wake
+  is best effort, not a guarantee: the durable notice survives a declined or
+  failed wake and is delivered on the next real turn.
 - The child writes append-mode to spool files (never a pipe it could
   deadlock on); the component reads from per-stream cursors, so the OS
   absorbs output bursts. A spool beyond the cap (32 MiB,

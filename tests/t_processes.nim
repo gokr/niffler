@@ -472,6 +472,19 @@ proc main() =
             notice{"label"}.getStr("") == "notice-fixture" and
             notice{"text"} == nil, $notice)
 
+    # The registry says WHO this job will report to. Without it a client can
+    # only say "a process is running", never whether its completion will reach
+    # the conversation the human is looking at — the difference between "walk
+    # away, I will call you" and "this finishes into the void".
+    let listed = pcall("process_list", %*{})
+    var mineRow: JsonNode = nil
+    if listed{"processes"} != nil:
+      for row in listed{"processes"}:
+        if row{"id"}.getStr("") == ownedId: mineRow = row
+    check("process_list names the owning session for a client's wake readback",
+      mineRow != nil and mineRow{"session"}.getStr("") == "bgnotice" and
+      mineRow{"notifies"}.getBool(false), $listed)
+
     var sawWake = false
     let wakeDeadline = epochTime() + 5.0
     while not sawWake and epochTime() < wakeDeadline:

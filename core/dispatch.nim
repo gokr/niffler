@@ -16,6 +16,7 @@ import ../sdk/niffler/sandboxpolicy
 import approval
 import catalog
 import compaction
+import notices
 import schema_validation
 import admission
 import taskpolicy
@@ -890,6 +891,12 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       ## adopted, and users can see which clone they are talking to.
       return %*{"tools": ct.cat.promptTools(), "root": ct.root,
                 "gitHash": harnessGitHash(ct.root),
+                # The wake budget as an instance fact. A TUI reads THIS shape
+                # (catalog {op: list}) at bootstrap, so the readout must be here
+                # and not only on the component view: it decides whether a
+                # background completion will bring an idle conversation back.
+                # 0 = wakes disabled. Single-sourced from notices.wakeBudget.
+                "maxWakes": wakeBudget(),
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "components":
       ## component→tools view for bus clients that missed the registrations
@@ -915,6 +922,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
                 "admissionPolicyVersion": admissionPolicyVersion,
                 "taskPolicyVersion": taskPolicyVersion,
                 "delegationPolicyVersion": delegationPolicyVersion,
+                # Whether a background settlement can start a turn of its own
+                # (0 = wakes disabled). Published because it is the answer to a
+                # question only the CLIENT can put to a human: "if this job
+                # finishes while I am idle, will the conversation come back to
+                # me?". The rule itself stays single-sourced in notices.nim;
+                # this is a readout, not a second policy.
+                "maxWakes": wakeBudget(),
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     if args{"op"}.getStr("") == "schemas":
       return ct.cat.selectedSchemas(args{"tools"})
@@ -975,6 +989,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
                 "admissionPolicyVersion": admissionPolicyVersion,
                 "taskPolicyVersion": taskPolicyVersion,
                 "delegationPolicyVersion": delegationPolicyVersion,
+                "maxWakes": wakeBudget(),
                 "instanceId": ct.instanceId, "name": ct.instanceName}
     return %*{"error":
       "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}

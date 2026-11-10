@@ -1164,9 +1164,33 @@ visibly moved on — without a human message. A declined or skipped wake
 leaves the notice pending for the next real turn (never lost); the human's
 next message resets the budget.
 
-The process-exited lane has no waker (a process notice is announced on the
-same subject but nothing wakes for it): its fallback remains the next turn's
-pull drain.
+The process-exited lane rides the same wake request as a subagent settlement
+(`components/processes` publishes `session {wake: true}` when a tracked child
+exits and again from its 10 s retry tick for a still-pending record), so an idle
+owner is woken under the same admission and budget. The notice is nevertheless
+recoverable without a wake: it stays pending until acknowledged, and the next
+real turn's pull drain delivers it. A record whose owning conversation has
+nobody attached is still folded on that conversation's next turn.
+
+**Client readback.** A human deciding whether to walk away needs the answer
+before the job finishes, so two readbacks carry it and no client derives it
+locally (the budget comes from stored history, and a client guess would promise
+a wake the runner then declines):
+
+- `catalog {op: list}` carries `maxWakes` — the instance-wide budget, `0` when
+  wakes are disabled;
+- `session {sessionId}` (the status readback) carries
+  `wake: {max, used}` — `used` counts the trailing wake turns since the human's
+  last message, i.e. what the next admission would check;
+- `process_list` rows carry `session` (the owning conversation, `""` for a direct
+  call with nobody to tell) and `notifies`.
+
+Together those answer "if this finishes, will THIS conversation come back to
+me?" for each running job: its owner is this conversation and the budget has
+room (yes), the budget is spent or wakes are disabled (no, until the human
+speaks), or the job belongs to another conversation or nobody (never). This is
+observability, not a guarantee: an admitted wake can still fail mid-turn, and
+the durable notice is the fallback.
 
 ## Subagent continuation (`agent_run`/`agent_spawn {session}`)
 

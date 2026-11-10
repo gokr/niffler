@@ -509,7 +509,13 @@ proc hList(c: Component, args: JsonNode): JsonNode =
     items.add(%*{"id": e.id, "label": e.label, "command": e.command,
                  "status": statusText(e),
                  "exit_code": (if e.status != stRunning: e.exitCode else: 0),
-                 "started_at": e.startedAt})
+                 "started_at": e.startedAt,
+                 # Owning conversation ("" = a direct call with nobody to
+                 # tell). A UI needs this to answer "will its completion reach
+                 # THIS conversation?" — without it the badge could only say a
+                 # job is running, never whether its exit will wake anyone.
+                 "session": e.session,
+                 "notifies": e.session.len > 0})
   evictFinished()
   let text = if lines.len == 0:
                "No background processes this component lifetime."

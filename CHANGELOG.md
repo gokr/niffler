@@ -94,6 +94,21 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   `global` write are approval-gated, credential-shaped text is refused, and
   subagents may not write. Design and reasoning: `docs/research/MEMORY.md`;
   contract test `tests/t_memory.nim`.
+- **A background job can now say whether it will wake you.** The processes
+  component already pushes a completion to its owning conversation and requests
+  a bounded wake; nothing told a human whether that would happen for the job
+  they were about to walk away from. Three readbacks now answer it, and no
+  client re-derives the rule: `catalog {op: list}` carries `maxWakes`,
+  the session status readback carries `wake: {max, used}`, and `process_list`
+  rows carry their owning `session` plus `notifies`. `niffler-tui` renders the
+  answer beside its background badge (`bg 2 · wake 1/3`, and
+  `completion waits for your next message` once the budget is spent or wakes
+  are disabled) and marks every `/processes` row as notifying this
+  conversation, another one, or nobody. The wake rule moved to
+  `core/notices.nim` so the enforcing loop and the published readout share one
+  copy. WIRE.md's contradictory "the process-exited lane has no waker" paragraph
+  is corrected: it does request a wake, and the durable notice remains the
+  fallback when the wake is declined or fails.
 
 ### Fixed
 

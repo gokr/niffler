@@ -243,6 +243,20 @@ proc main() =
   check("the declined direct wake ran no turn",
         wakeMessages(budgetParent).len == 2, $wakeMessages(budgetParent).len)
 
+  # --- 2b. the budget is READABLE, not just enforceable -------------------
+  # A client cannot tell a human "you will be woken" by reading the transcript:
+  # the budget is derived from stored records, so core publishes it. Prove the
+  # readback AGREES with the enforcement above, in both directions — a notice
+  # that says "you will be woken" over a spent budget is worse than none.
+  let spentStatus = call(nc, "core", "session",
+                         %*{"sessionId": budgetParent}, 30_000)
+  check("status reports the wake budget and its use",
+        spentStatus{"wake"}{"max"}.getInt(0) == 2 and
+        spentStatus{"wake"}{"used"}.getInt(-1) == 2, $spentStatus)
+  check("catalog publishes the instance-wide wake budget",
+        call(nc, "core", "catalog", %*{"op": "list"}, 10_000){"maxWakes"}.getInt(-1) == 2,
+        "catalog maxWakes")
+
   # The real user turn resets the budget and pulls the pending notice.
   discard call(nc, "core", "session",
                %*{"sessionId": budgetParent, "content": "status?"}, 120_000)
@@ -256,6 +270,15 @@ proc main() =
   check("the real turn is not wake-marked",
         wakeMessages(budgetParent).len == 2,
         $wakeMessages(budgetParent).len)
+
+  # ...and the REPORTED budget follows the reset immediately: the human's own
+  # message is what unblocks the next autonomous turn, so a client reading this
+  # can promise a wake again from the moment their turn lands.
+  let resetStatus = call(nc, "core", "session",
+                         %*{"sessionId": budgetParent}, 30_000)
+  check("a real user turn resets the reported budget use",
+        resetStatus{"wake"}{"max"}.getInt(0) == 2 and
+        resetStatus{"wake"}{"used"}.getInt(-1) == 0, $resetStatus)
 
   # --- 3. a wake with nothing pending is skipped, not run -----------------
   let emptyParent = "ntc-nopending"
