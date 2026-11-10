@@ -2023,14 +2023,34 @@ discard comp.tool("agent_fork", peerForkSchema,
     if spec{"fork"} == nil: spec["fork"] = %true
     let (ok, error, mode, k, chars) = parseForkSpec(spec)
     if not ok or mode.len == 0: return errResult("agent_fork needs a history cut: " & error)
+    # A worktree peer continues the human's chosen serving configuration.
+    # Snapshot the explicit pins together, never `model`/`provider`: those
+    # fields are response echoes and may not be valid provider/catalog ids.
+    # Read BEFORE creating the peer; an unreadable source must not silently
+    # turn a selected provider/model into harness-global defaults.
+    var selection: JsonNode
+    try:
+      let header = c.storeGet("conversation", source, 10_000).value
+      selection = %*{"provider": header{"providerOverride"}.getStr(""),
+                      "model": header{"modelOverride"}.getStr("")}
+    except StoreNotFoundError:
+      # No header yet: a conversation seeded by a fork has messages before its
+      # header exists, so "absent" means no selection was ever chosen — the
+      # peer starts on the same defaults the source would resolve. It is not
+      # the unreachable-store case below, which must fail closed.
+      selection = %*{"provider": "", "model": ""}
+    except CatchableError as e:
+      return errResult("cannot inherit source provider/model: " & e.msg)
     let prep = prepareChild(source, "", "", mode, k, chars,
                             supervised = false, workspace = cwd)
     if not prep.ok: return errResult(prep.error)
-    # Initialize the peer's own constitution and pin its workspace, without
-    # running inference. No source selection or supervision is inherited.
+    # Initialize through the runner's normal controls, not a store patch behind
+    # its live Session. The peer owns these pins after birth; no supervision or
+    # later source selection changes propagate to it.
+    selection["sessionId"] = %prep.child
+    selection["cwd"] = %cwd
     try:
-      let pinned = c.request("core", "session",
-        %*{"sessionId": prep.child, "cwd": cwd}, 60_000)
+      let pinned = c.request("core", "session", selection, 60_000)
       if pinned{"error"} != nil: return errResult($pinned{"error"})
     except CatchableError as e: return errResult(e.msg)
     return okResult(%*{"sessionId": prep.child, "cwd": cwd,

@@ -114,6 +114,10 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   opaque write claims follow the actual target tree.
 - `read` select tolerates per-target errors and reports scan and output limits
   instead of letting one unreadable file or a large tree hide other matches.
+- Worktree peer forks inherit the source conversation's provider/model pins
+  instead of starting with an empty selection. The pair is snapshotted at birth
+  and survives resume; later changes in either conversation remain independent.
+  Provider response/echo names are not substituted for selected model IDs.
 - Stale stop controls no longer deny `/worktree` and other client tool
   approvals after a cancelled turn. Client tool approvals carry the conversation
   identity, preserving per-conversation grants; live-turn cancellation and

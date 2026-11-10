@@ -1250,8 +1250,15 @@ Hidden client tool `agent_fork {source, cwd, fork?}` copies completed history
 using the same balanced cut as a supervised fork, prepares a conversation and
 pins its workspace without starting a turn. It returns `sessionId`, `cwd`,
 `origin`, and `checkpointCopied:false`: compaction checkpoints are not copied;
-the new conversation receives raw completed history. It inherits neither the
-source's grants nor its provider/model selection. Hidden tools are unavailable
+the new conversation receives raw completed history. At birth it snapshots the
+source's explicit `providerOverride`/`modelOverride` selection through the
+runner's normal session controls, not the provider's serving/echo names. A
+source with no header yet (a fork seeds messages before one exists) has no
+selection to inherit and starts on the same defaults. Empty pins retain that
+default selection behavior. Later source changes do not propagate;
+the peer can change its own selection independently. Source selection read
+failures refuse the fork rather than silently choosing defaults. It does not
+inherit the source's grants or supervision. Hidden tools are unavailable
 through model discovery/invoke and nested session calls.
 
 Both peer and supervised forks record immutable `sessionmeta.origin`:

@@ -380,6 +380,44 @@ proc main() =
           listed = not d{"supervised"}.getBool(true)
     check("origin lists its unsupervised descendant", listed, $originInfo)
 
+  # Peer birth inherits selection, not serving echoes, and does not keep a
+  # mutable link to the source. Exercise all explicit pin shapes through the
+  # same hidden tool the worktree client uses (no inference at peer birth).
+  for pins in [
+      (provider: "", model: ""),
+      (provider: "peer-provider", model: ""),
+      (provider: "peer-provider", model: "peer-model")]:
+    let configured = call(nc, "core", "session", %*{
+      "sessionId": ochild, "provider": pins.provider, "model": pins.model}, 30_000)
+    check("source selection configured", configured{"error"} == nil, $configured)
+    let born = call(nc, "agent", "agent_fork",
+      %*{"source": ochild, "cwd": root}, 90_000)
+    let id = born{"sessionId"}.getStr("")
+    check("peer selection fork succeeds", id.len > 0, $born)
+    if id.len == 0: continue
+    let hdr = headerOf(id)
+    check("peer inherits exact provider/model pins, never response echoes",
+      hdr{"providerOverride"}.getStr("") == pins.provider and
+      hdr{"modelOverride"}.getStr("") == pins.model, $hdr)
+    let status = call(nc, "core", "session", %*{"sessionId": id}, 30_000)
+    check("live peer selection agrees with durable pins",
+      status{"providerOverride"}.getStr("") == pins.provider and
+      status{"modelOverride"}.getStr("") == pins.model, $status)
+    discard call(nc, "core", "session", %*{
+      "sessionId": ochild, "provider": "changed-provider", "model": "changed-model"}, 30_000)
+    # The fixture retires idle runners after 2s; the next call resumes the peer.
+    sleep(2500)
+    let resumed = call(nc, "core", "session", %*{"sessionId": id}, 30_000)
+    check("peer selection survives resume and later source changes",
+      resumed{"providerOverride"}.getStr("") == pins.provider and
+      resumed{"modelOverride"}.getStr("") == pins.model, $resumed)
+    discard call(nc, "core", "session", %*{
+      "sessionId": id, "provider": "independent-provider", "model": "independent-model"}, 30_000)
+    let sourceHeader = headerOf(ochild)
+    check("peer controls do not change the source selection",
+      sourceHeader{"providerOverride"}.getStr("") == "changed-provider" and
+      sourceHeader{"modelOverride"}.getStr("") == "changed-model", $sourceHeader)
+
   # A runner consumes the durable merge inbox as append-only machinery.
   let gitProc = startComponent(repoRoot / "var/bin/git", url, root = root,
                                extra = [("NIF_GIT_MUTATIONS", "1")])

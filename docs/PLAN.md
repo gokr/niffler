@@ -76,7 +76,10 @@ for the exact tree, preserving unrelated-owner, dirty and unmerged guards.
 The git contract covers the isolated client-control path and primary contention.
 Client-control approvals now ignore stale turn stops and retain conversation
 identity; the controls contract covers post-cancel approval, denial and stops
-arriving during a non-turn approval.
+arriving during a non-turn approval. Peer forks now snapshot the source's
+explicit provider/model selection at birth (not serving/echo names), through
+normal runner controls. The agent-fork contract covers persisted/live pins,
+resume and independent later source/peer changes; moves keep the same session.
 
 ## Larger features
 
