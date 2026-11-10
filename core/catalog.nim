@@ -309,6 +309,18 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "required": ["sessionId"],
       "x-harness": {"hidden": true}
     }))
+  coreReg.tools.add(ToolReg(name: "sandbox_inherit", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Snapshot a parent conversation's sandbox policy into a child at birth. Core owns policy storage and revisioning, so a component asks rather than duplicating the rule. Birth path only; the child's own control path cannot widen what it received.",
+      "properties": {
+        "parent": {"type": "string", "description": "Conversation whose effective policy is copied"},
+        "sessionId": {"type": "string", "description": "The child conversation being created"},
+        "workspace": {"type": "string", "description": "The child's workspace, added as a root so an inherited policy is usable in a different tree"}
+      },
+      "required": ["parent", "sessionId"],
+      "x-harness": {"hidden": true}
+    }))
   coreReg.tools.add(ToolReg(name: "ui", component: "core",
     schema: %*{
       "type": "object",

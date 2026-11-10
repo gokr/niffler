@@ -726,6 +726,22 @@ proc prepareChild(parentSession, task, model: string;
                              timeoutMs = 10_000)
     except CatchableError as e:
       comp.log("warn", "child " & child & " did not inherit grants: " & e.msg)
+  # The sandbox POLICY inherits the same way and with the same trade: a
+  # snapshot at birth, so a later parent edit does not reach a running child
+  # (revocation of a live child is a separate lifecycle decision — see
+  # docs/research/SANDBOX-NEXT-SLICE.md "Inheritance decision"). Core owns the
+  # write because it owns policy storage and revisioning; this component must
+  # not grow a second copy of the rule. Best effort like the grants above: the
+  # child then runs under the off default rather than failing to start, and it
+  # can never widen what the parent chose — it has no human control path at all
+  # (core refuses sandbox changes from a session with a parent).
+  if supervised and parentSession.len > 0 and child.len > 0:
+    try:
+      discard comp.request("core", "sandbox_inherit",
+        %*{"parent": parentSession, "sessionId": child,
+           "workspace": workspace}, 10_000)
+    except CatchableError as e:
+      comp.log("warn", "child " & child & " did not inherit the sandbox policy: " & e.msg)
   result = (true, "", subject, child, forkCopied, forkUpto)
 
 # Model inheritance (main's ac14d02): an explicit child override wins;

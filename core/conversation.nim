@@ -27,6 +27,7 @@ import dispatch
 import admission
 import taskpolicy
 import ../sdk/niffler/codingartifact
+import ../sdk/niffler/sandboxpolicy
 import attachments
 import approval
 # The wake/notice rules live in a leaf module so `dispatch` (which publishes
@@ -300,6 +301,13 @@ type
                              ## store (kind grantedroot) rather than trusted
                              ## from here; this field is the in-memory view for
                              ## the status readback.
+    sandboxState*: SandboxPolicy
+                             ## This conversation's effective sandbox policy
+                             ## (session {sandbox}), from its own revisioned
+                             ## store document. STAGE A: it records the human's
+                             ## decision and is NOT consulted for confinement by
+                             ## any tool yet — every readback says
+                             ## `enforced: false` (SANDBOX-NEXT-SLICE.md).
     limitRounds*: int        ## the human's SOFT turn limits (/limit): when one
     limitTokens*: int        ## is reached the turn ASKS whether it may keep
     limitSeconds*: int       ## going (0 = unset). The scoping budgets above
@@ -5144,6 +5152,18 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   # write fence to the conversation's own tree; "shared" (the default) is
   # today's behaviour, unchanged.
   let hasIsolation = args.kind == JObject and args.hasKey("isolation")
+  # Conversation sandbox policy (docs/research/SANDBOX-NEXT-SLICE.md stage A).
+  # A content-less control call, human-only like `roots` and `isolation`:
+  # absent from the `session` tool schema, so a model cannot enable, disable or
+  # widen its own policy through the control channel. Persisted with a
+  # revision, so a stale concurrent edit is a refusal rather than a silent
+  # overwrite.
+  #
+  # THIS PERSISTS A DECISION; IT DOES NOT CONTAIN ANYTHING YET. Every readback
+  # reports `enforced: false`, because no tool consults the policy for
+  # confinement in this stage — claiming otherwise is exactly the "availability
+  # is not enforcement" mistake docs/PLAN.md opens 0.6.0 by forbidding.
+  let hasSandbox = args.kind == JObject and args.hasKey("sandbox")
   # Manual compaction (/compact): the human's explicit request for the same
   # replaceable-compactor rung the automatic ladder runs at pressure. Rides a
   # content-less control call like the other conversation controls.
@@ -5352,6 +5372,12 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     entry.isolationScope = header{"isolation"}.getStr("").strip().toLowerAscii()
     if entry.isolationScope.len == 0: entry.isolationScope = "shared"
     if ct.nested != nil: ct.nested.isolation = entry.isolationScope
+    # The conversation's sandbox policy, from its own document (NOT the header:
+    # a security decision must not ride the best-effort merge helper). Absent is
+    # the normal state — an off default — and an unreadable record falls back to
+    # the same default rather than widening anything, because nothing is enforced
+    # from it yet (stage A).
+    entry.sandboxState = ct.loadSandboxPolicy(sessionId, entry.workspace).policy
     let storedLimits = header{"limits"}
     if storedLimits != nil and storedLimits.kind == JObject:
       entry.limitRounds = storedLimits{"rounds"}.getInt(0)
@@ -6014,6 +6040,115 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     if ct.nested != nil: ct.nested.rootsKey = ""
     entry.grantedRoots = capped
     ct.updateConversationHeader(sessionId, %*{"grantedRoots": capped})
+  if hasSandbox:
+    # stage A: persist the human's decision, enforce nothing yet.
+    #
+    # Accepted fields: `enabled` (bool), `addRead`/`addWrite` (path arrays),
+    # `remove` (path array), `expectRev` (int). Keep the granted-root path and
+    # this one from silently disagreeing: the workspace set the fence consults
+    # is derived from `grantedroot`, so a root added here ALSO goes there below.
+    # Sandbox policy changes are HUMAN-ONLY. A subagent inherits its parent's
+    # policy at birth and may never widen or disable it: a child that could
+    # turn confinement off would make the parent's decision advisory. The
+    # lineage fact comes from the store (sessionmeta.parent), not from anything
+    # the caller supplies — the same relation agent_run authorizes against.
+    #
+    # Refused for a child whatever `approvals: auto` or NIF_AUTO_APPROVE would
+    # have answered: approval decides who may run a call, not who owns a policy.
+    try:
+      let lineage = ct.storeGetItem("sessionmeta", sessionId).value
+      if lineage != nil and lineage.kind == JObject and
+          lineage{"parent"}.getStr("").len > 0:
+        return %*{"error": "sandbox policy is human-only: a subagent inherits " &
+          "its parent's policy at birth and cannot change it",
+          "code": "human-only"}
+    except CatchableError:
+      # Unreadable lineage is not permission: refuse rather than let an
+      # unverifiable caller edit a confinement decision.
+      return %*{"error": "sandbox policy is human-only and this caller's " &
+        "lineage could not be read", "code": "human-only"}
+    let raw = args{"sandbox"}
+    if raw.kind != JObject:
+      return %*{"error": "sandbox must be an object (enabled, addRead, addWrite, remove, expectRev)"}
+    for key in raw.keys:
+      if key notin ["enabled", "addRead", "addWrite", "remove", "expectRev"]:
+        return %*{"error": "unknown sandbox field " & key &
+          " (enabled, addRead, addWrite, remove, expectRev)"}
+    let current = ct.loadSandboxPolicy(sessionId, entry.workspace)
+    if current.persisted and raw{"expectRev"} != nil and
+        raw{"expectRev"}.kind == JInt and current.rev != raw{"expectRev"}.getInt(-1):
+      # The human edited from a stale view. Refuse rather than overwrite: the
+      # whole point of the revision is that a second decision is never lost.
+      return %*{"error": "sandbox policy changed since revision " &
+        $raw{"expectRev"}.getInt(0) & " (now " & $current.rev &
+        ") — reload and re-apply", "code": "rev-conflict",
+        "rev": current.rev}
+    var policy = current.policy
+    if raw{"enabled"} != nil:
+      if raw{"enabled"}.kind != JBool:
+        return %*{"error": "sandbox.enabled must be a boolean"}
+      policy.enabled = raw{"enabled"}.getBool()
+    var added: seq[string] = @[]
+    for key in ["addRead", "addWrite"]:
+      let list = raw{key}
+      if list == nil: continue
+      if list.kind != JArray:
+        return %*{"error": "sandbox." & key & " must be an array of paths"}
+      for item in list:
+        if item.kind != JString or item.getStr().strip().len == 0:
+          return %*{"error": "sandbox." & key & " entries must be nonempty path strings"}
+        let path = item.getStr().strip()
+        if path == "/":
+          return %*{"error": "refusing to approve the filesystem root as a sandbox root"}
+        if not path.isAbsolute():
+          return %*{"error": "sandbox roots must be absolute (got " & path &
+            ") — a relative path would depend on where the harness runs"}
+        let norm = normalizeRoot(path)
+        if norm.len == 0 or not dirExists(norm):
+          return %*{"error": "sandbox root is not an existing directory: " & path}
+        # A WRITE root implies the read root: confinement that permits a write
+        # but forbids the matching read could not apply an edit at all.
+        if key == "addWrite": policy.addGrant(norm)
+        elif norm notin policy.readRoots: policy.readRoots.add norm
+        if norm notin added: added.add norm
+    let removing = raw{"remove"}
+    if removing != nil:
+      if removing.kind != JArray:
+        return %*{"error": "sandbox.remove must be an array of paths"}
+      for item in removing:
+        if item.kind != JString: continue
+        let norm = normalizeRoot(item.getStr().strip())
+        if norm.len == 0: continue
+        if norm == normalizeRoot(entry.workspace):
+          # The conversation's own workspace is not removable: every relative
+          # path, every tool's default and the runner's own cwd resolve from
+          # it. Refuse instead of producing a policy whose owner cannot work.
+          return %*{"error": "the conversation workspace cannot be removed from its own sandbox policy"}
+        policy.removeGrant(norm)
+    let saved = ct.saveSandboxPolicy(sessionId,
+      policy, expectRev = (if raw{"expectRev"} != nil and
+                             raw{"expectRev"}.kind == JInt:
+                            raw{"expectRev"}.getInt(-1) else: -1))
+    if not saved.ok:
+      return %*{"error": saved.error, "code": "rev-conflict"}
+    # A sandbox root the human approved is ALSO a workspace grant, or the write
+    # fence would refuse work the sandbox allows. One decision, two consumers:
+    # keeping them in separate documents without syncing is how a tool ends up
+    # permitted by one and denied by the other.
+    if added.len > 0:
+      var roots = grantedRootsFor(ct, sessionId)
+      for norm in added:
+        if norm != normalizeRoot(entry.workspace) and norm notin roots:
+          roots.add norm
+      let capped = roots[0 ..< min(roots.len, maxWorkspaceRoots - 1)]
+      if ct.saveGrantedRoots(sessionId, entry.workspace, capped):
+        if ct.nested != nil: ct.nested.rootsKey = ""
+        entry.grantedRoots = capped
+        ct.updateConversationHeader(sessionId, %*{"grantedRoots": capped})
+    entry.sandboxState = policy
+    if ct.nested != nil: ct.nested.sandboxKey = ""
+    ct.updateConversationHeader(sessionId, %*{
+      "sandbox": %*{"enabled": policy.enabled, "rev": saved.rev}})
   if hasLimits:
     let raw = args{"limits"}
     if raw.kind != JObject:
@@ -6322,6 +6457,18 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       "promptTokens": entry.persister.promptTokens,
       "usedTokens": entry.persister.contextUsed
     }
+    # The conversation's sandbox policy (stage A): what the human chose, and
+    # explicitly that it is NOT enforced. "configured" and "applied" are
+    # different words on purpose — a readback that said "sandboxed" over a
+    # persisted-but-unenforced policy is the overclaim SANDBOX-NEXT-SLICE.md
+    # forbids, and "availability is never enforcement" is the rule 0.6.0 opens
+    # with.
+    block:
+      var sandboxJson = encodeSandboxPolicy(entry.sandboxState)
+      sandboxJson["enforced"] = %false
+      sandboxJson["state"] = %"configured"
+      sandboxJson["rev"] = %ct.loadSandboxPolicy(sessionId, entry.workspace).rev
+      status["sandbox"] = sandboxJson
     try:
       # overlay the resolved config onto the literal — do NOT reassign, or
       # session-local fields (sessionId, thinkingEffort, token counters) are lost
@@ -6794,7 +6941,8 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     try:
       case env.tool
       of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
-          "session_prepare", "session_info", "activity_list", "prompt_preview",
+          "session_prepare", "sandbox_inherit",
+          "session_info", "activity_list", "prompt_preview",
           "context_status", "doctor", "admission_get",
           "conversation_delete", "toolset", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)

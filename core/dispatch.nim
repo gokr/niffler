@@ -198,6 +198,12 @@ type
       ## Kept separate from rootsKey because the two answer different
       ## questions: a grant must still rebuild when the graph is unchanged,
       ## and a new tree must rebuild when nothing was granted.
+    sandboxKey*: string
+      ## Invalidation stamp for the conversation's effective sandbox policy
+      ## (core/dispatch.nim loadSandboxPolicy). Empty forces a reload on the
+      ## next dispatch; set to the policy revision once loaded, so a human
+      ## update between calls is picked up without a runner restart and a
+      ## steady-state dispatch does no store read.
     isolation*: string
       ## Per-conversation write scope (WORKTREES.md §4.5): "shared" (default)
       ## or "worktree". Human-only — never in the `session` tool schema, next
@@ -534,6 +540,91 @@ proc claimRootsFor*(primary, isolation: string,
   for r in kept:
     if r != own: ordered.add r
   ordered
+
+# --- conversation sandbox policy (stage A: persist, don't enforce) ----------
+#
+# The effective policy is a SECURITY decision, so it lives in its own store
+# document with a revision and compare-and-set writes, not in the conversation
+# header's best-effort merge helper. Two reasons, both about failure modes a
+# header write has and this one must not:
+#
+# - a swallowed write failure would leave the live policy and the reloaded one
+#   different, and the reloaded one is what the next turn actually gets;
+# - a header merge is last-writer-wins, so two concurrent human edits could
+#   silently drop one — here a stale revision is an explicit refusal.
+#
+# `enabled` is NOT enforcement. Nothing reads it to confine anything yet: it
+# records what the human asked for, and every readback says `enforced: false`
+# until a stage that actually confines something lands. See
+# docs/research/SANDBOX-NEXT-SLICE.md.
+const SandboxPolicyKind = "sandboxpolicy"
+
+proc sandboxPolicyId(session: string): string = session & ":policy"
+
+proc loadSandboxPolicy*(ct: CoreTools, session, workspace: string):
+    tuple[policy: SandboxPolicy, rev: int, persisted: bool] =
+  ## The conversation's effective policy, or the initially-off default when it
+  ## has never been changed. An UNREADABLE document is returned as the default
+  ## with `persisted: false` rather than raising: callers that must not widen
+  ## on a parse failure (the grant path) check it, and a status readback can
+  ## still answer. Strict decoding lives in the codec, so a malformed record
+  ## can never decode as "disabled and therefore unconstrained".
+  result.rev = 0
+  result.persisted = false
+  if session.len == 0 or workspace.len == 0:
+    try: result.policy = initialSandboxPolicy("/")
+    except CatchableError:
+      result.policy = SandboxPolicy()
+    return
+  result.policy = initialSandboxPolicy(workspace)
+  try:
+    let item = ct.storeGetItem(SandboxPolicyKind, sandboxPolicyId(session))
+    if item.value == nil: return
+    result.policy = decodeSandboxPolicy(item.value)
+    result.rev = item.rev
+    result.persisted = true
+  except CatchableError:
+    # Absent is the normal state; unreadable is not distinguishable here and
+    # both fail toward the default, which is what an off policy was anyway.
+    discard
+
+proc saveSandboxPolicy*(ct: CoreTools, session: string, policy: SandboxPolicy,
+                        expectRev: int): tuple[ok: bool, rev: int, error: string] =
+  ## Persist an edited policy. `expectRev` is the revision the human was
+  ## looking at, so a concurrent edit is a visible conflict instead of a lost
+  ## update; a negative value means "no precondition" and is only for the
+  ## birth/repair paths that create the first revision.
+  if session.len == 0:
+    return (false, 0, "a conversation id is required")
+  try:
+    let rev = ct.storePutRev(SandboxPolicyKind, sandboxPolicyId(session),
+                             encodeSandboxPolicy(policy),
+                             expectRev = (if expectRev > 0: expectRev else: 0))
+    return (true, rev, "")
+  except StoreRevisionConflictError:
+    return (false, 0, "the policy changed since you looked at it (revision conflict) — reload and re-apply")
+  except CatchableError as e:
+    return (false, 0, "could not persist the policy: " & e.msg)
+
+proc inheritSandboxPolicyFor*(ct: CoreTools, parentSession, childSession,
+                              childWorkspace: string) =
+  ## Snapshot the parent's policy into a child at birth (docs/research/
+  ## SANDBOX-NEXT-SLICE.md "Inheritance decision"). Best effort and fail-closed
+  ## the same way grant inheritance is: a store hiccup leaves the child on the
+  ## default (off) rather than refusing to start it, and no mutable alias is
+  ## shared. The child's own workspace is added as a root, because an inherited
+  ## policy names the PARENT's checkout and a child working in its own tree
+  ## would otherwise have nowhere to write.
+  if parentSession.len == 0 or childSession.len == 0: return
+  try:
+    let parent = ct.loadSandboxPolicy(parentSession, childWorkspace).policy
+    var inherited = inheritSandboxPolicy(parent)
+    if childWorkspace.len > 0: inherited.ensureWorkspace(childWorkspace)
+    discard ct.saveSandboxPolicy(childSession, inherited, expectRev = -1)
+  except CatchableError:
+    discard
+
+
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   # the self-extension / destructive tools change the harness — human gate first
@@ -880,6 +971,20 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     if ct.prepareSession == nil:
       return %*{"error": "session_prepare is not available in this context"}
     return ct.prepareSession(args{"sessionId"}.getStr(""))
+  of "sandbox_inherit":
+    ## Snapshot a parent's sandbox policy into a child at birth. Core owns this
+    ## because it owns policy storage and revisioning; the agent component asks
+    ## rather than growing a second copy of the rule. Only the BIRTH path may
+    ## call it, and the child's own human control path cannot widen what it
+    ## received (a session with a parent is refused sandbox changes).
+    let parent = args{"parent"}.getStr("")
+    let child = args{"sessionId"}.getStr("")
+    if parent.len == 0 or child.len == 0 or parent == child:
+      return %*{"error": "sandbox_inherit needs distinct parent and sessionId"}
+    ct.inheritSandboxPolicyFor(parent, child, args{"workspace"}.getStr(""))
+    let inherited = ct.loadSandboxPolicy(child, args{"workspace"}.getStr(""))
+    return %*{"ok": true, "enabled": inherited.policy.enabled,
+              "rev": inherited.rev}
   of "catalog":
     # A late-joining client seeds from this snapshot. Drain registrations that
     # arrived before its request so the snapshot cannot lag the live bus.
@@ -2037,8 +2142,7 @@ proc saveGrantedRoots*(ct: CoreTools, session, workspace: string,
   if session.len == 0 or workspace.len == 0: return false
   var policy = initialSandboxPolicy(workspace)
   for r in roots:
-    if r notin policy.writeRoots: policy.writeRoots.add r
-    if r notin policy.readRoots: policy.readRoots.add r
+    policy.addGrant(r)
   try:
     discard ct.storePutRev("grantedroot", session & ":roots",
                            encodeSandboxPolicy(policy))
@@ -2640,7 +2744,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
               "session_info", "activity_list", "prompt_preview", "context_status",
-              "doctor", "ui", "admission_get",
+              "doctor", "ui", "admission_get", "sandbox_inherit",
               "conversation_delete", "toolset", "profile"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)

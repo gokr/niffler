@@ -1192,6 +1192,45 @@ speaks), or the job belongs to another conversation or nobody (never). This is
 observability, not a guarantee: an admitted wake can still fail mid-turn, and
 the durable notice is the fallback.
 
+## Conversation sandbox policy (stage A: configured, not enforced)
+
+Human-only control op on the hidden `session` tool — deliberately absent from
+that tool's schema, so a model cannot reach it through dispatch:
+
+```json
+{"sessionId": "…", "sandbox": {"enabled": true,
+  "addRead": ["/abs/dir"], "addWrite": ["/abs/dir"], "remove": ["/abs/dir"],
+  "expectRev": 3}}
+```
+
+Every field is optional. `expectRev` is the revision the caller was looking at:
+a stale one is refused (`rev-conflict`) rather than overwriting another human's
+decision. Roots must be absolute, existing directories; `/` is refused outright;
+a write root also becomes a read root (an edit reads before it writes); an
+approved root additionally joins the conversation's `grantedroot` set, so the
+write fence and the sandbox policy cannot disagree. `remove` refuses the
+conversation's own workspace, which every relative path resolves from.
+
+Refusals that are policy, not validation: a session whose durable
+`sessionmeta.parent` is set is refused with `human-only` — a subagent inherits
+its parent's policy at birth and may never widen or disable it — and a lineage
+record that cannot be read is refused the same way, because unreadable is not
+root. This holds regardless of `approvals: auto` or `NIF_AUTO_APPROVE`, which
+decide who may run a call, not who owns a policy.
+
+Storage is its own document (`sandboxpolicy`, `<session>:policy`), not the
+conversation header: a security decision must not share the header's
+best-effort merge helper, and a compare-and-set write turns a lost race into a
+visible refusal. The status readback carries the whole policy plus
+`enforced: false` and `state: "configured"`.
+
+**Nothing is confined by this document yet.** No tool consults `enabled`,
+`readRoots`, `writeRoots` or `denyPatterns` for enforcement; `enforced` stays
+false until a stage that actually confines something lands
+(docs/research/SANDBOX-NEXT-SLICE.md stages B and C). `sandbox_inherit
+{parent, sessionId, workspace}` is the hidden birth-path call a component uses
+to snapshot a parent's policy into a child; it is not a model-reachable tool.
+
 ## Subagent continuation (`agent_run`/`agent_spawn {session}`)
 
 Both drivers accept `session`: a previously returned `sessionId` gives that

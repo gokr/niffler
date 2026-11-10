@@ -1,10 +1,42 @@
 # Sandbox next slice — durable policy, uniform transport, strict Linux bash
 
-Status: **implementation task draft, not shipped behavior**. This decomposes
-[PLAN.md](../PLAN.md) pillar 3 items 1 → 2 → 4 into independently testable
-changes. [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md) owns
-the target policy; [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md) owns current
-behavior. No new protocol fields or tool names here are implemented contracts.
+Status: **stage A (persistence) is implemented; stages B and C are not.** This
+decomposes [PLAN.md](../PLAN.md) pillar 3 items 1 → 2 → 4 into independently
+testable changes. [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md)
+owns the target policy; [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md) owns
+current behavior.
+
+Implemented (stage A, `core/dispatch.nim` + `core/conversation.nim`,
+contract: `tests/t_sandbox_conversation.nim`): a per-conversation policy
+document (`sandboxpolicy` kind, `<session>:policy`) with revisions and
+compare-and-set writes; the `session {sandbox}` human control
+(`enabled`, `addRead`, `addWrite`, `remove`, `expectRev`) with the workspace
+and `/` refused as removals; a human-only guard that refuses any session whose
+durable `sessionmeta.parent` is set (refusing too when that lineage cannot be
+read, because unreadable is not root); birth inheritance through the hidden
+`sandbox_inherit` core tool; a status readback carrying the whole policy; and
+`ensureWorkspace`/`addGrant`/`removeGrant` on the codec. **Nothing is confined
+yet**: every readback reports `enforced: false` and `state: "configured"`, and
+no tool consults the policy. Stage B (uniform propagation) and stage C (strict
+bash roots) are unstarted.
+
+### What stage A deliberately left open
+
+Named so a later reader does not have to rediscover them:
+
+- **No operator default.** There is no instance-wide "new conversations start
+  sandboxed" setting. It needs an owner seam that core actually reads; a
+  bash-owned config domain would be the accepted-and-ignored mirror the
+  AGENTS.md rule warns about.
+- **No revocation for a live child.** Inheritance is a birth snapshot, and the
+  contract test asserts that a later parent change does NOT reach an existing
+  child. Whether a human revoking a parent should narrow running children (and
+  how a child mid-command settles first) is a lifecycle decision still open.
+- **`grants` stays opaque.** The codec round-trips it, nothing interprets it;
+  the per-tool conditional-grant seam (stage D) is what will.
+- **Nothing reads the policy.** No tool consults `enabled`, `readRoots`,
+  `writeRoots` or `denyPatterns`. That is stage B (transport) and C
+  (enforcement).
 
 ## Outcome and claim boundary
 

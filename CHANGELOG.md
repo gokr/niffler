@@ -94,6 +94,22 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   `global` write are approval-gated, credential-shaped text is refused, and
   subagents may not write. Design and reasoning: `docs/research/MEMORY.md`;
   contract test `tests/t_memory.nim`.
+- **A conversation's sandbox policy now persists (stage A of the sandbox
+  slice).** `session {sandbox}` is a human-only control that records
+  enablement, approved read/write roots and the `expectRev` it was edited from
+  in a dedicated revisioned `sandboxpolicy` document — not the conversation
+  header, so a security decision never rides the best-effort header merge and a
+  lost race is a visible refusal rather than a silent overwrite. A write root
+  implies its read root, an approved root also joins the write fence's grant
+  set (one decision, two consumers), and the workspace or `/` cannot be
+  removed. Any session with a lineage parent is refused `human-only`: a
+  subagent inherits at birth through the hidden `sandbox_inherit` call and can
+  never widen or disable what its parent chose. **Nothing is confined yet** —
+  every readback reports `enforced: false` and `state: "configured"`, and no
+  tool consults the policy, which is what `tests/t_sandbox_conversation.nim`
+  asserts so this cannot be mistaken for a sandbox. Stages B and C remain:
+  docs/research/SANDBOX-NEXT-SLICE.md.
+
 - **A background job can now say whether it will wake you.** The processes
   component already pushes a completion to its owning conversation and requests
   a bounded wake; nothing told a human whether that would happen for the job
