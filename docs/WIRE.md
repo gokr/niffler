@@ -1206,9 +1206,14 @@ that tool's schema, so a model cannot reach it through dispatch:
 Every field is optional. `expectRev` is the revision the caller was looking at:
 a stale one is refused (`rev-conflict`) rather than overwriting another human's
 decision. Roots must be absolute, existing directories; `/` is refused outright;
-a write root also becomes a read root (an edit reads before it writes); an
-approved root additionally joins the conversation's `grantedroot` set, so the
-write fence and the sandbox policy cannot disagree. `remove` refuses the
+a write root also becomes a read root (an edit reads before it writes), while a
+read root stays read-only. A **write** root additionally joins the
+conversation's `grantedroot` set, so the write fence and the policy cannot
+disagree. A **read** root deliberately does not: that set is a write set, so
+copying a read approval into it would grant write in practice while the
+document said read-only. Read-only reach is recorded but not yet honored by
+components — that needs a read/write split in the workspace plumbing
+(stage B). `remove` refuses the
 conversation's own workspace, which every relative path resolves from.
 
 Refusals that are policy, not validation: a session whose durable

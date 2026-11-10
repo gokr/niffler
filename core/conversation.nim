@@ -6088,7 +6088,13 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       if raw{"enabled"}.kind != JBool:
         return %*{"error": "sandbox.enabled must be a boolean"}
       policy.enabled = raw{"enabled"}.getBool()
-    var added: seq[string] = @[]
+    # Tracked SEPARATELY on purpose. A read approval must not become a write
+    # one: the write fence's grant set (`grantedroot`) is fed from write roots
+    # only, so collapsing the two here would make `addRead` grant write in
+    # practice while the policy document still said read-only — the exact
+    # read-implies-write conflation this distinction exists to prevent.
+    var addedRead: seq[string] = @[]
+    var addedWrite: seq[string] = @[]
     for key in ["addRead", "addWrite"]:
       let list = raw{key}
       if list == nil: continue
@@ -6108,9 +6114,12 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           return %*{"error": "sandbox root is not an existing directory: " & path}
         # A WRITE root implies the read root: confinement that permits a write
         # but forbids the matching read could not apply an edit at all.
-        if key == "addWrite": policy.addGrant(norm)
-        elif norm notin policy.readRoots: policy.readRoots.add norm
-        if norm notin added: added.add norm
+        if key == "addWrite":
+          policy.addGrant(norm)
+          if norm notin addedWrite: addedWrite.add norm
+        else:
+          if norm notin policy.readRoots: policy.readRoots.add norm
+          if norm notin addedRead: addedRead.add norm
     let removing = raw{"remove"}
     if removing != nil:
       if removing.kind != JArray:
@@ -6131,13 +6140,18 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                             raw{"expectRev"}.getInt(-1) else: -1))
     if not saved.ok:
       return %*{"error": saved.error, "code": "rev-conflict"}
-    # A sandbox root the human approved is ALSO a workspace grant, or the write
-    # fence would refuse work the sandbox allows. One decision, two consumers:
-    # keeping them in separate documents without syncing is how a tool ends up
-    # permitted by one and denied by the other.
-    if added.len > 0:
+    # A WRITE root the human approved is ALSO a workspace grant, or the write
+    # fence would refuse work the sandbox allows — one decision, two consumers.
+    #
+    # A READ root is deliberately NOT synced: the fence's grant set is a WRITE
+    # set, so copying a read approval into it would grant write in practice
+    # while the policy document said read-only. Read-only reach is a policy
+    # record for now; component read acceptance comes from the single workspace
+    # set, so honoring it needs read/write split in that plumbing — stage B
+    # (docs/research/SANDBOX-NEXT-SLICE.md), not a silent widening here.
+    if addedWrite.len > 0:
       var roots = grantedRootsFor(ct, sessionId)
-      for norm in added:
+      for norm in addedWrite:
         if norm != normalizeRoot(entry.workspace) and norm notin roots:
           roots.add norm
       let capped = roots[0 ..< min(roots.len, maxWorkspaceRoots - 1)]

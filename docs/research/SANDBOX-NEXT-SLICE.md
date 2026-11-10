@@ -32,6 +32,12 @@ Named so a later reader does not have to rediscover them:
   contract test asserts that a later parent change does NOT reach an existing
   child. Whether a human revoking a parent should narrow running children (and
   how a child mid-command settles first) is a lifecycle decision still open.
+- **Read roots are recorded, not honored.** `addRead` writes `readRoots` and
+  nothing else — in particular it does NOT enter the write fence's grant set
+  (a fence synced from both would grant write for a read approval). Component
+  read acceptance comes from one workspace set derived from WRITE grants, so
+  making `readRoots` mean something requires that plumbing to carry a
+  read/write distinction. That is stage B work.
 - **`grants` stays opaque.** The codec round-trips it, nothing interprets it;
   the per-tool conditional-grant seam (stage D) is what will.
 - **Nothing reads the policy.** No tool consults `enabled`, `readRoots`,

@@ -160,14 +160,31 @@ proc main() =
   check("the write root was added", writeDir in writeRoots, $rooted)
   check("a write root implies the matching read root", writeDir in readRoots, $rooted)
   check("a read root alone does not imply a write root", readDir notin writeRoots, $rooted)
-  # The workspace grant the write fence consults must agree with the sandbox
-  # decision, or a tool is permitted by one and refused by the other.
+  # The write fence consults the granted-root set, so a WRITE approval must
+  # appear there or a tool is permitted by the policy and refused by the fence.
   let fences = status(a){"grantedRoots"}
   var fenceList: seq[string] = @[]
   if fences != nil:
     for r in fences: fenceList.add r.getStr("")
-  check("an approved sandbox root also joins the write fence's grant set",
+  check("an approved WRITE root also joins the write fence's grant set",
         writeDir in fenceList, $fences)
+  # ...and a READ-only approval must NOT. The fence's set is a write set:
+  # syncing a read root into it would grant write in practice while the policy
+  # document said read-only — read-implies-write through the back door.
+  check("a read-only approval does NOT join the write fence",
+        readDir notin fenceList, $fences)
+
+  # Revoking the WRITE root must leave the read root it came with... but a
+  # path granted read-only keeps its read allowance when only write is removed.
+  discard call(nc, "core", "session",
+    %*{"sessionId": a, "sandbox": {"addRead": [readDir]}}, 20_000)
+  discard call(nc, "core", "session",
+    %*{"sessionId": a, "sandbox": {"remove": [writeDir]}}, 20_000)
+  let afterRemove = status(a){"sandbox"}
+  var readsNow: seq[string] = @[]
+  for r in afterRemove{"readRoots"}: readsNow.add r.getStr("")
+  check("removing a write root leaves an independent read root",
+        readDir in readsNow, $afterRemove)
 
   # --- 5. refusals: the filesystem root, a relative path, the workspace --
   for bad in [%*{"addRead": ["/"]}, %*{"addWrite": ["relative/path"]},
