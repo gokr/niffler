@@ -243,13 +243,13 @@ proc rebuildShipped(root: string): bool =
       let output = p.outputStream.readAll()
       p.close()
       if code == 0:
-        echo "core: recover — rebuilt with `" & tool & " " & args.join(" ") & "`"
+        coreLog("core: recover — rebuilt with `" & tool & " " & args.join(" ") & "`")
         return true
-      echo "core: recover — `" & tool & " " & args.join(" ") &
-           "` failed (exit " & $code & "):"
+      coreLog("core: recover — `" & tool & " " & args.join(" ") &
+           "` failed (exit " & $code & "):")
       echo tail(output, 1200)
     except CatchableError as e:
-      echo "core: recover — cannot run " & tool & ": " & e.msg
+      coreLog("core: recover — cannot run " & tool & ": " & e.msg)
   return false
 
 proc stopSpawnedBus(serverProc: var Process) =
@@ -315,9 +315,9 @@ proc main() =
   let recovering = options.recovering
   let minimalMode = options.minimal
   if recovering:
-    echo "core: RECOVER mode — rebuild shipped binaries, wipe spawned-component records"
+    coreLog("core: RECOVER mode — rebuild shipped binaries, wipe spawned-component records")
   if minimalMode:
-    echo "core: MINIMAL mode — starting store, bash, llm and systemprompt only"
+    coreLog("core: MINIMAL mode — starting store, bash, llm and systemprompt only")
   let root = getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
   # --log=<level> reaches every component through the environment: children
   # inherit this process's env, and the supervisor only ever overrides
@@ -325,7 +325,7 @@ proc main() =
   # component to grow an arg parser (and would miss core.spawn'd children).
   if options.logLevel.len > 0:
     putEnv("NIF_LOG_LEVEL", options.logLevel)
-    echo "core: log level " & options.logLevel
+    coreLog("core: log level " & options.logLevel)
   # The clone is the home of a Niffler instance: its .env is the master
   # config, and a NIF_NATS_URL declared there is this harness's home bus —
   # claimed when free, never shared with another clone. A NIF_NATS_URL in
@@ -339,7 +339,7 @@ proc main() =
   loadDotEnv(root / ".env")
   let instance = loadInstanceIdentity(root)
   openNatsLib()
-  echo "core: Niffler " & harnessGitHash(root) & " — root " & root
+  coreLog("core: Niffler " & harnessGitHash(root) & " — root " & root)
 
   # Signal handlers go up before the bus spawn so a SIGTERM during startup
   # can never leave the spawned nats-server orphaned.
@@ -363,8 +363,8 @@ proc main() =
     serverProc = spawned.process
     natsUrl = spawned.url
     monitorUrl = spawned.monitorUrl
-    echo "core: spawned " & spawned.binary & " at " & natsUrl &
-         " (isolated bus — NIF_NATS_SPAWN=1, monitoring " & monitorUrl & ")"
+    coreLog("core: spawned " & spawned.binary & " at " & natsUrl &
+         " (isolated bus — NIF_NATS_SPAWN=1, monitoring " & monitorUrl & ")")
   elif not natsUrlFromEnv and isLoopbackNatsUrl(natsUrl):
     # Home address declared by this clone (.env or the well-known default):
     # claim it when free, attach only to our own core, and yield loudly to
@@ -374,7 +374,7 @@ proc main() =
     var spawnPorts: seq[string] = @[]
     case probe.kind
     of bkOurs:
-      echo "core: using bus at " & natsUrl & " (our harness)"
+      coreLog("core: using bus at " & natsUrl & " (our harness)")
     of bkFree:
       spawnPorts = @[portOf(natsUrl)]
     of bkForeignCore:
@@ -396,8 +396,8 @@ proc main() =
       serverProc = spawned.process
       natsUrl = spawned.url
       monitorUrl = spawned.monitorUrl
-      echo "core: spawned " & spawned.binary & " at " & natsUrl &
-           " (monitoring " & monitorUrl & ")"
+      coreLog("core: spawned " & spawned.binary & " at " & natsUrl &
+           " (monitoring " & monitorUrl & ")")
   # else: explicit NIF_NATS_URL from the environment (tests, bench, scripts)
   # or a remote address — attach to exactly the bus we were handed; the
   # connectWithRetry below reports a dead one.
@@ -408,7 +408,7 @@ proc main() =
   except CatchableError:
     stopSpawnedBus(serverProc)
     raise
-  echo "core: connected to " & natsUrl
+  coreLog("core: connected to " & natsUrl)
   # Bus capacity check: a request carrying a whole conversation must fit the
   # bus. The bundled bus is started with 8MiB; an attached foreign bus (a
   # user's NIF_NATS_URL pointing at a stock nats-server, a remote gateway, an
@@ -450,7 +450,6 @@ proc main() =
   # --- 2. catalog + supervisor ------------------------------------------
   var cat = newCatalog(nc)
   var sup = newSupervisor(root, nc)
-
   # --- 3. manifest → children --------------------------------------------
   let manifest = loadManifest(root)
   var required: seq[string] = @[]
@@ -500,12 +499,12 @@ proc main() =
           "' (sqlite|tidb) — refusing to boot", 1)
     let binaryPath = root / binary
     if not fileExists(binaryPath):
-      echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binaryPath & ")"
+      coreLog("core: WARNING missing binary for " & name & " — run `nimble build` (" & binaryPath & ")")
       continue
     let requestedReplicas = c{"replicas"}.getInt(1)
     let replicas = min(max(requestedReplicas, 1), 16)
     if requestedReplicas != replicas:
-      echo "core: WARNING replicas for " & name & " clamped to " & $replicas
+      coreLog("core: WARNING replicas for " & name & " clamped to " & $replicas)
     for i in 0 ..< replicas:
       discard sup.addChild(name, binaryPath,
         parsePolicy(c{"restart"}.getStr("on-failure")))
@@ -515,7 +514,7 @@ proc main() =
     sup.startChild(c)
 
   # --- 4. converge: wait for the required set to register -----------------
-  echo "core: waiting for " & required.join(", ") & " ..."
+  coreLog("core: waiting for " & required.join(", ") & " ...")
   let deadline = epochTime() + 30
   while epochTime() < deadline:
     if gStop: break
@@ -528,7 +527,7 @@ proc main() =
     sleep(100)
   let missing = required.filterIt(not cat.components.hasKey(it))
   if missing.len > 0:
-    echo "core: WARNING not all required components registered: " & missing.join(", ")
+    coreLog("core: WARNING not all required components registered: " & missing.join(", "))
 
   # --- 4b. restore spawned components from the store ---------------------
   # Persistence of shape: components added via core.spawn come back on boot.
@@ -558,10 +557,10 @@ proc main() =
           "name": instance.name, "root": root,
           "gitHash": harnessGitHash(root)}, 5000)
       if not registered{"ok"}.getBool(false):
-        echo "core: WARNING instance registration refused: " &
-             registered{"error"}.getStr("store refused")
+        coreLog("core: WARNING instance registration refused: " &
+             registered{"error"}.getStr("store refused"))
     except CatchableError as e:
-      echo "core: WARNING instance registration failed: " & e.msg
+      coreLog("core: WARNING instance registration failed: " & e.msg)
 
   # Session calls are routed through private forwarding inboxes instead of
   # blocking this core process on one runner. Each runner still serializes
@@ -578,7 +577,7 @@ proc main() =
       if not cat.components.hasKey("store"): return
       discard ct.storePutRev("slash", "slash", cat.slashTable())
     except CatchableError as e:
-      echo "core: WARNING slash checkpoint failed (store down?): " & e.msg
+      coreLog("core: WARNING slash checkpoint failed (store down?): " & e.msg)
   # Components that registered during convergence announced before the hook
   # existed; checkpoint the current table once now.
   if cat.sortedSlashCommands().len > 0:
@@ -599,16 +598,16 @@ proc main() =
       return false
   if cat.components.hasKey("store"):
     if recovering:
-      echo "core: recover — wiping stored component records (spawned components will not be restored)"
+      coreLog("core: recover — wiping stored component records (spawned components will not be restored)")
       try:
         for item in ct.storeListItems("component"):
           let id = item{"id"}.getStr("")
           if id.len > 0:
             ct.storeDel("component", id)
       except CatchableError as e:
-        echo "core: WARNING recover wipe failed: " & e.msg
+        coreLog("core: WARNING recover wipe failed: " & e.msg)
     if minimalMode:
-      echo "core: minimal mode — persisted spawned components stay stopped"
+      coreLog("core: minimal mode — persisted spawned components stay stopped")
     else:
       try:
         for item in ct.storeListItems("component"):
@@ -622,8 +621,8 @@ proc main() =
             # The manifest's shipped definition wins — but say so: a stale
             # stored record must not silently shadow (or be shadowed by) a
             # component the operator thinks was replaced (A801).
-            echo "core: stored component " & name &
-                 " skipped — the manifest declares it"
+            coreLog("core: stored component " & name &
+                 " skipped — the manifest declares it")
             continue
           if fileExists(binary):
             let replicas = min(max(item{"value"}{"replicas"}.getInt(1), 1), 16)
@@ -632,18 +631,18 @@ proc main() =
               for a in item{"value"}{"args"}:
                 if a.kind == JString:
                   restoreArgs.add(a.getStr())
-            echo "core: restoring " & name & " from store (" & binary &
-                 ", " & $replicas & " replica(s))"
+            coreLog("core: restoring " & name & " from store (" & binary &
+                 ", " & $replicas & " replica(s))")
             for i in 0 ..< replicas:
               discard sup.addChild(name, binary,
                 parsePolicy(item{"value"}{"policy"}.getStr("on-failure")),
                 restoreArgs)
               sup.startChild(sup.children[^1])
           else:
-            echo "core: WARNING stored component " & name &
-                 " has missing binary: " & binary
+            coreLog("core: WARNING stored component " & name &
+                 " has missing binary: " & binary)
       except CatchableError as e:
-        echo "core: WARNING cannot restore components from store: " & e.msg
+        coreLog("core: WARNING cannot restore components from store: " & e.msg)
 
   # --- 5. service surface ----------------------------------------------------
   # tty stdin: the admin shell (status commands — core/tty.nim). Otherwise:
@@ -681,7 +680,7 @@ proc main() =
     pumpCoreCalls(ct, coreSub)
     cat.pump()
     sup.pump(cat)
-  echo "core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)"
+  coreLog("core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)")
 
   if isatty(stdin) and not autostart:
     try:
@@ -691,11 +690,11 @@ proc main() =
     except EOFError:
       discard
     except CatchableError as e:
-      echo "core: " & e.msg
+      coreLog("core: " & e.msg)
   else:
-    echo "core: service mode (no tty) — serving svc.core.call"
+    coreLog("core: service mode (no tty) — serving svc.core.call")
     if autostart:
-      echo "core: autostarted by a UI — exits when the last interactive client departs"
+      coreLog("core: autostarted by a UI — exits when the last interactive client departs")
     var sawClients = false
     var lastClientLeft = 0.0
     let bootedAt = epochTime()
@@ -716,20 +715,20 @@ proc main() =
           if lastClientLeft == 0.0:
             lastClientLeft = epochTime()
           elif epochTime() - lastClientLeft >= idleAfter:
-            echo "core: last interactive client departed — autostarted harness shutting down"
+            coreLog("core: last interactive client departed — autostarted harness shutting down")
             break
         elif epochTime() - bootedAt >= bootGrace:
-          echo "core: no interactive client arrived within boot grace — shutting down"
+          coreLog("core: no interactive client arrived within boot grace — shutting down")
           break
       sleep(20)
 
   # --- 6. teardown ----------------------------------------------------------
   echo ""
-  echo "core: shutting down"
+  coreLog("core: shutting down")
   sup.drain()
   cat.nc.close()
   stopSpawnedBus(serverProc)
-  echo "core: bye"
+  coreLog("core: bye")
 
 when isMainModule:
   main()

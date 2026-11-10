@@ -17,6 +17,19 @@ type
 
 var gGitHash = ""
 
+proc coreLog*(msg: string) =
+  ## Timestamped core/supervisor line on stdout.
+  ##
+  ## Core writes its lifecycle to stdout, which UI autostart redirects to
+  ## var/logs/core.log (scripts/niffler-tui.in, install.sh). Components log
+  ## timestamped JSONL via sdk.log; core's lines had no timestamp at all, so a
+  ## "supervisor: draining 34 children" could not be attributed to a minute —
+  ## which made an operator's own shutdown indistinguishable from a crash or a
+  ## stray kill, and cost a real investigation at 20:15 on 2026-11-10. The
+  ## zero-padded '.fff' keeps ordering obvious and matches the ISO-ish style
+  ## the rest of our tooling emits.
+  echo "[" & now().utc.format("yyyy-MM-dd'T'HH:mm:ss'.'fff'Z'") & "] " & msg
+
 proc harnessGitHash*(root: string): string =
   ## Short commit of the harness checkout, cached. The clone is the home of
   ## an instance — this is the second half of the identity a user sees (with
@@ -45,7 +58,7 @@ proc parsePolicy*(s: string): RestartPolicy =
   of "never": rpNever
   of "on-failure": rpOnFailure
   else:
-    echo "supervisor: unknown restart policy '" & s & "' — using on-failure"
+    coreLog("supervisor: unknown restart policy '" & s & "' — using on-failure")
     rpOnFailure
 
 type
@@ -169,8 +182,8 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
         cmd.add(quoteShell(sp) & " --pdeathsig TERM ")
       elif not setprivWarned:
         setprivWarned = true
-        echo "supervisor: warn: no setpriv with --pdeathsig (util-linux; Alpine: " &
-          "apk add setpriv) — non-SDK children are not killed if core is SIGKILLed"
+        coreLog("supervisor: warn: no setpriv with --pdeathsig (util-linux; Alpine: " &
+          "apk add setpriv) — non-SDK children are not killed if core is SIGKILLed")
   cmd.add(quoteShell(c.binary))
   let argv = if args.len > 0: args else: c.args
   for a in argv:
@@ -180,7 +193,7 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   # stdout/stderr pipes carry nothing (redirected at exec) and are never read.
   c.process = startProcess("/bin/sh", workingDir = sup.root, args = ["-c", cmd],
                            options = {poUsePath})
-  echo "supervisor: started " & c.childLabel() & " (" & c.binary & ")"
+  coreLog("supervisor: started " & c.childLabel() & " (" & c.binary & ")")
 
 proc addChild*(sup: Supervisor, name, binary: string,
                policy: RestartPolicy = rpOnFailure,
@@ -226,10 +239,10 @@ proc pump*(sup: Supervisor, cat: Catalog) =
     c.restarts += 1
     let backoff = backoffMs(c.restarts)
     c.nextStart = now + backoff / 1000.0
-    echo "supervisor: " & c.childLabel() & " died (exit " & $code &
-         ", restart #" & $c.restarts & ", backoff " & $backoff.int & "ms)"
+    coreLog("supervisor: " & c.childLabel() & " died (exit " & $code &
+         ", restart #" & $c.restarts & ", backoff " & $backoff.int & "ms)")
     if tail.len > 0:
-      echo "supervisor:   last output: " & tail
+      coreLog("supervisor:   last output: " & tail)
     startChild(sup, c)
   # delete the recorded indices descending so earlier indices stay valid
   for i in countdown(retired.len - 1, 0):
@@ -264,12 +277,12 @@ proc removeChild*(sup: Supervisor, name: string): bool =
       c.process.close()
       c.process = nil
     delete(sup.children, idx)
-  echo "supervisor: removed " & name & " (" & $indices.len & " replica(s))"
+  coreLog("supervisor: removed " & name & " (" & $indices.len & " replica(s))")
   return true
 
 proc drain*(sup: Supervisor) =
   ## Reverse registration order: drain event → grace → SIGTERM → SIGKILL.
-  echo "supervisor: draining " & $sup.children.len & " children"
+  coreLog("supervisor: draining " & $sup.children.len & " children")
   for c in sup.children:
     c.wanted = false
   # One broadcast reaches every process, including every replica.
@@ -288,4 +301,4 @@ proc drain*(sup: Supervisor) =
     if not c.process.running():
       c.process.close()
       c.process = nil
-  echo "supervisor: drained"
+  coreLog("supervisor: drained")
