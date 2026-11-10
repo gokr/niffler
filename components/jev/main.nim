@@ -245,10 +245,22 @@ comp.tool(%*{"onDemand": true, "effect": "read", "timeoutMs": 12000}):
     recommend(task, kind, query)
 
 proc persistShadow(job: ShadowJob, status: string, verdict: JsonNode = nil) =
+  ## Every persist goes through here, including the paths that run BEFORE
+  ## discovery — "stale" (the turn closed while the job queued) and "error"
+  ## (discovery itself failed). In both, `job.candidates` is still nil, and
+  ## `%*{... "candidates": job.candidates ...}` embeds that nil into the
+  ## document. `$doc` then walks it in toUgly and dereferences nil: an
+  ## immediate SIGSEGV (exit 139), so the component died instead of recording
+  ## a stale/error row — and the supervisor restarted it forever.
+  ##
+  ## A nil JsonNode is never a valid value to EMBED; represent "unknown" as an
+  ## explicit JSON null. Only `candidates.add` needs the non-nil node, which is
+  ## why the value stays a JsonNode elsewhere.
   let id = job.sessionId & ":" & job.turnId & ":" & job.kind
+  let candidates = if job.candidates == nil: newJNull() else: job.candidates
   var doc = %*{"sessionId": job.sessionId, "turnId": job.turnId,
     "kind": job.kind, "query": job.query, "backend": backend(),
-    "task": job.task, "candidates": job.candidates,
+    "task": job.task, "candidates": candidates,
     "startedAt": job.startedAt, "status": status}
   if verdict != nil:
     let finishedAt = epochTime()
@@ -335,7 +347,8 @@ proc startShadow(job: ShadowJob) =
   task.inputPath = dir / (key & ".input.json")
   task.resultPath = dir / (key & ".result.json")
   try:
-    writeFile(task.inputPath, $(%*{"task": task.task, "candidates": task.candidates}))
+    let candidates = if task.candidates == nil: newJNull() else: task.candidates
+    writeFile(task.inputPath, $(%*{"task": task.task, "candidates": candidates}))
     # selfBinaryPath: a rebuild replaces this binary while the component runs.
     task.process = startProcess(selfBinaryPath(), args = ["--judge", task.inputPath,
       task.resultPath], options = {poParentStreams})

@@ -153,6 +153,11 @@ proc main() =
       Envelope(v: 1, id: newId(), kind: ekEvent, payload: %*{
         "sessionId": sid, "turnId": id, "phase": phase,
         "content": content}).encode())
+  proc turn2(session, id, phase, content: string) =
+    coreNc.publish("ev.session." & session & ".turn",
+      Envelope(v: 1, id: newId(), kind: ekEvent, payload: %*{
+        "sessionId": session, "turnId": id, "phase": phase,
+        "content": content}).encode())
   turn("start", tid, "read the Niffler harness guide")
   for kind in ["skills", "tools"]:
     let key = sid & ":" & tid & ":" & kind
@@ -173,6 +178,32 @@ proc main() =
       $shadowDoc)
   turn("done", tid, "")
   stopProcess(http)
+
+  # --- regression: a job drained BEFORE discovery has nil candidates -------
+  # expireShadowJob-d no: this path records "stale", and "error" (discovery
+  # failed) is the same shape. persistShadow used to embed the nil JsonNode in
+  # the document, so `$doc` hit nil in toUgly -> SIGSEGV (exit 139) and the
+  # component died rather than recording the row. Reproduce by opening and
+  # closing a turn inside one idle tick, with no backend to launch.
+  let sid2 = "shadow-stale"
+  let tid2s = "turn-stale-1"
+  turn2(sid2, tid2s, "start", "read the Niffler harness guide")
+  turn2(sid2, tid2s, "done", "")
+  var staleDoc: JsonNode
+  for _ in 0 ..< 60:
+    staleDoc = call(coreNc, "store", "get", %*{
+      "kind": "jevshadow", "id": sid2 & ":" & tid2s & ":tools"}){"value"}
+    if staleDoc{"status"}.getStr("") in ["stale", "error", "done", "no-candidates"]: break
+    sleep(100)
+  check("a shadow job drained before discovery persists a stale row",
+        staleDoc{"status"}.getStr("") == "stale", $staleDoc)
+  check("its candidates are an explicit null, not a nil node",
+        staleDoc{"candidates"} != nil and staleDoc{"candidates"}.kind == JNull,
+        $staleDoc)
+  check("jev survived the nil-candidates persist",
+        call(coreNc, "core", "catalog", %*{"op": "components"}, 2000){
+          "components"}{"jev"} != nil,
+        "jev left the catalog after a stale persist")
   let logSub = openSub(coreNc, "ev.log.jev")
   let tid2 = "turn-shadow-2"
   turn("start", tid2, "read the Niffler harness guide")
