@@ -5,8 +5,8 @@
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[algorithm, json, monotimes, os, osproc, sets, strutils,
-            tables, times]
+import std/[algorithm, json, monotimes, os, osproc, sets, strutils, times,
+            tables]
 import yaml/tojson
 import natsnim
 import ../sdk/envelope
@@ -198,6 +198,13 @@ type
       ## Kept separate from rootsKey because the two answer different
       ## questions: a grant must still rebuild when the graph is unchanged,
       ## and a new tree must rebuild when nothing was granted.
+    sandboxCached*: JsonNode
+      ## The encoded policy last handed to components, with the monotonic stamp
+      ## it was read at. A cross-process decision (another client can call
+      ## `session {sandbox}` at any moment) cannot be cached forever, so this
+      ## expires — see sandboxPolicyFor.
+    sandboxAt*: int64
+      ## getMonoTime().ticks when sandboxCached was read (0 = never).
     sandboxKey*: string
       ## Invalidation stamp for the conversation's effective sandbox policy
       ## (core/dispatch.nim loadSandboxPolicy). Empty forces a reload on the
@@ -2222,6 +2229,82 @@ proc workspaceRootsFor*(ct: CoreTools): seq[string] =
     return claimRootsFor(primary, ct.nested.isolation, granted)
   ct.nested.workspaceRoots
 
+const SandboxCacheTtlMs = 2000'i64
+  ## How long a dispatch may reuse a policy snapshot. The value is a HUMAN
+  ## decision that another process can change at any moment, so it must not be
+  ## cached for a runner's lifetime; it also must not cost a store round trip on
+  ## every tool call. Two seconds bounds both, and an update inside the window
+  ## is late rather than lost.
+
+proc sandboxPolicyFor*(ct: CoreTools): JsonNode =
+  ## The conversation's effective sandbox policy, as handed to components.
+  ##
+  ## This is the ONE place the decision is read for dispatch, so every path
+  ## (serial, parallel, invoke, nested) sees the same snapshot for the same
+  ## conversation — a policy that one path honored and another ignored would be
+  ## the whole failure mode this stage exists to rule out. Cached briefly, and
+  ## only for a live session: a direct bus call has no conversation, so it has
+  ## no policy and gets none (a caller cannot borrow another's reach).
+  if ct.nested == nil or ct.nested.session.len == 0: return nil
+  if ct.nested.sandboxCached != nil and ct.nested.sandboxAt > 0 and
+      getMonoTime().ticks - ct.nested.sandboxAt < SandboxCacheTtlMs:
+    return ct.nested.sandboxCached
+  let session = ct.nested.session
+  var doc: JsonNode = nil
+  try:
+    # loaded with the CURRENT workspace so an unpersisted conversation still
+    # reports the default it is running under rather than nothing.
+    let loaded = ct.loadSandboxPolicy(session, ct.nested.workspace)
+    doc = encodeSandboxPolicy(loaded.policy)
+    doc["rev"] = %loaded.rev
+    doc["persisted"] = %loaded.persisted
+    # Stamped HERE, not left for a consumer to infer. A component that had to
+    # guess whether the document it received was enforced would eventually guess
+    # optimistically, and "configured" would silently become "sandboxed" in some
+    # component's own wording. False until a stage that confines something.
+    doc["enforced"] = %false
+  except CatchableError:
+    # Unreadable policy must not read as "no policy": a component that sees nil
+    # would take its unrestricted path. An explicit unreadable marker lets an
+    # enforcing component fail closed once any of them enforce.
+    doc = %*{"version": SandboxPolicyVersion, "enabled": false,
+             "unreadable": true, "enforced": false}
+  doc["session"] = %session
+  ct.nested.sandboxCached = doc
+  ct.nested.sandboxAt = getMonoTime().ticks
+  ct.nested.sandboxKey = session
+  doc
+
+proc injectSandboxContext*(ct: CoreTools, schema, callArgs: JsonNode) =
+  ## Private per-dispatch sandbox policy for tools that declare they want it
+  ## (`x-harness.sandbox` in their schema — data, not a component-name list in
+  ## core, so a new component opts in without touching this file).
+  ##
+  ## Two rules make this trustworthy rather than decorative:
+  ##
+  ## - any caller-supplied `__sandbox` is DELETED first. Tool arguments come
+  ##   from the model; a policy a caller can write is not a policy. This is the
+  ##   same reason `__session` is overwritten rather than trusted.
+  ## - a tool that does not declare it does not receive it, and does not keep a
+  ##   smuggled copy on its way through.
+  ##
+  ## Injected after the model's message exists and never into a schema or the
+  ## frozen prompt, so the request prefix is untouched (prompt-cache discipline,
+  ## same as __workspace).
+  if callArgs == nil or callArgs.kind != JObject: return
+  # Nim's json.delete RAISES KeyError ("key not in object") on an absent key —
+  # unlike the JS/Go map APIs a reader may assume. This runs on EVERY dispatch
+  # (including core's own catalog seeding, where nothing declares the field), so
+  # the unconditional form aborted the runner's catalog seed and left it
+  # tool-blind: every invoke then answered "not available through invoke",
+  # which reads like a missing tool rather than a one-line bug here.
+  if callArgs.hasKey("__sandbox"): callArgs.delete("__sandbox")
+  if schema == nil: return
+  if schema{"x-harness"}{"sandbox"} == nil: return
+  let policy = ct.sandboxPolicyFor()
+  if policy == nil: return
+  callArgs["__sandbox"] = policy
+
 proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =
   ## Private per-call context for tools that declare the workspace policy
   ## (x-harness.workspace): the trees this conversation considers its own.
@@ -2860,6 +2943,9 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # message exists — it never enters the request prefix, so worktree awareness
   # costs no cache miss (core/workspace.nim).
   injectWorkspaceContext(ct, schema, callArgs)
+  # The sandbox policy takes the SAME path (stage B): one decision, injected
+  # here and on the parallel wave path below, never readable from arguments.
+  injectSandboxContext(ct, schema, callArgs)
 
   # Session-context tools (fabric, agent): inject the calling session plus a
   # lease for the nested-call proxy. Leases are KEYED (P2.5 B): each dispatch
@@ -3010,6 +3096,7 @@ proc dispatchToolCalls*(ct: CoreTools,
       callArgs{"__session"} = %*{"session":
         (if ct.nested != nil: ct.nested.session else: "")}
     injectWorkspaceContext(ct, schema, callArgs)
+    injectSandboxContext(ct, schema, callArgs)
     let env = callEnvelope(call.tool, callArgs)
     let data = env.encode()
     let inbox = "_INBOX." & newId()

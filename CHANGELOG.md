@@ -107,7 +107,13 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   never widen or disable what its parent chose. **Nothing is confined yet** —
   every readback reports `enforced: false` and `state: "configured"`, and no
   tool consults the policy, which is what `tests/t_sandbox_conversation.nim`
-  asserts so this cannot be mistaken for a sandbox. Stages B and C remain:
+  asserts so this cannot be mistaken for a sandbox. Stage B has also landed: a
+  tool that declares `x-harness.sandbox` (data, not a name list in core)
+  receives the policy as private `__sandbox` context on every dispatch path; a
+  caller-supplied one is deleted first, a non-declaring tool receives nothing,
+  and a direct bus call gets no policy at all because it has no conversation.
+  The document is stamped `enforced: false` where it is built rather than left
+  for a component to infer. Stage C (strict bash roots) remains:
   docs/research/SANDBOX-NEXT-SLICE.md.
 
 - **A background job can now say whether it will wake you.** The processes

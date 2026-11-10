@@ -1229,6 +1229,16 @@ best-effort merge helper, and a compare-and-set write turns a lost race into a
 visible refusal. The status readback carries the whole policy plus
 `enforced: false` and `state: "configured"`.
 
+A tool opts into receiving the policy by declaring `x-harness.sandbox` in its
+schema (data, not a component-name list in core). When dispatch injects it, the
+tool receives `__sandbox` in its arguments — the policy plus `session`, `rev`,
+`persisted` and `enforced: false`. Incoming `__sandbox` is deleted first, so a
+caller cannot supply one, and a tool that does not declare the extension
+receives nothing. A direct bus call has no conversation therefore no policy; an
+unreadable policy arrives as an explicit `unreadable: true` marker rather than
+absent. The snapshot is cached ~2 s per conversation so a human update is seen
+promptly without a store read per tool call.
+
 **Nothing is confined by this document yet.** No tool consults `enabled`,
 `readRoots`, `writeRoots` or `denyPatterns` for enforcement; `enforced` stays
 false until a stage that actually confines something lands

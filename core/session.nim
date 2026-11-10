@@ -69,7 +69,17 @@ proc main() =
   try:
     let snap = dispatchToolCall(ct, "catalog", %*{"op": "snapshot"}, 15_000)
     for comp in snap{"components"}:
-      cat.applyReg(comp)
+      # Name the component in any failure. A seed that dies on one malformed
+      # registration used to abort with a bare message, leaving the runner
+      # tool-blind with nothing saying WHICH component did it — and a runner
+      # that cannot see the catalog answers every invoke with "not available",
+      # which reads like a missing tool rather than a broken registration.
+      let label = comp{"name"}.getStr("?")
+      try:
+        cat.applyReg(comp)
+      except CatchableError as e:
+        echo "session: WARNING cannot seed " & label & ": " & e.msg &
+             " — continuing; other components still register"
   except CatchableError as e:
     echo "session: WARNING cannot seed catalog: " & e.msg
 

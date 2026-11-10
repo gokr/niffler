@@ -1,6 +1,7 @@
 # Sandbox next slice — durable policy, uniform transport, strict Linux bash
 
-Status: **stage A (persistence) is implemented; stages B and C are not.** This
+Status: **stages A (persistence) and B (propagation) are implemented; stage C
+(strict bash roots) is not.** This
 decomposes [PLAN.md](../PLAN.md) pillar 3 items 1 → 2 → 4 into independently
 testable changes. [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md)
 owns the target policy; [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md) owns
@@ -17,8 +18,34 @@ read, because unreadable is not root); birth inheritance through the hidden
 `sandbox_inherit` core tool; a status readback carrying the whole policy; and
 `ensureWorkspace`/`addGrant`/`removeGrant` on the codec. **Nothing is confined
 yet**: every readback reports `enforced: false` and `state: "configured"`, and
-no tool consults the policy. Stage B (uniform propagation) and stage C (strict
-bash roots) are unstarted.
+no component enforces it. Stage C (strict bash roots) is unstarted.
+
+### Stage B — what now travels with a dispatch
+
+`injectSandboxContext` sits beside `injectWorkspaceContext`, so the two
+dispatch paths that already existed (the serial `dispatchToolCall` and the
+parallel wave host) share ONE decision instead of two computations. Rules,
+each with a contract test in `tests/t_sandbox_propagation.nim`:
+
+- **Opt-in is data.** A tool that declares `x-harness.sandbox` in its schema
+  receives `__sandbox`; one that does not receives nothing. Core keeps no
+  component-name list, so a new consumer needs no core edit.
+- **A caller cannot write the policy.** An incoming `__sandbox` is deleted
+  before injection, so model-supplied arguments (or a forged component) cannot
+  widen reach — asserted with a forged session id and a forged read root.
+- **No conversation, no policy.** A direct bus call gets none: it cannot borrow
+  another conversation's reach.
+- **The document says what it is.** `enforced: false` is stamped where the
+  document is built, not left for a consumer to infer, and an unreadable policy
+  is an explicit `unreadable: true` marker rather than nil — a component must
+  not meet "no policy" and take an unrestricted path.
+- **Updates are visible within a bounded delay.** The snapshot is cached for
+  2 s rather than for a runner's lifetime: the decision is a human's, and
+  another process can change it at any time.
+
+Note what this stage still does NOT do: no component acts on `enabled`. The
+recorder fixture reports what it received and enforces nothing, which is why
+the readback keeps saying `configured`.
 
 ### What stage A deliberately left open
 

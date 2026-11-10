@@ -9,7 +9,7 @@
 ##   bogus lease, and one targeting a hidden core tool. The evidence comes
 ##   back in the tool result so the test can assert on all three.
 
-import std/[json, os, strutils, tables, times]
+import std/[json, os, sequtils, strutils, tables, times]
 import natsnim
 import niffler/sdk
 
@@ -982,5 +982,40 @@ discard comp.tool("ctxecho", ctxSchema,
       "targetSawSession": inspect.args{"sawSession"}.getBool(true),
       "staleCode": stale.error{"code"}.getStr(""),
     })
+
+# ---------------------------------------------------------------------------
+# Sandbox policy propagation recorder (docs/research/SANDBOX-NEXT-SLICE.md
+# stage B). A component's job here is to say exactly what it RECEIVED: whether
+# the private context arrived, and what it contained. Enforcement is stage C;
+# this only proves the decision reaches every dispatch path.
+
+proc sandboxProbeSchema(): JsonNode =
+  result = toolSchema(%*{})
+  # Opt in as DATA. Core keeps no component-name list for this, so a new
+  # consumer needs no core edit — the AGENTS.md language-agnostic rule.
+  result["x-harness"] = %*{"sandbox": true, "effect": "read"}
+
+discard comp.tool("sandbox_probe", sandboxProbeSchema(),
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    ## Report the private policy context verbatim, or its absence. Also reports
+    ## any caller-supplied lookalike, so a test can prove core OVERWRITES
+    ## rather than merges: an argument a model can write is not a policy.
+    let ctx = toolArgs{"__sandbox"}
+    result = %*{
+      "present": ctx != nil,
+      "policy": (if ctx == nil: newJNull() else: ctx),
+      "keys": (if toolArgs.kind == JObject:
+                 %(toolArgs.keys.toSeq) else: newJArray()),
+    })
+
+# A tool that does NOT declare x-harness.sandbox: it must never be handed the
+# document, and a smuggled `__sandbox` argument must be dropped rather than
+# passed through to a component that did not ask for it.
+let noSandboxSchema = toolSchema(%*{})
+noSandboxSchema["x-harness"] = %*{"effect": "read"}
+discard comp.tool("sandbox_not_opted_in", noSandboxSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    %*{"present": toolArgs{"__sandbox"} != nil,
+       "keys": %(toolArgs.keys.toSeq)})
 
 comp.run()
