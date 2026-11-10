@@ -450,6 +450,13 @@ proc main() =
   # --- 2. catalog + supervisor ------------------------------------------
   var cat = newCatalog(nc)
   var sup = newSupervisor(root, nc)
+  # Bus ownership: refuse a component whose announced root is not this
+  # harness's. A foreign-root process on the same bus (a test root, a second
+  # clone) would otherwise join a component's queue group and answer a slice of
+  # our calls from another database — see the reg.publish guard in catalog.nim.
+  cat.ownsRoot = proc(announced: string): bool =
+    cmpIgnoreCase(normalizedPath(announced), normalizedPath(root)) == 0
+
   # --- 3. manifest → children --------------------------------------------
   let manifest = loadManifest(root)
   var required: seq[string] = @[]

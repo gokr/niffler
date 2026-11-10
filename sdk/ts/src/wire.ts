@@ -52,8 +52,58 @@ export function harnessRoot(): string {
   return path.dirname(path.dirname(path.dirname(path.resolve(entry))));
 }
 
+/** The root's discovery file, or "" when it is missing/empty. Unlike
+ *  resolveNatsUrl this never falls back to the well-known port: a COMPONENT
+ *  subscribes by queue group, so an invented address can put it on another
+ *  harness's bus answering that harness's calls. */
+export function readDiscoveryUrl(root = ""): string {
+  const r = root || harnessRoot();
+  if (!r) return "";
+  try {
+    // Lazy require: keeps this module importable in browser bundles.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require("fs");
+    return fs.readFileSync(r + "/var/nats-url", "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+/** The harness root of the core answering svc.core.call on `url` ("" when
+ *  none answers). The same identity probe the Nim and Go SDKs use: the clone
+ *  is the home of an instance, so a bus belongs to the root its core serves. */
+export async function coreRoot(url: string, timeoutMs = 500): Promise<string> {
+  let nc: any = null;
+  try {
+    // Lazy require: keeps this module importable in browser bundles.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const nats = require("nats");
+    const sc = nats.StringCodec();
+    nc = await nats.connect({ servers: url, timeout: timeoutMs });
+    const data = sc.encode(
+      JSON.stringify({
+        v: 1,
+        id: Math.random().toString(36).slice(2),
+        kind: "call",
+        tool: "catalog",
+        args: { op: "list" },
+      })
+    );
+    const reply = await nc.request("svc.core.call", data, {
+      timeout: timeoutMs,
+    });
+    const env = JSON.parse(sc.decode(reply.data));
+    if (env.kind !== "result" || !env.args) return "";
+    return env.args.root ?? "";
+  } catch {
+    return "";
+  } finally {
+    if (nc) await nc.drain().catch(() => {});
+  }
+}
+
 /** Bus address: NIF_NATS_URL env → <root>/var/nats-url discovery file →
- *  the well-known local default. */
+ *  the well-known local default (CLIENTS only — see readDiscoveryUrl). */
 export function resolveNatsUrl(root = ""): string {
   if (process.env.NIF_NATS_URL) return process.env.NIF_NATS_URL;
   const r = root || harnessRoot() || ".";

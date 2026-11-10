@@ -26,7 +26,7 @@ import { connect, NatsConnection, Subscription, StringCodec } from "nats";
 import { decode, encode, newId } from "./envelope";
 import type { Envelope, EnvelopeKind } from "./envelope";
 import { loadDotEnv } from "./dotenv";
-import { harnessRoot } from "./wire";
+import { coreRoot, harnessRoot, readDiscoveryUrl } from "./wire";
 
 export * from "./envelope";
 
@@ -241,7 +241,44 @@ export class Component {
   /** Connect, announce registration and start serving calls. */
   async connect(): Promise<void> {
     loadDotEnv(path.join(harnessRoot(), ".env"));
-    const url = process.env.NIF_NATS_URL ?? "nats://127.0.0.1:4222";
+    // A COMPONENT must not guess its bus: `?? "nats://127.0.0.1:4222"` (the
+    // old shape here) landed a dev-root component on whatever harness owned
+    // that port, where it answered a slice of that harness's queue-group
+    // calls from its own database. See sdk/go/component.go dial() and
+    // sdk/niffler/sdk.nim run() for the same guard.
+    const url = process.env.NIF_NATS_URL ?? readDiscoveryUrl();
+    if (!url) {
+      throw new Error(
+        this.name +
+          ": no bus to connect to — NIF_NATS_URL is unset and " +
+          harnessRoot() +
+          "/var/nats-url is missing; refusing to guess a bus (a component " +
+          "subscribes by queue group, so the wrong one silently answers " +
+          "another harness's calls)"
+      );
+    }
+    // Registering is not the danger — subscribing is: the call subject below
+    // uses this component's name as its queue group, so connecting already
+    // takes a share of this bus's calls. Refuse a bus whose core serves a
+    // DIFFERENT root (positive proof only; no core yet is legitimate).
+    {
+      const mine = harnessRoot();
+      const answered = mine ? await coreRoot(url) : "";
+      if (answered && path.resolve(answered) !== path.resolve(mine)) {
+        throw new Error(
+          this.name +
+            ": refusing bus " +
+            url +
+            ": the core there serves " +
+            answered +
+            ", not this root (" +
+            mine +
+            ") — a component subscribes to its component-name queue group, " +
+            "so staying would answer ANOTHER harness's calls from this " +
+            "root's database"
+        );
+      }
+    }
     this.nc = await connect({
       servers: url,
       maxReconnectAttempts: -1,
@@ -379,6 +416,12 @@ export class Component {
       version: this.version,
       pid: process.pid,
       tools: this.tools.map((t) => ({ name: t.name, schema: t.schema })),
+      // The root this component serves: core refuses a registration from
+      // another root (that process subscribed to its component-name queue
+      // group on this bus and would answer a slice of THIS harness's calls
+      // from a different database). See the reg.publish guard in
+      // core/catalog.nim.
+      root: harnessRoot(),
     };
     this.nc?.publish(subject, sc.encode(JSON.stringify(payload)));
   }

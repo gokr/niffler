@@ -1,7 +1,7 @@
 ## Catalog admission must not crash on malformed registrations or publish
 ## a UI notification before its durable slash-table checkpoint.
 
-import std/[json, os, tables]
+import std/[json, os, strutils, tables]
 import natsnim
 import ../core/catalog
 import helpers
@@ -64,6 +64,48 @@ proc main() =
   cat2.reapDeadClients()
   check("non-client components are never reaped by the client sweep",
         cat2.components.hasKey("worker"))
+
+  # --- ownership: a foreign root's component must not join the queue group --
+  #
+  # The catalog accepted any reg.publish, assuming every publisher serves this
+  # harness. When a component of ANOTHER root (a test root, a second clone)
+  # lands on the same bus, its store subscribes to the SAME `store` queue group
+  # on `svc.store.call` and answers a slice of this harness's calls from
+  # another database — intermittent not-founds for rows that exist, which
+  # reads as data loss (2026-11-10). Keyed on the announced ROOT, not the pid: a
+  # stub component a test starts from the same root is a legitimate stand-in.
+  let cat3 = newCatalog(nc)
+  cat3.onChange = proc(c: Catalog) = discard
+  let myRoot = "/home/someone/nifflerprod"
+  cat3.ownsRoot = proc(announced: string): bool =
+    normalizedPath(announced) == normalizedPath(myRoot)
+  cat3.applyReg(%*{"name": "store", "pid": 4242, "root": "/home/someone/devclone",
+    "tools": [{"name": "get", "schema": {"type": "object"}}]})
+  check("a foreign root's registration is refused",
+        not cat3.components.hasKey("store"))
+  check("the refusal names the offending root",
+        cat3.lastRejection("store").contains("/home/someone/devclone"))
+  check("a refused foreign component publishes no tool",
+        not cat3.toolIndex.hasKey("get"))
+  cat3.applyReg(%*{"name": "store", "pid": 4242, "root": myRoot,
+    "tools": [{"name": "get", "schema": {"type": "object"}}]})
+  check("a component of this root is accepted", cat3.components.hasKey("store"))
+  check("an accepted component records its replica",
+        cat3.components["store"].pids.len == 1)
+  # A UI is exempt: it answers no tool subject, so it cannot misroute a call,
+  # and older clients announce no root at all.
+  cat3.applyReg(%*{"name": "tui-ext", "pid": 4243, "client": true})
+  check("an external interactive client is exempt from the root check",
+        cat3.components.hasKey("tui-ext"))
+  # An unvouchable (root-less) announcement still registers — older SDKs and
+  # hand-rolled publishers predate the field — but it must not erase a
+  # registration when it departs under a pid we never recorded.
+  cat3.applyReg(%*{"name": "legacy", "pid": 4244})
+  check("a root-less registration still registers",
+        cat3.components.hasKey("legacy"))
+  cat3.arriveForTest("reg.depart", $(%*{"name": "store", "pid": 9999}))
+  check("a foreign departure cannot retire an owned component",
+        cat3.components.hasKey("store"))
 
   report("CATALOG")
 

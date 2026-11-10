@@ -800,9 +800,73 @@ func (c *Component) Connect() error {
 	return nil
 }
 
+// discoveryDescription names the discovery file the caller expected, for the
+// "no bus to connect to" error (a missing NIF_ROOT is itself part of the
+// diagnosis, so both cases are spelled out).
+func discoveryDescription() string {
+	if r := os.Getenv("NIF_ROOT"); r != "" {
+		return filepath.Join(r, "var", "nats-url")
+	}
+	return "$NIF_ROOT/var/nats-url (NIF_ROOT is unset)"
+}
+
+// enforceBusRoot refuses a bus whose core answers for a DIFFERENT harness
+// root.
+//
+// Registering is not the danger — subscribing is. A component joins
+// svc.<name>.call with queue group == its name, so the moment it connects it
+// takes its share of THAT bus's calls, well before a registration could be
+// refused. Measured on a live harness: with a foreign-root store merely
+// connected, the favorites list came back EMPTY on half the calls (alternating
+// full/empty) and provider lookups failed at the same rate — the incident
+// shape, with the database intact. The catalog's root check catches the
+// registration; this catches the subscription.
+//
+// Only POSITIVE proof refuses (a core answered and named another root). A bus
+// with no core yet — boot, a bare nats-server, a unit-test bus — is accepted: a
+// false refusal would be worse than the leak. The refusal is deliberately not
+// overridable: core always exports NIF_NATS_URL to its own children, so a
+// legitimate child never needs an escape hatch.
+func enforceBusRoot(url string) error {
+	mine := HarnessRoot()
+	if mine == "" {
+		return nil
+	}
+	answered := CoreRoot(url, dialTimeout())
+	if answered == "" {
+		return nil
+	}
+	if sameRoot(answered, mine) {
+		return nil
+	}
+	return fmt.Errorf("refusing bus %s: the core there serves %s, not this root "+
+		"(%s) — a component subscribes to its component-name queue group, so "+
+		"staying would answer ANOTHER harness's calls from this root's "+
+		"database (unset NIF_NATS_URL, or point it at this root's var/nats-url)",
+		url, answered, mine)
+}
+
+// sameRoot compares two harness roots after resolving them, so a symlinked
+// install and its target are the same instance.
+func sameRoot(a, b string) bool {
+	ra, erra := filepath.Abs(a)
+	rb, errb := filepath.Abs(b)
+	if erra != nil || errb != nil {
+		return a == b
+	}
+	if sa, err := filepath.EvalSymlinks(ra); err == nil {
+		ra = sa
+	}
+	if sb, err := filepath.EvalSymlinks(rb); err == nil {
+		rb = sb
+	}
+	return ra == rb
+}
+
 // dial resolves the bus URL and connects. Resolution order: NIF_NATS_URL
 // (explicit always wins), the harness root's var/nats-url discovery file
-// (a restarted core usually binds a new port), then the well-known port.
+// (a restarted core usually binds a new port). There is deliberately NO
+// well-known-port fallback for a component — see the guard below.
 func (c *Component) dial() (string, error) {
 	if c.explicitBus && c.explicitURL == "" {
 		return "", fmt.Errorf("explicit bus URL must not be empty")
@@ -821,7 +885,23 @@ func (c *Component) dial() (string, error) {
 		}
 	}
 	if url == "" {
-		url = "nats://127.0.0.1:4222"
+		// Refuse to GUESS the bus. This fallback used to be a silent
+		// `nats://127.0.0.1:4222`, which is fine for a CLIENT hunting its
+		// harness but wrong for a COMPONENT: a component subscribes to its
+		// component-name queue group, so landing on another root's bus makes
+		// it answer a slice of THAT harness's calls from its own database —
+		// intermittent not-founds for rows that exist (favorite lists,
+		// provider nicknames, conversation transcripts) while the database is
+		// perfectly intact. A test/dev root whose var/nats-url is missing is
+		// exactly how that happened (2026-11-10). No env and no discovery
+		// file means there is nowhere legitimate to go.
+		return "", fmt.Errorf("no bus to connect to: NIF_NATS_URL is unset and " +
+			"%s is missing — refusing to guess a bus (a component subscribes " +
+			"by queue group, so the wrong one silently answers another " +
+			"harness's calls)", discoveryDescription())
+	}
+	if err := enforceBusRoot(url); err != nil {
+		return "", err
 	}
 	nc, err := nats.Connect(url,
 		nats.Timeout(dialTimeout()),
@@ -1272,6 +1352,12 @@ func (c *Component) announceLocked(subject string) error {
 	}
 	payload := map[string]any{
 		"name": c.Name, "version": c.Version, "pid": os.Getpid(), "tools": tools,
+		// The root this component serves: core refuses a registration from
+		// another root (that process subscribed to its component-name queue
+		// group on this bus and would answer a slice of THIS harness's calls
+		// from a different database). See the reg.publish guard in
+		// core/catalog.nim.
+		"root": HarnessRoot(),
 	}
 	if len(c.slash) > 0 {
 		payload["slash"] = c.slash

@@ -61,6 +61,12 @@ type
     ## onChange fires before ev.catalog.updated is published; the system core
     ## uses it to checkpoint the merged slash table into the store.
     onChange*: proc (cat: Catalog)
+    ## ownsRoot answers "does that root belong to this harness?" — the system
+    ## core wires it to its own NIF_ROOT; a session runner leaves it nil (it
+    ## owns no children and must accept the system's snapshot). Nil disables
+    ## the check. See the reg.publish guard for why a registration depends on
+    ## it.
+    ownsRoot*: proc (root: string): bool {.closure.}
     sub*: ptr natsSubscription
 
 proc newCatalog*(nc: NatsConnection): Catalog =
@@ -833,6 +839,19 @@ proc dropRegistration(cat: Catalog, name, reason: string) =
   echo "catalog: " & name & " " & reason
   cat.announce()
 
+var rootWarnings: Table[string, bool]
+
+proc warnMissingRoot(name: string) =
+  ## Say once per component that a registration arrived WITHOUT a root, so an
+  ## unvouchable publisher is visible instead of silently trusted. Not a
+  ## refusal: older SDKs and hand-rolled publishers predate the field, and a
+  ## harness must not break them on upgrade.
+  if rootWarnings.hasKey(name): return
+  rootWarnings[name] = true
+  echo "catalog: " & name & " registered without a root — cannot verify it " &
+       "serves this harness (an older SDK?); a component from ANOTHER root " &
+       "answering this bus's calls looks exactly like this"
+
 proc handle(cat: Catalog, subject, data: string) =
   var node: JsonNode
   try:
@@ -865,6 +884,43 @@ proc handle(cat: Catalog, subject, data: string) =
       reg.pids.add(reg.pid)
     if reg.pid <= 0 and reg.pids.len > 0:
       reg.pid = reg.pids[0]
+    # A NON-CLIENT component must serve THIS core's root.
+    #
+    # The catalog trusts whoever publishes reg.publish, which assumed every
+    # publisher on the bus serves this harness. That assumption breaks when a
+    # component of another root — a test root, a second clone, a dev checkout
+    # — lands on the same bus: it subscribes with queue group == component
+    # name, so it joins THIS harness's `store` (or `llm`, `provider`, ...)
+    # queue group and answers a SLICE of the calls from a different, often
+    # empty database. The result is indistinguishable from data loss:
+    # `provider_get` returns a definitive not-found for a nickname that
+    # exists, /fav lists nothing, a session cannot read its own transcript —
+    # intermittently, because the foreign replica takes only some of the
+    # queue. That is the 2026-11-10 21:35/22:36 incidents (the database was
+    # intact throughout; foreign processes were answering).
+    #
+    # Root identity, not pid: a stub llm a test starts from the SAME root is
+    # a legitimate stand-in, while any process from another root is by
+    # definition reading another database. It also needs no supervisor state,
+    # so it works for components core did not spawn.
+    #
+    # Interactive clients are exempt: a UI answers no tool subject, so it
+    # cannot misroute a call, and older clients do not announce a root.
+    if not reg.client and cat.ownsRoot != nil:
+      let announced = (if node{"root"} != nil: node{"root"}.getStr("")
+                       else: "")
+      if announced.len > 0 and not cat.ownsRoot(announced):
+        cat.noteRejection(name, "that process serves root " & announced &
+          ", not this harness — refusing a foreign component that would " &
+          "join the '" & name & "' queue group on this bus and answer " &
+          "this harness's calls from another database (a second root/clone " &
+          "attached to this bus; give that root its own bus)")
+        return
+      # An announcement WITHOUT a root cannot be vouched for. Accept it (older
+      # SDKs and hand-rolled publishers must keep working) but say so once per
+      # name: a silent accept is exactly how the foreign-replica bug hid.
+      if announced.len == 0:
+        warnMissingRoot(name)
     # tool names are unique across the whole catalog (docs/WIRE.md). A clash
     # refuses the ENTIRE registration, before any state changes: a component
     # that joins minus its colliding tool shows up "installed" while silently
@@ -988,12 +1044,17 @@ proc handle(cat: Catalog, subject, data: string) =
   elif subject == "reg.depart":
     if cat.components.hasKey(name):
       let pid = node{"pid"}.getInt(0)
+      # A foreign process may not retire OUR registration: a depart is only
+      # honoured for a pid this registry actually holds (an unowned pid was
+      # refused at publish time, and guessing here would let any bus citizen
+      # erase a component).
       var reg = cat.components[name]
       if pid > 0 and reg.pids.len > 0:
         var remaining: seq[int]
         for livePid in reg.pids:
           if livePid != pid: remaining.add(livePid)
-        # Ignore a stale/duplicate departure rather than dropping peers.
+        # Ignore a stale/duplicate/foreign departure rather than dropping
+        # peers.
         if remaining.len == reg.pids.len: return
         if remaining.len > 0:
           reg.pids = remaining
@@ -1010,6 +1071,12 @@ proc applyReg*(cat: Catalog, node: JsonNode) =
   ## had arrived on reg.publish — used by session runners to seed their
   ## catalog from the system's snapshot taken at startup.
   handle(cat, "reg.publish", $node)
+
+proc arriveForTest*(cat: Catalog, subject, data: string) =
+  ## Feed one raw registration message through the same admission path as the
+  ## bus subscription (tests pin refusals that `applyReg` cannot express, e.g.
+  ## a foreign `reg.depart`). Not used by core.
+  handle(cat, subject, data)
 
 proc clientCount*(cat: Catalog): int =
   ## Registered interactive frontends (reg.publish with "client": true).
