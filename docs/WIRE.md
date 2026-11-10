@@ -1231,13 +1231,19 @@ pins its workspace without starting a turn. It returns `sessionId`, `cwd`,
 `origin`, and `checkpointCopied:false`: compaction checkpoints are not copied;
 the new conversation receives raw completed history. It inherits neither the
 source's grants nor its provider/model selection. Hidden tools are unavailable
-through model discovery/invoke and nested session calls.
+through model discovery/invoke and nested session calls. New peers receive a
+normal `conv-…` id; `agent-…` remains the supervised-subagent prefix, and
+existing ids are not renamed.
 
 Both peer and supervised forks record immutable `sessionmeta.origin`:
 `{session, atSeq, reason:"fork"|"worktree", worktree?:{path,branch,primary}}`.
 `atSeq` is the source message id at the balanced cut. Only supervised forks
 also record `parent`. Origin is provenance, never authority: it grants no
-continuation, approval routing, depth or idle-retirement relationship.
+continuation, approval routing, depth or idle-retirement relationship. One
+narrow use is retirement: a peer may remove the exact worktree its recorded
+origin created for it, verified against `sessionmeta.origin` (path and primary
+must match); unrelated conversations, sibling trees, dirty trees and unmerged
+branches are still refused.
 `session_info` reports `origin` forward and a deduplicated `descendants` array
 backward (`{sessionId,supervised,origin?,fork?,closed?}`). `children` retains its
 supervision-only meaning.

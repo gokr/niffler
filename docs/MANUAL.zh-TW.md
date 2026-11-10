@@ -1416,6 +1416,10 @@ git worktree 是同一儲存庫的第二個檢出。Niffler 將其視為一等�
   拒絕它們會把工作樹變成牢籠。
 - **它是圍籬，不是互斥鎖。** 同一棵樹中的兩個對話仍可在不同檔案上並行 ——
   `locks` 保持路徑分條。
+- **兩個生命週期呼叫可以觸及 primary。** `git_merge` 與
+  `git_worktree remove` 宣告一次性 primary 目標；只有當 `repo` 恰為連結對話的
+  `primaryRoot` 時 core 才放行。該宣告僅限本次呼叫，不改變 `isolation` 或
+  `writable`，因此針對 primary 的 `bash` 和 `edit` 仍被拒絕。
 
 持久化於 header 中，恢復時還原，呼叫之間可變，並在對話狀態回讀與
 `session_info.workspace` 中回報為 `isolation`。
@@ -1441,7 +1445,12 @@ git worktree 是同一儲存庫的第二個檢出。Niffler 將其視為一等�
 它**只是溯源，絕非權限**：不授予續行權、不路由審批、不豁免深度、不做閒置退休。
 *受監督*的分叉（`agent_spawn {fork}`）同時帶有兩條邊 —— 監督用 `parent`、溯源用
 `origin`；**對等**分叉（`agent_fork`，隱藏的客戶端工具）只帶有 `origin`，
-因為沒有任何東西在監督它。
+因為沒有任何東西在監督它。新的對等分叉使用一般的 `conv-…` id —— `agent-…`
+仍是新建受監督子代理的前綴 —— 既有 id 不會被重新命名。
+
+它唯一的狹窄用途是退休：對等分叉可以移除其記錄中的 origin 為它建立的那棵確切
+工作樹，依據 `sessionmeta.origin` 而非工具參數驗證。無關對話、同層樹、髒樹與
+未合併的工作仍會被拒絕。
 
 `session_info` 向前回報 `origin`，向後回報 `descendants`（`{sessionId, supervised, origin?}`），
 所以「這次探索產生了什麼？」從起點出發只需一次呼叫。

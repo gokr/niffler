@@ -2636,6 +2636,11 @@ refused with the existing `[E_WRITE_OUTSIDE]`.
   would make the tree a cage.
 - **It is a fence, not a mutex.** Two conversations in one tree still proceed on
   different files — `locks` keeps its path striping.
+- **Two lifecycle calls can reach the primary.** `git_merge` and
+  `git_worktree remove` declare a per-call primary target; core admits it only
+  when `repo` is exactly the linked conversation's `primaryRoot`. The claim
+  lasts for that call and changes neither `isolation` nor `writable`, so
+  `bash` and `edit` against the primary remain refused.
 - Persisted in the header, restored on resume, mutable between calls, and
   reported as `isolation` on the session status readback and in
   `session_info.workspace`.
@@ -2667,7 +2672,14 @@ grants no continuation rights, no approval routing, no depth exemption and no
 idle retirement. A *supervised* fork (`agent_spawn {fork}`) carries both edges —
 `parent` for supervision and `origin` for provenance; a **peer** fork
 (`agent_fork`, a hidden client tool) carries only `origin`, because nothing is
-supervising it.
+supervising it. New peers use a normal `conv-…` id — `agent-…` remains the
+prefix for newly created supervised subagents — and existing ids are not
+renamed.
+
+Its one narrow use is retirement — a peer may remove the exact worktree its
+recorded origin created for it, checked against `sessionmeta.origin` rather
+than a tool argument. Unrelated conversations, sibling trees, a dirty tree and
+unmerged work are still refused.
 
 `session_info` reports `origin` forward and `descendants` backward
 (`{sessionId, supervised, origin?}`), so "what came of this exploration?" is one
