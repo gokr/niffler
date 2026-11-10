@@ -6,6 +6,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **A component can no longer answer another harness's calls.** Symptom: with
+  several `niffler-tui` windows open, a conversation's pinned provider suddenly
+  "cannot be resolved", `/fav` listed nothing, and sessions failed on their own
+  transcripts — intermittently, and it read as data loss. The database was
+  intact every time: a component of a DIFFERENT root (a test root, a second
+  clone, a dev checkout) had attached to the same bus, and because a component's
+  call subject is a queue group named after the component, it answered a slice
+  of that harness's `svc.store.call` calls from another database. Two leaks fed
+  it — a component's connect path ended in a hardcoded
+  `nats://127.0.0.1:4222`, and the catalog trusted any `reg.publish`. Now a
+  component never invents a bus (the chain ends in an explicit failure), refuses
+  to stay on a bus whose core answers for a different root (`enforceBusRoot`,
+  before the subscribe — measured on a live harness: a foreign-root store merely
+  connected made `/fav` reads come back empty on 20 of 40 calls; with the guard,
+  0 of 40), and core refuses a registration whose announced root is not its own.
+  Interactive clients (which answer no tool subject) and root-less legacy
+  registrations stay accepted, the latter logged once. Details:
+  docs/research/BUS-OWNERSHIP.md.
+
 - **A `claudecode` bench lane measured, twice, across a Claude Code upgrade.**
   The full31 suite on Synthetic DeepSeek V4.1 Flash (`/anthropic` gateway, low
   effort, `jobs 1`) is 31/31 in round 1 with no invalid or leaked cells on both

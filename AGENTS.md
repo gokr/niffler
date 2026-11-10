@@ -107,6 +107,23 @@ working in every language.
   binaries have precedent (`cli`, `console`).
 - NATS is the only bus. The removed barrel store's embedded-KV pubsub was
   deliberately unused; nothing else carries messages either.
+- **One root, one bus** (docs/research/BUS-OWNERSHIP.md). A component's call
+  subject is a queue group named after the component, so ANY process that
+  subscribes — from any root — takes a share of that harness's calls. A foreign
+  `store` therefore answers some of them from another (usually empty) database,
+  and the result is indistinguishable from data loss: `provider_get` returns a
+  definitive not-found for a nickname that exists, favorites list nothing, a
+  session cannot read its transcript — intermittently. Two guards, both
+  load-bearing: a component never INVENTS a bus (no well-known-port fallback;
+  the chain ends in an explicit failure) and refuses to stay on one whose core
+  answers for a different root (`enforceBusRoot`, all three SDKs — it must run
+  before the subscribe, since subscribing is what misroutes); core refuses a
+  `reg.publish` whose announced `root` is not its own (interactive clients and
+  root-less legacy registrations are exempt, the latter logged once so an
+  unvouchable publisher stays visible). Never add a well-known-port fallback to
+  a component's connect path, and never let a test or dev root attach to a live
+  harness's bus — `tests/helpers.nim`'s bus-wide `ev.sys.drain` is enough to
+  take a whole harness down.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
   underscores. Tool names are globally unique — core rejects duplicates at
   registration. Prose here writes `component.tool` for readability
