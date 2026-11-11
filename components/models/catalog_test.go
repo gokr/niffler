@@ -76,6 +76,107 @@ func TestResolveRejectsAmbiguousBareID(t *testing.T) {
 	}
 }
 
+// The gap this closes: updateEmbedDocumentsLocked has always read
+// provider["embedModel"], but nothing ever populated it — the catalog is built
+// from the models.dev baseline, and a provider RECORD is a different document.
+// So a configured embed model was invisible in models_list/models_get while
+// being correct in provider_list.
+//
+// Scope: this is still a unit test, so it asserts the OVERLAY's effect by
+// placing the field on the baseline the way storedEmbedModels does. The wiring
+// from a stored record through the real tools is t_embed_chain.nim's job —
+// keeping that split is what makes this one honest instead of a fixture that
+// proves only itself.
+func TestConfiguredEmbedModelReachesTheEmbeddingView(t *testing.T) {
+	state := &catalogState{
+		base: map[string]any{
+			"synthetic": map[string]any{
+				"id":     "synthetic",
+				"models": map[string]any{"syn:small:text": map[string]any{"id": "syn:small:text"}},
+			},
+		},
+		sources:        make(map[string]modelSource),
+		patches:        make(map[string]map[string]any),
+		embedPatches:   make(map[string]map[string]any),
+		statuses:       make(map[string]sourceStatus),
+		embedEffective: map[string]any{},
+	}
+	// What refresh does with a provider record's configured embedModel.
+	state.base["synthetic"].(map[string]any)["embedModel"] = "hf:nomic-ai/nomic-embed-text-v1.5"
+	// A provider the baseline has never heard of (a local runtime).
+	state.base["local"] = map[string]any{"id": "local", "name": "local"}
+	state.base["local"].(map[string]any)["embedModel"] = "nomic-embed-text"
+	state.effective = state.base
+	state.rebuildLocked()
+
+	for _, tc := range []struct{ provider, model string }{
+		{"synthetic", "hf:nomic-ai/nomic-embed-text-v1.5"},
+		{"local", "nomic-embed-text"},
+	} {
+		document := objectValue(state.embedEffective[tc.provider])
+		if document == nil {
+			t.Fatalf("%s: no embedding document", tc.provider)
+		}
+		if got := stringValue(document["configured"]); got != tc.model {
+			t.Fatalf("%s: configured = %q, want %q", tc.provider, got, tc.model)
+		}
+		if _, ok := objectValue(document["available"])[tc.model]; !ok {
+			t.Fatalf("%s: %q missing from the available view", tc.provider, tc.model)
+		}
+	}
+	// And it must NOT become a chat choice.
+	models, _ := state.models(listModelsArgs{Provider: "synthetic", Embed: boolPtr(false)})
+	for _, entry := range models {
+		if entry["id"] == "hf:nomic-ai/nomic-embed-text-v1.5" {
+			t.Fatal("an embed model entered the chat list")
+		}
+	}
+}
+
+// The overlay is applied on every rebuild, from a field that refresh replaces
+// wholesale — so a provider that loses its embedModel must lose it here too.
+// Mutating the baseline instead of holding a separate field passes the happy
+// path above and fails exactly here: rebuilds keep cloning the stale value.
+func TestClearedEmbedModelLeavesTheView(t *testing.T) {
+	state := &catalogState{
+		base: map[string]any{
+			"synthetic": map[string]any{
+				"id":     "synthetic",
+				"models": map[string]any{"syn:small:text": map[string]any{"id": "syn:small:text"}},
+			},
+		},
+		sources:          make(map[string]modelSource),
+		patches:          make(map[string]map[string]any),
+		embedPatches:     make(map[string]map[string]any),
+		statuses:         make(map[string]sourceStatus),
+		embedEffective:   map[string]any{},
+		configuredEmbeds: map[string]string{"synthetic": "hf:nomic-ai/nomic-embed-text-v1.5"},
+	}
+	state.rebuildLocked()
+	if objectValue(state.embedEffective["synthetic"])["configured"] != "hf:nomic-ai/nomic-embed-text-v1.5" {
+		t.Fatalf("configured model missing before clearing: %#v", state.embedEffective)
+	}
+
+	// provider_update {embedModel: ""} — the operator clears it.
+	state.configuredEmbeds = map[string]string{}
+	state.rebuildLocked()
+	if document := objectValue(state.embedEffective["synthetic"]); document != nil {
+		if configured := stringValue(document["configured"]); configured != "" {
+			t.Fatalf("cleared embedModel survived a rebuild: %q", configured)
+		}
+	}
+
+	// A removed provider's model must not resurrect on a later baseline reload.
+	state.configuredEmbeds = map[string]string{"gone": "stale/embed"}
+	state.rebuildLocked()
+	state.base = map[string]any{"synthetic": map[string]any{"id": "synthetic"}}
+	state.configuredEmbeds = map[string]string{}
+	state.rebuildLocked()
+	if _, present := state.embedEffective["gone"]; present {
+		t.Fatalf("a removed provider's document persisted: %#v", state.embedEffective)
+	}
+}
+
 func TestProviderMetadataRedactsSecrets(t *testing.T) {
 	metadata := providerMetadata(map[string]any{
 		"api":        "https://example.test/v1",

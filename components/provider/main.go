@@ -25,6 +25,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -199,12 +201,43 @@ func (p Provider) withDefaults() Provider {
 	return p
 }
 
+// isLoopbackBaseURL reports whether a base URL points at this machine.
+//
+// A LOCAL runtime needs no credential: llama-server, a model2vec/transformers.js
+// shim, LM Studio and ollama's /v1 shim all answer without an Authorization
+// header. Requiring a made-up key to register one was a real gap
+// (docs/research/LOCAL-EMBEDDINGS.md §5) — the operator had to invent a
+// string, and `hasCredential` would still have called the record invalid.
+//
+// Loopback only, deliberately: a remote endpoint must still present a key, so
+// this cannot become "any provider without auth is fine".
+func isLoopbackBaseURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (p Provider) hasCredential() bool {
 	if p.AuthType == authOAuth || p.OAuth != nil {
 		return p.OAuth != nil && strings.TrimSpace(p.OAuth.Access) != "" &&
 			strings.TrimSpace(p.OAuth.Refresh) != ""
 	}
-	return strings.TrimSpace(p.APIKey) != ""
+	if strings.TrimSpace(p.APIKey) != "" {
+		return true
+	}
+	// A loopback endpoint legitimately has no key. Accept either the chat base
+	// URL or an embeddings-only one, so an embed-only local runtime registers.
+	return isLoopbackBaseURL(p.BaseURL) || isLoopbackBaseURL(p.EmbedBaseURL)
 }
 
 func validProtocol(value string) bool {
@@ -347,7 +380,7 @@ func main() {
 		"description": "Add or update an API-key LLM provider in the store. Use provider_oauth_start for ChatGPT or Claude subscription login. Optionally set active.",
 		"properties": map[string]any{
 			"nickname":     map[string]any{"type": "string", "description": "Provider nickname (e.g. deepseek, openrouter, local)"},
-			"apiKey":       map[string]any{"type": "string", "description": "API key / secret"},
+			"apiKey":       map[string]any{"type": "string", "description": "API key / secret (omit only for a loopback baseUrl, e.g. a local llama-server)"},
 			"protocol":     map[string]any{"type": "string", "enum": []string{protocolOpenAI, protocolAnthropic}, "description": "Wire API (default openai-chat)"},
 			"baseUrl":      map[string]any{"type": "string", "description": "Optional base URL (defaults by nickname/protocol)"},
 			"model":        map[string]any{"type": "string", "description": "Default model id"},
@@ -359,7 +392,7 @@ func main() {
 			"stripPrefix":  map[string]any{"type": "boolean", "description": "Strip the vendor/ prefix from model ids before sending (gateways that route on the canonical id, e.g. devpass)"},
 			"active":       map[string]any{"type": "boolean", "description": "Make this the active provider now (default true if none active)"},
 		},
-		"required":  []string{"nickname", "apiKey"},
+		"required":  []string{"nickname"},
 		"x-harness": map[string]any{"approval": "always", "timeoutMs": 30000, "onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
@@ -386,8 +419,12 @@ func main() {
 		if args.Nickname == activeID {
 			return nil, errors.New("reserved nickname")
 		}
-		if strings.TrimSpace(args.APIKey) == "" {
-			return nil, errors.New("apiKey required")
+		// A local runtime needs no key (llama-server, an embeddings shim,
+		// ollama's /v1): requiring one forced a made-up string into a
+		// credential field. Anything NON-loopback still needs a real key.
+		if strings.TrimSpace(args.APIKey) == "" &&
+			!isLoopbackBaseURL(args.BaseURL) && !isLoopbackBaseURL(args.EmbedBaseURL) {
+			return nil, errors.New("apiKey required (only a loopback baseUrl may omit it)")
 		}
 		if args.Protocol == "" {
 			args.Protocol = protocolOpenAI
@@ -769,7 +806,18 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"ok": true, "source": "store", "provider": p}, nil
+		// hasKey restates hasCredential() for the ROUTING consumer (the llm
+		// component). The key itself is omitted when empty, which is exactly
+		// the legitimate loopback case — a local llama-server sends no
+		// Authorization header. Without this flag a consumer that only sees
+		// the credential field cannot tell "keyless local endpoint" from
+		// "record without a credential" and must guess; llm guessed wrong and
+		// refused every keyless local provider as not found.
+		//
+		// hasKey is the same boolean provider_list already exposes per row, so
+		// this adds no new authority — the decision stays in one place.
+		return map[string]any{"ok": true, "source": "store", "provider": p,
+			"hasKey": p.hasCredential()}, nil
 	})
 
 	// ------------------------------------------------------------- models

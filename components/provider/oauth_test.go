@@ -205,6 +205,47 @@ func TestValidStoredProvider(t *testing.T) {
 	}
 }
 
+// A local runtime has no API key, and requiring one forced a made-up string
+// into a credential field (docs/research/LOCAL-EMBEDDINGS.md §5). Loopback is
+// the ONLY place that is allowed: a remote endpoint without a key must stay
+// invalid, or this rule would quietly become "auth is optional".
+func TestLoopbackProviderNeedsNoKey(t *testing.T) {
+	for _, base := range []string{
+		"http://127.0.0.1:8080/v1",
+		"http://localhost:11434/v1",
+		"http://[::1]:8080/v1",
+	} {
+		p := Provider{Nickname: "local", BaseURL: base}.withDefaults()
+		if !validStoredProvider(p) {
+			t.Fatalf("loopback provider %q rejected without a key", base)
+		}
+	}
+	// An embeddings-only local runtime registers too (chat may point elsewhere).
+	embedOnly := Provider{
+		Nickname: "local-embed", BaseURL: "https://api.example.com/v1",
+		APIKey: "key", EmbedBaseURL: "http://127.0.0.1:8080/v1",
+	}.withDefaults()
+	if !validStoredProvider(embedOnly) {
+		t.Fatal("loopback embedBaseUrl rejected")
+	}
+	// Remote without a key is still invalid.
+	remote := Provider{Nickname: "remote", BaseURL: "https://api.example.com/v1"}.withDefaults()
+	if validStoredProvider(remote) {
+		t.Fatal("a remote provider without a key must not be valid")
+	}
+	// A near-miss host must not be mistaken for loopback.
+	for _, base := range []string{
+		"https://127.0.0.1.evil.com/v1",
+		"https://localhost.evil.com/v1",
+		"https://example.com/127.0.0.1",
+	} {
+		p := Provider{Nickname: "x", BaseURL: base}.withDefaults()
+		if validStoredProvider(p) {
+			t.Fatalf("%q was treated as loopback", base)
+		}
+	}
+}
+
 func TestOAuthHTTPErrorIsBounded(t *testing.T) {
 	err := oauthHTTPError("exchange", 400, []byte(strings.Repeat("x", 2000)))
 	if len(err.Error()) > 1100 || !strings.Contains(err.Error(), "HTTP 400") {
