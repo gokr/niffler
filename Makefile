@@ -353,6 +353,9 @@ var/bin/systemprompt: components/systemprompt/main.nim \
 var/bin/recall: components/recall/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/recall/main.nim
 
+var/bin/memory: components/memory/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/memory/main.nim
+
 var/bin/compaction: components/compaction/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/compaction/main.nim
 
@@ -441,7 +444,7 @@ components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-s
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
-	var/bin/recall var/bin/compaction \
+	var/bin/recall var/bin/memory var/bin/compaction \
 	var/bin/hooks var/bin/nats-server \
 	var/bin/mcp var/bin/mcp-bridge
 
@@ -554,6 +557,7 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 # those died under load without any compiler output (issue #108, deterministic
 # in CI). Not part of `build` — they are fixtures, not shipped components.
 FIXTURE_BINS := var/bin/fixture-skills-baked var/bin/fixture-fleet-fault-store var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool var/bin/fixture-embed-source
+
 var/bin/fixture-embed-source: tests/fixtures/embed_source.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/fixtures/embed_source.nim
 
@@ -744,6 +748,13 @@ test-profile: build var/bin/test_t_profile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-observe: build var/bin/test_t_observe ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_observe
 test-logfile: build var/bin/test_t_logfile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_logfile
 test-recall:  build var/bin/test_t_recall  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_recall
+test-memory:  build var/bin/test_t_memory  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory
+# The end-to-end half: a real core + runner + memory, asserting a fact reaches a
+# conversation's PERSISTED transcript unasked, appended after the user message,
+# with the frozen system prompt untouched — and shared by a worktree.
+var/bin/test_t_memory_live: tests/t_memory_live.nim tests/helpers.nim $(SDK_NIM) $(CORE_NIM) \
+    var/bin/niffler var/bin/session var/bin/memory var/bin/fixture-mock-llm
+test-memory-live: build var/bin/test_t_memory_live ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory_live
 test-workspaces: build var/bin/test_t_workspaces ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_workspaces
 test-hooks:  build var/bin/test_t_hooks  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_hooks
 test-uireg:  build var/bin/test_t_uireg  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_uireg

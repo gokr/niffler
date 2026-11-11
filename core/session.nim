@@ -51,6 +51,7 @@ proc main() =
                      adviseStream: new(AdviseStream),
                      mapStream: new(MapStream),
                      diagStream: new(DiagStream),
+                     memoryStream: new(MemoryStream),
                      activeTurn: new(ActiveTurn),
                      lockState: new(LockState),
                      sessionAllowlist: new(seq[string]))
@@ -118,6 +119,21 @@ proc main() =
                      getErrorString(dst))
     quit(1)
   ct.diagStream.sub = diagSub
+  # Durable-memory recall channel: the memory component publishes the rendered
+  # block of facts this conversation should see unasked, once at the first turn
+  # and again after a compaction. pumpMemory drains it and drainMemory appends
+  # it as append-only history — never the frozen prefix (docs/research/MEMORY.md
+  # §4). Its own lane, because the repo-map lane keeps only one message per
+  # conversation and would starve this one.
+  let memorySubjectStr = memorySubject(sessionId)
+  var memorySub: ptr natsSubscription
+  let mstMem = natsConnection_SubscribeSync(addr memorySub, nc.conn,
+                                            memorySubjectStr.cstring)
+  if not checkStatus(mstMem):
+    stderr.writeLine("session: subscribe " & memorySubjectStr & ": " &
+                     getErrorString(mstMem))
+    quit(1)
+  ct.memoryStream.sub = memorySub
   # Advisory channel: sync subscribe to svc.session.<id>.advise (docs/research/EXPERT.md).
   # pumpAdvise answers each turn-bound advisory request — accepted only while
   # that turn is live — from dispatch's idle slot during a turn and from the
@@ -165,6 +181,7 @@ proc main() =
     pumpBusyCall(ct)
     pumpMap(ct)
     pumpDiag(ct)
+    pumpMemory(ct)
     pumpAdvise(ct)
     pumpNested(ct)
   approval.cancelled = proc(): bool =
@@ -204,6 +221,7 @@ proc main() =
       pumpAdvise(ct)
       pumpMap(ct)
       pumpDiag(ct)
+      pumpMemory(ct)
       drainIdleCleanDiagnostics(ct, sessionId)
       if epochTime() - lastActivity > idleLimitSecs:
         echo "session: retiring after " & $idleLimitSecs.int & "s idle"

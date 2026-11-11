@@ -2141,6 +2141,34 @@ proc drainMap(ct: CoreTools, p: var Persister,
       onEvent("map", %*{"sessionId": p.convId, "workspace": ws,
                         "bytes": map.len})
 
+proc drainMemory(ct: CoreTools, p: var Persister,
+                 messages: var seq[JsonNode],
+                 onEvent: proc(kind: string, data: JsonNode) {.closure.},
+                 force = false) =
+  ## Append the durable-memory recall block, once per conversation
+  ## (docs/research/MEMORY.md §4). The memory component decides WHAT is worth
+  ## sending and WHEN — the runner only appends, so the block is ordinary
+  ## append-only history and the frozen prefix is untouched.
+  ##
+  ## One block per conversation, deliberately: a later block would repeat facts
+  ## the model has already read, and the second copy costs context for nothing.
+  ## The exception is a compaction, which legitimately re-opens the window (the
+  ## facts it summarized away are exactly what memory should restore) — the
+  ## component re-publishes after a compaction and `appended` is cleared there.
+  if ct.memoryStream == nil: return
+  if force: ct.memoryStream.appended = false
+  if ct.memoryStream.queue.len == 0: return
+  if ct.memoryStream.appended:
+    ct.memoryStream.queue.setLen(0)
+    return
+  let text = ct.memoryStream.queue[0]
+  ct.memoryStream.queue.setLen(0)
+  ct.memoryStream.appended = true
+  let msg = %*{"role": "user", "content": text}
+  ctxAppend(p, messages, msg)
+  if onEvent != nil:
+    onEvent("memory", %*{"sessionId": p.convId, "bytes": text.len})
+
 func diagnosticMessage*(path, text: string, clean: bool): JsonNode =
   ## Display-only clean verdicts never enter the model projection.
   if clean: return nil
@@ -3895,6 +3923,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     discard drainSteer(ct, p, messages, onEvent, turnId)
     drainMap(ct, p, messages, onEvent)
     drainDiagnostics(ct, p, messages, onEvent)
+    drainMemory(ct, p, messages, onEvent)
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
     discard drainNotices(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
@@ -3927,6 +3956,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         discard drainSteer(ct, p, messages, onEvent, turnId)
         drainMap(ct, p, messages, onEvent)
         drainDiagnostics(ct, p, messages, onEvent)
+        drainMemory(ct, p, messages, onEvent, force = true)
         discard drainAdvisories(ct, p, messages, onEvent, turnId)
         verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
         if verdict.startsWith("pressure:") and
@@ -4131,6 +4161,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               discard drainSteer(ct, p, messages, onEvent, turnId)
               drainMap(ct, p, messages, onEvent)
               drainDiagnostics(ct, p, messages, onEvent)
+              drainMemory(ct, p, messages, onEvent, force = true)
               discard drainAdvisories(ct, p, messages, onEvent, turnId)
               overflowVerdict =
                 checkContext(p, messages, onEvent, turnId, toolTokens)
@@ -4184,6 +4215,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                 discard drainSteer(ct, p, messages, onEvent, turnId)
                 drainMap(ct, p, messages, onEvent)
                 drainDiagnostics(ct, p, messages, onEvent)
+                drainMemory(ct, p, messages, onEvent, force = true)
                 discard drainAdvisories(ct, p, messages, onEvent, turnId)
               if readyAsIs or (ceiling > 0 and measure + outputReserve(p) <= ceiling) or
                   (ceiling <= 0 and measure < promptTokens):
@@ -6595,6 +6627,14 @@ func diagSubject*(sessionId: string): string =
   ## server. The runner drains it (pumpDiag) and runTurn appends it as history
   ## — append-only, never the frozen prefix.
   "svc.session." & sanitizeSessionId(sessionId) & ".diag"
+
+func memorySubject*(sessionId: string): string =
+  ## The durable-memory recall channel: components/memory publishes a rendered
+  ## block of this workspace's facts here when it decides the conversation
+  ## should be told them unasked (its first turn, and again after a
+  ## compaction). The runner drains it (pumpMemory) and runTurn appends it as
+  ## history — append-only, never the frozen prefix (docs/research/MEMORY.md §4).
+  "svc.session." & sanitizeSessionId(sessionId) & ".memory"
 
 func adviseSubject*(sessionId: string): string =
   ## Turn-bound advisory requests from the expert peer (docs/research/EXPERT.md): answered

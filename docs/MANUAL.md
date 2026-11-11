@@ -29,6 +29,7 @@ outcomes, crash windows and the session-ID reuse restriction.
 - [Store engines](#store-engines)
 - [State and configuration](#state-and-configuration) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
+- [Long-term memory](#long-term-memory)
 - [Shell guard and read masks](#shell-guard-and-read-masks)
 - [Context window](#context-window) · [Images (dropped and tool-produced)](#images-dropped-and-tool-produced) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
@@ -100,6 +101,7 @@ A one-file index of every shipped capability (not a reference) is
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches — parameters, caps, exit codes and the effect classification are in [`grep` in detail](#grep-in-detail) |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `compaction` | Nim | optional | default replaceable `compaction_propose` implementation: verifies runner-owned paged snapshots, chooses a permitted cut, and returns a structured checkpoint candidate; the runner alone validates and commits projections — the tool itself is `hidden` + `x-harness.runner: true` (read-effect, 120 s), so no model ever sees it and only a runner or another component calls it; with the component absent or killed, summarization is off and the deterministic rungs (prune, both stub tiers, proportional trim) still run — the ladder degrades, it does not stop |
+| `memory` | Nim | optional | durable fact memory, scoped per repository (see [Long-term memory](#long-term-memory)). Seven on-demand tools: `memory_remember` (one live fact per SUBJECT — re-remembering updates it and keeps the prior text as a revision), `memory_search` (local token-prefix ranking over the scope's records), `memory_get` (one record plus its revision trail), `memory_list`, `memory_forget` (archives a higher revision, never destroys; approval-gated), `memory_recall` (the bounded block) and `memory_scopes` (which scopes resolve here and where they live). Scope is keyed on the repository's PRIMARY root via `sdk/checkout.nim`, so a linked worktree shares its primary's memory rather than starting blank. Facts are appended to conversations through their own `svc.session.<id>.memory` lane — append-only history, never the frozen prefix — at a conversation's first turn and again after a compaction or trim. Every tool degrades to an empty result without a store; absent component means no memory and nothing else changes |
 | `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a ranked search over the conversation's whole canonical history (trimmed/compacted-away messages included) through the store's search index, with a substring-grep fallback when the store cannot search; `scope: "all"` widens to every conversation but is refused for session calls (a cross-conversation disclosure — direct bus callers only, issue #51) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) and the headless turn driver (`run` — attach to a home or `--own` one, stream or `--quiet`, optional `--export` transcript) — a pure client that never publishes `reg.publish`, so it never appears in `catalog` and `cli wait cli` can never succeed |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
@@ -1212,6 +1214,93 @@ with `busy` ("the conversation is mid-turn — retry when the turn finishes")
 rather than waiting: turns never nest, and a client that waits instead just
 expires its own timeout (this is what made `/export` look broken during a long
 turn).
+
+## Long-term memory
+
+A conversation forgets everything when its runner exits. The store keeps the
+transcript, but nothing turns "we learned on Tuesday that `make build` needs
+`-j1` on this box" into something the *next* conversation in this repo already
+knows. The optional `memory` component is that layer; the design and its
+reasoning are in [research/MEMORY.md](research/MEMORY.md).
+
+### Scope: per repository, shared by its worktrees
+
+The scope key is the **primary checkout's** path, resolved through
+`sdk/checkout.nim` — the same classification the write fence uses. That is the
+one decision worth understanding:
+
+| Scope | Key | Read by |
+|---|---|---|
+| `repo` (default) | `<primaryRoot>` of the checkout | every conversation in that repository, **including every `git worktree` of it** |
+| `dir` | the workspace path | conversations in that non-git directory |
+| `global` | `"global"` | any conversation, read **last** |
+| `conversation` | the conversation id | that conversation only |
+
+A worktree is a different path but the same repository, so keying on the
+workspace path would give each `/worktree add` an amnesiac clone of the repo it
+was cut from — backwards, since a worktree is where you go to *apply* what the
+repository already taught you. `memory_scopes` reports the resolved key, which
+is how you confirm the sharing is in effect.
+
+**Strictest scope wins**: a `repo` fact shadows a `global` fact with the same
+subject. Reading *another* repository's memory is refused, not filtered.
+
+### One live fact per subject
+
+`memory_remember` writes a record keyed by a dotted **subject**
+(`build.jobs`, `deps.package_manager`). Remembering the same subject again
+**updates** it — revision 2 — and the prior text is kept as a `memory-rev`
+document. So "we use npm" and "we use pnpm" cannot coexist and leave the model
+holding both, and a correction stays debuggable afterwards. `memory_forget`
+archives a higher revision instead of destroying the record.
+
+`volatility` (`stable`/`slow`/`fast`) plus `verifiedAt` make staleness a
+**ranking** signal, never a delete: an expired fact comes back marked
+`stale: true` with its age, so the model re-verifies rather than trusting or
+losing it.
+
+### How memory reaches the model
+
+Two mechanisms, each on a different seam:
+
+- **Teaching** — one static line into the frozen prompt (`prompt_hint`),
+  registered once. It never changes, so it is legal under the prefix
+  invariant.
+- **Recall** — a bounded block appended to history, capped by
+  `recallFacts`/`recallChars`. It rides its own `svc.session.<id>.memory` lane
+  (the same shape the repo map and LSP diagnostics use), so it is **append-only
+  history, never a prefix edit**. It is published at a conversation's first
+  turn and again after a compaction or trim — the moment the historical facts
+  it summarized away are worth restoring — and not on every turn, because a
+  fixed per-turn tax buys a benefit concentrated at two moments.
+
+`memory.autoRecall` (`birth` | `compaction` | `both` | `off`) and the two
+budgets are a declared config domain (`config_patch memory`).
+
+### Write policy
+
+| Op | Gate |
+|---|---|
+| new subject, no secret-shaped text | none — a memory that prompts on every write is one the model stops using |
+| `memory_forget` | `x-harness.approval: "always"` |
+| writing `scope: "global"` | `x-harness.approval: "always"` (blast radius is every repo) |
+| credential-shaped text (`sk-…`, `ghp_…`, `AKIA…`, `-----BEGIN`, a key-ish word beside a long secret-alphabet run) | refused with `code: "secret"` — memory is durable store state recalled into every conversation in the scope, so it must not hold secrets; record *where* the secret lives instead |
+
+Subagents fail closed: a session with `sessionmeta.parent` may not write.
+
+### Retrieval, honestly labelled
+
+`memory_search` ranks with a local token-prefix AND over subjects, text and
+tags — the store's own matching rule — and reports `ranker: "text"`. Vector
+recall is **not** wired yet on purpose: `search {kind:"embedding"}` partitions
+vec0 by `kind`+`model` only, so a scope filter inside kNN needs `id_prefix` as
+a partition key; post-filtering a top-k would return a silent shortfall
+([research/MEMORY.md](research/MEMORY.md) §7). A scope holds a few hundred
+facts, so local ranking is exact today.
+
+Memory searches *memory*. For what was said earlier in a conversation —
+including text a trim removed — use
+[`context_recall`](#context-window) instead.
 
 ## Shell guard and read masks
 

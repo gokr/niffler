@@ -24,6 +24,26 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `bench/reports/full31-syn-ds41-claudecode-{2318,j1}-report.*` and
   `full31-syn-ds41-claudecode-analysis.md`.
 
+### Added
+
+- **Long-term memory, scoped per repository** (`components/memory`, optional):
+  durable facts a conversation chooses to keep, so a later conversation in the
+  same repo does not rediscover them. The scope key is the repository's
+  **primary** checkout, so every `git worktree` of it shares one memory instead
+  of starting blank. One live fact per **subject** — re-remembering updates it
+  and keeps the prior text as a revision — with `forget` archiving rather than
+  destroying, and staleness as a ranking signal rather than a delete. Facts
+  reach the model through a new append-only `svc.session.<id>.memory` lane (the
+  shape the repo map and LSP diagnostics already use), so automatic recall never
+  touches the frozen prompt prefix; it fires at a conversation's first turn and
+  again after a compaction or trim. Seven on-demand tools
+  (`memory_remember`/`search`/`get`/`list`/`forget`/`recall`/`scopes`); retrieval
+  is local token-prefix ranking (`ranker: "text"`) because scoped vector search
+  needs one store-contract change. Write policy is fail-closed: `forget` and any
+  `global` write are approval-gated, credential-shaped text is refused, and
+  subagents may not write. Design and reasoning: `docs/research/MEMORY.md`;
+  contract test `tests/t_memory.nim`.
+
 ### Fixed
 
 - Stale stop controls no longer deny `/worktree` and other client tool
