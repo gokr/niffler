@@ -2087,15 +2087,27 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   ct.steerStream.queue.setLen(0)
 
 proc drainMapQueue*(queue: var seq[tuple[workspace, map: string]],
-                    appended: var bool): seq[tuple[workspace, map: string]] =
-  ## Consume only the map lane. Return at most one map per conversation;
-  ## later arrivals are discarded, never touching the diagnostic lane.
-  if appended:
-    queue.setLen(0)  # stale later maps must not be retained forever
-    return
-  if queue.len > 0:
-    result.add(queue[0])
-    appended = true
+                    appended: var HashSet[string]): seq[tuple[workspace, map: string]] =
+  ## Consume only the map lane. Return at most one map per call, and only for a
+  ## workspace this conversation has not been given a map for yet; later
+  ## arrivals are discarded, never touching the diagnostic lane.
+  ##
+  ## The dedupe key is the WORKSPACE, not the conversation. It used to be a
+  ## bare bool, which meant "one map per conversation lifetime": a conversation
+  ## that moved — `/worktree add`, `/worktree close`, an explicit
+  ## `session {cwd}` — kept the map of the tree it had left and described the
+  ## wrong files to the model for the rest of its life. A stale map is worse
+  ## than no map, because it is read confidently and nothing signals that it
+  ## is about another checkout.
+  if queue.len == 0: return
+  var chosen = -1
+  for i in 0 ..< queue.len:
+    if queue[i].workspace notin appended:
+      chosen = i
+      break
+  if chosen >= 0:
+    result.add(queue[chosen])
+    appended.incl(queue[chosen].workspace)
   queue.setLen(0)
 
 proc drainDiagnosticsQueue*(queue: var seq[tuple[path, text: string, clean: bool]]):
@@ -2128,6 +2140,34 @@ proc drainMap(ct: CoreTools, p: var Persister,
     if onEvent != nil:
       onEvent("map", %*{"sessionId": p.convId, "workspace": ws,
                         "bytes": map.len})
+
+proc drainMemory(ct: CoreTools, p: var Persister,
+                 messages: var seq[JsonNode],
+                 onEvent: proc(kind: string, data: JsonNode) {.closure.},
+                 force = false) =
+  ## Append the durable-memory recall block, once per conversation
+  ## (docs/research/MEMORY.md §4). The memory component decides WHAT is worth
+  ## sending and WHEN — the runner only appends, so the block is ordinary
+  ## append-only history and the frozen prefix is untouched.
+  ##
+  ## One block per conversation, deliberately: a later block would repeat facts
+  ## the model has already read, and the second copy costs context for nothing.
+  ## The exception is a compaction, which legitimately re-opens the window (the
+  ## facts it summarized away are exactly what memory should restore) — the
+  ## component re-publishes after a compaction and `appended` is cleared there.
+  if ct.memoryStream == nil: return
+  if force: ct.memoryStream.appended = false
+  if ct.memoryStream.queue.len == 0: return
+  if ct.memoryStream.appended:
+    ct.memoryStream.queue.setLen(0)
+    return
+  let text = ct.memoryStream.queue[0]
+  ct.memoryStream.queue.setLen(0)
+  ct.memoryStream.appended = true
+  let msg = %*{"role": "user", "content": text}
+  ctxAppend(p, messages, msg)
+  if onEvent != nil:
+    onEvent("memory", %*{"sessionId": p.convId, "bytes": text.len})
 
 func diagnosticMessage*(path, text: string, clean: bool): JsonNode =
   ## Display-only clean verdicts never enter the model projection.
@@ -3883,6 +3923,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     discard drainSteer(ct, p, messages, onEvent, turnId)
     drainMap(ct, p, messages, onEvent)
     drainDiagnostics(ct, p, messages, onEvent)
+    drainMemory(ct, p, messages, onEvent)
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
     discard drainNotices(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
@@ -3915,6 +3956,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         discard drainSteer(ct, p, messages, onEvent, turnId)
         drainMap(ct, p, messages, onEvent)
         drainDiagnostics(ct, p, messages, onEvent)
+        drainMemory(ct, p, messages, onEvent, force = true)
         discard drainAdvisories(ct, p, messages, onEvent, turnId)
         verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
         if verdict.startsWith("pressure:") and
@@ -4119,6 +4161,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               discard drainSteer(ct, p, messages, onEvent, turnId)
               drainMap(ct, p, messages, onEvent)
               drainDiagnostics(ct, p, messages, onEvent)
+              drainMemory(ct, p, messages, onEvent, force = true)
               discard drainAdvisories(ct, p, messages, onEvent, turnId)
               overflowVerdict =
                 checkContext(p, messages, onEvent, turnId, toolTokens)
@@ -4172,6 +4215,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                 discard drainSteer(ct, p, messages, onEvent, turnId)
                 drainMap(ct, p, messages, onEvent)
                 drainDiagnostics(ct, p, messages, onEvent)
+                drainMemory(ct, p, messages, onEvent, force = true)
                 discard drainAdvisories(ct, p, messages, onEvent, turnId)
               if readyAsIs or (ceiling > 0 and measure + outputReserve(p) <= ceiling) or
                   (ceiling <= 0 and measure < promptTokens):
@@ -5108,8 +5152,23 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
     if hasCwd:
+      let before = entry.workspace
       let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""), args)
       if refusal.len > 0: return %*{"error": refusal}
+      # A live conversation that MOVED must announce the new workspace, exactly
+      # as a freshly loaded one does below. Without this, components that key
+      # off workspace identity — repomap builds a map per workspace, lsp warms
+      # servers for the languages present — kept serving the tree the
+      # conversation had left: "the workspace is X but the repo map shown is
+      # from Y".
+      if entry.workspace != before:
+        try:
+          ct.nc.publish("ev.workspace.opened",
+            Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: %*{"workspace": entry.workspace,
+                                 "conversationId": sessionId}).encode())
+        except CatchableError as e:
+          echo "core: WARNING workspace.opened publish failed: " & e.msg
   else:
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.
@@ -6568,6 +6627,14 @@ func diagSubject*(sessionId: string): string =
   ## server. The runner drains it (pumpDiag) and runTurn appends it as history
   ## — append-only, never the frozen prefix.
   "svc.session." & sanitizeSessionId(sessionId) & ".diag"
+
+func memorySubject*(sessionId: string): string =
+  ## The durable-memory recall channel: components/memory publishes a rendered
+  ## block of this workspace's facts here when it decides the conversation
+  ## should be told them unasked (its first turn, and again after a
+  ## compaction). The runner drains it (pumpMemory) and runTurn appends it as
+  ## history — append-only, never the frozen prefix (docs/research/MEMORY.md §4).
+  "svc.session." & sanitizeSessionId(sessionId) & ".memory"
 
 func adviseSubject*(sessionId: string): string =
   ## Turn-bound advisory requests from the expert peer (docs/research/EXPERT.md): answered

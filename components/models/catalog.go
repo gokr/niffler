@@ -101,11 +101,18 @@ type catalogState struct {
 	// one into the chat catalog would offer it as a chat choice.
 	embedPatches   map[string]map[string]any
 	embedEffective map[string]any
-	statuses       map[string]sourceStatus
-	baselineStatus sourceStatus
-	overrideStatus *sourceStatus
-	overridePatch  map[string]any
-	updatedAt      time.Time
+	// configuredEmbeds holds each provider RECORD's configured embedModel,
+	// keyed by provider nickname. It is kept separate from base on purpose:
+	// base is the models.dev baseline, replaced wholesale whenever the
+	// baseline reloads, and rebuildLocked derives everything from it. Writing
+	// the overlay into base would leave a removed or cleared provider's model
+	// behind forever (rebuilds would keep cloning the stale field).
+	configuredEmbeds map[string]string
+	statuses         map[string]sourceStatus
+	baselineStatus   sourceStatus
+	overrideStatus   *sourceStatus
+	overridePatch    map[string]any
+	updatedAt        time.Time
 	// owner settings (config surface, slice 4): read per call so a change
 	// applies on the next refresh without rebuilding the catalog state.
 	owner sdk.OwnerStore
@@ -160,21 +167,22 @@ func newCatalogState(root string) *catalogState {
 	}
 
 	state := &catalogState{
-		owner:          sdk.OwnerStore{Kind: modelsSettingsKind, ID: modelsSettingsID},
-		root:           root,
-		cacheDir:       cacheDir,
-		cachePath:      filepath.Join(cacheDir, "api.json"),
-		sourceURL:      sourceURL,
-		sourcePath:     os.Getenv("NIF_MODELS_PATH"),
-		overridePath:   os.Getenv("NIF_MODELS_OVERRIDE"),
-		offline:        envBool("NIF_MODELS_OFFLINE"),
-		cacheTTL:       envDuration("NIF_MODELS_CACHE_TTL", 5*time.Minute),
-		client:         &http.Client{Timeout: 12 * time.Second},
-		sources:        make(map[string]modelSource),
-		patches:        make(map[string]map[string]any),
-		embedPatches:   make(map[string]map[string]any),
-		embedEffective: make(map[string]any),
-		statuses:       make(map[string]sourceStatus),
+		owner:            sdk.OwnerStore{Kind: modelsSettingsKind, ID: modelsSettingsID},
+		root:             root,
+		cacheDir:         cacheDir,
+		cachePath:        filepath.Join(cacheDir, "api.json"),
+		sourceURL:        sourceURL,
+		sourcePath:       os.Getenv("NIF_MODELS_PATH"),
+		overridePath:     os.Getenv("NIF_MODELS_OVERRIDE"),
+		offline:          envBool("NIF_MODELS_OFFLINE"),
+		cacheTTL:         envDuration("NIF_MODELS_CACHE_TTL", 5*time.Minute),
+		client:           &http.Client{Timeout: 12 * time.Second},
+		sources:          make(map[string]modelSource),
+		patches:          make(map[string]map[string]any),
+		embedPatches:     make(map[string]map[string]any),
+		embedEffective:   make(map[string]any),
+		configuredEmbeds: make(map[string]string),
+		statuses:         make(map[string]sourceStatus),
 	}
 	state.loadInitialCatalog()
 	return state
@@ -453,6 +461,19 @@ func (c *catalogState) rebuildLocked() {
 		c.overrideStatus = &status
 	}
 
+	// Overlay the operator's configured embed models last, so a configured
+	// model always wins over baseline metadata, and so a provider the baseline
+	// has never heard of (a local llama-server) still gets a document that can
+	// carry it.
+	for nickname, model := range c.configuredEmbeds {
+		provider := objectValue(next[nickname])
+		if provider == nil {
+			provider = map[string]any{"id": nickname, "name": nickname}
+			next[nickname] = provider
+		}
+		provider["embedModel"] = model
+	}
+
 	normalizeCatalog(next)
 	c.effective = next
 	c.updateEmbedDocumentsLocked(next, embedSources)
@@ -682,6 +703,50 @@ func (c *catalogState) discover(ctx context.Context, comp *sdk.Component) error 
 	return nil
 }
 
+// storedEmbedModels reads the configured embed model of every provider record.
+//
+// WHY this exists: updateEmbedDocumentsLocked has always consulted
+// provider["embedModel"], but nothing ever put it there. The models catalog is
+// built from the models.dev baseline file, and a provider RECORD (what
+// provider_add/provider_update write into the store) is a different document
+// this component never read. So `embedModel` was dead configuration: accepted
+// by provider_update, echoed by provider_list, absent from
+// models_list/models_get, and reported downstream as "model not found".
+//
+// TestEmbedSourceFormsASeparateView did not catch it and could not: it is a
+// legitimate test of the projection, and it supplies the field by writing it
+// into state.base. That is exactly the boundary to mind — a test that hands a
+// component the data it does not own proves the arithmetic, not the wiring.
+// tests/t_embed_chain.nim covers the wiring, through the real tools.
+//
+// Best effort and non-fatal: the operator's configured model is a hint, and a
+// catalog that failed to load because the provider registry was slow would be
+// a worse trade than a missing embed entry.
+func (c *catalogState) storedEmbedModels(ctx context.Context, comp *sdk.Component) map[string]string {
+	result := make(map[string]string)
+	requestCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	raw, err := comp.RequestContext(requestCtx, "provider", "provider_list", map[string]any{})
+	if err != nil {
+		return result
+	}
+	var listed struct {
+		Providers []struct {
+			Nickname   string `json:"nickname"`
+			EmbedModel string `json:"embedModel"`
+		} `json:"providers"`
+	}
+	if json.Unmarshal(raw, &listed) != nil {
+		return result
+	}
+	for _, p := range listed.Providers {
+		if model := strings.TrimSpace(p.EmbedModel); model != "" && p.Nickname != "" {
+			result[p.Nickname] = model
+		}
+	}
+	return result
+}
+
 func (c *catalogState) refresh(ctx context.Context, comp *sdk.Component, force bool) map[string]any {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
@@ -715,7 +780,12 @@ func (c *catalogState) refresh(ctx context.Context, comp *sdk.Component, force b
 		}
 	}
 
+	// Hand the operator's configured embed models to the projection. Replacing
+	// the whole map (rather than merging) is what drops a model when its
+	// provider is removed or its embedModel is cleared.
+	configured := c.storedEmbedModels(ctx, comp)
 	c.mu.Lock()
+	c.configuredEmbeds = configured
 	c.rebuildLocked()
 	if c.overrideStatus != nil && (c.overrideStatus.State == "error" || c.overrideStatus.State == "stale") {
 		refreshErrors = append(refreshErrors, "local override: "+c.overrideStatus.Error)

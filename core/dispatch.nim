@@ -54,6 +54,10 @@ type
                                        ## the lsp component publishes on
                                        ## svc.session.<id>.diag, pumpDiag drains,
                                        ## runTurn appends — see DiagStream)
+    memoryStream*: MemoryStream        ## durable-memory recall channel (runners only;
+                                       ## components/memory publishes on
+                                       ## svc.session.<id>.memory, pumpMemory
+                                       ## drains, runTurn appends — docs/research/MEMORY.md)
     adviseStream*: AdviseStream        ## turn-bound advisory queue (runners only)
     activeTurn*: ActiveTurn            ## live turn identity (set by runTurn)
     sessionAllowlist*: ref seq[string] ## frozen per-session tool allowlist
@@ -105,7 +109,14 @@ type
   MapStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[tuple[workspace, map: string]]
-    appended*: bool          # one map per conversation
+    appended*: HashSet[string]
+      ## One map per WORKSPACE, not per conversation: a conversation that
+      ## changes workspace (`/worktree add`, `/worktree close`, an explicit
+      ## `session {cwd}`) must get the map of the tree it is now in. Keyed on
+      ## a bare bool, the first map was appended for the conversation's
+      ## lifetime and a moved conversation kept describing the tree it had
+      ## left — a model reading a stale map is worse off than one with none,
+      ## because it reasons confidently about the wrong files.
   # Asynchronous LSP-diagnostics channel (svc.session.<id>.diag): the edit
   # tool asks the lsp component for diagnostics WITHOUT waiting (a cold
   # rust-analyzer/jdtls needs minutes, and every edit used to pay a 25s
@@ -117,6 +128,18 @@ type
   DiagStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[tuple[path, text: string, clean: bool]]
+  # Durable-memory recall channel (svc.session.<id>.memory): the memory
+  # component decides ONCE per conversation (at its first turn, and again after
+  # a compaction) which of its facts the model should see unasked, and
+  # publishes the rendered block here. The runner drains it and appends it as
+  # history — append-only, so the frozen prefix is never touched
+  # (docs/research/MEMORY.md §4). A lane of its own, not the repo-map one:
+  # drainMapQueue keeps at most ONE map per conversation, so sharing would let
+  # a map starve the recall block (or the reverse).
+  MemoryStream* = ref object
+    sub*: ptr natsSubscription
+    queue*: seq[string]        # rendered recall blocks, oldest first
+    appended*: bool            # at most one block per conversation lifetime
   # Raised from a dispatch's idle slot when a turn cancellation arrives
   # while that dispatch is in flight: the caller stops waiting for the
   # reply immediately. The callee keeps running (NATS request/reply has no
@@ -1662,6 +1685,26 @@ proc pumpDiag*(ct: CoreTools) =
     if path.len == 0 or text.len == 0: continue
     ct.diagStream.queue.add((path, text, env.payload{"clean"}.getBool(false)))
 
+proc pumpMemory*(ct: CoreTools) =
+  ## Drain svc.session.<id>.memory — the memory component's recall block for
+  ## this conversation. Queue for drainMemory, which runTurn appends as
+  ## append-only history; the frozen prefix is untouched (docs/research/MEMORY.md
+  ## §4). Never blocks: the component decides what is worth sending, so the
+  ## runner carries only the rendered text.
+  if ct.memoryStream == nil or ct.memoryStream.sub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.memoryStream.sub, 1)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    let data = $natsMsg_GetData(msg)
+    natsMsg_Destroy(msg)
+    let env = decode(data)
+    if env.kind != ekEvent or env.payload == nil: continue
+    let text = env.payload{"block"}.getStr("")
+    if text.len > 0:
+      ct.memoryStream.queue.add text
+
 proc pumpAdvise*(ct: CoreTools) =
   ## Drain svc.session.<id>.advise — turn-bound advisory requests from the
   ## expert peer. Each request is answered immediately: accepted only while
@@ -1916,6 +1959,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     pumpBusyCall(ct)
     pumpMap(ct)
     pumpDiag(ct)
+    pumpMemory(ct)
     # Turn cancellation while THIS dispatch is in flight: stop waiting for
     # the reply (TurnCancelled). Only during a live turn, and only for a
     # fresh cancel — non-turn dispatches (model selection, session_prepare)
@@ -2924,6 +2968,7 @@ proc dispatchToolCalls*(ct: CoreTools,
     pumpBusyCall(ct)
     pumpMap(ct)
     pumpDiag(ct)
+    pumpMemory(ct)
     pumpAdvise(ct)
     pumpNested(ct)
     # Turn cancellation while this WAVE is in flight, same contract as the

@@ -101,7 +101,7 @@ SQLITE_VEC_INC = shim="$${TMPDIR:-/tmp}/niffler-sqlite-inc"; mkdir -p "$$shim"; 
 
 .PHONY: help all build components components-inner run down down-here \
          test test-server test-bench test-bash test-store test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
-        test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
+        test-models test-embed-chain test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-fleet-admission test-taskpolicy test-codingartifact test-server-lifecycle test-fleet \
         test-retry-unit test-ctx-accounting test-context-status test-compaction \
         test-toolpair-unit test-toolpair-heal test-dotenv test-dotenv-ts \
@@ -144,6 +144,8 @@ help-tests:
 	@echo '  test-go              Go unit tests + vet; race detector on audited packages'
 	@echo '  test-bench           Node benchmark unit tests; not a model eval, and not'
 	@echo '                       part of make test (they SIGKILL matched processes)'
+	@echo '  test-embed-chain     The embed-model chain: a provider record's embedModel'
+	@echo '                       reaches the models catalog (never the chat list)'
 	@echo '  test-clean           Cleanup contract only; no full build or live store access'
 	@echo '  test-fleet           Mocked provisioning tests; no real SSH/VM mutations'
 	@echo '  test-fleet-tasks     Two-instance task smoke (real bus/runners, mock model)'
@@ -351,6 +353,9 @@ var/bin/systemprompt: components/systemprompt/main.nim \
 var/bin/recall: components/recall/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/recall/main.nim
 
+var/bin/memory: components/memory/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/memory/main.nim
+
 var/bin/compaction: components/compaction/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/compaction/main.nim
 
@@ -439,7 +444,7 @@ components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-s
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
-	var/bin/recall var/bin/compaction \
+	var/bin/recall var/bin/memory var/bin/compaction \
 	var/bin/hooks var/bin/nats-server \
 	var/bin/mcp var/bin/mcp-bridge
 
@@ -551,7 +556,10 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 # them per sandbox started a dozen concurrent `nim c` runs per pooled gate and
 # those died under load without any compiler output (issue #108, deterministic
 # in CI). Not part of `build` — they are fixtures, not shipped components.
-FIXTURE_BINS := var/bin/fixture-skills-baked var/bin/fixture-fleet-fault-store var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool
+FIXTURE_BINS := var/bin/fixture-skills-baked var/bin/fixture-fleet-fault-store var/bin/ctxtest var/bin/ctxsink var/bin/fixture-mock-llm var/bin/fixture-compaction var/bin/fixture-mcp-server var/bin/fixture-slow-lsp var/bin/fixture-image-tool var/bin/fixture-embed-source
+
+var/bin/fixture-embed-source: tests/fixtures/embed_source.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/fixtures/embed_source.nim
 
 var/bin/fixture-fleet-fault-store: tests/fixtures/fleet_fault_store.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/fixtures/fleet_fault_store.nim
@@ -740,10 +748,20 @@ test-profile: build var/bin/test_t_profile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-observe: build var/bin/test_t_observe ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_observe
 test-logfile: build var/bin/test_t_logfile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_logfile
 test-recall:  build var/bin/test_t_recall  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_recall
+test-memory:  build var/bin/test_t_memory  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory
+# The end-to-end half: a real core + runner + memory, asserting a fact reaches a
+# conversation's PERSISTED transcript unasked, appended after the user message,
+# with the frozen system prompt untouched — and shared by a worktree.
+var/bin/test_t_memory_live: tests/t_memory_live.nim tests/helpers.nim $(SDK_NIM) $(CORE_NIM) \
+    var/bin/niffler var/bin/session var/bin/memory var/bin/fixture-mock-llm
+test-memory-live: build var/bin/test_t_memory_live ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory_live
 test-workspaces: build var/bin/test_t_workspaces ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_workspaces
 test-hooks:  build var/bin/test_t_hooks  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_hooks
 test-uireg:  build var/bin/test_t_uireg  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_uireg
 test-models:  build var/bin/test_t_models  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_models
+
+test-embed-chain: build var/bin/test_t_embed_chain var/bin/fixture-embed-source
+	$(TEST_LOCK) $(TEST_ENV) ./var/bin/test_t_embed_chain
 test-llm-modelpin: build var/bin/test_t_llm_modelpin ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_llm_modelpin
 test-provider-pin: build var/bin/test_t_provider_pin ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_provider_pin
 test-provider: build var/bin/test_t_provider ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_provider

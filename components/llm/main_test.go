@@ -212,6 +212,44 @@ func TestResolveProviderFallsBackToEnvWithoutStore(t *testing.T) {
 	}
 }
 
+// A keyless loopback provider is a legitimate record, not a missing one. The
+// key field is omitempty, so the credential is ABSENT from this reply — reading
+// "usable" off that absence made llm report every local llama-server as
+// `unknown provider`, which is the exact configuration the local-embeddings
+// work exists to support. provider_get now states hasKey (its own
+// hasCredential verdict); llm must trust it rather than re-deriving the
+// loopback rule.
+func TestClassifyProviderReplyAcceptsKeylessLoopback(t *testing.T) {
+	local := classifyProviderReply(json.RawMessage(`{"ok":true,"source":"store","hasKey":true,`+
+		`"provider":{"nickname":"llamacpp","baseUrl":"http://127.0.0.1:8080/v1",`+
+		`"model":"nomic","embedModel":"nomic"}}`), nil)
+	if !local.Found || local.Unreachable != nil {
+		t.Fatalf("keyless loopback lookup = %+v (want Found)", local)
+	}
+	if local.Provider.BaseURL != "http://127.0.0.1:8080/v1" ||
+		local.Provider.EmbedModel != "nomic" || local.Nickname != "llamacpp" {
+		t.Fatalf("keyless loopback provider = %+v", local.Provider)
+	}
+	if local.Provider.APIKey != "" {
+		t.Fatalf("a keyless record must carry no credential, got %q", local.Provider.APIKey)
+	}
+
+	// No credential AND no hasKey stays a miss: an old registry answer (or a
+	// record that genuinely lost its key) must not become routable.
+	stillMissing := classifyProviderReply(json.RawMessage(`{"ok":true,"source":"store",`+
+		`"provider":{"nickname":"other","baseUrl":"https://api.example.com/v1","model":"m"}}`), nil)
+	if stillMissing.Found || stillMissing.Unreachable != nil {
+		t.Fatalf("keyless non-loopback lookup = %+v (want definitive miss)", stillMissing)
+	}
+
+	// An explicit hasKey:false from the registry is authoritative too.
+	refused := classifyProviderReply(json.RawMessage(`{"ok":true,"source":"store","hasKey":false,`+
+		`"provider":{"nickname":"other","baseUrl":"http://127.0.0.1:8080/v1","model":"m"}}`), nil)
+	if refused.Found {
+		t.Fatalf("hasKey:false must not be routable, got %+v", refused)
+	}
+}
+
 func TestClassifyProviderReplySeparatesUnreachableFromUnknown(t *testing.T) {
 	// The split that stops a transient registry blip from being reported (and
 	// acted on) as "unknown provider": only a definitive answer may fall

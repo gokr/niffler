@@ -581,6 +581,13 @@ type registryResponse struct {
 	Code   string `json:"code"`
 	Error  string `json:"error"`
 	Source string `json:"source"`
+	// HasKey is the provider component's own verdict on whether the record has
+	// a usable credential (provider.hasCredential). It exists because the key
+	// field is omitted when empty, and an empty key is LEGITIMATE for a
+	// loopback endpoint — a local llama-server sends no Authorization header.
+	// Inferring "usable" from the key alone therefore rejected every keyless
+	// local provider as not-found, which is the whole local-embeddings case.
+	HasKey   bool `json:"hasKey"`
 	Provider *struct {
 		Nickname string `json:"nickname"`
 		AuthType string `json:"authType"`
@@ -726,7 +733,11 @@ func classifyProviderReply(raw json.RawMessage, err error) providerLookup {
 		credential = resp.Provider.OAuth.Access
 		accountID = resp.Provider.OAuth.AccountID
 	}
-	if credential == "" {
+	// A loopback provider has no key by design. Only the provider component can
+	// judge that (it owns the loopback rule), so trust its hasKey rather than
+	// re-deriving the rule here — a second copy would drift, and the first one
+	// (credential != "") was wrong for exactly this case.
+	if credential == "" && !resp.HasKey {
 		return providerLookup{}
 	}
 	source := resp.Source

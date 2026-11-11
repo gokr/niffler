@@ -87,6 +87,19 @@ components:
     required: false
     restart: on-failure
 
+  # Durable fact memory, scoped per repository (docs/research/MEMORY.md): facts
+  # a conversation chooses to keep, so a LATER conversation in the same repo
+  # does not rediscover them. Optional by design — every tool degrades to an
+  # empty result without it, and its recall block rid the append-only
+  # svc.session.<id>.memory lane, so core carries the wiring and this component
+  # carries the policy.
+  - name: memory
+    build: {lang: nim, src: components/memory/main.nim}
+    binary: var/bin/memory
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Replaceable context summarizer (COMPACTION.md §4): the runner writes a
   # temporary verified snapshot and validates/commits the returned candidate.
   # This component owns only cut choice + summary quality and may be replaced

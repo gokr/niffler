@@ -58,6 +58,26 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   `bench/reports/full31-syn-ds41-claudecode-{2318,j1}-report.*` and
   `full31-syn-ds41-claudecode-analysis.md`.
 
+### Added
+
+- **Long-term memory, scoped per repository** (`components/memory`, optional):
+  durable facts a conversation chooses to keep, so a later conversation in the
+  same repo does not rediscover them. The scope key is the repository's
+  **primary** checkout, so every `git worktree` of it shares one memory instead
+  of starting blank. One live fact per **subject** — re-remembering updates it
+  and keeps the prior text as a revision — with `forget` archiving rather than
+  destroying, and staleness as a ranking signal rather than a delete. Facts
+  reach the model through a new append-only `svc.session.<id>.memory` lane (the
+  shape the repo map and LSP diagnostics already use), so automatic recall never
+  touches the frozen prompt prefix; it fires at a conversation's first turn and
+  again after a compaction or trim. Seven on-demand tools
+  (`memory_remember`/`search`/`get`/`list`/`forget`/`recall`/`scopes`); retrieval
+  is local token-prefix ranking (`ranker: "text"`) because scoped vector search
+  needs one store-contract change. Write policy is fail-closed: `forget` and any
+  `global` write are approval-gated, credential-shaped text is refused, and
+  subagents may not write. Design and reasoning: `docs/research/MEMORY.md`;
+  contract test `tests/t_memory.nim`.
+
 ### Fixed
 
 - Core timestamps its lifecycle logs and checks `var/logs` at boot and hourly
@@ -640,7 +660,28 @@ approval-gated `store_claim`. The full list, with the reasoning, is in
   view and mark entries `embedding: true`; `models_list {embed: true|false}`
   filters on it, `models_providers` reports each provider's configured
   `embedModel`, and `models_sources` reports `embedModels`. A departed source
-  drops its patch and its models in one step, like a chat source.
+  drops its patch and its models in one step, like a chat source. The
+  configured-model half of that was inert on arrival: the catalog is projected
+  from the models.dev baseline file and never read provider records, so a
+  record's `embedModel` reached neither the embedding view nor
+  `models_providers.embedModel` — accepted by `provider_update`, echoed by
+  `provider_list`, and reported downstream as `model not found: <id>`. Fixed by
+  overlaying every provider record's configured model onto the baseline before
+  the projection, which also gives a provider the baseline has never heard of
+  (a local llama-server) a listable document;
+  `tests/t_embed_chain.nim` drives the real tools end to end instead of
+  supplying the field to a fixture. A third defect sat on the same path, one
+  component further out: `llm` decided a provider was usable by testing whether
+  its credential was non-empty, so a **keyless loopback provider was reported
+  as `unknown provider`** — refuting, at the routing boundary, the keyless-local
+  registration the provider component had just been taught to accept. The key
+  field is `omitempty` and an empty key is legitimate for a local llama-server,
+  so `provider_get` now states `hasKey` (the provider component's own
+  `hasCredential` verdict) and `llm` trusts it rather than re-deriving the
+  loopback rule in a second place. `tests/t_embed_chain.nim` covers the whole
+  chain — stored record, catalog view, `models_providers`, and routing — and
+  `docs/research/LOCAL-EMBEDDINGS.md` §8 measures the local install it enables
+  (llama.cpp + Q4_K_M GGUF = 107 MB, no daemon, 768 dims, verified end to end).
 
 - The resident user service now uses `Restart=always`. `Restart=on-failure`
   left a persistent instance stopped after a clean exit or SIGTERM (treated as

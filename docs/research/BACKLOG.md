@@ -49,8 +49,13 @@ in the manual and active plan.
 
 ### Context, memory and payloads
 
-- **`memory` component** — durable fact memory with subject keys, under the
-  D3/D4 design constraints ([CODEWHALE.md](CODEWHALE.md) #1 + D3/D4,
+- **`memory` component — v1 shipped** (see [MEMORY.md](MEMORY.md)). Durable
+  facts with subject keys and revisions, scoped `repo` (keyed on the PRIMARY
+  checkout, so worktrees share it) / `dir` / `global` / `conversation`, a
+  bounded append-only recall block on `svc.session.<id>.memory`, and
+  fail-closed writes. Still open: **vector recall** (needs `id_prefix` as a
+  vec0 partition key — MEMORY.md §7), which is why retrieval is local text
+  ranking today ([CODEWHALE.md](CODEWHALE.md) #1 + D3/D4,
   [REASONIX.md](REASONIX.md) #6,
   [MAKI-STEAL.md](MAKI-STEAL.md) #8).
 - **Tool-produced images — shipped.** A tool result may carry `images`
