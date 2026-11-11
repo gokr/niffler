@@ -208,6 +208,28 @@ proc runCmd*(cmd: string, timeoutMs: int = 120_000,
     # parent's kill), then exec the command. execvp resolves bash via PATH;
     # exitnow is _exit — no Nim teardown in the forked child.
     discard posix.setpgid(0, 0)
+    # Die with the component (Linux). Without this, a forked child is NOT
+    # cleaned up when its parent dies: it is a different process group, so no
+    # group kill reaches it, and nothing here asked the kernel to watch the
+    # parent. The supervisor wraps CHILDREN in `setpriv --pdeathsig`, but this
+    # fork is invisible to it — so an in-flight `make test-server` (or any long
+    # bash tool) outlived its component and kept running detached, contradicting
+    # AGENTS.md's "nothing survives its harness, even on SIGKILL". Measured:
+    # such a child was still alive after the component took SIGTERM.
+    #
+    # PDEATHSIG holds only across fork/exec, which is exactly the window here
+    # (the child is about to execvp and never forks again). The getppid re-check
+    # closes the race where the parent died between fork() and this call: in
+    # that case we were already re-parented and must not keep running.
+    when defined(linux):
+      proc prctl(option: cint): cint {.varargs, importc,
+                                       header: "<sys/prctl.h>".}
+      const prSetPdeathsig = 1.cint   # PR_SET_PDEATHSIG
+      const sigTermSignal = 15.cint
+      let ppidBefore = posix.getppid()
+      discard prctl(prSetPdeathsig, sigTermSignal)
+      if posix.getppid() != ppidBefore:
+        posix.exitnow(128)            # parent already gone: run nothing
     if workingDir.len > 0 and posix.chdir(workingDir) != 0:
       posix.exitnow(126)
     discard posix.execvp("bash", argv)
