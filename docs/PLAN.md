@@ -19,11 +19,27 @@ behavior.
 
 ## Baseline
 
-Reconciled against local `main` at `v0.5.0`. This is source status, not a fresh
-runtime certification of that release. Existing uncommitted implementation
-changes were not used to mark work complete. The old fleet worktrees have been
-removed, and the `compact` worktree was merged and is likewise gone; their
-commits are included in `main`.
+Reconciled against local `main` at `4ddfed8`, after `v0.5.0`. This is
+source and recorded-test status, not a fresh runtime certification or evidence
+that a remote worker has been updated. Active worktree branches are independent
+and are not counted as merged until they land on main.
+
+## Current priorities
+
+1. **Finalize Fleet in its own worktree:** verify the current worker and client
+   versions, then, with operator authorization, exercise a real delegated goal,
+   paged report, continuation and live remote cancellation. Fix the actual
+   blockers found and prioritize actionable blocked/approval notices. See
+   [Fleet simplification](FLEET-SIMPLIFICATION.md) and Pillar 1 below.
+2. **Validate memory in a separate worktree:** dogfood cross-conversation and
+   cross-worktree recall, correction, stale facts, scope, safety and visibility.
+   Record evidence before choosing new retrieval features; scoped vector search
+   is not yet implemented. See [MEMORY.md](research/MEMORY.md).
+3. **Next substantial boundary work:** a vertical conversation-sandbox slice,
+   including persisted human-controlled policy, uniform dispatch propagation and
+   filesystem enforcement. Worktree allocation and writer liveness remain
+   separate gaps. Scope the release from verified results, not the week estimates
+   in an older schedule.
 
 ## Transcript safety
 
@@ -50,9 +66,10 @@ arriving during a non-turn approval.
 
 | Feature | Implemented on main | Still open |
 |---|---|---|
-| Write arbitration | Durable `locks` peer; session dispatch claims; path-bound and opaque writers; harness-state claims for plugins; explicit no-claim declarations; nested Fabric calls; restart/outage/TTL contracts | Automatic worktree allocation/ownership — planned in 0.6.0 as pillar 2 and specified in [WORKTREES.md](research/WORKTREES.md); fencing or confirmed termination for writers that outlive leases; evidence-based completion adjudication is a separate feature |
+| Write arbitration | Durable `locks` peer; session dispatch claims; path-bound and opaque writers; harness-state claims for plugins; explicit no-claim declarations; nested Fabric calls; worktree ownership and lifecycle; restart/outage/TTL contracts | Automatic worktree allocation by policy; fencing or confirmed termination for writers that outlive leases; evidence-based completion adjudication is a separate feature |
 | Sandboxing | Opt-in synchronous Linux bwrap shell guard; launch-time checks, environment clearing, network isolation and configured masks; partial component mask checks; pure versioned conversation-policy model | Persisted effective conversation policy and human controls; uniform dispatch propagation; approved-root enforcement; conditional grants; migration from global masks; background execution; Seatbelt and real Mac validation |
-| Fleet | SSH/Incus/Lima provisioning and lifecycle; pinned receipts; native relay and TUI switching; agent definitions/heartbeat; bounded read-only tasks, durable parent notices and local inbox; queued and active cancellation | F2 exit (patch/commit artifact and real-provider acceptance); steering/continuation and a live remote-cancel exercise; scoped artifacts, background approvals and a human profile/grant UI; see [FLEET.md](FLEET.md) |
+| Fleet | SSH/Incus/Lima provisioning and lifecycle; pinned receipts; named trusted-worker delegation, paged reports, continuation, durable notices and inbox; queued and active cancellation paths | Real-worker delegated-goal and remote-cancel acceptance; blocked/approval interaction; optional artifact retrieval, retention and authentication; see [FLEET-SIMPLIFICATION.md](FLEET-SIMPLIFICATION.md) |
+| Long-term memory | Optional repo-scoped fact component, revision history, bounded append-only recall, worktree-shared scope, text ranking and contract/live tests | Independent real-use validation of recall quality, correction, safety and visibility; correctly scoped vector retrieval is deferred ([MEMORY.md](research/MEMORY.md)) |
 | Vision path | Tool results may carry `images` (`docs/WIRE.md` "Tool results"): core validates them against the byte-sniffed allowlist, stores them as attachment docs under the tool message, and materializes them through the same budget/projection rule as a dropped image; `read` answers an image path with the image plus a caption; elision drops refs with text so a superseded screenshot leaves the projection | Re-encoding an oversized capture (reported today, never silently downscaled — needs an image codec in a component plus a bound on its output); provider-specific degradation beyond the honest elision marker; TUI-side rendering of tool images |
 
 ### Write arbitration: usable foundation, not a sandbox
@@ -91,7 +108,8 @@ builder, MCP server or native Fabric guest sandboxed.
 
 ### Fleet: finish the remote-task workflow
 
-The authoritative delivery plan is [FLEET.md](FLEET.md). Provisioning over SSH,
+The current delivery direction is [FLEET-SIMPLIFICATION.md](FLEET-SIMPLIFICATION.md);
+[FLEET.md](FLEET.md) retains the older ladder as history. Provisioning over SSH,
 Incus and Lima, stable identity, private receipts, TUI switching, and bounded
 read-only remote tasks with durable parent notices are implemented. Local Lima
 bootstrap and SSH-hosted Incus provisioning have live evidence; the original
@@ -125,13 +143,14 @@ it a goal, read a paged prose report.
   pump (it was refused with `busy` mid-turn); it now needs only a live exercise
   against a real peer
   (queued-vs-dispatched cancel semantics themselves are implemented and tested).
-- **Slice 4 (Fleet-only acceptance)** — **not met, and blocked on a deployment
-  step rather than on code.** The registered `worker` instance is pinned at a
-  revision with no `delegationPolicyVersion`, so a delegated goal is correctly
-  refused by the requester before dispatch. Acceptance needs the worker updated
-  (`fleet_update`) and its operator to enable trust — deliberate operator acts,
-  not something a merge can self-certify. The requester-side contract is covered:
-  an older peer refuses a goal, and the same peer still serves an `ask` task.
+- **Slice 4 (Fleet-only acceptance)** — **not yet recorded**. At the last
+  documented check the registered `worker` was pinned to a revision without
+  `delegationPolicyVersion`, so delegated goals correctly refused before dispatch.
+  Recheck the actual worker and client versions; updating the worker and enabling
+  trust are deliberate operator acts requiring approval, not something a merge
+  can self-certify. An older peer's refusal and `ask` compatibility are covered
+  on the requester side. A live run may expose additional code or deployment
+  blockers; do not assume either in advance.
 
 Honest boundaries that did not change: the envelope `caller` is self-declared, so
 unattended trust means trusted bus/SSH access, not per-requester authentication;
@@ -139,23 +158,12 @@ a worker with `bash` and its own credentials can push and open PRs, and no
 sandbox is claimed; a worker's report is a claim, not verified fact. PR #24 is
 assigned independently and was not dispatched here.
 
-The older F2 ladder below is kept as history. Its exit stock (patch/commit
-artifact as a completion contract, workspace isolation, runtime deadline) is
-deliberately NOT the target any more: artifacts are optional supporting evidence.
-
-Durable worker admission is implemented (F1: versioned capability negotiation,
-immutable birth-policy digest, idempotent admission, activation-bound terminal
-receipts). F2 has an experimental unattended-execution implementation with
-narrow contracts and real store/runner tests, but is not ready to ship. Review
-found component/core import violations, incomplete callable control-plane denial,
-non-idempotent policy retries, and unproven grant/resume/revocation semantics;
-all four are now closed — shared contracts moved to the SDK, denial matches
-callable names plus a worker-side schema audit, exact retries replay receipts,
-and stale grants plus content-only continuations refuse under test. The exit
-stock still is not met: there is no patch/commit artifact, workspace isolation or
-runtime deadline, and no fresh-grant continuation or in-flight revocation. See
-the blocker list in [FLEET.md](FLEET.md). Complete that artifact before treating
-F2 as shipped or proceeding to F3.
+The older F2 artifact-first ladder is historical, not a second acceptance gate.
+Durable admission, idempotent retries and activation-bound receipts are
+implemented and covered by contracts; goal delegation still needs real-worker
+acceptance. A patch or commit can be useful evidence, but is not a required
+result of every goal. Automatic checkout isolation, runtime deadlines and
+in-flight revocation are not implied by the shipped trusted-worker mode.
 
 The human inbox has landed: `fleet_task_inbox` is a paged, read-only view over
 the `fleetjob` kind, so a settled job is answerable from your own machine
@@ -173,9 +181,10 @@ rather than an exit condition; sequenced blocked/completion notices (F3/F4); a
 human UI for the delegation setting and task profiles. Read-only tasks remain the
 default, and unattended coding is never enabled by requesting it — it needs the
 worker operator's `fleet_delegation_set` (or a named `taskProfile`). Human seen
-state stays separate from agent notice acknowledgement. Published-revision update
-and real-provider coding acceptance remain separate gates (they are what blocks
-slice 4 above); the completed Linux Lima smoke does not certify macOS/VZ.
+state stays separate from agent notice acknowledgement. A compatible published
+revision and real-provider acceptance remain separate gates for slice 4; their
+current deployment status must be checked. The completed Linux Lima smoke does
+not certify macOS/VZ.
 
 Unattended work on a resident instance has both halves of the approval story
 shipped: `NIF_APPROVALS_DEFAULT=auto` (rendered by `scripts/server.sh`) gives
@@ -233,63 +242,51 @@ prefix must stay byte-stable.
 
 ## 0.6.0 — authority boundaries that hold
 
-Target release. Niffler grants reach in four places — a conversation in a
-directory, a shell, a task on another machine, and a running turn — and none of
-them has one authoritative policy object. This release gives each one a boundary
-that can be stated without an asterisk. The headline sentence the release notes
-should be able to write: *a delegated goal with `bash` runs inside a policy the
-worker's operator set, in a tree nobody else is writing, and the person who owns
-the machine can stop it mid-turn.*
+Planning target, not a release claim: Niffler grants reach in a workspace, a
+shell, a remote task and a running turn. The longer-term goal is to make each
+boundary explicit and testable. The release scope and version must be decided
+from what is actually verified; trusted-worker delegation today does not itself
+provide automatic worktree isolation or a complete shell sandbox.
 
 Ordering rule for everything below: **a boundary is not shipped until a test
 proves the refusal, and the refusal text says which layer refused.**
 Availability is never enforcement; a skipped Mac test is not a pass.
 
-### P0. Hotfix first — `session {stop: true}` is refused mid-turn
+### P0. Mid-turn stop — fixed locally, remote acceptance open
 
-`pumpBusyCall` (`core/dispatch.nim`) answers `busy` to every session call while
-a turn runs, deliberately including read-only ops. `stop` is served *inside*
-`handleSessionCall`, so the one op whose purpose is cancelling a RUNNING turn is
-rejected exactly when it is needed. Fleet's remote cancel
-(`components/fleet/delegation.nim`) sends that call, and the only test
-(`t_arbitration.nim` "sessionStopOp") runs it against an IDLE conversation — so
-the path that matters has never been exercised.
-
-- Fix: `stop` needs no session context, only a publish on the steer subject.
-  Serve it in the busy pump, before the refusal, with the same reply shape.
-- Gate: a test that stops a turn that is actually running (not an idle
-  conversation), plus `fleet_task_cancel` against a mid-turn peer settling the
-  job.
-- This unblocks Fleet F3's live cancellation gate (pillar 1, F2).
+`session {stop: true}` is served by the busy pump instead of being refused
+mid-turn; `t_controls` block 9 covers a running turn. The stale idle-steer
+cancellation and post-stop client-control approval fixes also landed. Fleet's
+queued and dispatched cancellation paths have contracts, but a stop against a
+real running peer and its observed settlement remain an open acceptance gate.
 
 ### Pillar 1 — Fleet: from "works" to "trusted"
 
 Slices 1–3 are merged; what remains is acceptance plus the edges that make a
-remote task feel broken. Authority: [FLEET.md](FLEET.md),
-[FLEET-SIMPLIFICATION.md](FLEET-SIMPLIFICATION.md),
-[FLEET-INBOX.md](FLEET-INBOX.md).
+remote task feel broken. Direction: [FLEET-SIMPLIFICATION.md](FLEET-SIMPLIFICATION.md);
+[FLEET.md](FLEET.md) preserves the older plan and [FLEET-INBOX.md](FLEET-INBOX.md)
+describes the inbox.
 
 | # | Slice | Gate |
 |---|---|---|
-| F1 | **Slice 4 acceptance**: publish, `fleet_update` the registered worker, operator enables trust with `fleet_delegation_set`, run a real delegated goal | a real worker returns a reviewable commit link and a paged report. Blocked on a deployment step, not code — the worker is pinned at a revision with no `delegationPolicyVersion`, so every goal is correctly refused |
+| F1 | **Slice 4 acceptance**: verify the worker, publish/update if needed, have its operator enable trust, and run an approved real delegated goal | a real worker returns a complete paged report and durable settlement; continue the same conversation and verify the follow-up. A commit link is useful if the chosen task produces one, not a universal requirement |
 | F2 | **Live remote cancel** (F3) — queued and dispatched, using P0 | a dispatched turn on a peer stops and settles; the requester reads settlement, not a guess |
-| F3 | **Artifact retrieval from a settled activation** — the last ▢ in FLEET-INBOX.md | `/tasks <jobId>` shows the commit and diffstat for a settled job whose peer is offline |
+| F3 | **Optional artifact retrieval from a settled activation** — see FLEET-INBOX.md | when prioritized, `/tasks <jobId>` can show available commit and diffstat evidence while the peer is offline; not a prerequisite for report-first acceptance |
 | F4 | **Blocked / approval-needed notices, and approval routing to a human who is not attached** | a task that stalls on a question raises a `blocked` notice, and a human arriving later can answer it. Two known gaps to fix here: the broadcast fallback pre-denies on `clientCount() == 0`, and `reapDeadClients` judges a relayed client by local pid liveness |
 | F5 | **Receipt retention policy** and reconcile beyond one 1000-item page | stated retention (no unbounded growth, no early loss); reconnect proven past a single page |
 | F6 | **Authenticated bus for non-loopback Fleet** (`NIF_NAME`, key-gated flags) | a harness on a non-loopback bus refuses an unauthenticated peer. The envelope's `caller` is self-declared today |
 | F7 | **macOS/VZ validation of Lima** | one macOS guest provisioned and one task run, recorded; the Linux/KVM smoke does not certify it |
 
-Cut F5–F7 if the window is tight. **Fleet is not "really well" until F1–F4 land:**a
-flag that has never run against a real peer, a cancel nobody has observed, an
-inbox that cannot open what it lists, and a task that stalls invisibly are the
-four things a user hits first.
+F1 and F2 are the immediate acceptance gates; F4 addresses stalled work after
+that. Prioritize F3 based on actual user need rather than reinstating an
+artifact-first milestone. F5–F7 are separate follow-ups; non-loopback exposure
+must not be treated as safe before an appropriate authenticated boundary exists.
 
 ### Pillar 2 — Worktrees: the substrate both other pillars need
 
 The authoritative plan is [WORKTREES.md](research/WORKTREES.md) (basis
-`v0.5.0`): nine independently shippable slices with their tests, plus
-[WORKTREES-TUTORIAL.md](WORKTREES-TUTORIAL.md) for the workflows in operator
-language (its Part 1 is what ships today). Prior art:
+`v0.5.0`), plus [WORKTREES-TUTORIAL.md](WORKTREES-TUTORIAL.md) for the
+workflows in operator language. Prior art:
 [CODEWHALE.md](research/CODEWHALE.md) D1, [OPENHANDS.md](research/OPENHANDS.md)
 §3.15. This section records only what 0.6.0 requires of it and why it is not
 optional.
@@ -317,12 +314,13 @@ graph changed. The conversation stays pinned to its tree; merging is an ordinary
 claimed write into the primary, not a move. `isolation: "worktree"` makes the
 tree a FENCE rather than a convenience.
 
-What 0.6.0 adds on top of that proposal, because the other pillars need it:
+Status and follow-ups relevant to the other pillars (the items below mix shipped
+behavior, verification and proposed work; labels distinguish them):
 
-1. **Claims follow the resolved checkout (WORKTREES.md slice 2 + §4.4).** An
+1. **Shipped — claims follow the resolved checkout (WORKTREES.md slice 2 + §4.4).** An
    opaque writer's claim is the workspace-set root that CONTAINS its resolved
    `cwd`, never a path-prefix guess and never blindly the primary — that is the
-   cross-root arbitration hole, and it is a 0.6.0 blocker. Two consequences worth
+   cross-root arbitration hole, now addressed. Two consequences worth
    stating because they are *not* new rules: with sibling worktrees the primary's
    claim and a worktree's writes are disjoint by construction, and **`locks`'
    "disjoint stays parallel" striping is unchanged** — two conversations in ONE
@@ -331,20 +329,22 @@ What 0.6.0 adds on top of that proposal, because the other pillars need it:
    tree. WORKTREES.md §10 records why the stricter reading ("a second writer in
    the same worktree is refused") was rejected: it would reverse a shipped design
    rule and invalidate two `t_locks.nim` assertions without a decision record.
-2. **Sandbox executable roots (pillar 3 item 4).** The bwrap reachable set and
+2. **Open — sandbox executable roots (pillar 3 item 4).** The bwrap reachable set and
    the policy's writable roots are computed from the same resolved checkout, so
    "the only writable root is my worktree" becomes expressible at all.
-3. **Fleet lanes.** `fleet_task_submit`/`agent_spawn` gain
-   `isolation: worktree|shared`; a worktree child does not see the parent's
-   uncommitted or committed work, and escaping to `shared` needs the grant.
-4. **Per-worktree state.** `edit` undo/seen store, repomap census, LSP roots,
+3. **Proposed — Fleet lanes.** Explore `isolation: worktree|shared` for
+   `fleet_task_submit`/`agent_spawn`, with explicit authorization for shared
+   access. A new worktree starts from its selected base and does not automatically
+   contain uncommitted changes from another checkout; committed changes visible
+   from that base remain visible. This is not yet a Fleet isolation guarantee.
+4. **Verification — per-worktree state.** `edit` undo/seen store, repomap census, LSP roots,
    AGENTS discovery, readscope masks and the private `__workspace` context must
    key on the worktree, not the repo — mostly true by construction (`edit` keys
    undo/seen by `session:absolute-path`, `lsp` per root, `repomap` per path), so
    this is a verification pass rather than a change. The real gap is **census
    cost**: a worktree is a second full tree, so `lsp`/`repomap` may warm and map
    the same files twice; `__workspace.primary` is the fact that lets them decide.
-5. **A conversation's move-or-fork is a first-class act (WORKTREES.md §5.1).**
+5. **Shipped, with a follow-up — move-or-fork (WORKTREES.md §5.1).**
    `/worktree add <name>` from an exploratory conversation moves it when that is
    safe (pristine or unpinned, and a clean tree — `repinWorkspace` already allows
    it, at no prompt-cache cost) and forks it into a linked conversation when it
@@ -355,7 +355,7 @@ What 0.6.0 adds on top of that proposal, because the other pillars need it:
    (messages verbatim, `usage`/`summary`/`error` dropped, configuration the
    child's own) with one gap to close: a compaction checkpoint is not carried,
    so either copy it forward as the projection seed or say so in the output.
-6. **The loop closes back on the origin (WORKTREES.md §5.3b).** `/worktree close`
+6. **Shipped, with a delivery gap — origin notices (WORKTREES.md §5.3b).** `/worktree close`
    returns the client to the conversation that forked you there, and the merge
    settles a durable notice into that conversation's lane (`drainNotices` already
    folds `agent_notices`/`process_notices`/`fleet_notices`), so the parent learns
@@ -421,10 +421,11 @@ the backend argument is [SANDBOX-MATRIX.md](research/SANDBOX-MATRIX.md) §5.
 
 ### Pillar 4 — Mid-turn is a first-class state
 
-The client currently refuses 18 commands while a turn runs, in four different
-styles, and core refuses the rest with one blanket `busy`. Two verbs work:
-typed text steers, ESC cancels. Classify every session op once, in one table,
-and make each class's behavior explicit:
+The client has historically refused 18 commands while a turn runs, in several
+styles; core's busy pump refuses most session operations but now serves `stop`.
+Typed text steers and ESC cancels. Recheck the current client surface, then
+classify every session op once, in one table, and make each class's behavior
+explicit:
 
 | Class | Ops | Mid-turn behavior |
 |---|---|---|
@@ -505,33 +506,27 @@ Cheap, measured, and independent — each rides along any week of the above.
 | **Semantic refactor through LSP** (BACKLOG) | two real defects where a rename rewrote JSON keys and missed call sites | ~5 days |
 
 Deferred on purpose, so this plan is not read as a wish list: goal/loop
-autonomy, memory component, checkpoints and rewind, ACP endpoint, MCP
-per-conversation scoping, OS keyring, team/mailbox.
+autonomy, memory v2/vector retrieval pending evidence, checkpoints and rewind,
+ACP endpoint, MCP per-conversation scoping, OS keyring, team/mailbox. Memory v1
+itself is implemented and under separate validation.
 
 ### Sequence
 
-| Week | Work |
-|---|---|
-| 0 | **P0 stop hotfix** (unblocks Fleet F2/F3) + F1 publish/update/enable trust |
-| 1 | Worktree creation, lineage, per-tree state (pillar 2 items 1–2, 4) |
-| 2 | Locks claim verification, lifecycle, gate (pillar 2 items 3, 5–6) |
-| 3 | Sandbox policy persistence + propagation (pillar 3 items 1–2) |
-| 4 | Filesystem enforcement + bwrap reachable set (items 3–4) |
-| 5 | Hardening bundle + Seatbelt + recorded Mac run (items 5–6, 9) |
-| 6 | Fleet edges F2–F4, then pillar 4 queue + op table |
-
-Pillar 4's `answerNow` snapshot class (M2) is small and can land in any week;
-the queue itself wants a settled turn lifecycle, which P0 delivers. Client side
-ships `niffler-tui 0.11.0`: queued blocks, `/queue`, `/tasks` artifact view,
-worktree status, sandbox-policy panel.
+The current order is at the top of this document: Fleet acceptance and memory
+validation in separate worktrees, then a vertical sandbox slice and the remaining
+boundary work informed by those results. Worktree creation and the stop hotfix
+have landed; their remaining gaps are not new implementation milestones.
+Pillar 4's `answerNow` snapshot class can land independently; its durable control
+queue and client rendering remain proposed. Client version and release scope are
+not predetermined.
 
 ## Recommended work order (older ordering, kept for context)
 
-1. **Complete remote task delegation.** Follow [FLEET.md](FLEET.md): F1 durable
-   worker admission/activation receipts, F2 explicitly authorized unattended coding,
-   F3 task control and actionable notices, F4 inbox/artifacts, F5 live acceptance
-   and compatible releases. The outcome is “assign a coding task to another
-   Niffler and get a reviewable result back,” not just remote management or badges.
+1. **Complete remote task delegation.** Follow the current
+   [Fleet simplification](FLEET-SIMPLIFICATION.md) direction, not the superseded
+   artifact-first numbering in [FLEET.md](FLEET.md). The outcome is to assign a
+   goal to another Niffler and get a useful report, not just remote management
+   or badges.
 2. **Finish one vertical conversation-sandbox slice.** Persist and resume the
    effective policy; provide a human-only update seam; propagate it through
    serial/parallel/invoke/nested dispatch; enforce it first on filesystem tools.
