@@ -83,11 +83,56 @@ proc doProbe(): ProbeResult =
   result.detail = bwrapWhy & "; Landlock ABI " & $result.abi &
     " (set NIF_SANDBOX_ALLOW_DEGRADED=1 to accept writes-only confinement)"
 
+const strictRuntimeBinds* = [
+  ## What a confined command may SEE in strict mode, beyond its own workspace
+  ## and approved data roots. Deliberately short and reviewable: system
+  ## executables and the shared libraries they need. Everything else — /home,
+  ## /root, /etc, /var, other checkouts, the harness's own state — is simply
+  ## not mounted, so it is not merely unreadable by policy but absent.
+  ##
+  ## This list is a starting point for review, not a settled answer: a
+  ## toolchain that lives in /usr/local or nix needs its own entry, and the
+  ## right response to a missing path is an explicit --allow, never a wider
+  ## default.
+  "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+  "/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/lib32", "/lib32",
+  "/usr/share/locale"]
+
+proc strictMode*(requested: string): bool =
+  ## Does THIS launch promise read confinement, or only write confinement?
+  ##
+  ## Three inputs, most specific first, because "which promise did the caller
+  ## get" must have one answer:
+  ##
+  ## 1. `--reach strict|compat` on the command line — a per-launch request from
+  ##    the component that knows the conversation's policy. This is how a
+  ##    human's `session {sandbox}` decision reaches the launcher.
+  ## 2. `NIF_SANDBOX_STRICT=0|1` — the operator's default for launches that do
+  ##    not say.
+  ## 3. compat, which is the old behaviour.
+  ##
+  ## A malformed value refuses rather than guessing: silently picking the weaker
+  ## mode on a typo is how a launch gets reported as stricter than it was.
+  case requested.strip()
+  of "strict": return true
+  of "compat": return false
+  of "": discard
+  else:
+    raise newException(SandboxError,
+      "requested reach must be strict or compat")
+  case getEnv("NIF_SANDBOX_STRICT", "0").strip()
+  of "1": true
+  of "", "0": false
+  else:
+    raise newException(SandboxError,
+      "NIF_SANDBOX_STRICT must be 0 or 1")
+
 proc bwrapArgv(binPath: string, req: LaunchRequest): seq[string] =
   ## Assemble the bubblewrap invocation. The workspace is mounted writable at
   ## its own absolute path (so paths inside the command mean the same thing as
   ## outside — what every shelf harness does), everything else read-only, and
   ## each mask is bound over with /dev/null.
+  let strict = strictMode(req.reach)
   result = @[binPath]
   # Keep the caller's process group so runCmd cancellation reaches bwrap.
   result.add "--cap-drop"; result.add "ALL"
@@ -101,7 +146,23 @@ proc bwrapArgv(binPath: string, req: LaunchRequest): seq[string] =
   result.add "--unshare-pid"
   result.add "--unshare-ipc"
   result.add "--unshare-net"  # no bus: closes the component-bypass path
-  result.add "--ro-bind"; result.add "/"; result.add "/"
+  # STRICT mode (NIF_SANDBOX_STRICT=1): do not mount the host root read-only.
+  # This is the difference between "writes are confined" and "this command can
+  # only SEE its workspace", and the read half is what SANDBOX-MATRIX §5 says
+  # selects the backend: a write-only promise leaves the whole filesystem
+  # readable, secrets included. Off by default because an unbound toolchain
+  # (interpreters, compilers, /usr) would simply not run; the compat mode is
+  # the honest name for the old behaviour, and the status file records which
+  # one was used so a result can never be read as stricter than it was.
+  if not strict:
+    result.add "--ro-bind"; result.add "/"; result.add "/"
+  else:
+    # A minimal, reviewed runtime set. Not "everything except the workspace":
+    # an allow-list, because the point of strict mode is that a path nobody
+    # named is unreachable.
+    for root in strictRuntimeBinds:
+      if dirExists(root):
+        result.add "--ro-bind"; result.add root; result.add root
   result.add "--dev"; result.add "/dev"
   result.add "--proc"; result.add "/proc"
   result.add "--tmpfs"; result.add "/tmp"
@@ -126,7 +187,11 @@ proc writeStatus(req: LaunchRequest, backend: string, applied: bool) =
   try:
     writeFile(req.statusFile,
               $(%*{"backend": backend, "applied": applied, "scope": "shell",
-                   "masksInWorkspace": masksInsideWorkspace(req), "masks": req.masks.len}))
+                   "masksInWorkspace": masksInsideWorkspace(req), "masks": req.masks.len,
+                   # Which promise was made: "strict" hides the host root,
+                   # "compat" leaves it readable. A result must never be read
+                   # as stricter than the launch actually was.
+                   "reach": (if strictMode(req.reach): "strict" else: "compat")}))
   except CatchableError:
     discard
 
@@ -317,6 +382,9 @@ proc parseRequest(args: seq[string]): LaunchRequest =
     of "--mask":
       inc i
       if i < args.len: result.masks.add canonicalMask(args[i])
+    of "--reach":
+      inc i
+      if i < args.len: result.reach = args[i]
     of "--status-file":
       inc i
       if i < args.len: result.statusFile = args[i]

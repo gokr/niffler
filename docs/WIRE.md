@@ -1239,7 +1239,22 @@ unreadable policy arrives as an explicit `unreadable: true` marker rather than
 absent. The snapshot is cached ~2 s per conversation so a human update is seen
 promptly without a store read per tool call.
 
-**Nothing is confined by this document yet.** No tool consults `enabled`,
+**Confinement exists for one path: foreground `bash` on Linux.** When
+`__sandbox.enabled` is true, the bash component routes the command through the
+`niffler-sandbox` launcher with `--reach strict`, the policy's WRITE
+roots as writable allows, and the operator's masks. Strict means the host root
+is NOT mounted: reads reach the workspace, those write roots and a reviewed
+runtime set (executables and shared libraries). `--reach compat` is the old
+behaviour (writes confined, host readable) and every result says which one ran,
+via `sandbox.reach`. A read-only approval never becomes a writable allow, and a
+disabled conversation policy cannot un-guard an operator's `NIF_BASH_SANDBOX=on`.
+
+**The filesystem tools are still unconfined by this document.** read, grep,
+edit, write and their siblings act under the workspace set, not the policy, so
+a conversation with `enabled: true` does not get a confined `read` — the
+promise above is about `bash` alone. Naming that here is deliberate: the
+release notes must not say "sandboxed" about a conversation whose edit tool
+still reaches anything the workspace set allows. No tool consults `enabled`,
 `readRoots`, `writeRoots` or `denyPatterns` for enforcement; `enforced` stays
 false until a stage that actually confines something lands
 (docs/research/SANDBOX-NEXT-SLICE.md stages B and C). `sandbox_inherit

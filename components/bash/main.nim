@@ -159,7 +159,15 @@ discard comp.tool("bash", bashSchema,
     var statusDir = ""
     defer:
       if statusDir.len > 0: removeDir(statusDir)
-    if getEnv("NIF_BASH_SANDBOX", "off") == "on":
+    # The launcher's evidence file is needed whenever a launch will be guarded,
+    # from EITHER source: the operator's env or this conversation's policy.
+    # Keying it on the env alone meant a policy-driven launch ran with no
+    # status file and reported "requested" forever — evidence missing, not
+    # evidence absent, and a human reads those differently.
+    let policyWantsGuard = toolArgs{"__sandbox"} != nil and
+      toolArgs{"__sandbox"}.kind == JObject and
+      toolArgs{"__sandbox"}{"enabled"}.getBool(false)
+    if getEnv("NIF_BASH_SANDBOX", "off") == "on" or policyWantsGuard:
       # Private random directory avoids predictable filenames, stale records
       # and pre-planted symlinks in the shared temp directory.
       statusDir = createTempDir("niffler-sbx-", "")
@@ -217,7 +225,11 @@ discard comp.tool("bash", bashSchema,
           sandbox = %*{"state": (if j{"applied"}.getBool(false): "applied"
                                    else: "failed"),
                        "scope": "shell",
-                       "backend": j{"backend"}.getStr("")}
+                       "backend": j{"backend"}.getStr(""),
+                       # "strict" = the host root is not mounted (reads confined
+                       # too); "compat" = writes confined, host readable. A
+                       # result must never be read as stricter than it was.
+                       "reach": j{"reach"}.getStr("compat")}
           if j{"masksInWorkspace"}.getInt(0) > 0:
             sandbox["inWorkspaceMasks"] = %true
             sandbox["note"] = %"this mask applies only to commands launched through the guard; other tools, other components and unguarded launches still see the path"
@@ -234,8 +246,24 @@ discard comp.tool("bash", bashSchema,
     status.add(")")
     var text = status & "\n"
     if guarded.enabled:
-      text.add("[sandbox: " & payload{"sandbox"}{"state"}.getStr("requested") &
-        "; backend: " & payload{"sandbox"}{"backend"}.getStr("unknown") &
+      # State the reach in the words that matter: a "sandboxed" command whose
+      # host is still readable must not look like one whose host is not.
+      let reach = payload{"sandbox"}{"reach"}.getStr("unknown")
+      let reachNote = case reach
+        of "strict": "reads and writes confined to approved trees"
+        of "compat": "writes confined; the host filesystem is still readable"
+        else: "reach unrecorded"
+      let proxied = payload{"sandbox"}
+      # Say which promise was made, in words a human acts on. "compat" leaves
+      # the whole host readable, so a line that only said "sandbox: applied"
+      # would overstate it — and this text is the model's only window into what
+      # the command ran under.
+      text.add("[sandbox: " & proxied{"state"}.getStr("requested") &
+        "; backend: " & proxied{"backend"}.getStr("unknown") &
+        "; reach: " & proxied{"reach"}.getStr("unknown") &
+        (if proxied{"reach"}.getStr("") == "compat":
+           " (writes confined; the host filesystem is still readable)"
+         else: "") &
         "; startup acknowledgement precedes user exec]\n")
     # transcript cap: spill the full capture and keep only head+tail in
     # the conversation; the model pages the rest with read (offset/limit).

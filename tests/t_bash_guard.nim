@@ -126,6 +126,61 @@ proc main() =
     check("guard preserves timeout outcome", timed{"exit_code"}.getInt(0) == 124, $timed)
     sleep(2500)
     check("timed-out child does not survive", not fileExists(a / "late"))
+  # --- stage C: a CONVERSATION policy drives the guard, with strict reach ---
+  # This component runs with NIF_BASH_SANDBOX=on above, so the policy must not be
+  # able to switch confinement OFF; it can only narrow. The read assertion is the
+  # one that matters: until stage C the guard confined WRITES and left the whole
+  # host readable, which is why "sandboxed" was not a defensible word.
+  let secret = root / "policy-secret"
+  writeFile(secret, "POLICY-SECRET")
+  let policyRun = call(nc, "bash", "bash", %*{
+    "command": "cat " & quoteShell(secret), "cwd": a, "timeoutMs": 10000,
+    "__workspace": {"root": a},
+    "__sandbox": {"version": 1, "enabled": true, "reach": "strict",
+                  "readRoots": [a], "writeRoots": [a], "denyPatterns": [".env"]}},
+    20000)
+  check("a policy-driven launch reports its reach",
+        policyRun{"sandbox"}{"reach"}.getStr("") == "strict", $policyRun)
+  check("strict reach makes an unapproved host path unreadable",
+        not ($policyRun).contains("POLICY-SECRET"), $policyRun)
+  # ...while the conversation's own workspace still works: a denial that broke
+  # the tool would pass the check above and ship useless.
+  # NB: `secret` is masked by this suite's operator mask list ("secret" is a
+  # relative mask entry), so reading it here would fail for a REASON THAT IS
+  # NOT the reach — and the check would "pass" while proving nothing. Use a file
+  # the masks do not name: strict reach must keep ordinary workspace work alive.
+  writeFile(a / "ordinary.txt", "ORDINARY-CONTENT")
+  let insideRun = call(nc, "bash", "bash", %*{
+    "command": "cat ordinary.txt", "cwd": a, "timeoutMs": 10000,
+    "__workspace": {"root": a},
+    "__sandbox": {"version": 1, "enabled": true, "reach": "strict",
+                  "readRoots": [a], "writeRoots": [a], "denyPatterns": [".env"]}},
+    20000)
+  check("the approved workspace stays readable under strict reach",
+        ($insideRun).contains("ORDINARY-CONTENT"), $insideRun)
+  check("and it still reports applied",
+        insideRun{"sandbox"}{"state"}.getStr("") == "applied", $insideRun)
+
+  # A READ-only approval must never reach the launcher as a writable --allow.
+  let readonly = root / "readonly-root"
+  createDir(readonly)
+  let roRun = call(nc, "bash", "bash", %*{
+    "command": "echo forged > " & quoteShell(readonly / "w"), "cwd": a,
+    "timeoutMs": 10000, "__workspace": {"root": a},
+    "__sandbox": {"version": 1, "enabled": true, "reach": "strict",
+                  "readRoots": [a, readonly], "writeRoots": [a]}}, 20000)
+  check("a read-only approval is not writable through the guard",
+        not fileExists(readonly / "w"), $roRun)
+
+  # The policy cannot turn OFF an operator who asked for confinement.
+  let offRun = call(nc, "bash", "bash", %*{
+    "command": "echo hi", "cwd": a, "timeoutMs": 10000,
+    "__workspace": {"root": a},
+    "__sandbox": {"version": 1, "enabled": false, "readRoots": [a],
+                  "writeRoots": [a]}}, 20000)
+  check("a disabled conversation policy does not un-guard an operator's guard",
+        offRun{"sandbox"}{"state"}.getStr("") == "applied", $offRun)
+
   let noRoot = call(nc, "bash", "bash", %*{"command": "true"})
   check("guard refuses missing authoritative root", noRoot{"exit_code"}.getInt(0) == 125, $noRoot)
   let bg = call(nc, "bash", "bash", %*{"command": "true", "run_in_background": true,

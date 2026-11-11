@@ -113,8 +113,20 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   caller-supplied one is deleted first, a non-declaring tool receives nothing,
   and a direct bus call gets no policy at all because it has no conversation.
   The document is stamped `enforced: false` where it is built rather than left
-  for a component to infer. Stage C (strict bash roots) remains:
-  docs/research/SANDBOX-NEXT-SLICE.md.
+  for a component to infer. Stage C has landed too, for foreground `bash` on Linux: a
+  conversation whose policy is enabled now runs its commands with **strict
+  reach** — the host root is not mounted at all, so reads reach the workspace,
+  the policy's write roots and a reviewed runtime set rather than the whole
+  filesystem. Measured with bubblewrap on this host: a host file in `$HOME`
+  reads under the old `compat` reach and reports "No such file or directory"
+  under `strict`, while ordinary workspace work keeps working. Results record
+  `sandbox.reach`, so a launch is never read as stricter than it was; a
+  read-only approval never becomes a writable allow; and a disabled
+  conversation policy cannot un-guard an operator's `NIF_BASH_SANDBOX=on`.
+  Honest limits, named rather than implied: foreground Linux only, no Seatbelt,
+  the runtime allow-list is a review starting point, and the filesystem tools
+  (read/grep/edit/write) are NOT confined by this policy yet — that remains the
+  release gate. docs/research/SANDBOX-NEXT-SLICE.md.
 
 - **A background job can now say whether it will wake you.** The processes
   component already pushes a completion to its owning conversation and requests

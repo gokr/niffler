@@ -1,7 +1,9 @@
 # Sandbox next slice — durable policy, uniform transport, strict Linux bash
 
-Status: **stages A (persistence) and B (propagation) are implemented; stage C
-(strict bash roots) is not.** This
+Status: **stages A (persistence), B (propagation) and C (strict Linux bash) are
+implemented for FOREGROUND bash on Linux.** Still open: filesystem-tool
+enforcement, escape-capable tool gates, Seatbelt (needs a Mac), and the honest
+limits listed below. This
 decomposes [PLAN.md](../PLAN.md) pillar 3 items 1 → 2 → 4 into independently
 testable changes. [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md)
 owns the target policy; [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md) owns
@@ -70,6 +72,37 @@ Named so a later reader does not have to rediscover them:
 - **Nothing reads the policy.** No tool consults `enabled`, `readRoots`,
   `writeRoots` or `denyPatterns`. That is stage B (transport) and C
   (enforcement).
+
+### Stage C — what a confined command can now reach
+
+`NIF_SANDBOX_STRICT`/`--reach strict` stops mounting the host root read-only and
+mounts only `strictRuntimeBinds` (system executables and shared libraries), the
+workspace, and the policy's **write** roots. `--reach compat` keeps the old
+behaviour and is labelled as such. Measured on this host with bwrap: under
+compat a command reads a file in `$HOME`; under strict that path does not exist
+("No such file or directory"), and `$HOME` lists only the workspace. Both modes
+still refuse writes outside the allowed set, still run with no network, no bus
+and a private tmpfs, and the launcher's status file now records
+`reach: strict|compat` so a result can never be read as stricter than it was.
+
+How a conversation's decision reaches it: `__sandbox.enabled` (stage B) makes
+the guard run the launcher and give it `--reach strict`, with the policy's
+WRITE roots as `--allow`. A read-only approval never becomes an `--allow` (the
+fence/allow conflation again, this time at the launcher boundary), and a policy
+that says `enabled: false` cannot un-guard an operator who asked for
+`NIF_BASH_SANDBOX=on`.
+
+Honest limits, each a named follow-on rather than an implied gap:
+
+- **Foreground bash only.** A guarded `run_in_background` still refuses.
+- **Linux only.** Seatbelt is unimplemented, so "sandboxed" stays a Linux claim.
+- **The runtime allow-list is a starting point for review**, not a settled
+  answer: a toolchain under `/usr/local` or nix needs an explicit `--allow`.
+- **Not the filesystem tools.** read/grep/edit/write still act under the
+  workspace set, not this policy; item 3 of the pillar remains a release gate.
+- **Denies are exact-path masks**, so a recursive deny rule is not expressible.
+- **Check-then-open is not race-safe**; masks are a boundary against mistakes
+  and ordinary probing, not a confidentiality model against a hostile process.
 
 ## Outcome and claim boundary
 
