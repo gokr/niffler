@@ -105,7 +105,14 @@ type
   MapStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[tuple[workspace, map: string]]
-    appended*: bool          # one map per conversation
+    appended*: HashSet[string]
+      ## One map per WORKSPACE, not per conversation: a conversation that
+      ## changes workspace (`/worktree add`, `/worktree close`, an explicit
+      ## `session {cwd}`) must get the map of the tree it is now in. Keyed on
+      ## a bare bool, the first map was appended for the conversation's
+      ## lifetime and a moved conversation kept describing the tree it had
+      ## left — a model reading a stale map is worse off than one with none,
+      ## because it reasons confidently about the wrong files.
   # Asynchronous LSP-diagnostics channel (svc.session.<id>.diag): the edit
   # tool asks the lsp component for diagnostics WITHOUT waiting (a cold
   # rust-analyzer/jdtls needs minutes, and every edit used to pay a 25s

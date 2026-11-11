@@ -2087,15 +2087,27 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   ct.steerStream.queue.setLen(0)
 
 proc drainMapQueue*(queue: var seq[tuple[workspace, map: string]],
-                    appended: var bool): seq[tuple[workspace, map: string]] =
-  ## Consume only the map lane. Return at most one map per conversation;
-  ## later arrivals are discarded, never touching the diagnostic lane.
-  if appended:
-    queue.setLen(0)  # stale later maps must not be retained forever
-    return
-  if queue.len > 0:
-    result.add(queue[0])
-    appended = true
+                    appended: var HashSet[string]): seq[tuple[workspace, map: string]] =
+  ## Consume only the map lane. Return at most one map per call, and only for a
+  ## workspace this conversation has not been given a map for yet; later
+  ## arrivals are discarded, never touching the diagnostic lane.
+  ##
+  ## The dedupe key is the WORKSPACE, not the conversation. It used to be a
+  ## bare bool, which meant "one map per conversation lifetime": a conversation
+  ## that moved — `/worktree add`, `/worktree close`, an explicit
+  ## `session {cwd}` — kept the map of the tree it had left and described the
+  ## wrong files to the model for the rest of its life. A stale map is worse
+  ## than no map, because it is read confidently and nothing signals that it
+  ## is about another checkout.
+  if queue.len == 0: return
+  var chosen = -1
+  for i in 0 ..< queue.len:
+    if queue[i].workspace notin appended:
+      chosen = i
+      break
+  if chosen >= 0:
+    result.add(queue[chosen])
+    appended.incl(queue[chosen].workspace)
   queue.setLen(0)
 
 proc drainDiagnosticsQueue*(queue: var seq[tuple[path, text: string, clean: bool]]):
@@ -5108,8 +5120,23 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
     if hasCwd:
+      let before = entry.workspace
       let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""), args)
       if refusal.len > 0: return %*{"error": refusal}
+      # A live conversation that MOVED must announce the new workspace, exactly
+      # as a freshly loaded one does below. Without this, components that key
+      # off workspace identity — repomap builds a map per workspace, lsp warms
+      # servers for the languages present — kept serving the tree the
+      # conversation had left: "the workspace is X but the repo map shown is
+      # from Y".
+      if entry.workspace != before:
+        try:
+          ct.nc.publish("ev.workspace.opened",
+            Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: %*{"workspace": entry.workspace,
+                                 "conversationId": sessionId}).encode())
+        except CatchableError as e:
+          echo "core: WARNING workspace.opened publish failed: " & e.msg
   else:
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.

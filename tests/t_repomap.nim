@@ -137,6 +137,46 @@ proc main() =
         got{"map"}.getStr("").contains("fn0x0"),
         (if got != nil: $got{"map"}.getStr("")[0 ..< 120] else: "nothing arrived"))
 
+  # The SAME conversation, now in a second qualifying workspace: repomap must
+  # build a map for the new tree rather than treat the conversation as already
+  # served. This is the component half of the report "the workspace is X but
+  # the repo map shown is from Y" — a conversation that ran `/worktree add`
+  # kept the map of the tree it had left. (The core half is the re-announce on
+  # a live workspace move; the runner half is workspace-keyed dedupe in
+  # drainMapQueue.)
+  let otherWs = tmp / "otherws"
+  createDir(otherWs)
+  for i in 0 ..< 60:
+    var src = ""
+    for j in 0 ..< 4:
+      src.add("proc other" & $i & "x" & $j & "(x: int): int =\n  x + " & $j &
+              "\n\n")
+    writeFile(otherWs / ("mod" & $i & ".nim"), src)
+  var movedSub: ptr natsSubscription
+  discard natsConnection_SubscribeSync(addr movedSub, nc.conn,
+                                       "svc.session.sess-moved.map".cstring)
+  nc.publish("ev.workspace.opened",
+    Envelope(v: 1, id: newId(), kind: ekEvent,
+             payload: %*{"workspace": bigWs,
+                         "conversationId": "sess-moved"}).encode())
+  let firstMap = recvMap(movedSub)
+  check("a moved conversation gets its first workspace's map",
+        firstMap != nil and firstMap{"map"}.getStr("").contains("fn0x0"),
+        (if firstMap != nil: $firstMap{"map"}.getStr("")[0 ..< 120] else: "nothing"))
+  nc.publish("ev.workspace.opened",
+    Envelope(v: 1, id: newId(), kind: ekEvent,
+             payload: %*{"workspace": otherWs,
+                         "conversationId": "sess-moved"}).encode())
+  let secondMap = recvMap(movedSub)
+  check("and then a map of the NEW workspace, not the one it left",
+        secondMap != nil and secondMap{"workspace"}.getStr("") == otherWs and
+        secondMap{"map"}.getStr("").contains("other0x0") and
+        not secondMap{"map"}.getStr("").contains("fn0x0"),
+        (if secondMap != nil:
+           "workspace=" & secondMap{"workspace"}.getStr("") & " map=" &
+             $secondMap{"map"}.getStr("")[0 ..< 120]
+         else: "no map for the new workspace"))
+
   # Restart with the switch explicitly OFF: even the padded workspace must
   # remain silent, while the onDemand tool continues to work.
   if rmProc.peekExitCode() == -1: rmProc.terminate()
