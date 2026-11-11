@@ -1386,7 +1386,7 @@ git worktree 是同一儲存庫的第二個檢出。Niffler 將其視為一等�
 
 | 工具 | 審批 | 作用 |
 |---|---|---|
-| `git_worktree_list {repo?}` | 無（讀取） | 每個工作樹：路徑、分支、HEAD、鎖（及原因）、是否可清理、是否為呼叫來源樹，以及（來自歸屬帳本）哪個對話建立了它 |
+| `git_worktree_list {repo?, status?}` | 無（讀取） | 每個工作樹：路徑、分支、HEAD、鎖（及原因）、是否可清理、是否為呼叫來源樹，以及歸屬帳本中的建立對話。`status: true` 額外回報每棵樹的 `clean`/`changed`/`untracked` 和相對 primary 目前分支的 `ahead`/`behind`（`compare`）；每棵樹多執行兩次 git |
 | `git_worktree {op, repo?, name?, path?, branch?, base?, force?, delete_branch?}` | 一律 | `add` 從 `base`（預設為 primary 目前分支）切出 `<repo>.wt/<name>`、上鎖並記錄歸屬；`remove` 回收工作樹；`prune` 清除已手工刪除的工作樹記錄 |
 | `git_merge_preview {repo?, into?, from_ref?}` | 無（讀取） | 以 `git merge-tree` 計算合併結果而不觸碰工作樹：乾淨（含 `ahead`/`behind` 與 stat）或衝突路徑 |
 | `git_merge {op, repo, into?, from_ref?, strategy?, allow_dirty?}` | 一律 | `start` 合併至目前檢出的分支；`abort` 撤銷衝突中的合併 |
