@@ -6,7 +6,78 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **A `claudecode` bench lane measured, twice, across a Claude Code upgrade.**
+  The full31 suite on Synthetic DeepSeek V4.1 Flash (`/anthropic` gateway, low
+  effort, `jobs 1`) is 31/31 in round 1 with no invalid or leaked cells on both
+  Claude Code 2.1.286 and 2.1.318, so the suite is saturated for this model
+  through this harness and the numbers measure shape: **14.1 LLM messages per
+  task at ~0.5 tool calls each**, against Droid's 1.9 messages at ~4.4 — the
+  busiest caller in the set, and the most expensive lane on both cost bases
+  ($0.0231/task on Synthetic's catalog, $0.2208/run at first-party list
+  prices). The upgrade itself is a **prefix** saving, not a capability or speed
+  one: the first call's prompt fell 10 855 → 9 222 tokens (a deterministic
+  55-token spread across all 31 tasks) and per-task cost fell 15%
+  ($0.0271 → $0.0231) at identical wall clock (33.7 s), because Synthetic's
+  Anthropic endpoint bills every prompt token as a cache write at the prompt
+  rate, so cost tracks prefix size × calls. The newer build ships two *more*
+  tools (`Monitor`, `ToolSearch`) in a prefix 15% smaller. Reports in
+  `bench/reports/full31-syn-ds41-claudecode-{2318,j1}-report.*` and
+  `full31-syn-ds41-claudecode-analysis.md`.
+
+### Fixed
+
+- Explicitly choosing a conversation's current (default) workspace now pins it:
+  the `cwd`/`cwdPinned` header is persisted even though the path does not change,
+  so a later resume cannot silently move the conversation and a client that just
+  asked for that workspace no longer reads `cwdPinned: false` back. Conversations
+  that already carry a choice, and the immutability rule after turns, are unchanged.
+- Stale stop controls no longer deny `/worktree` and other client tool
+  approvals after a cancelled turn. Client tool approvals carry the conversation
+  identity, preserving per-conversation grants; live-turn cancellation and
+  explicit human denials remain enforced.
+- New independent peer forks (including `/worktree add` forks) use `conv-…`
+  identifiers instead of the supervised subagent's `agent-…` prefix. Existing
+  conversations are not renamed.
+- Isolated worktree merge/close calls can lease their own primary checkout via
+  the declarative `writes.primary` flag, without widening bash/edit or root
+  grants. Peer forks can retire the exact origin-created tree recorded in their
+  durable lineage; foreign ownership, dirty-tree and unmerged-work guards remain.
+- **Worktree isolation keeps the human's grants.** Isolation now drops only
+  automatically discovered roots, not `/roots add` grants, with the
+  conversation's own tree first; `session_info.workspace.writable` uses the same
+  rule as the write fence.
+- **Write-path fields declared through `x-harness.writes.paths` are resolved
+  against the conversation workspace.** Both string and array forms (including
+  `git_commit`'s `paths`) now reach the component resolved, so an isolated
+  conversation is no longer refused `E_WRITE_OUTSIDE` for a file inside its own
+  tree.
+- **An isolated opaque writer outside its tree refuses instead of falling back
+  to the primary claim.** `roots: true` narrows to the conversation's own tree
+  and answers `E_WRITE_OUTSIDE`; an isolated bash with a cwd inside its tree
+  still works.
+
+- Canonical transcript writes are create-only: a stale continuation refuses
+  rather than overwriting an existing message. Full-kind reads reject malformed
+  pages and stalled cursors instead of accepting a partial transcript.
+- Conversation header updates use strict reads and compare-and-set retries,
+  preserving creation time, title and unrelated metadata across read failures
+  and concurrent updates. Header creation is also create-only.
+
 ### Added
+
+- `git_worktree_list {status: true}` reports each tree's cleanliness
+  (`clean`, `changed`, `untracked`) and its divergence from the primary's
+  current branch (`ahead`/`behind`, the compared ref named once as `compare`),
+  measured by running git in that tree. Opt-in because it costs two extra git
+  calls per tree; the default listing stays metadata-only.
+
+- **Client tool controls run through the runner's dispatch gate.**
+  `session {invoke: {tool, arguments}}` runs one ordinary tool with the
+  conversation's workspace, approval mode and isolation applied for the call
+  and restored afterwards, preserving write fences, approvals and session
+  attribution that a direct `core.invoke` cannot. It is human-only: absent from
+  the model-facing schema, refused in task-scoped sessions, and hidden tools
+  stay unreachable.
 
 - **Worktree provenance, a peer fork, and durable merge notices.** Hidden
   client tool `agent_fork {source, cwd, fork?}` copies completed history at the
@@ -21,14 +92,6 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and deduplicated against canonical history; a notification failure is a
   warning on the already-successful merge, never a reason to replay it.
 
-- **Client tool controls run through the runner's dispatch gate.**
-  `session {invoke: {tool, arguments}}` runs one ordinary tool with the
-  conversation's workspace, approval mode and isolation applied for the call
-  and restored afterwards, preserving write fences, approvals and session
-  attribution that a direct `core.invoke` cannot. It is human-only: absent from
-  the model-facing schema, refused in task-scoped sessions, and hidden tools
-  stay unreachable.
-
 - **A live worktree acceptance run.** `scripts/worktree-acceptance.sh` drives
   the workflow against a live harness the way a client does — seeded
   conversation, add, repin, isolate, fence both directions, commit, preview,
@@ -37,6 +100,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run for the client surface, and what each failure means.
 
 ### Changed
+
+- **The website picked up the shipped worktree and write-arbitration surface,
+  the full bench set, and a responsive/readability pass.** Feature cards now
+  cover isolated Git worktrees (`/worktree add` with an optional peer fork,
+  merge-back, and removal guards) and cooperative write arbitration
+  (`E_WRITE_BUSY`, lease recovery, disjoint writes in parallel); the bench copy
+  names Pi, Opencode, DeepSeek Harness, CodeWhale, Droid and Claude Code; and
+  narrow widths keep benchmark tables and the application diagram inside their
+  own scroll frames, with a sticky harness column, keyboard scrolling and
+  readable headers. All copy is localized in `en`, `zh` and `zh-TW`.
 
 - **The Chinese manuals (`docs/MANUAL.zh.md`, `docs/MANUAL.zh-TW.md`) are back
   in step with the 0.5.0 English manual.** Both gained the shell guard and read
@@ -67,46 +140,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per-component settings surface. All of it is localized in `en`, `zh` and
   `zh-TW`.
 
-- **The website's bench section names the full harness set.** It now lists Pi,
-  Opencode, DeepSeek Harness, CodeWhale, Droid and Claude Code in `en`, `zh` and
-  `zh-TW`, instead of only three.
-
 - **The READMEs no longer claim `make test` runs the bench adapter suite.**
   `make test` is documented as the complete code gate (bus-contract suite plus
   Go unit tests), with `make test-bench` as the separate, opt-in Node bench
   adapter suite that skips when Node is absent. The bench comparison list in
   `README.md`, `README.zh.md`, `README.zh-TW.md` and `bench/README.md` now
   names DeepSeek Harness and Droid.
-
-### Fixed
-
-- New independent peer forks (including `/worktree add` forks) use `conv-…`
-  identifiers instead of the supervised subagent's `agent-…` prefix. Existing
-  conversations are not renamed.
-- Isolated worktree merge/close calls can lease their own primary checkout via
-  the declarative `writes.primary` flag, without widening bash/edit or root
-  grants. Peer forks can retire the exact origin-created tree recorded in their
-  durable lineage; foreign ownership, dirty-tree and unmerged-work guards remain.
-- Canonical transcript writes are create-only: a stale continuation refuses
-  rather than overwriting an existing message. Full-kind reads reject malformed
-  pages and stalled cursors instead of accepting a partial transcript.
-- Conversation header updates use strict reads and compare-and-set retries,
-  preserving creation time, title and unrelated metadata across read failures
-  and concurrent updates. Header creation is also create-only.
-- **Write-path fields declared through `x-harness.writes.paths` are resolved
-  against the conversation workspace.** Both string and array forms (including
-  `git_commit`'s `paths`) now reach the component resolved, so an isolated
-  conversation is no longer refused `E_WRITE_OUTSIDE` for a file inside its own
-  tree — the documented `/worktree` merge flow would otherwise have broken for
-  every user.
-- **An isolated opaque writer outside its tree refuses instead of falling back
-  to the primary claim.** `roots: true` narrows to the conversation's own tree
-  and answers `E_WRITE_OUTSIDE`; an isolated bash with a cwd inside its tree
-  still works.
-- **Worktree isolation keeps the human's grants.** Isolation now drops only
-  automatically discovered roots, not `/roots add` grants, with the
-  conversation's own tree first; `session_info.workspace.writable` uses the same
-  rule as the write fence.
 
 ## [0.5.0] — 2026-10-29
 
