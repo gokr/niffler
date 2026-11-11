@@ -113,6 +113,53 @@ proc sweepLogs*(sup: Supervisor, maxAgeDays: float, maxTotalMb: float) =
       except CatchableError:
         discard
 
+proc rotateFile(path: string, suffix: string, maxBytes: int64) =
+  ## Rotate ONE file in place when it outgrows maxBytes: copy the tail to
+  ## <path><suffix>, then truncate the live file.
+  ##
+  ## COPY-THEN-TRUNCATE, never rename. The harness's own stdout (var/logs/core.log)
+  ## is an inherited fd opened by whichever UI autostarted core — scripts/
+  ## niffler-tui.in and scripts/install.sh both do `>>core.log`, and neither can
+  ## be made to follow a rename. rename(2) would leave core writing to an
+  ## unlinked inode: the log silently vanishes while the disk keeps filling,
+  ## which is worse than no rotation at all. Truncating the SAME inode keeps
+  ## every writer valid. The cost is the retained history: at most one suffix
+  ## file per name, overwritten each time, so `core.log` (live) +
+  ## `core.log.1` (previous) — bounded, no chain to prune.
+  try:
+    if not fileExists(path): return
+    if getFileSize(path) <= maxBytes: return
+    # Copy the whole file, not just the tail: the caller learns the window from
+    # the live file's new size, and a partial tail would make the retained file
+    # claim to start where it does not.
+    copyFile(path, path & suffix)
+    let live = open(path, fmWrite)   # truncates, keeps the inode
+    live.close()
+  except CatchableError:
+    discard
+
+proc rotateLogs*(sup: Supervisor, maxBytes: int64) =
+  ## Size-based rotation for var/logs, run from the hourly sweep and at boot
+  ## (core/niffler.nim). sweepLogs only DELETES whole files, so a long-lived
+  ## harness had exactly one unbounded file: core.log reached 7 712 lines /
+  ## 576 KB across a handful of boots on 2026-11-10, with nothing marking where
+  ## one boot ended — so a shutdown could not be told from a crash even after
+  ## the lines gained timestamps. Rotation keeps one previous generation.
+  ##
+  ## Every log rotates, not just core.log: a component that chatters (a restart
+  ## loop logging its last output, e.g. jev's 343 crash lines) has the same
+  ## problem, and sweepLogs cannot help because it only acts on age and total
+  ## size, never on one file being large.
+  if maxBytes <= 0: return
+  let dir = sup.root / "var" / "logs"
+  if not dirExists(dir): return
+  for kind, path in walkDir(dir):
+    if kind != pcFile: continue
+    # Skip the previous generations: rotating "core.log.1" into "core.log.1.1"
+    # grows a chain and doubles the disk it is meant to bound.
+    if path.endsWith(".1"): continue
+    rotateFile(path, ".1", maxBytes)
+
 proc logTail(path: string, maxLines: int): string =
   ## Last lines of a child's log file, for the death report. Missing or
   ## unreadable file → empty string (report degrades gracefully).

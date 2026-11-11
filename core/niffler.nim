@@ -665,7 +665,16 @@ proc main() =
   let logMaxMb = block:
     try: parseFloat(getEnv("NIF_LOG_MAX_MB", "200"))
     except CatchableError: 200.0
+  # Per-file rotation cap. sweepLogs bounds the DIRECTORY (age + total size) but
+  # never truncates a single file, so one chatty log could grow without limit
+  # for as long as the harness lived. 5 MB keeps roughly a day of a busy
+  # component and still fits ~40 rotated files inside the 200 MB default.
+  let logRotateMb = block:
+    try: parseFloat(getEnv("NIF_LOG_ROTATE_MB", "5"))
+    except CatchableError: 5.0
+  let logRotateBytes = int64(logRotateMb * 1_000_000.0)
   sup.sweepLogs(logRetentionDays, logMaxMb)
+  sup.rotateLogs(logRotateBytes)
   var lastLogSweep = epochTime()
   let autostart = getEnv("NIF_AUTOSTART") == "1"
   let idleAfter = parseFloat(getEnv("NIF_AUTOSTART_IDLE_S", "10"))
@@ -711,6 +720,7 @@ proc main() =
       sup.pump(cat)
       if epochTime() - lastLogSweep >= 3600.0:
         sup.sweepLogs(logRetentionDays, logMaxMb)
+        sup.rotateLogs(logRotateBytes)
         lastLogSweep = epochTime()
       if autostart:
         let clients = cat.clientCount()

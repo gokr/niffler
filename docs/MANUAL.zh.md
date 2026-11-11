@@ -385,6 +385,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | `NIF_WRITE_MAX_BYTES` | `write` 工具整文件负载的上限 | `900000` |
 | `NIF_OAUTH_CALLBACK_HOST` | 本地 OAuth 回调监听器的主机（端口固定为 1455/53692） | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core 在 `var/logs` 中子进程日志保留上限（MB） | `200` |
+| `NIF_LOG_ROTATE_MB` | `var/logs` 中单个文件的上限；超过后轮转为 `<name>.log.1`（保留一代） | `5` |
 | `NIF_LOG_RETENTION_DAYS` | core 在清扫前保留子进程日志的天数 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在新组件于目录中注册之前等待多久才使调用失败（钳制 250–120000）；当目录记录拒绝时等待提前结束，因此该旋钮仅约束静默组件 | `5000` |
 

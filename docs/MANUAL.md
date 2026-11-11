@@ -771,6 +771,7 @@ see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_D
 | `NIF_OAUTH_CALLBACK_HOST` | host for the local OAuth callback listener (ports stay fixed at 1455/53692) | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core's child-log retention cap in `var/logs` (MB) | `200` |
 | `NIF_LOG_RETENTION_DAYS` | days core retains child logs before sweeping | `7` |
+| `NIF_LOG_ROTATE_MB` | per-file cap for any `var/logs` file; past it the file is rotated to `<name>.log.1` (one generation kept) | `5` |
 | `NIF_SPAWN_WAIT_MS` | how long `core.spawn` waits for the new component to register in the catalog before failing the call (clamped 250–120000); the wait ends early when the catalog records a refusal, so the knob only bounds a silent component | `5000` |
 
 **Build and script knobs** — read by the scripts around the harness, never by

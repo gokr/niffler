@@ -391,6 +391,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | `NIF_WRITE_MAX_BYTES` | `write` 工具整檔 payload 的上限 | `900000` |
 | `NIF_OAUTH_CALLBACK_HOST` | 本機 OAuth 回呼監聽器的主機（埠固定為 1455/53692） | `127.0.0.1` |
 | `NIF_LOG_MAX_MB` | core 在 `var/logs` 的子行程日誌保留上限（MB） | `200` |
+| `NIF_LOG_ROTATE_MB` | `var/logs` 中單一檔案的上限；超過後輪轉為 `<name>.log.1`（保留一代） | `5` |
 | `NIF_LOG_RETENTION_DAYS` | core 掃掠前保留子行程日誌的天數 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在使呼叫失敗前，等待新元件在目錄中註冊的時間（限制 250–120000）；當目錄記錄到拒絕時等待會提早結束，因此此旋鈕只約束沉默的元件 | `5000` |
 
