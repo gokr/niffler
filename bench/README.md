@@ -206,6 +206,18 @@ patch instead of burning the remaining feedback rounds.
   niffler adapter uses. `firstPromptTokens` is the first assistant event's
   `input_tokens` (the first call's full prompt). Only models with a
   `claudecode` section in config.json can select this harness.
+  The lane is CLI-version-sensitive in one measurable way: the frozen prefix
+  (base prompt + tool schemas) moved 10 855 → 9 222 first-call tokens between
+  2.1.286 and 2.1.318, and on Synthetic's Anthropic endpoint — where every
+  prompt token bills as a cache **write** at the prompt rate — that alone is a
+  15% per-task cost difference at identical wall clock. Quote the version with
+  any number you publish; the `system/init` frame's `tools`/`plugins` arrays
+  are the surface that changed (2.1.318 adds `Monitor`, `ToolSearch` and
+  `cc-plugin-privacy`). Upgrading needs
+  `npm i -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest`:
+  without `--allow-scripts` the blocked postinstall leaves `claude` failing with
+  "native binary not installed". See
+  `bench/reports/full31-syn-ds41-claudecode-analysis.md`.
 - **dsh** — DeepSeek Harness driven over its SDK JSON-RPC profile, one
   process per task workspace. `DSH_PROFILE`/`dsh.profile` selects the
   profile: `sdk` (default) is the out-of-the-box `dsh-base` tool surface

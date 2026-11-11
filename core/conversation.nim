@@ -4795,7 +4795,16 @@ proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
   # read as "no request", which is the rule a client must not have to know —
   # omit the key to leave the workspace alone.
   if not explicit: return refusal
-  if resolved.path == entry.workspace: return ""  # nothing to do
+  if resolved.path == entry.workspace:
+    # Explicitly choosing the default is still a choice, even though there is
+    # no path change. Persist it so a later resume cannot silently move it.
+    if not workspaceChosen(ct, sessionId):
+      try:
+        ct.updateConversationHeader(sessionId,
+          %*{"cwd": entry.workspace, "cwdPinned": true})
+      except CatchableError as e:
+        return "cannot persist workspace: " & e.msg
+    return ""
   let hasTurns = conversationHasTurns(ct, sessionId)
   let pristine = not hasTurns and
     (entry.messages.len == 0 or
@@ -6191,14 +6200,21 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         return %*{"error": "invoke needs tool and object arguments"}
       let previousSession = ct.nested.session
       let previousWorkspace = ct.nested.workspace
-      let previousCaller = ct.approval.caller
+      let previousCaller = if ct.approval != nil: ct.approval.caller else: ""
+      let previousApprovalSession = if ct.approval != nil: ct.approval.session else: ""
       let previousMode = if ct.approval != nil: ct.approval.approvalMode else: ""
+      # Client controls run outside a turn. A previous stop must not poison
+      # their approval; queued controls are also ignored by the live-turn guard.
+      if ct.steerStream != nil:
+        pumpSteer(ct, discardControls = true)
+        ct.steerStream.cancelRequested = false
       let previousIsolation = ct.nested.isolation
       sessions[sessionId] = entry
       ct.nested.session = sessionId
       ct.nested.workspace = entry.workspace
       if ct.approval != nil:
         ct.approval.caller = caller
+        ct.approval.session = sessionId
         ct.approval.approvalMode = entry.approvalMode
       ct.nested.isolation = entry.isolationScope
       defer:
@@ -6206,7 +6222,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         ct.nested.isolation = previousIsolation
         ct.nested.session = previousSession
         ct.nested.workspace = previousWorkspace
-        if ct.approval != nil: ct.approval.caller = previousCaller
+        if ct.approval != nil:
+          ct.approval.caller = previousCaller
+          ct.approval.session = previousApprovalSession
       return %*{"ok": true, "result": ct.dispatchToolCall("invoke", request)}
     var status = %*{
       "sessionId": sessionId,

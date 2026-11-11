@@ -400,6 +400,20 @@ proc main() =
         unpinnedStatus{"error"} == nil and
         unpinnedStatus{"cwd"}.getStr("") == root and
         not unpinnedStatus{"cwdPinned"}.getBool(true), $unpinnedStatus)
+  let sameStatus = call(nc, "core", "session",
+                        %*{"sessionId": "ws-same"}, 10_000)
+  let samePin = call(nc, "core", "session",
+                     %*{"sessionId": "ws-same", "cwd": root}, 10_000)
+  check("explicitly choosing the default persists the choice",
+        sameStatus{"error"} == nil and samePin{"error"} == nil and
+        samePin{"cwdPinned"}.getBool(false), $samePin)
+  discard call(nc, "store", "put", %*{
+    "kind": "message", "id": "ws-same:000001",
+    "value": %*{"role": "user", "content": "x"}}, 10_000)
+  let sameMove = call(nc, "core", "session",
+                      %*{"sessionId": "ws-same", "cwd": extWs}, 10_000)
+  check("choosing the default makes it immutable after turns",
+        sameMove{"error"}.getStr("").contains("immutable"), $sameMove)
   # Turns exist (seeded the same way the recount below seeds a transcript), so
   # the "pristine" escape hatch does NOT apply — only "never chosen" does.
   for seqNo in 1 .. 3:

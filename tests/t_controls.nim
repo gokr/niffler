@@ -769,6 +769,51 @@ proc main() =
           epochTime() - cancelAt < 15.0,
           "took " & $(epochTime() - cancelAt) & "s: " & $turnReply)
 
+    # Client invokes are not turns: neither an old stop nor a stop arriving
+    # during their approval may stand in for the human's verdict.
+    for attempt in 0 .. 1:
+      nc.publish("svc.session." & sid & ".steer",
+        Envelope(v: 1, id: newId(), kind: ekEvent,
+                 payload: %*{"__cancel": true}).encode())
+      sleep(200)
+      publishCall(nc, "svc.core.call", inbox,
+        callEnvelope("session", %*{"sessionId": sid, "invoke": {
+          "tool": "bash", "arguments": {"command": "printf control-ok"}}}, "probe"))
+      var question: JsonNode = nil
+      let controlDeadline = epochTime() + 20.0
+      while question == nil and epochTime() < controlDeadline:
+        let polled = pollEnv(directed, 50)
+        if polled.found: question = polled.env.payload
+      check("client invoke: approval still required after stop",
+            question != nil, $question)
+      if question != nil:
+        check("client invoke: approval carries conversation identity",
+              question{"sessionId"}.getStr("") == sid, $question)
+        nc.publish("svc.session." & sid & ".steer",
+          Envelope(v: 1, id: newId(), kind: ekEvent,
+                   payload: %*{"__cancel": true}).encode())
+        sleep(300)
+        check("client invoke: idle stop does not answer the approval",
+              not pollEnv(replies, 100).found)
+        nc.publish("ev.approval.reply",
+          Envelope(v: 1, id: newId(), kind: ekEvent,
+                   payload: %*{"id": question{"id"}.getStr(""),
+                               "ok": attempt == 0}).encode())
+      var controlReply: JsonNode = nil
+      while controlReply == nil and epochTime() < controlDeadline:
+        let polled = pollEnv(replies, 50)
+        if polled.found: controlReply = callerOf(polled.env)
+      if attempt == 0:
+        check("client invoke: explicit approval executes the tool",
+              controlReply != nil and
+              controlReply{"result"}{"text"}.getStr("").contains("control-ok"),
+              $controlReply)
+      else:
+        check("client invoke: explicit denial still refuses the tool",
+              controlReply != nil and
+              controlReply{"error"}.getStr("").contains("approval denied"),
+              $controlReply)
+
   # -------------------------------------------------------------------------
   # 8b. A __cancel that arrives while the runner is IDLE must not abort the
   # next turn. Reported shape: "I press ESC twice, then I must type continue
