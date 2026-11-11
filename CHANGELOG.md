@@ -6,6 +6,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Release overview
+
+This development cycle adds a complete sibling-worktree workflow: create and
+isolate checkouts, fork peer conversations, review and merge their changes, and
+retire trees with ownership and safety checks. Client tool controls now use the
+runner's dispatch gate, including approvals and write arbitration. Workspace
+and grant inheritance also apply to subagents; worktree discovery stays outside
+frozen prompt prefixes.
+
+Reliability work protects transcript and header writes, distinguishes provider
+lookup failures from definitive misses, and prevents foreign-root components
+from sharing a harness's bus. These protections are cooperative boundaries, not
+OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
+[Bus ownership](docs/research/BUS-OWNERSHIP.md).
+
 - **A component can no longer answer another harness's calls.** Symptom: with
   several `niffler-tui` windows open, a conversation's pinned provider suddenly
   "cannot be resolved", `/fav` listed nothing, and sessions failed on their own
@@ -45,6 +60,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Core timestamps its lifecycle logs and checks `var/logs` at boot and hourly
+  for oversized files, retaining one rotated generation. `NIF_LOG_ROTATE_MB`
+  controls the per-file threshold; this is not a continuous hard size limit.
+- Explicitly selecting the already-default workspace now pins that choice, so a
+  later resume cannot silently move it; the existing post-turn immutability
+  rule still applies.
+- `jev` persists stale or failed shadow jobs with unknown candidates as JSON
+  null rather than crashing and entering a supervisor restart loop.
+- SQLite refuses an unbound database containing instance-owned rows when it
+  cannot establish the owner, rather than serving a misleading empty view.
+  Provider lookup now distinguishes a definitive not-found from a registry or
+  store failure; busy store reads get a retry rather than a false verdict.
+- Cancelling a running turn works again, and a stale idle steer cancellation
+  cannot abort the next turn. Worktree isolation preserves explicit human grants;
+  opaque write claims follow the actual target tree.
+- `read` select tolerates per-target errors and reports scan and output limits
+  instead of letting one unreadable file or a large tree hide other matches.
 - Stale stop controls no longer deny `/worktree` and other client tool
   approvals after a cancelled turn. Client tool approvals carry the conversation
   identity, preserving per-conversation grants; live-turn cancellation and
@@ -66,6 +98,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Git worktree creation, listing, removal and pruning use a durable ownership
+  ledger; explicit commit, merge preview and merge tools complete the workflow.
+  Peer forks carry origin provenance and durable merge notices. Opt-in worktree
+  isolation narrows writes while retaining reads and explicit human grants.
+- Client tool controls run through the session dispatch gate, and new worktrees
+  are discovered on subsequent dispatches. Subagents inherit the caller's
+  workspace and grants.
+- Store full-text search indexes tool-call arguments on SQLite and TiDB.
+  `scripts/provider-triage.sh` also captures store identity and binding for diagnosis.
 - `git_worktree_list {status: true}` reports each tree's cleanliness
   (`clean`, `changed`, `untracked`) and its divergence from the primary's
   current branch (`ahead`/`behind`, the compared ref named once as `compare`),
