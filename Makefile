@@ -915,6 +915,29 @@ doctor:
 	else \
 		echo "  jev backend (Von): not installed (optional) — 'make install-jev', then 'make von-up'"; \
 	fi
+	@# The sandbox backend, probed the way the launcher probes it: a backend
+	@# that starts commands but confines nothing must not read as available.
+	@# Only meaningful once niffler-sandbox is built, so absent binaries report
+	@# "run make build" rather than a false OK.
+	@if [ -x var/bin/niffler-sandbox ]; then \
+		if out=$$(var/bin/niffler-sandbox probe < /dev/null 2>/dev/null | tail -1); then \
+			case "$$out" in \
+			*'"backend":"bwrap"'*) echo "  sandbox backend: bwrap — confined bash can promise reads AND writes confined";; \
+			*'"backend":"landlock"'*) echo "  sandbox backend: landlock — writes confined, reads UNCONFINED (see NIF_SANDBOX_ALLOW_DEGRADED)";; \
+			*) echo "  sandbox backend: UNAVAILABLE — $${out:-no answer}; a policy-enabled conversation will refuse to run bash";; \
+			esac; \
+		else echo "  sandbox backend: probe failed"; fi; \
+	elif [ -n "$(IS_LNX)" ]; then \
+		echo "  sandbox backend: unknown — var/bin/niffler-sandbox not built yet ('make build')"; \
+	else \
+		echo "  sandbox backend: n/a — Seatbelt (macOS) is not implemented; confined bash is Linux-only"; \
+	fi
+	@if [ -n "$(IS_LNX)" ] && command -v bwrap >/dev/null 2>&1; then \
+		if ! var/bin/niffler-sandbox probe < /dev/null 2>/dev/null | tail -1 | grep -q '"backend":"bwrap"'; then \
+			echo "     (bwrap is installed but unusable — on Ubuntu 23.10+ AppArmor blocks"; \
+			echo "      unprivileged user namespaces: 'make install-sandbox-profile')"; \
+		fi; \
+	fi
 	@echo "Then: make — then launch niffler-tui (the client) or ./var/bin/niffler (admin shell)"
 
 install-go:
@@ -983,7 +1006,15 @@ install-native-deps:
 	else \
 		$(SUDO) apt-get update && \
 		$(SUDO) apt-get install -y build-essential curl ca-certificates git \
-			pkg-config libssl-dev; fi
+			pkg-config libssl-dev bubblewrap; fi
+	@# bubblewrap is what makes a confined bash command possible on Linux
+	@# (sandbox/main.nim probes it and refuses when it is unusable). It is NOT
+	@# installed on macOS: it is a Linux-namespace tool, and the macOS answer is
+	@# Seatbelt, which is not implemented yet — so there is deliberately no
+	@# Homebrew line here pretending otherwise.
+	@if [ -n "$(IS_LNX)" ] && ! command -v bwrap >/dev/null 2>&1; then \
+		echo "  note: bubblewrap did not install — confined bash will refuse"; \
+	fi
 
 install-nim:
 	@if ! command -v nim >/dev/null 2>&1; then \

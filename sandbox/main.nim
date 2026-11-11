@@ -319,6 +319,19 @@ proc runRequest(req: LaunchRequest): int =
   of bkWrap:
     return runBwrap(req)
   of bkLandlock:
+    # A STRICT request can never be satisfied by Landlock: it confines writes
+    # and leaves every read unconfined. Accepting it would mean a conversation
+    # whose policy is enabled — the one case where read confinement is the whole
+    # point — silently running with the host fully readable, and only a
+    # status-file field to notice. Refuse instead; NIF_SANDBOX_ALLOW_DEGRADED
+    # stays the operator's escape hatch for a COMPAT launch, where reads were
+    # never promised.
+    if strictMode(req.reach):
+      stderr.writeLine "niffler-sandbox: refusing a strict launch: " &
+        "Landlock confines writes only, so this launch would leave the host " &
+        "readable — install bubblewrap (reads and writes confined)"
+      writeStatus(req, "landlock", false)
+      return 125
     if req.masks.len > 0:
       stderr.writeLine "niffler-sandbox: refusing requested masks: Landlock cannot enforce them"
       writeStatus(req, "landlock", false)

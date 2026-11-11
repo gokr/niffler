@@ -231,6 +231,46 @@ proc main() =
   if failures > 0:
     echo "SANDBOX TEST FAILED: ", failures, " failure(s)"
     quit(1)
+  # --- a STRICT launch is never satisfied by writes-only confinement --------
+  # Landlock confines writes and leaves reads open. A strict request exists to
+  # hide the host, so accepting Landlock for it would mean the one case where
+  # reads matter most runs with the host fully readable — visible only to
+  # whoever inspected a status field. Refusal is the honest outcome.
+  block strictNeverDegrades:
+    let ws = getTempDir() / "sb-strict-degrade"
+    createDir(ws)
+    defer: removeDir(ws)
+    # NIF_BWRAP points at nothing so the probe cannot find a usable bwrap, and
+    # degraded mode is allowed — which is exactly the trap: before this check,
+    # that combination ran. The env is per-invocation, so the rest of the suite
+    # still sees the real backend.
+    let strictRun = runLauncher(launcher(root), @["run", "--workspace", ws,
+                                                "--reach", "strict",
+                                                "--", "/bin/true"],
+      @[("NIF_BWRAP", "/nonexistent-bwrap"),
+        ("NIF_SANDBOX_ALLOW_DEGRADED", "1")])
+    check("a strict launch refuses a writes-only backend",
+          strictRun.code == 125 and
+          strictRun.output.contains("refusing a strict launch"),
+          strictRun.output)
+    # ...while the SAME host still runs a compat launch, because compat never
+    # promised read confinement. Breaking this would take away the operator's
+    # escape hatch on machines without bubblewrap.
+    let compatRun = runLauncher(launcher(root), @["run", "--workspace", ws,
+                                                  "--reach", "compat",
+                                                  "--", "/bin/true"],
+      @[("NIF_BWRAP", "/nonexistent-bwrap"),
+        ("NIF_SANDBOX_ALLOW_DEGRADED", "1")])
+    check("a compat launch still accepts writes-only confinement",
+          compatRun.output.contains("reads UNCONFINED"), compatRun.output)
+    # A malformed reach refuses rather than silently picking a mode: neither
+    # choice is safe to guess when someone meant the strict one.
+    let bogus = runLauncher(launcher(root), @["run", "--workspace", ws,
+                                              "--reach", "paranoid",
+                                              "--", "/bin/true"])
+    check("a malformed reach refuses instead of guessing",
+          bogus.code == 125 and bogus.output.contains("reach"), bogus.output)
+
   echo "SANDBOX TEST PASSED"
 
 main()

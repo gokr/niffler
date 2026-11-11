@@ -664,6 +664,7 @@ see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_D
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
 | `NIF_BASH_SANDBOX_MAP` | `<absolute-dir>=<image>` lines (longest matching prefix of the command's `cwd` wins) that make the `bash` tool run every command — foreground and `run_in_background` alike — as `docker run --rm --network none` with only that workspace root bind-mounted at the same path (the image's toolchains and caches, the workspace, and nothing else). Written by hosted-benchmark lanes (the DeepSWE port); a `cwd` that matches no entry fails the call loudly (exit 125) rather than running unsandboxed. Takes precedence over `NIF_BASH_NET` | unset |
+| `NIF_SANDBOX_STRICT` | `1` makes an operator-env guard (`NIF_BASH_SANDBOX=on`) launch with **strict** reach — the host root is not mounted, so reads reach only the workspace, approved roots and a reviewed runtime set — instead of the default `compat` (writes confined, host readable). A conversation whose own sandbox policy is enabled always asks for strict. A strict launch **refuses** rather than degrading to Landlock (writes-only, reads unconfined); `NIF_SANDBOX_ALLOW_DEGRADED=1` still permits that degradation for a compat launch only. `make doctor` reports which backend a host can actually provide | unset (compat) |
 | `NIF_BASH_SANDBOX` | `on` runs every **foreground** `bash` command through the `niffler-sandbox` launcher (see [Shell guard and read masks](#shell-guard-and-read-masks)): workspace writable at its own path, the rest of the host bind-mounted read-only, private `/tmp`, fresh `/proc`, no network and no bus. `off` (the default) is unguarded. Any other value refuses. The workspace comes from the runner's session context, else `NIF_BASH_SANDBOX_ROOT`; a guarded `run_in_background` call is refused rather than run unguarded, and the guard cannot be combined with `NIF_BASH_SANDBOX_MAP` | `off` |
 | `NIF_BASH_SANDBOX_ROOT` | workspace path for a guarded command that has **no** session context (a bare `cli` call). A conversation turn supplies the workspace itself, so this is only for direct bus calls | unset |
 | `NIF_BASH_SANDBOX_MASKS` | operator-owned exact paths, one per line (absolute, or relative to the workspace), hidden from reads **and** writes: `read`, `grep`/`files`, `repomap` and skill resources refuse them, symlink and hard-link aliases are refused, and the shell guard binds `/dev/null` over each so a guarded command cannot read them either. Active whether or not the shell guard is on. A mask is a mask, not a confidentiality boundary: it removes what would have been returned, and cannot hide the same bytes behind an undeclared path or a copy taken before it was configured. A configured but missing path refuses rather than dropping the protection | unset |
@@ -1340,6 +1341,13 @@ each other's authority, and the manual keeps them apart deliberately:
 | **machine isolation** | shipped, for fleet | an Incus container or Lima VM per remote instance — a separate kernel and userland, which is why trusted-worker delegation is meaningful |
 
 ### The shell guard (off by default)
+
+`make setup` installs `bubblewrap` on Linux (never on macOS — it is a Linux
+namespace tool, and the macOS answer is Seatbelt, which is not implemented).
+`make doctor` probes the backend with a forbidden operation and reports
+`bwrap` / `landlock` / `UNAVAILABLE`, so "the sandbox is available" is never
+assumed from the binary merely existing; on Ubuntu 23.10+ it also points at
+`make install-sandbox-profile` when AppArmor is blocking user namespaces.
 
 With `NIF_BASH_SANDBOX=on`, every foreground `bash` command is exec'd through the
 launcher (`var/bin/niffler-sandbox`, built by `make build`) instead of directly.

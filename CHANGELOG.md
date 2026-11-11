@@ -113,8 +113,8 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   caller-supplied one is deleted first, a non-declaring tool receives nothing,
   and a direct bus call gets no policy at all because it has no conversation.
   The document is stamped `enforced: false` where it is built rather than left
-  for a component to infer. Stage C has landed too, for foreground `bash` on Linux: a
-  conversation whose policy is enabled now runs its commands with **strict
+  for a component to infer. Stage C has landed too, for foreground `bash` on
+  Linux: a conversation whose policy is enabled now runs its commands with **strict
   reach** — the host root is not mounted at all, so reads reach the workspace,
   the policy's write roots and a reviewed runtime set rather than the whole
   filesystem. Measured with bubblewrap on this host: a host file in `$HOME`
@@ -163,6 +163,24 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   opaque write claims follow the actual target tree.
 - `read` select tolerates per-target errors and reports scan and output limits
   instead of letting one unreadable file or a large tree hide other matches.
+- **`make setup` installs bubblewrap, and `make doctor` reports the real
+  sandbox backend.** A fresh Linux clone got no confinement backend at all —
+  `install-native-deps` never asked for `bubblewrap` — so the first conversation
+  with a sandbox policy simply refused to run `bash`, with nothing in the
+  prerequisite report explaining why. `doctor` now probes the backend the way
+  the launcher does (a forbidden operation, not "does the binary exist") and
+  prints `bwrap` / `landlock` / `UNAVAILABLE`, pointing at
+  `make install-sandbox-profile` when AppArmor is blocking user namespaces on
+  Ubuntu 23.10+. macOS reports `n/a` rather than suggesting a brew package for a
+  Linux-namespace tool.
+- **A strict launch refuses a writes-only backend instead of degrading.**
+  Landlock confines writes and leaves reads open, so accepting it for a
+  conversation that asked to hide the host meant the one case where read
+  confinement matters ran with the host fully readable — visible only in a
+  status field. `NIF_SANDBOX_ALLOW_DEGRADED=1` still permits that degradation
+  for a *compat* launch, which never promised reads.
+
+
 - Worktree peer forks inherit the source conversation's provider/model pins
   instead of starting with an empty selection. The pair is snapshotted at birth
   and survives resume; later changes in either conversation remain independent.
