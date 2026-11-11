@@ -114,8 +114,16 @@ proc main() =
           if data.contains("\"" & name & "\""): announced[name] = true
     false
 
-  check("edit registers", awaitComponents(@["edit"], 20))
-  check("grep registers", awaitComponents(@["grep"], 20))
+  # ONE wait over the union, then assert on what was recorded. Waiting for
+  # "edit" first discarded any "grep" announcement that arrived earlier: the
+  # inner loop only matched names it was currently looking for, so the message
+  # was consumed and never recorded, and the following "grep" wait timed out.
+  # That is the ordering race this helper exists to remove, one level down —
+  # and it reproduced intermittently (test_t_readscope, 2026-11-11).
+  let ready = awaitComponents(@["edit", "grep"], 20)
+  check("edit and grep register", ready)
+  check("edit registers", announced.hasKey("edit"))
+  check("grep registers", announced.hasKey("grep"))
   natsSubscription_Destroy(regSub)
   # Request/reply readiness avoids announcement ordering between independent peers.
   let mapper = startComponent(repo / "var/bin/repomap", url, root = root,
