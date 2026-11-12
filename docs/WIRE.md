@@ -1207,11 +1207,11 @@ Every field is optional. `expectRev` is the revision the caller was looking at:
 a stale one is refused (`rev-conflict`) rather than overwriting another human's
 decision. Roots must be absolute, existing directories; `/` is refused outright;
 a write root also becomes a read root (an edit reads before it writes), while a
-read root stays read-only. A **write** root additionally joins the
-conversation's `grantedroot` set, so the write fence and the policy cannot
-disagree. A **read** root deliberately does not: that set is a write set, so
-copying a read approval into it would grant write in practice while the
-document said read-only. Read-only reach is recorded but not yet honored by
+read root stays read-only. Sandbox roots do not automatically modify the
+separate workspace `grantedroot` document. The write fence is an independent
+check and may still refuse a sandbox-approved root; adding or removing a
+sandbox root does not create or revoke a workspace grant. In particular, a
+read approval never creates a write grant. Read-only reach is recorded but not yet honored by
 components — that needs a read/write split in the workspace plumbing
 (stage B). `remove` refuses the
 conversation's own workspace, which every relative path resolves from.
@@ -1239,25 +1239,24 @@ unreadable policy arrives as an explicit `unreadable: true` marker rather than
 absent. The snapshot is cached ~2 s per conversation so a human update is seen
 promptly without a store read per tool call.
 
-**Confinement exists for one path: foreground `bash` on Linux.** When
-`__sandbox.enabled` is true, the bash component routes the command through the
-`niffler-sandbox` launcher with `--reach strict`, the policy's WRITE
-roots as writable allows, and the operator's masks. Strict means the host root
-is NOT mounted: reads reach the workspace, those write roots and a reviewed
-runtime set (executables and shared libraries). `--reach compat` is the old
-behaviour (writes confined, host readable) and every result says which one ran,
-via `sandbox.reach`. A read-only approval never becomes a writable allow, and a
-disabled conversation policy cannot un-guard an operator's `NIF_BASH_SANDBOX=on`.
+**Experimental foreground `bash` guard on Linux.** Policy-driven calls opt
+into `__sandbox`. Before launching, the guard resolves the policy's deny
+patterns — exact basenames only, `.env` by default — to the concrete files under
+the workspace and WRITE roots and hands them to the launcher as masks; a glob,
+path or otherwise unsupported pattern refuses the launch, because masking
+nothing while reporting protection is worse than not running. Read-only roots
+still have no launcher vocabulary, so a policy naming one refuses before
+execution. For supported inputs, strict bwrap mounts selected runtime and
+writable roots rather than the host root; backend availability and actual
+launch are separate facts. No whole-conversation sandbox is claimed.
 
 **The filesystem tools are still unconfined by this document.** read, grep,
 edit, write and their siblings act under the workspace set, not the policy, so
 a conversation with `enabled: true` does not get a confined `read` — the
 promise above is about `bash` alone. Naming that here is deliberate: the
 release notes must not say "sandboxed" about a conversation whose edit tool
-still reaches anything the workspace set allows. No tool consults `enabled`,
-`readRoots`, `writeRoots` or `denyPatterns` for enforcement; `enforced` stays
-false until a stage that actually confines something lands
-(docs/research/SANDBOX-NEXT-SLICE.md stages B and C). `sandbox_inherit
+still reaches anything the workspace set allows. `enforced` stays false for
+whole-conversation policy; see docs/research/SANDBOX-NEXT-SLICE.md. `sandbox_inherit
 {parent, sessionId, workspace}` is the hidden birth-path call a component uses
 to snapshot a parent's policy into a child; it is not a model-reachable tool.
 

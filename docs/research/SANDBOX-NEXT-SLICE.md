@@ -1,13 +1,20 @@
 # Sandbox next slice — durable policy, uniform transport, strict Linux bash
 
-Status: **stages A (persistence), B (propagation) and C (strict Linux bash) are
-implemented for FOREGROUND bash on Linux.** Still open: filesystem-tool
-enforcement, escape-capable tool gates, Seatbelt (needs a Mac), and the honest
-limits listed below. This
+Status: **experimental; stages A–C are not yet accepted as complete.** A
+policy record, dispatch injection and strict Linux launcher exist, but the
+failure paths and actual session-to-bash behavior require the milestone gate
+below. Filesystem-tool and network enforcement, escape-capable tool gates, and
+Seatbelt (needs a Mac) remain open. This
 decomposes [PLAN.md](../PLAN.md) pillar 3 items 1 → 2 → 4 into independently
 testable changes. [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md)
 owns the target policy; [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md) owns
 current behavior.
+
+> **Review warning:** the historical stage descriptions below include claims
+> not yet established by the merge gate. In particular, session-driven bash
+> policy propagation, forbidden-file enforcement, read-only roots, failed
+> inheritance and store outages need end-to-end evidence. Do not rely on this
+> branch as a security boundary until those gaps are closed.
 
 Implemented (stage A, `core/dispatch.nim` + `core/conversation.nim`,
 contract: `tests/t_sandbox_conversation.nim`): a per-conversation policy
@@ -69,9 +76,12 @@ Named so a later reader does not have to rediscover them:
   read/write distinction. That is stage B work.
 - **`grants` stays opaque.** The codec round-trips it, nothing interprets it;
   the per-tool conditional-grant seam (stage D) is what will.
-- **Nothing reads the policy.** No tool consults `enabled`, `readRoots`,
-  `writeRoots` or `denyPatterns`. That is stage B (transport) and C
-  (enforcement).
+- **Bash policy support: denies are enforced, read-only roots are not.** The
+  guard resolves exact-basename deny patterns to masks over the workspace and
+  writable roots, and refuses unsupported patterns (globs, paths) rather than
+  masking nothing. A read-only root still refuses before execution. Masking is a
+  check-then-mask walk, so a denied file created after it starts, or one merely
+  hard-linked elsewhere, is not covered by this slice.
 
 ### Stage C — what a confined command can now reach
 
@@ -103,6 +113,19 @@ Honest limits, each a named follow-on rather than an implied gap:
 - **Denies are exact-path masks**, so a recursive deny rule is not expressible.
 - **Check-then-open is not race-safe**; masks are a boundary against mistakes
   and ordinary probing, not a confidentiality model against a hostile process.
+
+## Merge milestone: fail-closed foundation
+
+Before merging, prove durable revisioned policy and child inheritance under
+store read/write failure; distinct read and write roots and deny precedence;
+serial, parallel, invoke and nested propagation; and an actual session-driven
+foreground bash launch with positive workspace and negative host controls.
+Unsupported requested restrictions must refuse before execution, never silently
+run with weaker protection. Verify live on Linux and run `make build && make
+test`. Status must say shell-only, not whole-conversation confinement. The user
+has additionally decided sandboxed network defaults to off, with fetch and bash
+permissions separate; network-capable tools are not yet governed by that target.
+See [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md).
 
 ## Outcome and claim boundary
 

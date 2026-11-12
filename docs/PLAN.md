@@ -441,16 +441,12 @@ Stage persistence and propagation first, then a strict Linux bash reachable
 set (items 1 → 2 → 4). This is not a whole-conversation sandbox until filesystem
 and escape-tool paths are covered too; item 3 remains a release gate.
 
-1. **Persist the policy — stage A implemented.** Off/on, read roots, write
-   roots and deny rules per conversation in a revisioned `sandboxpolicy`
-   document; the `session {sandbox}` human control with compare-and-set
-   revisions; a human-only refusal for any session with a lineage parent;
-   birth inheritance by snapshot through `sandbox_inherit`; and a status
-   readback. **No confinement is claimed**: every readback says
-   `enforced: false`, and no tool consults the policy yet. Still open here: the
-   instance-scoped operator default (needs an owner seam core actually reads),
-   and the revocation/continuation lifecycle for existing children. Contract:
-   `tests/t_sandbox_conversation.nim`.
+1. **Persist the policy — experimental, not yet accepted.** The branch has a
+   revisioned `sandboxpolicy` document, session control and birth inheritance.
+   Fail-closed outage/inheritance coverage, root/fence consistency and
+   revision races remain merge-gate work. The operator default and lifecycle
+   of revocation for existing children also remain open. Readbacks say
+   `enforced: false`; this is not whole-conversation confinement.
 2. **Propagate uniformly.** One decision through serial, parallel, `invoke` and
    nested Fabric dispatch. A policy that guards only `bash` is a claim we cannot
    make.

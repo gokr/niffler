@@ -70,11 +70,20 @@ This metadata controls approval, not filesystem authority. Approved use of an
 escape-capable tool must clearly show that the action is trusted/unconfined;
 never label it as sandboxed merely because it was approved.
 
-## Trusted infrastructure and decisions still pending per tool
+## Network policy — decision: default off
 
-LSP servers and trafilatura are trusted infrastructure, not hostile agent shell
-commands. Do not disable them merely because a mask is configured. Trust does
-not grant direct filesystem tools permission to read outside approved roots.
+For a sandbox-enabled conversation, network access is off by default. A human
+may selectively enable `fetch` HTTP access and bash network access separately;
+allowing one never enables the other. Other network-capable tools must enforce
+an explicit permission or be refused or expressly approved as trusted and
+unconfined. Fetch retains its protocol and SSRF restrictions when permitted.
+Sandbox-off behavior remains unchanged. This decision supersedes the older
+fetch/trafilatura exemption below; it is a target, not yet implemented.
+
+LSP servers and other infrastructure can require trusted access for their
+operation, but that trust must not silently grant a sandboxed conversation
+network access. Direct filesystem tools remain subject to approved roots and
+denies.
 
 ## Bash network — approved by the user
 
@@ -106,19 +115,14 @@ This is agreed design, not implemented per-call approval support.
 This is the agreed target, not a claim that the current experimental LSP
 implementation has already been migrated.
 
-## Fetch and extraction — approved by the user
+## Fetch and extraction — revised network decision
 
-HTTP retrieval and trafilatura extraction are trusted infrastructure, with no
-additional sandbox approval. Restore trafilatura under sandboxing; the earlier
-mask-triggered extractor suppression is not the agreed policy. Existing
-protocol, SSRF and output-size restrictions remain unchanged. Generated files
-belong in managed scratch storage, not arbitrary caller-selected output paths.
-Fetch retains network access independently of bash's network-off default.
-Implementation must provide scoped access to returned scratch artifacts without
-implicitly granting access to other conversations' files or harness state.
-
-This is the agreed target; restoration and per-conversation integration are not
-yet implemented.
+In a sandbox-enabled conversation, HTTP retrieval is off until a human enables
+fetch network access; that permission is separate from bash networking. Existing
+protocol, SSRF and output-size restrictions remain. Extraction and generated
+artifacts need a reviewed filesystem boundary and scoped scratch access; a
+trusted extractor must not silently bypass the network decision. Sandbox-off
+behavior remains unchanged. These controls are not implemented yet.
 
 ## Builder — approved by the user
 

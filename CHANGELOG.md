@@ -94,39 +94,15 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   `global` write are approval-gated, credential-shaped text is refused, and
   subagents may not write. Design and reasoning: `docs/research/MEMORY.md`;
   contract test `tests/t_memory.nim`.
-- **A conversation's sandbox policy now persists (stage A of the sandbox
-  slice).** `session {sandbox}` is a human-only control that records
-  enablement, approved read/write roots and the `expectRev` it was edited from
-  in a dedicated revisioned `sandboxpolicy` document — not the conversation
-  header, so a security decision never rides the best-effort header merge and a
-  lost race is a visible refusal rather than a silent overwrite. A write root
-  implies its read root, an approved root also joins the write fence's grant
-  set (one decision, two consumers), and the workspace or `/` cannot be
-  removed. Any session with a lineage parent is refused `human-only`: a
-  subagent inherits at birth through the hidden `sandbox_inherit` call and can
-  never widen or disable what its parent chose. **Nothing is confined yet** —
-  every readback reports `enforced: false` and `state: "configured"`, and no
-  tool consults the policy, which is what `tests/t_sandbox_conversation.nim`
-  asserts so this cannot be mistaken for a sandbox. Stage B has also landed: a
-  tool that declares `x-harness.sandbox` (data, not a name list in core)
-  receives the policy as private `__sandbox` context on every dispatch path; a
-  caller-supplied one is deleted first, a non-declaring tool receives nothing,
-  and a direct bus call gets no policy at all because it has no conversation.
-  The document is stamped `enforced: false` where it is built rather than left
-  for a component to infer. Stage C has landed too, for foreground `bash` on
-  Linux: a conversation whose policy is enabled now runs its commands with **strict
-  reach** — the host root is not mounted at all, so reads reach the workspace,
-  the policy's write roots and a reviewed runtime set rather than the whole
-  filesystem. Measured with bubblewrap on this host: a host file in `$HOME`
-  reads under the old `compat` reach and reports "No such file or directory"
-  under `strict`, while ordinary workspace work keeps working. Results record
-  `sandbox.reach`, so a launch is never read as stricter than it was; a
-  read-only approval never becomes a writable allow; and a disabled
-  conversation policy cannot un-guard an operator's `NIF_BASH_SANDBOX=on`.
-  Honest limits, named rather than implied: foreground Linux only, no Seatbelt,
-  the runtime allow-list is a review starting point, and the filesystem tools
-  (read/grep/edit/write) are NOT confined by this policy yet — that remains the
-  release gate. docs/research/SANDBOX-NEXT-SLICE.md.
+- **Experimental conversation sandbox foundation.** A revisioned policy record
+  and private dispatch context exist, and a policy-enabled foreground Linux
+  `bash` launch now masks the policy's denied files (`.env` by default) while
+  running under strict bubblewrap reach. This is still not whole-conversation
+  confinement: filesystem and network-capable tools are not uniformly governed,
+  read-only roots refuse until the launcher can express them, and macOS
+  (Seatbelt) is unimplemented. See
+  [SANDBOX-NEXT-SLICE.md](docs/research/SANDBOX-NEXT-SLICE.md) for the remaining
+  acceptance gates.
 
 - **A background job can now say whether it will wake you.** The processes
   component already pushes a completion to its owning conversation and requests
