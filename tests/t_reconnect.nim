@@ -24,6 +24,7 @@ type Probe = object
   sandbox: TestSandbox
   server1: Process
   server2: Process
+  foreignServer: Process
   nc: NatsConnection
   comp: Process
 
@@ -105,6 +106,31 @@ block outage:
   p.nc.close()
   sleep(7_000)
 
+  # A stale discovery file must not move this peer onto a foreign bus.
+  # Answer its identity probes ourselves; no core or production port involved.
+  let foreign = startNats()
+  p.foreignServer = foreign.prc
+  var foreignNc = waitConnect(foreign.url)
+  let coreCalls = openSub(foreignNc, "svc.core.call")
+  discard natsConnection_FlushTimeout(foreignNc.conn, 1000)
+  writeFile(p.sandbox.root / "var" / "nats-url", foreign.url & "\n")
+  var probed = false
+  let foreignDeadline = epochTime() + 18
+  while epochTime() < foreignDeadline:
+    var msg: ptr natsMsg
+    if natsSubscription_NextMsg(addr msg, coreCalls, 200) == NATS_OK:
+      let request = decode($natsMsg_GetData(msg))
+      let response = resultEnvelope(request.id,
+        %*{"root": p.sandbox.root & "-foreign"}).encode()
+      foreignNc.publish($natsMsg_GetReply(msg), response)
+      natsMsg_Destroy(msg)
+      probed = true
+  check("recovery probed the foreign discovery candidate", probed)
+  check("foreign bus never acquires the component call subscription",
+        callPing(foreignNc, 1000) == nil)
+  natsSubscription_Destroy(coreCalls)
+  foreignNc.close()
+
   # 2. Restart the bus on a NEW port and point the discovery file at it.
   let started2 = startNats()
   p.server2 = started2.prc
@@ -127,6 +153,7 @@ block outage:
 stopProcess(p.comp)
 p.nc.close()
 if p.server2 != nil: stopServer(p.server2)
+if p.foreignServer != nil: stopServer(p.foreignServer)
 if p.server1 != nil: stopServer(p.server1)
 if p.sandbox.root.len > 0: removeDir(p.sandbox.root)
 

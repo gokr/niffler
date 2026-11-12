@@ -897,12 +897,13 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component =
   c.reattachedHandlers.add(handler)
   return c
 
+proc enforceBusRoot(url: string)
+
 proc reattachCandidates(c: Component): seq[string] =
   ## Bus URLs to try when re-attaching, most likely first: the env URL (the
   ## same bus may simply have returned), then the harness root's discovery
-  ## file (a restarted core usually binds a new port), then the well-known
-  ## port — adopted only when a core serving OUR root answers it, the same
-  ## identity rule ensureHarness applies.
+  ## file (a restarted core usually binds a new port). Components never
+  ## guess a well-known bus, including during recovery.
   let explicit = getEnv("NIF_NATS_URL")
   if explicit.len > 0: result.add(explicit)
   let r = harnessRoot()
@@ -910,9 +911,6 @@ proc reattachCandidates(c: Component): seq[string] =
   if fileExists(disc):
     let u = readFile(disc).strip()
     if u.len > 0 and u != explicit: result.add(u)
-  let wellKnown = "nats://127.0.0.1:4222"
-  if wellKnown notin result and coreRoot(wellKnown) == r:
-    result.add(wellKnown)
 
 proc reattach(c: Component) =
   ## The connection is dead beyond the client's own reconnect budget (issue
@@ -935,6 +933,7 @@ proc reattach(c: Component) =
   while not gShutdown:
     for url in reattachCandidates(c):
       try:
+        enforceBusRoot(url)
         c.nc = connect(url)
         subscribeSurface(c)
         c.announce("reg.publish")
@@ -999,9 +998,8 @@ proc run*(c: Component) =
   # whatever harness happened to own that port, and it then answered a slice
   # of that harness's `svc.store.call` requests from another database —
   # intermittent not-founds for rows that exist (favorites, provider
-  # nicknames, transcripts). reattachCandidates applies the identity rule
-  # (the well-known port only when a core serving OUR root answers it), so
-  # use it here too and make "nowhere to go" an explicit failure.
+  # nicknames, transcripts). Use the same explicit/discovery candidates on
+  # initial connection and recovery; validate identity before subscribing.
   let candidates = reattachCandidates(c)
   if candidates.len == 0:
     raise newException(IOError, c.name & ": no bus to connect to — NIF_NATS_URL " &

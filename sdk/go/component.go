@@ -895,9 +895,9 @@ func (c *Component) dial() (string, error) {
 		// perfectly intact. A test/dev root whose var/nats-url is missing is
 		// exactly how that happened (2026-11-10). No env and no discovery
 		// file means there is nowhere legitimate to go.
-		return "", fmt.Errorf("no bus to connect to: NIF_NATS_URL is unset and " +
-			"%s is missing — refusing to guess a bus (a component subscribes " +
-			"by queue group, so the wrong one silently answers another " +
+		return "", fmt.Errorf("no bus to connect to: NIF_NATS_URL is unset and "+
+			"%s is missing — refusing to guess a bus (a component subscribes "+
+			"by queue group, so the wrong one silently answers another "+
 			"harness's calls)", discoveryDescription())
 	}
 	if err := enforceBusRoot(url); err != nil {
@@ -966,8 +966,9 @@ func (c *Component) resubscribe() error {
 }
 
 // reattachCandidates lists bus URLs to try when re-attaching, most likely
-// first: the env URL (the same bus may simply have returned), the discovery
-// file (a restarted core usually binds a new port), the well-known port.
+// first: the env URL (the same bus may simply have returned), then the discovery
+// file (a restarted core usually binds a new port). Never guess a well-known bus:
+// a surviving test component must not migrate into production after its bus dies.
 func (c *Component) reattachCandidates() []string {
 	if c.explicitBus {
 		if c.explicitURL == "" {
@@ -989,7 +990,6 @@ func (c *Component) reattachCandidates() []string {
 			add(strings.TrimSpace(string(data)))
 		}
 	}
-	add("nats://127.0.0.1:4222")
 	return urls
 }
 
@@ -1021,6 +1021,11 @@ func (c *Component) reconnectWatch(initialURL string) {
 		nc := c.nc
 		c.contractMu.RUnlock()
 		if nc == nil {
+			// A refused/failed re-attach leaves no connection. Keep retrying
+			// discovery instead of remaining permanently alive-but-deaf.
+			if err := c.reattachNow(); err != nil {
+				slog.Error("re-attach failed — retrying", "component", c.Name, "err", err)
+			}
 			continue
 		}
 		status := nc.Status()
@@ -1067,8 +1072,14 @@ func (c *Component) reconnectNow() error {
 		c.nc.Close()
 		c.nc = nil
 	}
-	var lastErr error
+	var lastErr error = fmt.Errorf("no bus to re-attach to: no explicit URL or discovery file")
 	for _, url := range c.reattachCandidates() {
+		if err := enforceBusRoot(url); err != nil {
+			lastErr = err
+			slog.Warn("refusing re-attach candidate", "component", c.Name,
+				"pid", os.Getpid(), "root", HarnessRoot(), "url", url, "err", err)
+			continue
+		}
 		nc, err := nats.Connect(url,
 			nats.Timeout(dialTimeout()),
 			nats.MaxReconnects(-1),
@@ -1092,7 +1103,7 @@ func (c *Component) reconnectNow() error {
 			continue
 		}
 		slog.Info("reattached after the outage — resubscribed and re-announced",
-			"component", c.Name, "url", url)
+			"component", c.Name, "pid", os.Getpid(), "root", HarnessRoot(), "url", url)
 		return nil
 	}
 	return lastErr
@@ -1112,9 +1123,6 @@ func (c *Component) Close() {
 	}
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
-	if c.nc == nil {
-		return
-	}
 	// Stop the reconnect watch before tearing the connection down: its
 	// goroutine must not observe (or act on) a half-closed component.
 	c.reconnectStopOnce.Do(func() { close(c.reconnectStop) })
@@ -1142,9 +1150,11 @@ func (c *Component) Close() {
 	c.stopDispatch()
 	c.stopIdle()
 	c.contractMu.Lock()
-	_ = c.nc.FlushTimeout(time.Second)
-	c.nc.Close()
-	c.nc = nil
+	if c.nc != nil {
+		_ = c.nc.FlushTimeout(time.Second)
+		c.nc.Close()
+		c.nc = nil
+	}
 	c.contractMu.Unlock()
 }
 
