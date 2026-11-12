@@ -141,6 +141,7 @@ type Component struct {
 	owner             *Component
 	inHandler         bool
 	deferAnnounce     bool
+	admissionRequired bool
 	contractMu        sync.RWMutex // protects setup while deferred calls/events can arrive
 	ready             bool
 	// Re-attach (issue #3): callbacks for a successful post-outage re-attach;
@@ -708,6 +709,13 @@ func (c *Component) Connect() error {
 		return err
 	}
 	nc := c.nc
+	if c.admissionRequired {
+		if err := c.admitLocked(); err != nil {
+			nc.Close()
+			c.nc = nil
+			return err
+		}
+	}
 	if c.shutdown == nil {
 		c.shutdown = make(chan struct{})
 	}
@@ -1090,6 +1098,14 @@ func (c *Component) reconnectNow() error {
 			continue
 		}
 		c.nc = nc
+		if c.admissionRequired {
+			if err := c.admitLocked(); err != nil {
+				lastErr = err
+				nc.Close()
+				c.nc = nil
+				continue
+			}
+		}
 		if err := c.resubscribe(); err != nil {
 			lastErr = err
 			nc.Close()
@@ -1355,7 +1371,43 @@ func (c *Component) announce(subject string) error {
 	return c.announceLocked(subject)
 }
 
-func (c *Component) announceLocked(subject string) error {
+// RequireAdmission opts a single-writer service into core admission BEFORE
+// acquiring a call subscription, on initial connect and full re-attach.
+// Call before Connect. A bare bus (no reg subscribers) remains usable in tests;
+// a core that is present but cannot acknowledge admission fails closed.
+func (c *Component) RequireAdmission() *Component {
+	c.admissionRequired = true
+	return c
+}
+
+func (c *Component) admitLocked() error {
+	data, err := c.registrationData()
+	if err != nil {
+		return err
+	}
+	msg, err := c.nc.Request("reg.admit", data, 5*time.Second)
+	if err == nats.ErrNoResponders {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("registration admission failed (core must support reg.admit): %w", err)
+	}
+	var verdict struct {
+		OK     bool   `json:"ok"`
+		Name   string `json:"name"`
+		PID    int    `json:"pid"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(msg.Data, &verdict); err != nil {
+		return fmt.Errorf("invalid registration admission: %w", err)
+	}
+	if !verdict.OK || verdict.Name != c.Name || verdict.PID != os.Getpid() {
+		return fmt.Errorf("registration rejected for %s pid %d: %s", c.Name, os.Getpid(), verdict.Reason)
+	}
+	return nil
+}
+
+func (c *Component) registrationData() ([]byte, error) {
 	tools := make([]map[string]any, 0, len(c.tools))
 	for _, t := range c.tools {
 		tools = append(tools, map[string]any{"name": t.Name, "schema": t.Schema})
@@ -1375,7 +1427,11 @@ func (c *Component) announceLocked(subject string) error {
 	if c.Client {
 		payload["client"] = true
 	}
-	data, err := json.Marshal(payload)
+	return json.Marshal(payload)
+}
+
+func (c *Component) announceLocked(subject string) error {
+	data, err := c.registrationData()
 	if err != nil {
 		return err
 	}

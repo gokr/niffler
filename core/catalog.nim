@@ -852,7 +852,7 @@ proc warnMissingRoot(name: string) =
        "serves this harness (an older SDK?); a component from ANOTHER root " &
        "answering this bus's calls looks exactly like this"
 
-proc handle(cat: Catalog, subject, data: string) =
+proc handle(cat: Catalog, subject, data: string, reply = "") =
   var node: JsonNode
   try:
     node = data.parseJson()
@@ -860,6 +860,14 @@ proc handle(cat: Catalog, subject, data: string) =
     return
   let name = node{"name"}.getStr("")
   if name.len == 0: return
+  var admissionAnswered = false
+  proc admissionReply(ok: bool) =
+    if reply.len == 0 or cat.ownsRoot == nil or admissionAnswered: return
+    let verdict = %*{"ok": ok, "name": name, "pid": node{"pid"}.getInt(0),
+      "reason": (if ok: "" else: cat.lastRejection(name))}
+    cat.nc.publish(reply, $verdict)
+    admissionAnswered = true
+  defer: admissionReply(false)
 
   # "core" is the control plane itself — its tools are seeded above and
   # must not be spoofable or replaceable by a bus citizen (docs/ARCHITECTURE.md)
@@ -867,7 +875,10 @@ proc handle(cat: Catalog, subject, data: string) =
     cat.noteRejection(name, "reserved component name")
     return
 
-  if subject == "reg.publish":
+  if subject in ["reg.publish", "reg.admit"]:
+    # Admission requests have exactly one authority; runner catalogs follow
+    # the ordinary reg.publish sent once the component is actually serving.
+    if subject == "reg.admit" and cat.ownsRoot == nil: return
     var reg = ComponentReg(name: name,
                            version: node{"version"}.getStr(""),
                            pid: node{"pid"}.getInt(0),
@@ -884,6 +895,10 @@ proc handle(cat: Catalog, subject, data: string) =
       reg.pids.add(reg.pid)
     if reg.pid <= 0 and reg.pids.len > 0:
       reg.pid = reg.pids[0]
+    if name == "store" and reg.pids.len != 1:
+      cat.noteRejection(name, "SINGLE-WRITER VIOLATION: store must announce " &
+        "exactly one positive PID, incoming pids=" & $reg.pids)
+      return
     # A NON-CLIENT component must serve THIS core's root.
     #
     # The catalog trusts whoever publishes reg.publish, which assumed every
@@ -952,6 +967,16 @@ proc handle(cat: Catalog, subject, data: string) =
     # singular while the service has N workers.
     if cat.components.hasKey(name):
       var current = cat.components[name]
+      # The mandatory persistence service is single-writer, never a replica
+      # group. Re-announcing its existing PID after recovery is legitimate.
+      # This is an admission alarm, not NATS subscription fencing: SDKs must
+      # refuse the wrong bus BEFORE they subscribe.
+      if name == "store" and reg.pids != current.pids:
+        cat.noteRejection(name, "SINGLE-WRITER VIOLATION: extra store refused; " &
+          "recorded pids=" & $current.pids & ", incoming pids=" & $reg.pids &
+          ". A foreign subscription may already be answering store calls; " &
+          "inspect the preceding registration identity and NATS connections")
+        return
       var compatible = current.client == reg.client and
                        current.tools.len == reg.tools.len
       if compatible:
@@ -980,6 +1005,7 @@ proc handle(cat: Catalog, subject, data: string) =
       cat.clearRejection(name)
       echo "catalog: " & name & " replica registered (" &
            $current.pids.len & " live)"
+      admissionReply(true)
       cat.announce()
       return
     for t in reg.tools:
@@ -1039,6 +1065,9 @@ proc handle(cat: Catalog, subject, data: string) =
     cat.clearRejection(name)
     echo "catalog: " & name & " v" & reg.version & " registered (" &
          $reg.tools.len & " tools, " & $reg.slash.len & " slash commands)"
+    # Reply before checkpointing: the store is not subscribed until admission
+    # succeeds, so a checkpoint request here must not delay its admission.
+    admissionReply(true)
     cat.announce()
 
   elif subject == "reg.depart":
@@ -1149,5 +1178,7 @@ proc pump*(cat: Catalog) =
     if not checkStatus(st): break
     let subject = $natsMsg_GetSubject(msg)
     let data = $natsMsg_GetData(msg)
+    let replyPtr = natsMsg_GetReply(msg)
+    let reply = if replyPtr == nil: "" else: $replyPtr
     natsMsg_Destroy(msg)
-    cat.handle(subject, data)
+    cat.handle(subject, data, reply)

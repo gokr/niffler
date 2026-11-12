@@ -87,11 +87,28 @@ proc main() =
         cat3.lastRejection("store").contains("/home/someone/devclone"))
   check("a refused foreign component publishes no tool",
         not cat3.toolIndex.hasKey("get"))
+  cat3.applyReg(%*{"name": "store", "pids": [4242, 4245], "root": myRoot,
+    "tools": [{"name": "get", "schema": {"type": "object"}}]})
+  check("a store group cannot start with multiple PIDs",
+        not cat3.components.hasKey("store"))
   cat3.applyReg(%*{"name": "store", "pid": 4242, "root": myRoot,
     "tools": [{"name": "get", "schema": {"type": "object"}}]})
   check("a component of this root is accepted", cat3.components.hasKey("store"))
   check("an accepted component records its replica",
         cat3.components["store"].pids.len == 1)
+  cat3.applyReg(%*{"name": "store", "pid": 4245, "root": myRoot,
+    "tools": [{"name": "get", "schema": {"type": "object"}}]})
+  check("a second store PID is refused even from the same root",
+        cat3.components["store"].pids == @[4242] and
+        cat3.lastRejection("store").contains("SINGLE-WRITER VIOLATION"))
+  cat3.applyReg(%*{"name": "store", "pid": 4246,
+    "tools": [{"name": "get", "schema": {"type": "object"}}]})
+  check("a legacy extra store cannot bypass the single-writer alarm",
+        cat3.components["store"].pids == @[4242])
+  cat3.applyReg(%*{"name": "store", "pid": 4242, "root": myRoot,
+    "tools": [{"name": "get", "schema": {"type": "object"}}]})
+  check("the existing store can re-announce after recovery",
+        cat3.lastRejection("store").len == 0)
   # A UI is exempt: it answers no tool subject, so it cannot misroute a call,
   # and older clients announce no root at all.
   cat3.applyReg(%*{"name": "tui-ext", "pid": 4243, "client": true})
@@ -106,6 +123,34 @@ proc main() =
   cat3.arriveForTest("reg.depart", $(%*{"name": "store", "pid": 9999}))
   check("a foreign departure cannot retire an owned component",
         cat3.components.hasKey("store"))
+
+  # Request/reply admission reaches only the system catalog, even with runner
+  # catalogs subscribed to reg.>. Reserve before acknowledging; a competing
+  # store must receive a negative verdict rather than joining the queue group.
+  let inbox = "_INBOX.catalog.admission." & $getCurrentProcessId()
+  var replies: ptr natsSubscription
+  doAssert natsConnection_SubscribeSync(addr replies, nc.conn,
+    inbox.cstring) == NATS_OK
+  defer: natsSubscription_Destroy(replies)
+  for pid in [4242, 4247]:
+    let data = $(%*{"name": "store", "pid": pid, "root": myRoot,
+      "tools": [{"name": "get", "schema": {"type": "object"}}]})
+    discard natsConnection_PublishRequest(nc.conn, "reg.admit", inbox.cstring,
+      data.cstring, data.len.cint)
+    discard natsConnection_FlushTimeout(nc.conn, 1000)
+    cat.pump()
+    cat2.pump()
+    cat3.pump()
+    var reply: ptr natsMsg
+    let status = natsSubscription_NextMsg(addr reply, replies, 1000)
+    check("admission has a reply for pid " & $pid, status == NATS_OK)
+    if status == NATS_OK:
+      let verdict = parseJson($natsMsg_GetData(reply))
+      natsMsg_Destroy(reply)
+      check("admission verdict is correlated and enforces single writer",
+        verdict["pid"].getInt() == pid and verdict["ok"].getBool() == (pid == 4242))
+    check("runner catalogs do not answer admission",
+      natsSubscription_NextMsg(addr reply, replies, 100) == NATS_TIMEOUT)
 
   report("CATALOG")
 

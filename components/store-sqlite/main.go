@@ -115,7 +115,7 @@ func main() {
 		fmt.Println("store-sqlite: serving documents for instance " + db.owner)
 	}
 
-	comp := sdk.New("store", "0.1.0")
+	comp := sdk.New("store", "0.1.0").RequireAdmission()
 	comp.
 		Tool("store_claim", claimSchema(), claimHandler(db.DB, db.owner)).
 		Tool("instance_list", instanceSchema(false), instanceListHandler(db.DB)).

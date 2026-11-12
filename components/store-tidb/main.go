@@ -89,7 +89,7 @@ func main() {
 		fmt.Println("store-tidb: serving documents for instance " + boundOwner)
 	}
 
-	comp := sdk.New("store", "0.1.0")
+	comp := sdk.New("store", "0.1.0").RequireAdmission()
 	comp.
 		Tool("store_claim", claimSchema(), claimHandler(db, boundOwner)).
 		Tool("instance_list", instanceSchema(false), instanceListHandler(db)).

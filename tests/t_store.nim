@@ -49,6 +49,42 @@ proc main() =
   secondStore.close()
   check("store rejects a second writer", secondCode != -1 and secondCode != 0)
 
+  # A different database avoids flock: admission, not file locking, must
+  # refuse an extra store before it acquires any call subscription.
+  block admissionRejection:
+    let rejectedRoot = tempRoot("store-rejected")
+    defer: removeDir(rejectedRoot)
+    let isolated = startNats()
+    defer: stopServer(isolated.prc)
+    var isolatedNc = waitConnect(isolated.url)
+    defer: isolatedNc.close()
+    var admissions: ptr natsSubscription
+    doAssert natsConnection_SubscribeSync(addr admissions, isolatedNc.conn,
+      "reg.admit") == NATS_OK
+    defer: natsSubscription_Destroy(admissions)
+    discard natsConnection_FlushTimeout(isolatedNc.conn, 1000)
+    let rejected = startComponent(bin, isolated.url, root = rejectedRoot,
+      logFile = rejectedRoot / "var" / "rejected.log")
+    defer: stopProcess(rejected)
+    var request: ptr natsMsg
+    let admissionStatus = natsSubscription_NextMsg(addr request, admissions, 15_000)
+    check("store requests admission before serving", admissionStatus == NATS_OK)
+    if admissionStatus == NATS_OK:
+      let identity = parseJson($natsMsg_GetData(request))
+      let before = call(isolatedNc, "store", "list", %*{"kind": "test"}, 1000)
+      check("store takes no calls while admission is pending", before{"error"} != nil)
+      isolatedNc.publish($natsMsg_GetReply(request), $(%*{"ok": false,
+        "name": "store", "pid": identity["pid"],
+        "reason": "SINGLE-WRITER VIOLATION: test refusal"}))
+      natsMsg_Destroy(request)
+      discard natsConnection_FlushTimeout(isolatedNc.conn, 1000)
+      let rejectedCode = rejected.waitForExit(5000)
+      check("rejected store exits nonzero", rejectedCode != -1 and rejectedCode != 0)
+      let after = call(isolatedNc, "store", "list", %*{"kind": "test"}, 1000)
+      check("rejected store leaves no call subscription", after{"error"} != nil)
+      check("store rejection reason survives in its process log",
+        readFile(rejectedRoot / "var" / "rejected.log").contains("SINGLE-WRITER VIOLATION"))
+
   # Instance metadata is a separate bounded registry, not free-form docs.
   let identityA = repeat('a', 32)
   let identityB = repeat('b', 32)
