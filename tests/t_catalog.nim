@@ -109,6 +109,16 @@ proc main() =
     "tools": [{"name": "get", "schema": {"type": "object"}}]})
   check("the existing store can re-announce after recovery",
         cat3.lastRejection("store").len == 0)
+  let trace = registrationTrace("reg.publish", %*{"name": "store",
+    "pid": 4245, "root": "/foreign\nforged", "version": "test"})
+  let identity = parseJson(trace[trace.find("{") .. ^1])
+  check("registration evidence carries timestamp, PID and escaped root",
+        trace.startsWith("[20") and trace.contains("Z] catalog:") and
+        not trace.contains('\n') and identity["pid"].getInt() == 4245 and
+        identity["root"].getStr() == "/foreign\nforged")
+  check("legacy diagnostic root is explicitly empty",
+        registrationTrace("reg.depart", %*{"name": "store", "pid": 4242}).contains(
+          "\"root\":\"\""))
   # A UI is exempt: it answers no tool subject, so it cannot misroute a call,
   # and older clients announce no root at all.
   cat3.applyReg(%*{"name": "tui-ext", "pid": 4243, "client": true})

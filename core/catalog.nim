@@ -852,6 +852,19 @@ proc warnMissingRoot(name: string) =
        "serves this harness (an older SDK?); a component from ANOTHER root " &
        "answering this bus's calls looks exactly like this"
 
+proc registrationTrace*(subject: string, node: JsonNode): string =
+  ## Bounded identity evidence, independent of the store and persisted in core.log.
+  ## JSON quoting keeps an announced path/name from forging another log line.
+  let identity = %*{"subject": subject, "name": node{"name"}.getStr("")[0 ..<
+      min(node{"name"}.getStr("").len, 128)],
+    "pid": node{"pid"}.getInt(0), "root": node{"root"}.getStr("")[0 ..<
+      min(node{"root"}.getStr("").len, 4096)],
+    "version": node{"version"}.getStr("")[0 ..<
+      min(node{"version"}.getStr("").len, 128)],
+    "client": node{"client"}.getBool(false)}
+  "[" & now().utc.format("yyyy-MM-dd'T'HH:mm:ss'.'fff'Z'") &
+    "] catalog: registration " & $identity
+
 proc handle(cat: Catalog, subject, data: string, reply = "") =
   var node: JsonNode
   try:
@@ -860,6 +873,12 @@ proc handle(cat: Catalog, subject, data: string, reply = "") =
     return
   let name = node{"name"}.getStr("")
   if name.len == 0: return
+  # Only the system catalog owns admission. Runners seed snapshots and must
+  # not multiply diagnostic traffic. Record BEFORE admission, including refused
+  # and legacy publishers: a later PID count alone cannot identify a stray store.
+  if cat.ownsRoot != nil:
+    echo registrationTrace(subject, node)
+
   var admissionAnswered = false
   proc admissionReply(ok: bool) =
     if reply.len == 0 or cat.ownsRoot == nil or admissionAnswered: return
