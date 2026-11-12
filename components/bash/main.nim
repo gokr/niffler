@@ -131,6 +131,7 @@ let bashSchema = toolSchema(%*{
 bashSchema["x-harness"] = %*{"approval": "always",
                              "timeoutMs": BASH_CALL_TIMEOUT_MS,
                              "sessionId": true,
+                             "sandbox": true,
                              # §6.3 tier 2: a command's output is reproducible
                              # by re-running it, so an old result may be
                              # elided when the window is tight. This is the

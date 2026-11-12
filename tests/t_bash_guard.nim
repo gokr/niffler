@@ -137,7 +137,7 @@ proc main() =
     "command": "cat " & quoteShell(secret), "cwd": a, "timeoutMs": 10000,
     "__workspace": {"root": a},
     "__sandbox": {"version": 1, "enabled": true, "reach": "strict",
-                  "readRoots": [a], "writeRoots": [a], "denyPatterns": [".env"]}},
+                  "readRoots": [a], "writeRoots": [a], "denyPatterns": []}},
     20000)
   check("a policy-driven launch reports its reach",
         policyRun{"sandbox"}{"reach"}.getStr("") == "strict", $policyRun)
@@ -154,7 +154,7 @@ proc main() =
     "command": "cat ordinary.txt", "cwd": a, "timeoutMs": 10000,
     "__workspace": {"root": a},
     "__sandbox": {"version": 1, "enabled": true, "reach": "strict",
-                  "readRoots": [a], "writeRoots": [a], "denyPatterns": [".env"]}},
+                  "readRoots": [a], "writeRoots": [a], "denyPatterns": []}},
     20000)
   check("the approved workspace stays readable under strict reach",
         ($insideRun).contains("ORDINARY-CONTENT"), $insideRun)
@@ -168,8 +168,11 @@ proc main() =
     "command": "echo forged > " & quoteShell(readonly / "w"), "cwd": a,
     "timeoutMs": 10000, "__workspace": {"root": a},
     "__sandbox": {"version": 1, "enabled": true, "reach": "strict",
-                  "readRoots": [a, readonly], "writeRoots": [a]}}, 20000)
-  check("a read-only approval is not writable through the guard",
+                  "readRoots": [a, readonly], "writeRoots": [a], "denyPatterns": []}}, 20000)
+  check("unsupported read-only root is explicitly refused before execution",
+        roRun{"exit_code"}.getInt(0) == 125 and
+        roRun{"sandbox"}{"state"}.getStr("") == "refused" and
+        roRun{"text"}.getStr("").contains("read-only sandbox roots") and
         not fileExists(readonly / "w"), $roRun)
 
   # The policy cannot turn OFF an operator who asked for confinement.

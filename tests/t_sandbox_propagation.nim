@@ -43,6 +43,8 @@ proc main() =
   echo "sandbox root: ", root
   copyFileWithPermissions(repoRoot / "var" / "bin" / "ctxtest",
                           sandbox.sandboxBin("ctxtest"))
+  copyFileWithPermissions(repoRoot / "var" / "bin" / "niffler-sandbox",
+                          sandbox.sandboxBin("niffler-sandbox"))
 
   let (server, url, _) = startNatsMonitoring()
   defer: stopServer(server)
@@ -199,6 +201,28 @@ proc main() =
   check("a second conversation stays off",
         otherPolicy != nil and not otherPolicy{"enabled"}.getBool(true),
         $otherSeen)
+
+  # Exercise the actual bash schema through the runner, not a forged direct
+  # component request. The default policy's `.env` denial must be ENFORCED on a
+  # launch that still runs — a refusal would also "pass" a no-secret check
+  # while leaving the shell unusable.
+  writeFile(root / ".env", "POLICY-SECRET=1")
+  let denyMarker = root / "deny-policy-ran"
+  let guarded = invoke(conv, "bash",
+    %*{"command": "cat .env; touch " & denyMarker}, 30_000)
+  check("default deny policy masks .env on a launch that still runs",
+    fileExists(denyMarker) and guarded{"result"} != nil and
+    guarded{"result"}{"sandbox"}{"state"}.getStr("") == "applied" and
+    not guarded{"result"}{"text"}.getStr("").contains("POLICY-SECRET"), $guarded)
+
+  # A malformed persisted decision is not equivalent to an absent one. The
+  # next dispatch must not run bash with the off default.
+  discard call(nc, "store", "put", %*{"kind": "sandboxpolicy",
+    "id": conv & ":policy", "value": {"version": 999}}, 10_000)
+  sleep(2500)
+  let marker = root / "malformed-policy-ran"
+  let malformed = invoke(conv, "bash", %*{"command": "touch " & marker}, 30_000)
+  check("malformed policy cannot execute bash", not fileExists(marker), $malformed)
 
   report("SANDBOX POLICY PROPAGATION")
 

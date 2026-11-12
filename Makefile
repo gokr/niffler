@@ -238,7 +238,7 @@ var/bin/store-tidb: $(wildcard components/store-tidb/*.go) components/store-tidb
     $(wildcard components/store-tidb/migrations/*.sql) $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/store-tidb && go build -o ../../var/bin/store-tidb .'
 
-var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/bash: $(call NIM_SRCS,bash) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/bash/main.nim
 
 var/bin/edit: components/edit/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin

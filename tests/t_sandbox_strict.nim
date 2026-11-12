@@ -88,8 +88,17 @@ proc main() =
     if sandbox != nil: args["__sandbox"] = sandbox
     call(nc, "bash", "bash", args, 40000)
 
+  # A deny pattern is enforced as a real mask on a launch that still runs. The
+  # earlier refusal path proved nothing about enforcement.
+  writeFile(ws / ".env", "DENIED-SECRET=1")
+  let denied = run("cat .env", %*{"enabled": true,
+    "readRoots": [ws, approved], "writeRoots": [ws, approved],
+    "denyPatterns": [".env"]})
+  check("default deny masks .env inside the workspace",
+    denied{"sandbox"}{"state"}.getStr("") == "applied" and
+    not ($denied).contains("DENIED-SECRET"), $denied)
   let policy = %*{"enabled": true, "readRoots": [ws, approved],
-                  "writeRoots": [ws, approved], "denyPatterns": [".env"],
+                  "writeRoots": [ws, approved], "denyPatterns": [],
                   "enforced": false, "session": "strict-conv"}
 
   # --- 1. the policy turns the guard on by itself -----------------------
@@ -137,6 +146,16 @@ proc main() =
         writeOutside{"exit_code"}.getInt(0) != 0 and
         not fileExists(outside / "escaped.txt"), $writeOutside)
   check("nothing was created outside", not fileExists(outside / "escaped.txt"))
+
+  # A workspace path is not itself a grant. The launcher mounts its workspace
+  # writable, so a policy that does not authorize it must refuse before exec.
+  let wrongWorkspace = run("touch workspace-widened", %*{
+    "enabled": true, "readRoots": [approved], "writeRoots": [approved],
+    "denyPatterns": []})
+  check("unapproved workspace refuses before bash starts",
+    wrongWorkspace{"sandbox"}{"state"}.getStr("") == "refused" and
+    wrongWorkspace{"text"}.getStr("").contains("outside sandbox write roots") and
+    not fileExists(ws / "workspace-widened"), $wrongWorkspace)
 
   # --- 5. OFF stays off, and a disabled policy confines nothing --------
   # The pre-sandbox behaviour must survive: an unrelated conversation (no
