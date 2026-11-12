@@ -5372,11 +5372,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     entry.isolationScope = header{"isolation"}.getStr("").strip().toLowerAscii()
     if entry.isolationScope.len == 0: entry.isolationScope = "shared"
     if ct.nested != nil: ct.nested.isolation = entry.isolationScope
-    # The conversation's sandbox policy, from its own document (NOT the header:
-    # a security decision must not ride the best-effort merge helper). Absent is
-    # the normal state — an off default — and an unreadable record falls back to
-    # the same default rather than widening anything, because nothing is enforced
-    # from it yet (stage A).
+    # An absent policy defaults to off; malformed or unreachable policy must
+    # fail this operation rather than silently disable confinement.
     entry.sandboxState = ct.loadSandboxPolicy(sessionId, entry.workspace).policy
     let storedLimits = header{"limits"}
     if storedLimits != nil and storedLimits.kind == JObject:
@@ -6075,8 +6072,10 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         return %*{"error": "unknown sandbox field " & key &
           " (enabled, addRead, addWrite, remove, expectRev)"}
     let current = ct.loadSandboxPolicy(sessionId, entry.workspace)
-    if current.persisted and raw{"expectRev"} != nil and
-        raw{"expectRev"}.kind == JInt and current.rev != raw{"expectRev"}.getInt(-1):
+    if raw{"expectRev"} != nil and
+        (raw{"expectRev"}.kind != JInt or raw{"expectRev"}.getInt(-1) < 0):
+      return %*{"error": "sandbox.expectRev must be a non-negative integer"}
+    if raw{"expectRev"} != nil and current.rev != raw{"expectRev"}.getInt(-1):
       # The human edited from a stale view. Refuse rather than overwrite: the
       # whole point of the revision is that a second decision is never lost.
       return %*{"error": "sandbox policy changed since revision " &
@@ -6088,13 +6087,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       if raw{"enabled"}.kind != JBool:
         return %*{"error": "sandbox.enabled must be a boolean"}
       policy.enabled = raw{"enabled"}.getBool()
-    # Tracked SEPARATELY on purpose. A read approval must not become a write
-    # one: the write fence's grant set (`grantedroot`) is fed from write roots
-    # only, so collapsing the two here would make `addRead` grant write in
-    # practice while the policy document still said read-only — the exact
-    # read-implies-write conflation this distinction exists to prevent.
-    var addedRead: seq[string] = @[]
-    var addedWrite: seq[string] = @[]
+    # Sandbox roots are separate from workspace grants. Updating two store
+    # documents cannot be made atomic here; a partial sync could widen or leave
+    # stale write authority. The existing fence remains an independent check.
     for key in ["addRead", "addWrite"]:
       let list = raw{key}
       if list == nil: continue
@@ -6114,12 +6109,8 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           return %*{"error": "sandbox root is not an existing directory: " & path}
         # A WRITE root implies the read root: confinement that permits a write
         # but forbids the matching read could not apply an edit at all.
-        if key == "addWrite":
-          policy.addGrant(norm)
-          if norm notin addedWrite: addedWrite.add norm
-        else:
-          if norm notin policy.readRoots: policy.readRoots.add norm
-          if norm notin addedRead: addedRead.add norm
+        if key == "addWrite": policy.addGrant(norm)
+        elif norm notin policy.readRoots: policy.readRoots.add norm
     let removing = raw{"remove"}
     if removing != nil:
       if removing.kind != JArray:
@@ -6134,31 +6125,12 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
           # it. Refuse instead of producing a policy whose owner cannot work.
           return %*{"error": "the conversation workspace cannot be removed from its own sandbox policy"}
         policy.removeGrant(norm)
-    let saved = ct.saveSandboxPolicy(sessionId,
-      policy, expectRev = (if raw{"expectRev"} != nil and
-                             raw{"expectRev"}.kind == JInt:
-                            raw{"expectRev"}.getInt(-1) else: -1))
+    # Always CAS the revision we loaded, even when the caller did not supply
+    # one. An absent record uses the store's create-only sentinel (-1).
+    let saved = ct.saveSandboxPolicy(sessionId, policy,
+      expectRev = (if current.persisted: current.rev else: -1))
     if not saved.ok:
       return %*{"error": saved.error, "code": "rev-conflict"}
-    # A WRITE root the human approved is ALSO a workspace grant, or the write
-    # fence would refuse work the sandbox allows — one decision, two consumers.
-    #
-    # A READ root is deliberately NOT synced: the fence's grant set is a WRITE
-    # set, so copying a read approval into it would grant write in practice
-    # while the policy document said read-only. Read-only reach is a policy
-    # record for now; component read acceptance comes from the single workspace
-    # set, so honoring it needs read/write split in that plumbing — stage B
-    # (docs/research/SANDBOX-NEXT-SLICE.md), not a silent widening here.
-    if addedWrite.len > 0:
-      var roots = grantedRootsFor(ct, sessionId)
-      for norm in addedWrite:
-        if norm != normalizeRoot(entry.workspace) and norm notin roots:
-          roots.add norm
-      let capped = roots[0 ..< min(roots.len, maxWorkspaceRoots - 1)]
-      if ct.saveGrantedRoots(sessionId, entry.workspace, capped):
-        if ct.nested != nil: ct.nested.rootsKey = ""
-        entry.grantedRoots = capped
-        ct.updateConversationHeader(sessionId, %*{"grantedRoots": capped})
     entry.sandboxState = policy
     if ct.nested != nil: ct.nested.sandboxKey = ""
     ct.updateConversationHeader(sessionId, %*{

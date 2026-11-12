@@ -125,6 +125,11 @@ proc main() =
         $afterEnable)
   let rev1 = afterEnable{"sandbox"}{"rev"}.getInt(0)
   check("the policy carries a revision", rev1 > 0, $afterEnable)
+  let staleAbsent = call(nc, "core", "session",
+    %*{"sessionId": a, "sandbox": {"enabled": false, "expectRev": 0}}, 20_000)
+  check("a stale absent revision cannot overwrite an existing policy",
+    staleAbsent{"error"} != nil and status(a){"sandbox"}{"enabled"}.getBool(false),
+    $staleAbsent)
 
   # --- 3. a stale revision is refused, not silently overwritten ----------
   # Edit from rev1 ONCE, which advances the document...
@@ -160,14 +165,14 @@ proc main() =
   check("the write root was added", writeDir in writeRoots, $rooted)
   check("a write root implies the matching read root", writeDir in readRoots, $rooted)
   check("a read root alone does not imply a write root", readDir notin writeRoots, $rooted)
-  # The write fence consults the granted-root set, so a WRITE approval must
-  # appear there or a tool is permitted by the policy and refused by the fence.
+  # Policy changes must not silently create workspace write grants: the two
+  # records cannot be atomically updated, and the fence is an independent gate.
   let fences = status(a){"grantedRoots"}
   var fenceList: seq[string] = @[]
   if fences != nil:
     for r in fences: fenceList.add r.getStr("")
-  check("an approved WRITE root also joins the write fence's grant set",
-        writeDir in fenceList, $fences)
+  check("a sandbox write root does not silently create a workspace grant",
+        writeDir notin fenceList, $fences)
   # ...and a READ-only approval must NOT. The fence's set is a write set:
   # syncing a read root into it would grant write in practice while the policy
   # document said read-only — read-implies-write through the back door.
@@ -280,6 +285,21 @@ proc main() =
   check("a session with any lineage parent is refused",
         orphanEdit{"error"} != nil and
         orphanEdit{"error"}.getStr("").contains("human-only"), $orphanEdit)
+
+  # An invalid stored parent must not produce an off child policy. This checks
+  # the real core inheritance request; the agent must also refuse its birth
+  # when that request fails.
+  discard call(nc, "store", "put", %*{"kind": "sandboxpolicy",
+    "id": a & ":policy", "value": {"version": 999}}, 10_000)
+  let failedChild = "agent-sbx-invalid"
+  let failedInheritance = call(nc, "core", "sandbox_inherit",
+    %*{"parent": a, "sessionId": failedChild, "workspace": root}, 20_000)
+  check("malformed parent policy refuses inheritance",
+    failedInheritance{"error"} != nil, $failedInheritance)
+  let noChildPolicy = call(nc, "store", "get", %*{"kind": "sandboxpolicy",
+    "id": failedChild & ":policy"}, 10_000)
+  check("failed inheritance never persists an off child policy",
+    not noChildPolicy{"ok"}.getBool(false), $noChildPolicy)
 
   report("SANDBOX POLICY CONVERSATION")
 

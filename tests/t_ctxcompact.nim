@@ -126,7 +126,7 @@ proc main() =
   doAssert waitRegistered(nc, "store"), "store did not register"
 
   let cat = newCatalog(nc)
-  let ct = CoreTools(nc: nc, cat: cat)
+  let ct = CoreTools(nc: nc, cat: cat, root: getCurrentDir())
 
   # --- 1. ctxAppend: the ledger stays 1:1 with the projection --------------
   let conv = "ctxcompact"

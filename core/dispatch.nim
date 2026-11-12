@@ -570,43 +570,27 @@ proc sandboxPolicyId(session: string): string = session & ":policy"
 
 proc loadSandboxPolicy*(ct: CoreTools, session, workspace: string):
     tuple[policy: SandboxPolicy, rev: int, persisted: bool] =
-  ## The conversation's effective policy, or the initially-off default when it
-  ## has never been changed. An UNREADABLE document is returned as the default
-  ## with `persisted: false` rather than raising: callers that must not widen
-  ## on a parse failure (the grant path) check it, and a status readback can
-  ## still answer. Strict decoding lives in the codec, so a malformed record
-  ## can never decode as "disabled and therefore unconstrained".
-  result.rev = 0
-  result.persisted = false
+  ## Only an absent record means the initially-off default. Store failures and
+  ## malformed records must propagate: treating either as off disables a
+  ## previously enabled policy exactly when its authority is unavailable.
   if session.len == 0 or workspace.len == 0:
-    try: result.policy = initialSandboxPolicy("/")
-    except CatchableError:
-      result.policy = SandboxPolicy()
-    return
+    raise newException(ValueError, "sandbox policy needs a session and workspace")
   result.policy = initialSandboxPolicy(workspace)
-  try:
-    let item = ct.storeGetItem(SandboxPolicyKind, sandboxPolicyId(session))
-    if item.value == nil: return
-    result.policy = decodeSandboxPolicy(item.value)
-    result.rev = item.rev
-    result.persisted = true
-  except CatchableError:
-    # Absent is the normal state; unreadable is not distinguishable here and
-    # both fail toward the default, which is what an off policy was anyway.
-    discard
+  let item = ct.storeGetItem(SandboxPolicyKind, sandboxPolicyId(session))
+  if item.value == nil: return
+  result.policy = decodeSandboxPolicy(item.value)
+  result.rev = item.rev
+  result.persisted = true
 
 proc saveSandboxPolicy*(ct: CoreTools, session: string, policy: SandboxPolicy,
                         expectRev: int): tuple[ok: bool, rev: int, error: string] =
-  ## Persist an edited policy. `expectRev` is the revision the human was
-  ## looking at, so a concurrent edit is a visible conflict instead of a lost
-  ## update; a negative value means "no precondition" and is only for the
-  ## birth/repair paths that create the first revision.
+  ## Persist an edited policy. Positive revisions are compare-and-set; -1 is
+  ## create-only, and 0 is an unconditional upsert per the store contract.
   if session.len == 0:
     return (false, 0, "a conversation id is required")
   try:
     let rev = ct.storePutRev(SandboxPolicyKind, sandboxPolicyId(session),
-                             encodeSandboxPolicy(policy),
-                             expectRev = (if expectRev > 0: expectRev else: 0))
+                             encodeSandboxPolicy(policy), expectRev = expectRev)
     return (true, rev, "")
   except StoreRevisionConflictError:
     return (false, 0, "the policy changed since you looked at it (revision conflict) — reload and re-apply")
@@ -615,21 +599,29 @@ proc saveSandboxPolicy*(ct: CoreTools, session: string, policy: SandboxPolicy,
 
 proc inheritSandboxPolicyFor*(ct: CoreTools, parentSession, childSession,
                               childWorkspace: string) =
-  ## Snapshot the parent's policy into a child at birth (docs/research/
-  ## SANDBOX-NEXT-SLICE.md "Inheritance decision"). Best effort and fail-closed
-  ## the same way grant inheritance is: a store hiccup leaves the child on the
-  ## default (off) rather than refusing to start it, and no mutable alias is
-  ## shared. The child's own workspace is added as a root, because an inherited
-  ## policy names the PARENT's checkout and a child working in its own tree
-  ## would otherwise have nowhere to write.
-  if parentSession.len == 0 or childSession.len == 0: return
-  try:
-    let parent = ct.loadSandboxPolicy(parentSession, childWorkspace).policy
-    var inherited = inheritSandboxPolicy(parent)
-    if childWorkspace.len > 0: inherited.ensureWorkspace(childWorkspace)
-    discard ct.saveSandboxPolicy(childSession, inherited, expectRev = -1)
-  except CatchableError:
-    discard
+  ## Snapshot the parent's policy into a child at birth. An unreadable parent
+  ## or failed child write raises: defaulting to off would widen authority.
+  ## Existing-child revocation remains a separate lifecycle decision.
+  if parentSession.len == 0 or childSession.len == 0:
+    raise newException(ValueError, "sandbox inheritance needs parent and child")
+  let parent = ct.loadSandboxPolicy(parentSession, childWorkspace).policy
+  var inherited = inheritSandboxPolicy(parent)
+  if inherited.enabled:
+    # A child-supplied cwd is not an authority grant. Resolve aliases before
+    # checking containment; siblings must be explicitly approved by the human.
+    let workspace = expandFilename(childWorkspace)
+    var allowed = false
+    for root in inherited.writeRoots:
+      let resolved = expandFilename(root)
+      if workspace == resolved or workspace.startsWith(resolved & DirSep):
+        allowed = true
+    if not allowed:
+      raise newException(ValueError, "child workspace is outside sandbox write roots")
+  elif childWorkspace.len > 0:
+    inherited.ensureWorkspace(childWorkspace)
+  let saved = ct.saveSandboxPolicy(childSession, inherited, expectRev = -1)
+  if not saved.ok:
+    raise newException(IOError, "sandbox inheritance failed: " & saved.error)
 
 
 
@@ -2246,7 +2238,8 @@ proc sandboxPolicyFor*(ct: CoreTools): JsonNode =
   ## only for a live session: a direct bus call has no conversation, so it has
   ## no policy and gets none (a caller cannot borrow another's reach).
   if ct.nested == nil or ct.nested.session.len == 0: return nil
-  if ct.nested.sandboxCached != nil and ct.nested.sandboxAt > 0 and
+  if ct.nested.sandboxCached != nil and ct.nested.sandboxKey == ct.nested.session and
+      ct.nested.sandboxAt > 0 and
       getMonoTime().ticks - ct.nested.sandboxAt < SandboxCacheTtlMs:
     return ct.nested.sandboxCached
   let session = ct.nested.session

@@ -17,6 +17,8 @@ for tool in ["get", "put", "list", "del"]:
       let key = kind & "/" & id
       let fault = if fileExists(control): parseFile(control) else: newJObject()
       if name == "put":
+        if fault{"putKind"}.getStr("") == kind:
+          return %*{"ok": false, "code": "unavailable", "error": "injected write failure"}
         let v = a["value"]
         if (fault{"state"}.getStr("") != "" and v{"state"}.getStr("") == fault["state"].getStr()) or
             (fault{"message"}.getBool(false) and kind == "message") or

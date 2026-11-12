@@ -3,6 +3,7 @@ import std/[json, os, strutils]
 import natsnim
 import helpers
 import ../core/[conversation, dispatch, catalog]
+import niffler/sandboxpolicy
 
 proc main() =
   let root = getCurrentDir() / "var" / ("transcript-safety-" & $getCurrentProcessId())
@@ -67,6 +68,37 @@ proc main() =
   ensureConversationHeader(ct, "new")
   check("header creation is idempotent",
     ct.storeGetItem("conversation", "new").rev == born.rev)
+  # Sandbox policy must distinguish an absent document (default off) from a
+  # store outage, and child birth must not persist an off policy on failure.
+  let parent = initialSandboxPolicy(root, true)
+  check("sandbox parent policy persists",
+    ct.saveSandboxPolicy("sb-parent", parent, -1).ok)
+  let duplicate = ct.saveSandboxPolicy("sb-parent", initialSandboxPolicy(root), -1)
+  check("create-only sandbox policy cannot overwrite an existing decision",
+    not duplicate.ok and ct.loadSandboxPolicy("sb-parent", root).policy.enabled)
+  let outside = root / ".."
+  refused = false
+  try: ct.inheritSandboxPolicyFor("sb-parent", "sb-child-outside", outside)
+  except CatchableError: refused = true
+  check("sandbox child cannot turn an unapproved workspace into a grant", refused)
+  fault(%*{"get": true})
+  refused = false
+  try: discard ct.loadSandboxPolicy("sb-parent", root)
+  except CatchableError: refused = true
+  check("sandbox policy read outage refuses instead of defaulting off", refused)
+  refused = false
+  try: ct.inheritSandboxPolicyFor("sb-parent", "sb-child-read", root)
+  except CatchableError: refused = true
+  check("sandbox child inheritance refuses an unreadable parent", refused)
+  fault(%*{"putKind": "sandboxpolicy"})
+  refused = false
+  try: ct.inheritSandboxPolicyFor("sb-parent", "sb-child-write", root)
+  except CatchableError: refused = true
+  check("sandbox child inheritance refuses a failed child write", refused)
+  fault(%*{})
+  check("failed inheritance leaves no off child policy",
+    ct.storeGetItem("sandboxpolicy", "sb-child-write:policy").value == nil)
+
   report("TRANSCRIPT SAFETY")
 
 main()
