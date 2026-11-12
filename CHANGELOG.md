@@ -21,6 +21,16 @@ from sharing a harness's bus. These protections are cooperative boundaries, not
 OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 [Bus ownership](docs/research/BUS-OWNERSHIP.md).
 
+- **Close the bus recovery bypass and admit stores before serving.** Go and
+  Nim full re-attachment now check every candidate's root before subscribing
+  and never guess port 4222. Both shipped store engines request core admission
+  before taking calls; a second store PID is refused and disconnects, even from
+  the same root. Core records bounded timestamp/PID/root identity evidence for
+  arrivals, departures and refusals in rotating `core.log`, without using the
+  store. Upgrade/restart core and stores together: older cores cannot acknowledge
+  admission, and old components cannot be fenced by registration rejection.
+  Private-bus regressions cover recovery and rejection without call subscriptions.
+
 - **A component can no longer answer another harness's calls.** Symptom: with
   several `niffler-tui` windows open, a conversation's pinned provider suddenly
   "cannot be resolved", `/fav` listed nothing, and sessions failed on their own

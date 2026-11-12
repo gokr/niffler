@@ -1,7 +1,7 @@
 # Bus ownership — one root, one bus, one set of component queue groups
 
-Status: implemented (2026-11-10). Guards live in `core/catalog.nim`,
-`core/niffler.nim` and the three SDKs' connect paths.
+Status: implemented (2026-11-10), recovery/admission hardening 2026-11-12.
+Guards live in `core/catalog.nim`, `core/niffler.nim` and the SDKs.
 
 ## The failure
 
@@ -71,8 +71,7 @@ supervisor restarting them into
 Resolution is `NIF_NATS_URL` → the root's `var/nats-url`; when both are absent
 the component fails with an explicit error instead of inventing an address. The
 well-known port stays available to *clients* (`ensureHarness`,
-`resolveNatsUrl`, `reattachCandidates` — the last applies the identity rule, so
-it only adopts 4222 when a core serving *our* root answers).
+`resolveNatsUrl`), not component recovery.
 
 **2. A registration must serve this root** (`core/catalog.nim`).
 Every SDK now announces `"root"` in `reg.publish`. The system core sets
@@ -126,6 +125,39 @@ The foreign process now exits on connect with
 `refusing bus nats://127.0.0.1:4222: the core there serves <our root>, not this
 root (<its root>)`.
 
+## Recovery and single-writer admission (2026-11-12)
+
+A later investigation found the Go recovery path still guessed port 4222 and
+skipped the initial-connect identity check. Go and Nim now validate every
+full re-attachment candidate before subscribing, and neither invents a
+well-known-port candidate. Explicit/discovery addresses remain supported;
+Go retries after a refused candidate instead of wedging with a nil connection.
+TypeScript has no separate full re-attachment path.
+
+The catalog no longer admits `store` replicas: exactly one positive PID,
+including on the first registration; the same PID may re-announce. Both Go
+store engines opt into `RequireAdmission`, a request on `reg.admit` before
+acquiring the call subscription, on initial connection and full re-attachment.
+Rejection closes the connection; initial rejection exits nonzero. Core reserves
+the slot atomically and replies before any store checkpoint can delay admission.
+A bare bus with no registration subscribers is supported for standalone tests;
+an old core that hears but cannot answer admission fails closed. This is a
+cooperative protocol, not fencing for old or malicious binaries. See WIRE.md.
+
+Every system catalog arrival/departure/admission now has a bounded, JSON-escaped
+identity line (UTC timestamp, PID, announced root, name, version, client flag)
+in rotating `var/logs/core.log`, including rejected and legacy arrivals. This
+requires no store and is always enabled after restarting the rebuilt core;
+there is no four-hour witness timer to forget. It does not capture arbitrary
+bus traffic or establish actual process liveness. SDK recovery refusal logs
+name the candidate and conflicting root; Go recovery success includes PID/root.
+
+The Nov 12 incident happened under a core booted Nov 10, before the earlier
+fix was deployed. Extra store registrations and not-found/rev-conflict errors
+support misrouting, but no historical PID/root mapping was retained: a specific
+culprit is not proven. Private-bus regressions cover candidate refusal,
+recovery to a valid bus, admission, and no serving while admission is pending.
+
 ## Residual notes
 
 The catalog root check (guard 2) and the connect check (guard 3) overlap on
@@ -134,7 +166,9 @@ check is what keeps a *registration* honest — including for a component built
 against an older SDK, which announces no root at all. Neither can help a process
 that connects while no core answers yet and is answered by a foreign core later;
 the registration check then refuses it and the `registered without a root` /
-`serves root …` lines name the cause.
+`serves root …` lines name the cause. Store admission adds a cooperative
+pre-subscription check, but an already-running legacy binary must still be
+stopped when deploying the update.
 
 ## Verifying
 

@@ -41,6 +41,22 @@ and are not counted as merged until they land on main.
    separate gaps. Scope the release from verified results, not the week estimates
    in an older schedule.
 
+## Bus ownership hardening
+
+The Nov 12 investigation found recovery bypassed the initial bus-root check.
+Go and Nim full re-attachment now validate every candidate and never invent a
+well-known-port bus. Both store engines require pre-subscription core admission;
+the catalog refuses a second store PID, including same-root/legacy replicas,
+while allowing the existing PID to re-announce. Rejected stores disconnect
+without acquiring call subscriptions. Timestamped, bounded PID/root identity
+lines for admissions, registrations and departures persist in rotating core.log
+without depending on the store. See [BUS-OWNERSHIP.md](research/BUS-OWNERSHIP.md)
+and [WIRE.md](WIRE.md#subjects) for deployment and compatibility limits. A rebuild
+is not deployment: restart core and store together, retiring old binaries.
+Validation: `make build`, targeted catalog/reconnect/store contracts, Go SDK
+race tests, and `make test-server` (115 contracts plus Go tests/vet) passed
+2026-11-12. The production process was not restarted during this change.
+
 ## Transcript safety
 
 Canonical message appends are create-only, and full-kind reads refuse malformed

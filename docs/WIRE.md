@@ -527,7 +527,28 @@ Rules:
 
 ## Subjects
 
+Both shipped store engines request `reg.admit` before subscribing to
+`svc.store.call`, on initial connection and full re-attachment. Core atomically
+reserves the registration before replying; a second store PID is refused even
+with an identical contract/root. Re-announcing the existing PID is allowed.
+A rejected store closes its connection without taking any store calls. A bare
+standalone test bus with no registration subscribers returns NATS no-responders
+and is allowed; timeout, malformed replies, and older cores that subscribe to
+`reg.>` but cannot acknowledge admission fail closed. Upgrade core and store
+together. Legacy binaries that do not request admission cannot be fenced by
+catalog rejection alone; do not leave old components running after upgrading.
+This is cooperative admission, not authentication or a NATS permission boundary.
+
+System core records each registration/admission/departure's timestamp, PID,
+announced root (empty for legacy peers), version and name in `var/logs/core.log`,
+including refused arrivals. These bounded identity lines require no store access
+and use existing core-log rotation. They are evidence of announced identity,
+not proof of process liveness or database integrity, and are not an audit log.
+No frozen prompt prefix or conversation history changes.
+
 ```
+reg.admit              # optional pre-subscription admission request (raw registration
+                       #   JSON); system core replies {ok, name, pid, reason}
 reg.publish            # component process announces itself on connect
                        #   {name, version, pid, tools: [ {name, schema} ], client?,
                        #    slash?: [SlashCommand]}; repeated logical name +
