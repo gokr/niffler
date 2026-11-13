@@ -436,30 +436,48 @@ slices 1–3, plus the hardening bundle from [STEAL-WAVE-2](research/STEAL-WAVE-
 #7. Current behavior is [SANDBOX-BASH-STATUS.md](research/SANDBOX-BASH-STATUS.md);
 the backend argument is [SANDBOX-MATRIX.md](research/SANDBOX-MATRIX.md) §5.
 
-Next engineering task: [Sandbox next slice](research/SANDBOX-NEXT-SLICE.md).
-Stage persistence and propagation first, then a strict Linux bash reachable
-set (items 1 → 2 → 4). This is not a whole-conversation sandbox until filesystem
-and escape-tool paths are covered too; item 3 remains a release gate.
+**Milestone reached: fail-closed policy + guarded Linux bash (items 1, 2, 4).**
+A conversation's policy persists with compare-and-set revisions and refuses to
+read as "off" when the store or the record is unreadable; children inherit at
+birth or refuse to start; dispatch injects the same snapshot on serial,
+parallel, `invoke` and nested paths; and a policy-enabled foreground `bash`
+launch on Linux runs under strict bubblewrap reach with the policy's denied
+files masked, refusing read-only roots and unsupported deny patterns rather than
+silently running wider. `make test` covers it (`t_sandbox_conversation`,
+`t_sandbox_propagation`, `t_sandbox_strict`, `t_bash_guard`, plus
+`t_transcript_safety` for outage paths).
 
-1. **Persist the policy — experimental, not yet accepted.** The branch has a
-   revisioned `sandboxpolicy` document, session control and birth inheritance.
-   Fail-closed outage/inheritance coverage, root/fence consistency and
-   revision races remain merge-gate work. The operator default and lifecycle
-   of revocation for existing children also remain open. Readbacks say
-   `enforced: false`; this is not whole-conversation confinement.
-2. **Propagate uniformly.** One decision through serial, parallel, `invoke` and
-   nested Fabric dispatch. A policy that guards only `bash` is a claim we cannot
-   make.
+What this milestone does **not** claim: the filesystem tools (item 3), network
+permission, Seatbelt, or a unified roots authority — sandbox roots and the write
+fence remain separate records, so a sandbox-approved root can still be refused
+by the fence. Readbacks say `enforced: false`; do not call a conversation
+sandboxed. Next engineering task remains item 3.
+
+Numbered work below is unchanged, with delivery state marked:
+
+1. **Persist the policy — done, fail-closed.** Revisioned `sandboxpolicy`
+   document, `session {sandbox}` control, birth inheritance, and status
+   readback. Absent means the documented off default; an unreadable record, an
+   unreachable store, or a failed child write refuses instead of degrading to
+   off. Still open: an operator default for new conversations (needs an owner
+   seam core reads) and revocation reaching live children.
+2. **Propagate uniformly — done for the dispatch paths that exist.** One
+   decision through serial, parallel, `invoke` and nested dispatch, stamped
+   `enforced: false` at the source; a caller-supplied `__sandbox` is deleted,
+   and a direct bus call has no conversation and therefore no policy.
 3. **Filesystem enforcement** for the approved group (`read`, `grep`, `files`,
    `write`, `edit`, `replace_across`, `undo`) — including cached results, diff
    previews, undo data and lazy instructions, and the parent chain of new files
    rather than a lexical prefix.
-4. **Kill the readable host root in bwrap.** Bind only reviewed runtime and data
-   roots so reads reach only approved data plus reviewed runtime roots, and
-   writes reach only approved writable data and private scratch. Per
-   SANDBOX-MATRIX §5 this requirement, not write protection, is
-   what selects the backend; keep an explicit, honestly-labelled compat mode for
-   toolchains.
+4. **Kill the readable host root in bwrap — done for foreground Linux bash.**
+   A policy launch binds only reviewed runtime, the workspace and the policy's
+   WRITE roots; the host root is not mounted, so an unapproved `$HOME` file
+   reports "No such file or directory" where the compat reach read it. Denied
+   basenames (`.env` by default) become exact-path masks; a glob or path pattern
+   refuses. Honest limits: the mask walk happens before the launch (a denied file
+   created after it, or one hard-linked elsewhere, is not covered), denies are
+   exact basenames, guarded background commands still refuse, and strict refuses
+   a writes-only Landlock backend rather than degrading.
 5. **Seatbelt** — generate `.sbpl` profiles, spawn via `sandbox-exec`, same policy
    vocabulary. Unusable on a machine ⇒ honest `degraded`, never a false `applied`.
    Needs real Mac hardware (human authorization).
@@ -589,12 +607,14 @@ itself is implemented and under separate validation.
 ### Sequence
 
 The current order is at the top of this document: Fleet acceptance and memory
-validation in separate worktrees, then a vertical sandbox slice and the remaining
-boundary work informed by those results. Worktree creation and the stop hotfix
-have landed; their remaining gaps are not new implementation milestones.
-Pillar 4's `answerNow` snapshot class can land independently; its durable control
-queue and client rendering remain proposed. Client version and release scope are
-not predetermined.
+validation in separate worktrees, then the remaining sandbox boundary work
+informed by those results. Worktree creation, the stop hotfix and the sandbox
+foundation (pillar 3 items 1, 2 and 4) have landed; their remaining gaps are not
+new implementation milestones. Filesystem enforcement (item 3) and
+per-capability network permission are the next boundary work. Pillar 4's
+`answerNow` snapshot class can land independently; its durable control queue and
+client rendering remain proposed. Client version and release scope are not
+predetermined.
 
 ## Recommended work order (older ordering, kept for context)
 
