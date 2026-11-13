@@ -64,7 +64,9 @@ internal children (restart policy `never`), not agent capabilities.
 
 ### 4. Catalog authority — `core/catalog.nim`
 
-The live registry: `reg.publish`/`reg.depart` handling, global tool-name
+The live registry: `reg.publish`/`reg.admit`/`reg.depart` handling,
+pre-subscription admission (at most one `store` PID per bus), bounded
+registration identity lines in core's stdout, global tool-name
 uniqueness enforcement, exposure projection (`x-harness.hidden` removes a
 tool from every LLM view; `x-harness.onDemand` keeps it out of the per-
 conversation direct set but discoverable via `discover`), schema

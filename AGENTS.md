@@ -87,8 +87,10 @@ working in every language.
     inside `Connect`, so a handler added afterwards never runs at all.
   The Nim and Go SDKs also watch connection health: a bus unhealthy past
   `NIF_RECONNECT_GRACE_S` (default 180 s) triggers a **re-attach** (re-resolve
-  the URL, redial, rebuild every subscription, re-publish `reg.publish`) instead
-  of leaving the component alive but deaf. A component that defers its announce
+  the URL — `NIF_NATS_URL` then the root's `var/nats-url`, never a well-known
+  port — validate the candidate's root before subscribing, redial, rebuild every
+  subscription, re-publish `reg.publish`) instead of leaving the component alive
+  but deaf. A component that defers its announce
   (the Go SDK's `DeferAnnounce`, e.g. `mcp-bridge`) must register
   `onReattached` / `OnReattached` to re-publish its own contract on the fresh
   connection; a Go client that must reconcile durable state after *any*
@@ -113,14 +115,18 @@ working in every language.
   `store` therefore answers some of them from another (usually empty) database,
   and the result is indistinguishable from data loss: `provider_get` returns a
   definitive not-found for a nickname that exists, favorites list nothing, a
-  session cannot read its transcript — intermittently. Two guards, both
+  session cannot read its transcript — intermittently. Three guards, all
   load-bearing: a component never INVENTS a bus (no well-known-port fallback;
   the chain ends in an explicit failure) and refuses to stay on one whose core
   answers for a different root (`enforceBusRoot`, all three SDKs — it must run
   before the subscribe, since subscribing is what misroutes); core refuses a
   `reg.publish` whose announced `root` is not its own (interactive clients and
   root-less legacy registrations are exempt, the latter logged once so an
-  unvouchable publisher stays visible). Never add a well-known-port fallback to
+  unvouchable publisher stays visible); and core admits at most one `store` PID
+  per bus — both shipped store engines call `RequireAdmission()`, so a second
+  store is refused before it takes any call, even from the same root. Admission
+  is cooperative, not authentication: retire binaries that never request it.
+  Never add a well-known-port fallback to
   a component's connect path, and never let a test or dev root attach to a live
   harness's bus — `tests/helpers.nim`'s bus-wide `ev.sys.drain` is enough to
   take a whole harness down.
@@ -479,7 +485,10 @@ beside client `v0.10.0`) for steps 7–8.
   `NIF_STORE_TIDB_DSN` cluster — no flock, the DSN is shared network state and
   row locks arbitrate; selected with `NIF_STORE_BACKEND=sqlite|tidb` — see
   docs/research/STORE_V2.md and docs/research/COMPACTION.md §2). Never run two
-  file-backed stores against the same file. The Nim/bitbarrel engine and
+  file-backed stores against the same file. Independently of the file lock, core
+  admits one `store` PID per bus (`reg.admit`); a second store on the same bus —
+  even from another root, and even sharing a TiDB DSN — is refused before it
+  subscribes. The Nim/bitbarrel engine and
   `niffler-store-migrate` were removed in 0.4.0: a harness with history in
   `var/barrel-db` refuses to boot rather than open an empty SQLite database over
   it (move it with a 0.3.x checkout).
