@@ -440,7 +440,7 @@ components:
 components-inner: check-nim-deps var/bin/niffler var/bin/session var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
 	var/bin/niffler-sandbox \
 	var/bin/edit var/bin/locks var/bin/lsp var/bin/repomap var/bin/processes var/bin/heartbeat var/bin/fleet var/bin/grep var/bin/git \
-	var/bin/builder var/bin/plugins var/bin/config var/bin/skills var/bin/fetch var/bin/jev var/bin/von \
+	var/bin/builder var/bin/plugins var/bin/config var/bin/skills var/bin/fetch var/bin/jev var/bin/von var/bin/local-embed \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
@@ -931,6 +931,19 @@ install-sandbox-profile:
 
 uninstall-sandbox-profile:
 	@bash scripts/install-sandbox-profile.sh --uninstall $(if $(filter 1,$(SUDO)),--sudo,)
+
+.PHONY: install-embed embed-up embed-down
+install-embed:
+	bash scripts/install-embed.sh
+
+var/bin/local-embed: components/local-embed/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ $<
+
+embed-up: var/bin/local-embed
+	./var/bin/cli call spawn '{"name":"local-embed","binary":"var/bin/local-embed"}'
+
+embed-down:
+	./var/bin/cli call remove '{"name":"local-embed"}'
 
 install-jev:
 	@# The Von runtime behind the jev component (venv + von-sdk). Opt-in:

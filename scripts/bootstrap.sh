@@ -386,6 +386,7 @@ echo
 say "optional extras — every one of these is optional; Enter (the default) skips:"
 offerExtra install-lsp "language servers for the lsp component (Go/Nim/TS + per-language y/n)" tty
 offerExtra install-tools "the agent CLI toolkit for bash: jq, yq, ripgrep, fd, fzf, bat, tree, htop, wget, zip, unzip, sqlite3, gh"
+offerExtra install-embed "local nomic embeddings without Ollama (~107 MB; enable separately with make embed-up)"
 if [ -x var/jev-venv/bin/von ]; then
   say "optional 'make install-jev' — Von is already installed ('make von-up' enables the launcher)"
 else
