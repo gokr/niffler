@@ -6,6 +6,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Memory gains opt-in provider-backed semantic search/query recall, revision-checked
+  derived vectors and text fallback. SQLite filters instance and literal idPrefix
+  before exact cosine top-k. Subagent remember/forget writes now refuse.
+- Optional `make install-embed` installs llama.cpp plus SHA256-pinned nomic Q4
+  weights without Ollama; `embed-up`/`embed-down` control a supervised launcher.
+  Provider registration and memory configuration remain explicit.
+
 ### Release overview
 
 This development cycle adds a complete sibling-worktree workflow: create and

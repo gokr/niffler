@@ -755,6 +755,16 @@ test-memory:  build var/bin/test_t_memory  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 var/bin/test_t_memory_live: tests/t_memory_live.nim tests/helpers.nim $(SDK_NIM) $(CORE_NIM) \
     var/bin/niffler var/bin/session var/bin/memory var/bin/fixture-mock-llm
 test-memory-live: build var/bin/test_t_memory_live ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory_live
+# Validation of the RETRIEVAL half: the store's vector path end to end (kNN
+# ordering, model isolation, honest refusals) and — pinned as a
+# regression test — scoped retrieval without cross-repository leakage
+# (docs/research/MEMORY.md §7). NIF_STORE_BACKEND=tidb asserts that engine's
+# explicit "unsupported" refusal instead.
+test-memory-vector: build var/bin/test_t_memory_vector ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory_vector
+# Validation of the ACCUMULATION half: selective collection (no automatic
+# transcript-to-facts extractor), provenance, the subagent write rule, and the
+# recall block reaching the persisted transcript without touching the prefix.
+test-memory-feed: build var/bin/test_t_memory_feed ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory_feed
 test-workspaces: build var/bin/test_t_workspaces ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_workspaces
 test-hooks:  build var/bin/test_t_hooks  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_hooks
 test-uireg:  build var/bin/test_t_uireg  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_uireg
@@ -932,7 +942,7 @@ install-sandbox-profile:
 uninstall-sandbox-profile:
 	@bash scripts/install-sandbox-profile.sh --uninstall $(if $(filter 1,$(SUDO)),--sudo,)
 
-.PHONY: install-embed embed-up embed-down
+.PHONY: install-embed embed-up embed-down test-memory-vector test-memory-feed test-memory-embed-chain
 install-embed:
 	bash scripts/install-embed.sh
 
@@ -944,6 +954,9 @@ embed-up: var/bin/local-embed
 
 embed-down:
 	./var/bin/cli call remove '{"name":"local-embed"}'
+
+test-memory-embed-chain: build var/bin/test_t_memory_embed_chain
+	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_memory_embed_chain
 
 install-jev:
 	@# The Von runtime behind the jev component (venv + von-sdk). Opt-in:

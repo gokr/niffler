@@ -60,6 +60,10 @@ const
   subjSlugMax = 48
 
 type
+  Lineage = object
+    isChild: bool      ## the calling conversation has a sessionmeta.parent
+    parent: string     ## that parent, so a refusal can name what it found
+
   ScopeRes = object
     key: string        ## the store key ("repo:/path", "global", …)
     scope: string      ## repo | dir | global | conversation
@@ -279,13 +283,13 @@ proc isStale(value: JsonNode): tuple[stale: bool, ageDays: int] =
   result.ageDays = int(age / 86_400.0)
   result.stale = age > window
 
-proc rankScope(comp: Component, key: string, queryTokens: seq[string],
+proc textRankScope(comp: Component, key: string, queryTokens: seq[string],
                limit: int): seq[Hit] =
   ## Every live fact in one scope, scored locally. A store outage yields no
   ## hits rather than an error: memory must never fail a turn.
   var hits: seq[Hit] = @[]
   try:
-    for item in comp.storeList(memoryKind, key & ":", limit = 1000):
+    for item in comp.storeListAll(memoryKind, key & ":"):
       let s = scoreRecord(queryTokens, item.value)
       if s <= 0.0: continue
       let fresh = isStale(item.value)
@@ -300,6 +304,12 @@ proc rankScope(comp: Component, key: string, queryTokens: seq[string],
     if a.score != b.score: return cmp(b.score, a.score)
     cmp(a.id, b.id))
   for i in 0 ..< min(limit, hits.len): result.add hits[i]
+
+# Semantic retrieval is optional. The provider identifies the embedding space;
+# its returned model id and width are persisted, never inferred from chat.
+proc rankScope(comp: Component, key: string, queryTokens: seq[string],
+               limit: int): seq[Hit] =
+  textRankScope(comp, key, queryTokens, limit)
 
 proc renderHit(hit: Hit): JsonNode =
   var node = %*{"id": hit.id,
@@ -331,6 +341,8 @@ let memoryDecl = declaration(
   "(memory_recall).",
   "memory-settings", appImmediate,
   %*{"type": "object", "properties": {
+       "maxDistance": {"type": "number", "minimum": 0, "maximum": 2, "default": 0.5, "x-config": {"title": "Semantic distance ceiling", "description": "Maximum cosine distance; calibrate for the configured model"}},
+       "embedProvider": {"type": "string", "default": "", "x-config": {"title": "Embedding provider", "description": "Provider nickname for semantic retrieval; empty uses text ranking"}},
        "autoRecall": {"type": "string", "enum": ["birth", "compaction", "both", "off"],
          "default": "both", "x-config": {
            "title": "Automatic recall",
@@ -360,6 +372,69 @@ proc recallChars(): int =
   result = max(200, min(20_000, settings.num("recallChars",
                                             "NIF_MEMORY_RECALL_CHARS",
                                             recallDefaultChars)))
+
+proc semanticScope(c: Component, key, query: string, limit: int): tuple[hits: seq[Hit], vector: bool, warning: string] =
+  let provider = settings.str("embedProvider", "NIF_MEMORY_EMBED_PROVIDER", "")
+  if provider.len == 0:
+    result.hits = rankScope(c, key, tokens(query), limit)
+    return
+  try:
+    let q = c.requestOk("llm", "embed", %*{"provider": provider,
+      "input": ["search_query: " & query]}, 10_000)
+    let model = q{"model"}.getStr("")
+    let vectors = q{"embeddings"}
+    if model.len == 0 or vectors == nil or vectors.len != 1:
+      raise newException(IOError, "embed returned no query vector")
+    let width = vectors[0].len
+    # Refresh derived vectors on demand. Source revisions prevent a correction
+    # or forgotten fact from returning stale text; model/provider changes rebuild
+    # the space rather than mixing vectors from two runtimes of the same model.
+    let space = provider & ":" & model
+    let prefix = key & ":"
+    let live = c.storeListAll(memoryKind, prefix)
+    var liveIds = initHashSet[string]()
+    for item in live: liveIds.incl item.id
+    for cached in c.storeListAll("embedding", prefix):
+      if cached.value{"source"}.getStr("") == "memory" and cached.id notin liveIds:
+        c.storeDel("embedding", cached.id)
+    for item in live:
+      var valid = false
+      try:
+        let cached = c.storeGet("embedding", item.id)
+        valid = cached.value{"model"}.getStr("") == space and
+          cached.value{"sourceRev"}.getInt(0) == item.rev and
+          cached.value{"dimensions"}.getInt(0) == width
+      except StoreNotFoundError: discard
+      if not valid:
+        let e = c.requestOk("llm", "embed", %*{"provider": provider,
+          "input": ["search_document: " & factSubject(item.value) & " " & factText(item.value)]}, 10_000)
+        let ev = e{"embeddings"}
+        if ev == nil or ev.len != 1 or ev[0].len != width or e{"model"}.getStr("") != model:
+          raise newException(IOError, "embedding space changed during retrieval")
+        discard c.storePut("embedding", item.id, %*{"model": space,
+          "dimensions": width, "vector": ev[0], "source": "memory",
+          "sourceId": item.id, "sourceRev": item.rev})
+    let found = c.requestOk("store", "search", %*{"kind": "embedding",
+      "model": space, "vector": vectors[0], "idPrefix": prefix, "limit": limit}, 10_000)
+    if not found{"ok"}.getBool(false):
+      raise newException(IOError, "store vector search refused: " & $found)
+    let items = found{"items"}
+    if items != nil:
+      for hit in items:
+        let ceiling = settings.values(){"maxDistance"}.getFloat(0.5)
+        if hit{"distance"}.getFloat(2.0) > ceiling: continue
+        try:
+          let source = c.storeGet(memoryKind, hit{"id"}.getStr(""))
+          if source.rev != hit{"value"}{"sourceRev"}.getInt(0): continue
+          let fresh = isStale(source.value)
+          result.hits.add Hit(id: source.id, value: source.value,
+            score: 1.0 - hit{"distance"}.getFloat(1.0),
+            stale: fresh.stale, ageDays: fresh.ageDays)
+        except StoreNotFoundError: discard
+    result.vector = true
+  except CatchableError as e:
+    result.warning = "semantic retrieval unavailable; text fallback: " & e.msg
+    result.hits = rankScope(c, key, tokens(query), limit)
 
 # ---------------------------------------------------------------------------
 # tools
@@ -402,7 +477,7 @@ let rememberSchema = toolSchema(%*{
 
 let searchSchema = toolSchema(%*{
   "query": {"type": "string",
-            "description": "Words to look for, matched as case-insensitive token prefixes against subjects, text and tags (the store's search rule)."},
+            "description": "A question or words describing a remembered fact. Uses the configured embedding provider, otherwise local token-prefix matching."},
   "scope": {"type": "string", "enum": ["repo", "dir", "global", "conversation"],
             "description": "Restrict to one scope. Omitted: this repository first, then global, with a repository fact shadowing a global one on the same subject."},
   "limit": {"type": "integer", "minimum": 1,
@@ -452,6 +527,31 @@ let scopesSchema = toolSchema(%*{
 # ---------------------------------------------------------------------------
 # handlers
 
+proc childLineage(c: Component, conversation: string): Lineage =
+  ## Is this conversation a subagent? `sessionmeta.parent` is the durable
+  ## lineage relation core and the agent component already use (docs/WIRE.md
+  ## "Subagent continuation"), so no second notion of "child" is invented.
+  ##
+  ## Fail CLOSED on a store error, matching the depth walk in core's dispatch:
+  ## a write whose lineage cannot be checked is not allowed. A caller with no
+  ## conversation at all (a direct `cli` call, an operator script) is not a
+  ## subagent — it is the human's own tooling.
+  result = Lineage(isChild: false, parent: "")
+  if conversation.len == 0: return
+  try:
+    let meta = c.storeGet("sessionmeta", conversation, timeoutMs = 5_000)
+    if meta.value != nil:
+      let parent = meta.value{"parent"}.getStr("")
+      if parent.len > 0:
+        result.isChild = true
+        result.parent = parent
+  except StoreNotFoundError:
+    discard                  # no lineage record: a root conversation
+  except CatchableError:
+    # Unverifiable lineage must not become permission to write.
+    result.isChild = true
+    result.parent = "(unverifiable: the store did not answer)"
+
 proc doRemember(c: Component, args: JsonNode): JsonNode =
   let text = args{"text"}.getStr("").strip()
   if text.len == 0:
@@ -467,6 +567,19 @@ proc doRemember(c: Component, args: JsonNode): JsonNode =
                      "the scope, so it must not hold secrets. Record WHERE the " &
                      "secret lives (which env var, which file) instead.", "secret")
   let conversation = args{"__session"}{"session"}.getStr("")
+  # Subagents fail closed (docs/MANUAL.md "Long-term memory", MEMORY.md §6).
+  # A child READS the repo's facts — it needs the context to work — but a
+  # half-finished inference from a scoped subagent must not become a fact that
+  # every later conversation in the repository inherits. The refusal names the
+  # lineage it found, so a caller can tell "you are a child" from "the store
+  # was unreachable and I refused rather than guess".
+  let lineage = childLineage(c, conversation)
+  if lineage.isChild:
+    return errResult("memory: a subagent cannot write repository memory — a " &
+                     "child's inference is not authoritative for the repo " &
+                     "(session \"" & conversation & "\" has parent \"" &
+                     lineage.parent & "\"). Report the fact to your parent " &
+                     "and let it remember it.", "subagent-readonly")
   let resolved = resolveScope(c, args{"scope"}.getStr(""),
                               args{"workspace"}.getStr(""), conversation)
   if resolved.error.len > 0: return errResult(resolved.error, "bad-request")
@@ -546,12 +659,17 @@ proc doSearch(c: Component, args: JsonNode): JsonNode =
   var seen = initHashSet[string]()
   var items = newJArray()
   var scopesSearched = newJArray()
+  var usedVector = false
+  var warnings: seq[string]
   for scopeRes in scopesFor(c, args):
     if scopeRes.error.len > 0:
       if items.len == 0: return errResult(scopeRes.error, "bad-request")
       continue
     scopesSearched.add(%scopeRes.key)
-    for hit in rankScope(c, scopeRes.key, qTokens, limit):
+    let ranked = semanticScope(c, scopeRes.key, query, limit)
+    usedVector = usedVector or ranked.vector
+    if ranked.warning.len > 0: warnings.add ranked.warning
+    for hit in ranked.hits:
       # Strictest scope wins: the same subject in a broader scope is shadowed,
       # not merged — otherwise a repo convention and a global one contradict
       # each other in the same block.
@@ -561,8 +679,8 @@ proc doSearch(c: Component, args: JsonNode): JsonNode =
       items.add renderHit(hit)
       if items.len >= limit: break
     if items.len >= limit: break
-  okResult(%*{"items": items, "count": items.len, "ranker": "text",
-              "scopes": scopesSearched})
+  okResult(%*{"items": items, "count": items.len, "ranker": (if usedVector: "vector" else: "text"),
+              "warning": warnings.join("; "), "scopes": scopesSearched})
 
 proc doGet(c: Component, args: JsonNode): JsonNode =
   let id = args{"id"}.getStr("").strip()
@@ -616,6 +734,10 @@ proc doList(c: Component, args: JsonNode): JsonNode =
               "scopeKey": resolved.key})
 
 proc doForget(c: Component, args: JsonNode): JsonNode =
+  let lineage = childLineage(c, args{"__session"}{"session"}.getStr(""))
+  if lineage.isChild:
+    return errResult("memory: subagents cannot forget facts (parent " &
+                     lineage.parent & ")", "subagent-readonly")
   let id = args{"id"}.getStr("").strip()
   if id.len == 0: return errResult("memory_forget needs id", "bad-request")
   try:
@@ -629,6 +751,8 @@ proc doForget(c: Component, args: JsonNode): JsonNode =
                        id & "#" & $item.value{"revision"}.getInt(1), archived,
                        timeoutMs = 10_000)
     c.storeDel(memoryKind, id, timeoutMs = 10_000)
+    try: c.storeDel("embedding", id)
+    except CatchableError: discard # source validation still excludes the hit
     return okResult(%*{"id": id, "forgotten": true,
                        "note": "archived; readable through memory_get of the id"})
   except StoreNotFoundError:
@@ -653,7 +777,7 @@ proc buildRecallBlock(c: Component, args: JsonNode): JsonNode =
     if scopeRes.error.len > 0: continue
     var hits: seq[Hit] = @[]
     if qTokens.len > 0:
-      hits = rankScope(c, scopeRes.key, qTokens, limit)
+      hits = semanticScope(c, scopeRes.key, query, limit).hits
     else:
       # No query: the standing facts, newest-verified first, so a long-lived
       # repo shows what was learned most recently.
@@ -710,6 +834,29 @@ proc doScopes(c: Component, args: JsonNode): JsonNode =
   okResult(%*{"scopes": resolvedScopes, "autoRecall": autoRecall(),
               "recallFacts": recallFacts(), "recallChars": recallChars()})
 
+proc observed(c: Component, args: JsonNode, operation: string,
+              reply: JsonNode): JsonNode =
+  ## Durable display-only activity. A search is not an injected recall, and a
+  ## refused or failed write is never displayed as saved. No fact text enters
+  ## the frozen prefix; clients render this separate record in their own style.
+  result = reply
+  let session = args{"__session"}{"session"}.getStr("")
+  if session.len == 0: return
+  var phase = if reply{"ok"}.getBool(false): "completed" else: "refused"
+  if operation == "remember" and phase == "completed":
+    phase = if reply{"updated"}.getBool(false): "updated" else: "saved"
+  let activity = %*{"sessionId": session, "operation": operation,
+    "phase": phase, "injected": false, "createdAt": epochTime(),
+    "subject": args{"subject"}.getStr(""),
+    "scope": reply{"scope"}.getStr(""), "result": reply}
+  let id = session & ":" & $epochTime()
+  activity["id"] = %id
+  try:
+    discard c.storePut("memory-activity", id, activity)
+    c.emit("ev.session." & sanitizeSessionId(session) & ".memory", activity)
+  except CatchableError as e:
+    result["activityWarning"] = %("memory activity was not recorded: " & e.msg)
+
 # ---------------------------------------------------------------------------
 # registration
 
@@ -717,7 +864,7 @@ var rememberSchemaFinal = rememberSchema
 rememberSchemaFinal["x-harness"] = %*{"onDemand": true, "sessionId": true,
   "timeoutMs": 15_000, "effect": "write", "workspace": {"defaultPathFields": ["workspace"]}}
 discard comp.tool("memory_remember", rememberSchemaFinal,
-  proc(c: Component, args: JsonNode): JsonNode = doRemember(c, args))
+  proc(c: Component, args: JsonNode): JsonNode = observed(c, args, "remember", doRemember(c, args)))
 
 # Overwriting an existing fact is a human decision (the correction path above
 # is still the model's, but a same-subject update can erase curation), and a
@@ -726,9 +873,9 @@ discard comp.tool("memory_remember", rememberSchemaFinal,
 # only refuse further (it never widens).
 var searchSchemaFinal = searchSchema
 searchSchemaFinal["x-harness"] = %*{"onDemand": true, "sessionId": true,
-  "timeoutMs": 15_000, "effect": "read", "workspace": {"defaultPathFields": ["workspace"]}}
+  "timeoutMs": 120_000, "effect": "read", "workspace": {"defaultPathFields": ["workspace"]}}
 discard comp.tool("memory_search", searchSchemaFinal,
-  proc(c: Component, args: JsonNode): JsonNode = doSearch(c, args))
+  proc(c: Component, args: JsonNode): JsonNode = observed(c, args, "search", doSearch(c, args)))
 
 var getSchemaFinal = getSchema
 getSchemaFinal["x-harness"] = %*{"onDemand": true, "sessionId": true,
@@ -746,13 +893,13 @@ var forgetSchemaFinal = forgetSchema
 forgetSchemaFinal["x-harness"] = %*{"onDemand": true, "sessionId": true,
   "approval": "always", "timeoutMs": 15_000, "effect": "write"}
 discard comp.tool("memory_forget", forgetSchemaFinal,
-  proc(c: Component, args: JsonNode): JsonNode = doForget(c, args))
+  proc(c: Component, args: JsonNode): JsonNode = observed(c, args, "forget", doForget(c, args)))
 
 var recallSchemaFinal = recallSchema
 recallSchemaFinal["x-harness"] = %*{"onDemand": true, "sessionId": true,
-  "timeoutMs": 15_000, "effect": "read", "workspace": {"defaultPathFields": ["workspace"]}}
+  "timeoutMs": 120_000, "effect": "read", "workspace": {"defaultPathFields": ["workspace"]}}
 discard comp.tool("memory_recall", recallSchemaFinal,
-  proc(c: Component, args: JsonNode): JsonNode = buildRecallBlock(c, args))
+  proc(c: Component, args: JsonNode): JsonNode = observed(c, args, "recall", buildRecallBlock(c, args)))
 
 var scopesSchemaFinal = scopesSchema
 scopesSchemaFinal["x-harness"] = %*{"onDemand": true, "sessionId": true,
@@ -792,7 +939,12 @@ discard comp.onIdle(500) do (c: Component):
                    "(memory_search) before assuming you are the first to hit a " &
                    "build, dependency or flakiness problem, and record a fact " &
                    "(memory_remember) when you learn one the hard way and it " &
-                   "will still be true tomorrow."}, 1_000){"ok"}.getBool(false)
+                   "will still be true tomorrow. Save only verified, reusable, non-obvious " &
+                   "and actionable findings, with evidence and an appropriate freshness " &
+                   "window. Do not save guesses, TODOs, temporary failures or secrets. " &
+                   "Correct the same subject rather than adding a contradictory fact. " &
+                   "Consult memory at task entry and before repeating a surprising " &
+                   "investigation; do not search after every tool call."}, 1_000){"ok"}.getBool(false)
     except CatchableError:
       discard
 

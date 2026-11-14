@@ -2164,10 +2164,17 @@ proc drainMemory(ct: CoreTools, p: var Persister,
   let text = ct.memoryStream.queue[0]
   ct.memoryStream.queue.setLen(0)
   ct.memoryStream.appended = true
-  let msg = %*{"role": "user", "content": text}
+  let activity = %*{"id": "memory-" & newId(), "operation": "recall",
+    "phase": "applied", "sessionId": p.convId, "text": text,
+    "bytes": text.len, "createdAt": epochTime(), "injected": true}
+  if ct.activeTurn != nil and ct.activeTurn.id.len > 0:
+    activity["turnId"] = %ct.activeTurn.id
+  # Persist the display identity with the canonical message: reconnecting
+  # clients can reconstruct a memory block without parsing ordinary user prose.
+  let msg = %*{"role": "user", "content": text, "memory": activity}
   ctxAppend(p, messages, msg)
   if onEvent != nil:
-    onEvent("memory", %*{"sessionId": p.convId, "bytes": text.len})
+    onEvent("memory", activity)
 
 func diagnosticMessage*(path, text: string, clean: bool): JsonNode =
   ## Display-only clean verdicts never enter the model projection.
@@ -3609,6 +3616,29 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if ct.activeTurn != nil:
       ct.activeTurn.session = ""
       ct.activeTurn.id = ""
+  # Task-entry semantic recall: only the first substantive request, not every
+  # turn/tool call. Missing memory is optional and must never fail a turn.
+  # Query recall remains append-only; the ordinary drain records its activity.
+  if ct.memoryStream != nil and not ct.memoryStream.appended and turnContent.strip().len > 0:
+    var priorRecall = false
+    for message in messages:
+      if message{"memory"} != nil or
+          message{"content"}.getStr("").startsWith("Durable memory for this workspace"):
+        priorRecall = true
+    if not priorRecall:
+      try:
+        let header = ct.storeGetItem("conversation", sessionId).value
+        let workspace = header{"cwd"}.getStr("")
+        let policy = ct.dispatchToolCall("memory_scopes", %*{"workspace": workspace}, 3000)
+        var recalled = newJObject()
+        if policy{"autoRecall"}.getStr("off") in ["birth", "both"]:
+          recalled = ct.dispatchToolCall("memory_recall", %*{
+            "workspace": workspace, "query": turnContent, "limit": 3}, 15_000)
+        let blockText = recalled{"block"}.getStr("")
+        if blockText.len > 0:
+          ct.memoryStream.queue = @[blockText]
+      except CatchableError:
+        discard
   # ---- authoritative per-turn accounting (docs/WIRE.md "Turn usage") ------
   # A LOCAL mirror, not the `var` out-parameter: the nested procs below
   # (emitTurnDone, finishTurn, endTurnOnLimit) may not capture a var parameter
