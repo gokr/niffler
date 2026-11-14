@@ -31,6 +31,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -119,15 +120,47 @@ type execer interface {
 func ensureVectorTable(tx execer, dim int) error {
 	// `IF NOT EXISTS` on a vec0 virtual table is a no-op when the table is
 	// already there, so this stays cheap on the hot path.
+	//
+	// id_prefix is a PARTITION KEY for the same reason kind and model are: a
+	// constrained partition key is applied INSIDE the kNN, so `k` neighbours
+	// come back from that partition rather than surviving as whatever is left
+	// of a global top-k. Post-filtering a global search returns a silent
+	// shortfall — the exact bug docs/research/MEMORY.md §7 predicted for
+	// scoped recall. Omitting the constraint scans every partition
+	// (measured), so an unscoped query stays possible and unchanged.
 	_, err := tx.Exec(fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS %s USING vec0(
 		docs_rowid INTEGER PRIMARY KEY,
 		kind TEXT PARTITION KEY,
 		model TEXT PARTITION KEY,
+		id_prefix TEXT PARTITION KEY,
 		embedding float[%d] distance_metric=cosine)`, vectorTableName(dim), dim))
 	if err != nil {
 		return fmt.Errorf("create vector index for %d dimensions: %w", dim, err)
 	}
 	return nil
+}
+
+// idPrefixPartition is the id_prefix a document is indexed under: its id up to
+// and including the LAST colon.
+//
+// That one rule covers both real id shapes, which is why it needs no per-kind
+// knowledge here:
+//
+//   - a memory id is `<scope>:<subject>` (`repo:/home/x/proj:build.jobs`), so
+//     the partition is the scope key plus ':' — exactly what memory_search
+//     narrows by;
+//   - a message id is `<convId>:<seq>`, so the partition is `<convId>:` —
+//     exactly the documented "one conversation's messages".
+//
+// The LAST colon (not the first) is what makes the scope case work: a repo
+// path itself contains colons, and only the final one separates the subject.
+// A doc id with no colon has no partition; its prefix is the empty string and
+// it is only reachable by a query that does not narrow.
+func idPrefixPartition(id string) string {
+	if i := strings.LastIndex(id, ":"); i >= 0 {
+		return id[:i+1]
+	}
+	return ""
 }
 
 // indexVector upserts one document's vector row. A document that is not an
@@ -153,8 +186,9 @@ func indexVector(tx *sql.Tx, rowid int64, kind, id string, value []byte) error {
 		return err
 	}
 	_, err = tx.Exec(fmt.Sprintf(
-		`INSERT INTO %s(docs_rowid, kind, model, embedding) VALUES (?, ?, ?, ?)`,
-		vectorTableName(doc.Dimensions)), rowid, kind, doc.Model, blob)
+		`INSERT INTO %s(docs_rowid, kind, model, id_prefix, embedding) VALUES (?, ?, ?, ?, ?)`,
+		vectorTableName(doc.Dimensions)), rowid, kind, doc.Model,
+		idPrefixPartition(id), blob)
 	if err != nil {
 		return fmt.Errorf("index vector: %w", err)
 	}
@@ -220,7 +254,9 @@ type vectorHit struct {
 // return nonsense. A dimension whose table does not exist yet has no vectors,
 // which is an empty answer rather than an error (a fresh store has no
 // embeddings, and that is not a failure).
-func vectorSearch(db *sql.DB, instance, kind, model string, query []float64, limit int) ([]vectorHit, error) {
+//
+// idPrefix and instance filters are evaluated before exact cosine top-k.
+func vectorSearch(db *sql.DB, instance, kind, model, idPrefix string, query []float64, limit int) ([]vectorHit, error) {
 	dim := len(query)
 	widths := make([]float32, dim)
 	for i, v := range query {
@@ -237,20 +273,22 @@ func vectorSearch(db *sql.DB, instance, kind, model string, query []float64, lim
 	if !exists {
 		return nil, nil
 	}
-	// vec0 requires its own `k = ?` constraint on a kNN query — a generic
-	// LIMIT is refused (`A LIMIT or 'k = ?' constraint is required`). Ask for
-	// one extra row so the caller can tell a truncated result set from a
-	// complete one, the same rule as every other page in this store.
-	// instance_id is NOT optional here: vec0 partitions only by kind/model, and
-	// docs is shared by every instance in the file (PK instance_id,kind,id). A
-	// join on rowid alone would return another instance's vectors as this one's
-	// hits — the one scoping rule every read in this store must carry.
-	sqlText := fmt.Sprintf(`SELECT d.id, d.rev, d.value, v.distance
+	// Exact distance evaluation over the filtered candidates preserves arbitrary
+	// idPrefix semantics (not just a colon-delimited partition) and instance
+	// isolation BEFORE spending k. A MATCH query followed by a docs-side filter
+	// can silently lose neighbours belonging to the requested instance.
+	sqlText := fmt.Sprintf(`SELECT d.id, d.rev, d.value,
+		vec_distance_cosine(v.embedding, ?) AS distance
 		FROM %s v JOIN docs d ON d.rowid = v.docs_rowid
-		WHERE v.embedding MATCH ? AND k = ? AND v.kind = ? AND v.model = ?
-		  AND d.instance_id = ?
-		ORDER BY v.distance`, vectorTableName(dim))
-	rows, err := db.Query(sqlText, blob, limit+1, kind, model, instance)
+		WHERE v.kind = ? AND v.model = ? AND d.instance_id = ?`, vectorTableName(dim))
+	qargs := []any{blob, kind, model, instance}
+	if idPrefix != "" {
+		sqlText += ` AND d.id LIKE ? ESCAPE '\'`
+		qargs = append(qargs, likePrefix(idPrefix))
+	}
+	sqlText += ` ORDER BY distance, d.id LIMIT ?`
+	qargs = append(qargs, limit+1)
+	rows, err := db.Query(sqlText, qargs...)
 	if err != nil {
 		// The table is chosen from the query's own width, so a width
 		// mismatch cannot reach here; an error is a real failure.
@@ -278,7 +316,43 @@ func vectorTableExists(q execer, dim int) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("check vector index: %w", err)
 	}
-	return true, nil
+	return vectorTableHasPrefixColumn(q, dim)
+}
+
+// vectorTableHasPrefixColumn reports whether an existing index was built with
+// the current vec0 schema.
+//
+// The shape check is load-bearing, not paranoia: `CREATE VIRTUAL TABLE IF NOT
+// EXISTS` is a no-op when a table by that name already exists, so a store
+// created before id_prefix became a partition key would keep its OLD schema
+// forever and every insert would fail against it. Reporting a stale table as
+// "missing" routes it to the rebuild path, which recreates it from the
+// documents — the same authority rule syncSearchIndex follows.
+//
+// PRAGMA table_info on a vec0 virtual table reports its declared columns
+// (partition keys included), so the check needs no schema-version bookkeeping.
+func vectorTableHasPrefixColumn(q execer, dim int) (bool, error) {
+	rows, err := q.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, vectorTableName(dim)))
+	if err != nil {
+		return false, fmt.Errorf("inspect vector index: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		// cid, name, type, notnull, dflt_value, pk
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, fmt.Errorf("inspect vector index: %w", err)
+		}
+		if name == "id_prefix" {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect vector index: %w", err)
+	}
+	return false, nil
 }
 
 // syncVectorIndex rebuilds the vector indexes when they disagree with `docs`,
@@ -303,9 +377,29 @@ func syncVectorIndex(db *sql.DB) (bool, error) {
 		}
 		indexed += n
 	}
+	// A stale SCHEMA is a disagreement in its own right, independent of the
+	// row count: an index built before id_prefix became a partition key has the
+	// right number of rows and the wrong shape, so a count-only check would
+	// declare it healthy and every insert would then fail against it. The
+	// documents are the authority, so a stale shape forces the rebuild below.
+	staleSchema := false
+	for _, name := range names {
+		dim, err := strconv.Atoi(strings.TrimPrefix(name, "docs_vec_"))
+		if err != nil {
+			continue // not a dimension table; the GLOB already excluded these
+		}
+		ok, err := vectorTableHasPrefixColumn(db, dim)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			staleSchema = true
+			break
+		}
+	}
 	// A store with no embedding documents and no index is the common case:
 	// nothing to do, and no table to create.
-	if embeddingDocs == indexed {
+	if embeddingDocs == indexed && !staleSchema {
 		return false, nil
 	}
 
@@ -398,7 +492,12 @@ func vectorSearchResult(db *sql.DB, instance, kind string, m map[string]json.Raw
 	if limit > vectorLimitCap {
 		limit = vectorLimitCap
 	}
-	hits, err := vectorSearch(db, instance, kind, model, query, limit)
+	// `idPrefix` narrows the kNN the same way it narrows the text search. It
+	// is applied as a vec0 PARTITION KEY constraint, so k neighbours come from
+	// the prefix itself; a post-filter would return however many survived,
+	// which reads as "nothing matched" when plenty did.
+	idPrefix := strings.TrimSpace(rawString(m, "idPrefix"))
+	hits, err := vectorSearch(db, instance, kind, model, idPrefix, query, limit)
 	if err != nil {
 		return nil, err
 	}
