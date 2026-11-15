@@ -107,6 +107,12 @@ proc main() =
     if content.contains("Durable memory") and content.contains("build.jobs"):
       sawBlockMsg = true
       blockText = content
+      let activity = item{"value"}{"memory"}
+      check("recall persists a distinct display activity for reconnect",
+        activity{"operation"}.getStr("") == "recall" and
+        activity{"phase"}.getStr("") == "applied" and
+        activity{"injected"}.getBool(false) and
+        activity{"turnId"}.getStr("").len > 0, $activity)
   check("the recall block was persisted into the transcript unasked",
         sawBlockMsg,
         "no memory block among " & $listing{"items"}.len & " messages — the " &

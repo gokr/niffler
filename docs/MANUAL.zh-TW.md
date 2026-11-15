@@ -3273,3 +3273,5 @@ SSH 安裝可明確選擇 `service: "process"`。目標 Linux 主機需預先安
 它也不會使供應商的 SSH 閘道新增連接埠轉送能力；Fleet 任務透過 SSH 命令執行。
 只有實際節點 catalog 回應後才儲存已驗證 receipt。路由保留於私有 receipt，
 不改變模型的固定提示前綴，任務結果繼續附加到歷史。
+
+> 語義檢索：memory 驗證分支新增 `memory.embedProvider`，透過提供方嵌入模型查詢 SQLite 向量；空值使用文字排序，失敗時回退。`make install-embed` 安裝無需 Ollama 的本機 nomic，`make embed-up` 啟用監督啟動器；安裝本身不會啟動服務或修改提供方。自動召回仍是有界的常駐事實。詳見英文手冊 “Retrieval, honestly labelled”。

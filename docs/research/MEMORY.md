@@ -1,7 +1,11 @@
 # Memory — durable facts, scoped per repo
 
-Status: **v1 shipped** (`components/memory`). Vector recall is v2 and gated on
-one store-contract change (§7). `docs/research/BACKLOG.md` carried the line
+Status: **text and opt-in semantic retrieval implemented** (`components/memory`).
+Set `memory.embedProvider` to enable embeddings. The original design analysis
+below is historical where it describes vector retrieval as deferred: current
+SQLite retrieval filters candidates by instance and literal idPrefix before
+exact cosine top-k, and memory validates source revisions. See MANUAL.md
+"Retrieval, honestly labelled" and tests/t_memory_embed_chain.nim. `docs/research/BACKLOG.md` carried the line
 "`memory` component — durable fact memory with subject keys, under the D3/D4
 design constraints" with the note that it stays deferred *while its scope and
 retrieval authority are researched*; this document is that research, and the

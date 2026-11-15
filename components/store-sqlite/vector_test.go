@@ -250,3 +250,137 @@ func TestTextSearchStillWorks(t *testing.T) {
 		t.Fatalf("text search found %d items", n)
 	}
 }
+
+// idPrefixPartition is the whole scoping rule for the vector index, and it is
+// derived rather than stored, so the two shapes it must serve are pinned
+// directly. The LAST colon is the load-bearing detail: a memory scope key is a
+// filesystem path and contains colons of its own.
+func TestIdPrefixPartition(t *testing.T) {
+	cases := []struct{ id, want string }{
+		// memory: <scope>:<subject>
+		{"repo:/home/x/proj:build.jobs", "repo:/home/x/proj:"},
+		{"repo:/home/x/proj:deps.package_manager", "repo:/home/x/proj:"},
+		// message: <convId>:<seq>
+		{"conv-1:000042", "conv-1:"},
+		{"conv-1:000043", "conv-1:"},
+		// global scope has no path, still one colon
+		{"global:conventions", "global:"},
+		// no colon: no partition, reachable only by an unscoped query
+		{"plain", ""},
+	}
+	for _, c := range cases {
+		if got := idPrefixPartition(c.id); got != c.want {
+			t.Errorf("idPrefixPartition(%q) = %q, want %q", c.id, got, c.want)
+		}
+	}
+}
+
+// The scoping promise memory recall depends on (docs/research/MEMORY.md §7):
+// a query constrained to one prefix must return k neighbours FROM THAT PREFIX,
+// never another scope's documents and never a shortfall.
+func TestVectorSearchScopesToPrefix(t *testing.T) {
+	db := newTestDB(t)
+	const model = "fixture/embed"
+	const a = "repo:/work/a:"
+	const b = "repo:/work/b:"
+
+	// Scope a: three facts. Scope b: one fact that is CLOSER to the query than
+	// everything in a. A post-filter would return b's hit and drop it, leaving
+	// fewer than k; a partition-constrained kNN must not see it at all.
+	mustOK(t, putEmbedding(t, db, a+"build.jobs", []float64{0.80, 0.60, 0}, model))
+	mustOK(t, putEmbedding(t, db, a+"deps.manager", []float64{0.70, 0.71, 0}, model))
+	mustOK(t, putEmbedding(t, db, a+"test.suite", []float64{0.60, 0.80, 0}, model))
+	mustOK(t, putEmbedding(t, db, b+"build.jobs", []float64{1, 0, 0}, model))
+
+	scoped := searchVector(t, db, fmt.Sprintf(
+		`{"kind":"embedding","model":%q,"vector":[1,0,0],"idPrefix":%q,"limit":10}`,
+		model, a))
+	items, _ := scoped["items"].([]map[string]any)
+	if len(items) != 3 {
+		t.Fatalf("scoped kNN returned %d neighbours, want 3 (a post-filtered "+
+			"global search would return fewer): %#v", len(items), scoped)
+	}
+	for _, item := range items {
+		id, _ := item["id"].(string)
+		if len(id) < len(a) || id[:len(a)] != a {
+			t.Fatalf("scoped kNN leaked %q from another scope", id)
+		}
+	}
+
+	// Unscoped stays exactly as it was: every scope, still nearest-first.
+	all := searchVector(t, db, fmt.Sprintf(
+		`{"kind":"embedding","model":%q,"vector":[1,0,0],"limit":10}`, model))
+	allItems, _ := all["items"].([]map[string]any)
+	if len(allItems) != 4 {
+		t.Fatalf("unscoped kNN returned %d neighbours, want 4", len(allItems))
+	}
+	first, _ := allItems[0]["id"].(string)
+	if first != b+"build.jobs" {
+		t.Fatalf("unscoped nearest = %q, want the b-scope fact", first)
+	}
+}
+
+// A store created before id_prefix became a partition key must be repaired at
+// startup, not served with a schema that rejects every insert. The old table
+// is simulated here exactly as the previous release built it.
+func TestVectorIndexMigratesFromPrefixlessSchema(t *testing.T) {
+	db := newTestDB(t)
+	const model = "fixture/embed"
+
+	// Build the PREVIOUS index shape by hand (no id_prefix column), as the
+	// last release did, then let the startup sync see it.
+	if _, err := db.DB.Exec(`CREATE VIRTUAL TABLE docs_vec_3 USING vec0(
+		docs_rowid INTEGER PRIMARY KEY,
+		kind TEXT PARTITION KEY,
+		model TEXT PARTITION KEY,
+		embedding float[3] distance_metric=cosine)`); err != nil {
+		t.Fatalf("create old-shape index: %v", err)
+	}
+	// Seed canonical documents as an older release would already have stored
+	// them. Rebuild must preserve populated stores too, not just empty schemas.
+	if _, err := db.DB.Exec(`INSERT INTO docs(kind,id,value,rev) VALUES
+		('embedding','repo:/p:old',?,1)`,
+		`{"model":"fixture/embed","vector":[0,1,0],"dimensions":3}`); err != nil {
+		t.Fatal(err)
+	}
+	// The shape check must report the stale table as unusable BEFORE anything
+	// writes through it: that is what routes a store booted from an older
+	// release to the repair instead of failing every put.
+	if ok, err := vectorTableExists(db.DB, 3); err != nil || ok {
+		t.Fatalf("vectorTableExists on a prefixless index = (%v, %v), want (false, nil)", ok, err)
+	}
+	// In production the repair runs at startup, before any traffic
+	// (main.go: syncVectorIndex right after syncSearchIndex). The document is
+	// therefore written AFTER the rebuild here, which matches the sequence a
+	// store upgraded on boot actually performs.
+	if _, err := syncVectorIndex(db.DB); err != nil {
+		t.Fatalf("syncVectorIndex: %v", err)
+	}
+	mustOK(t, putEmbedding(t, db, "repo:/p:a", []float64{1, 0, 0}, model))
+	if ok, err := vectorTableExists(db.DB, 3); err != nil || !ok {
+		t.Fatalf("after rebuild vectorTableExists = (%v, %v), want (true, nil)", ok, err)
+	}
+	// The rebuilt index serves the scoped query the old one could not.
+	scoped := searchVector(t, db, fmt.Sprintf(
+		`{"kind":"embedding","model":%q,"vector":[1,0,0],"idPrefix":"repo:/p:","limit":5}`, model))
+	items, _ := scoped["items"].([]map[string]any)
+	if len(items) != 2 {
+		t.Fatalf("rebuilt index did not preserve old and new documents: %#v", scoped)
+	}
+}
+
+func TestVectorSearchArbitraryLiteralPrefix(t *testing.T) {
+	db := newTestDB(t)
+	const model = "prefix-test"
+	for _, id := range []string{"repo:/a_%:x", "repo:/a_OTHER:x", "repo:/a_%:xyz"} {
+		mustOK(t, putEmbedding(t, db, id, []float64{1, 0, 0}, model))
+	}
+	r := searchVector(t, db, `{"kind":"embedding","model":"prefix-test","vector":[1,0,0],"idPrefix":"repo:/a_%:x","limit":1}`)
+	items, _ := r["items"].([]map[string]any)
+	if len(items) != 1 || r["hasMore"] != true {
+		t.Fatalf("literal prefix/top-k: %#v", r)
+	}
+	if items[0]["id"] != "repo:/a_%:x" {
+		t.Fatalf("prefix wildcard escaped incorrectly: %#v", items)
+	}
+}

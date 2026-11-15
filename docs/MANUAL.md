@@ -1291,13 +1291,38 @@ Subagents fail closed: a session with `sessionmeta.parent` may not write.
 
 ### Retrieval, honestly labelled
 
-`memory_search` ranks with a local token-prefix AND over subjects, text and
-tags — the store's own matching rule — and reports `ranker: "text"`. Vector
-recall is **not** wired yet on purpose: `search {kind:"embedding"}` partitions
-vec0 by `kind`+`model` only, so a scope filter inside kNN needs `id_prefix` as
-a partition key; post-filtering a top-k would return a silent shortfall
-([research/MEMORY.md](research/MEMORY.md) §7). A scope holds a few hundred
-facts, so local ranking is exact today.
+Set `memory.embedProvider` to an embedding-capable provider nickname to enable
+semantic `memory_search` and query-focused `memory_recall`. Empty (the default)
+uses text ranking. An embedding failure falls back to text; search reports the
+ranker and a warning. Automatic birth/post-compaction recall still supplies
+bounded standing facts, not a semantic query against the latest turn.
+
+Semantic retrieval lazily derives revision-tagged embedding documents from
+curated facts, uses `search_document:` / `search_query:` prefixes, and validates
+hits against the current source revision so forgotten or corrected text cannot
+be recalled from an old vector. SQLite applies instance and arbitrary literal
+`idPrefix` filters before its exact cosine-distance top-k. This is an exact scan
+of filtered candidates, not an approximate index-speed claim. TiDB vector
+retrieval remains unsupported.
+
+For local nomic without Ollama:
+
+```bash
+make install-embed    # optional llama.cpp CPU runner + Q4 GGUF (~107 MB)
+make embed-up        # persisted supervised local-embed launcher; live harness
+```
+
+Register a keyless loopback provider with `baseUrl` set to
+`http://127.0.0.1:18100/v1` and `embedModel: "local-nomic-q4"`, then set
+`memory.embedProvider` to that nickname through config. `make embed-down` removes
+the launcher record. Installation does not start a service or change providers.
+The foreground equivalent is `bash scripts/embed-server.sh`; the runtime binds
+loopback and uses a 2048-token context/batch. Do not infer an 8192-token window
+from the original model card. A Linux CPU smoke run with llama.cpp b12345 and
+nomic Q4 returned 768-dimensional vectors and ranked a dependency query closer
+to the package-manager fact than to unrelated text. This is a smoke check, not
+a retrieval-quality benchmark or macOS certification; the deterministic fixture
+validates plumbing, not nomic accuracy.
 
 Memory searches *memory*. For what was said earlier in a conversation —
 including text a trim removed — use

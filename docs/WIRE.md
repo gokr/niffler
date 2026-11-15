@@ -1898,7 +1898,11 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
   it in the same transaction, a startup disagreement re-derives it from the
   documents, and dropping it loses nothing. Consumers never see which index
   answered. The sqlite engine implements it with sqlite-vec (`vec0` tables
-  partitioned by kind and model, one table per vector width); the tidb
+  partitioned by kind, model and derived id prefix, one table per vector width).
+  Queries apply instance and literal `idPrefix` filters before exact cosine
+  top-k evaluation; arbitrary prefixes need not end at a partition boundary.
+  This preserves correct k without post-filter shortfalls, at filtered-scan
+  cost rather than an approximate-index performance guarantee. The tidb
   engine does not yet, and answers `code: "unsupported"` rather than
   pretending to have searched.
 - **Engines**: the sqlite engine (default) answers from an FTS5 index
