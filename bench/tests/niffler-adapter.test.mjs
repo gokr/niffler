@@ -109,3 +109,46 @@ test("readiness waits for catalogs instead of accepting the initial four-tool ra
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// The sandbox maps are env text handed to a DIFFERENT process tree, so a
+// wrong spelling is silent at write time and fatal at run time: bash matches
+// cwd against the map, finds nothing and answers `exit 125` to every command
+// (deepswe pilot10: 83/83 calls). These pin the spelling contract.
+test("sandbox map names each cell's session workspace, not the prepared path", () => {
+  const tmp = fs.mkdtempSync(path.resolve("var/niffler-sandboxmap-test-"));
+  try {
+    const h = new NifflerHarness({ benchRoot: tmp, runRoot: path.join(tmp, "run"),
+      baseUrl: "http://x", apiKey: "k", model: "m" });
+    const repo = path.join(tmp, "var", "bench", "results", "R", "niffler__m__t01", "repo");
+    h.addWorkspace(repo, "img-a");
+    // The entry must use workspaceFor's spelling (under the harness root),
+    // because that is the cwd the session is actually given.
+    const map = h.sandboxMap();
+    assert.equal(map, `${h.workspaceFor(repo)}=img-a`);
+    assert.ok(!map.includes(repo), "the prepared path must not be the map key");
+    // One line per cell, same image namespace as the container name.
+    h.addWorkspace(repo, "img-a"); // idempotent: a repeated round must not duplicate
+    assert.equal(h.sandboxMap().split("\n").length, 1);
+    assert.match(h.containerMap(), /^.+=nif-task-[0-9a-f]{24}$/);
+    // No registered cells: fall through to whatever the caller exported, so a
+    // non-container run keeps an operator-provided map.
+    const bare = new NifflerHarness({ benchRoot: tmp, runRoot: path.join(tmp, "run2"),
+      baseUrl: "http://x", apiKey: "k", model: "m" });
+    const prev = process.env.NIF_BASH_SANDBOX_MAP;
+    process.env.NIF_BASH_SANDBOX_MAP = "/work/task-a=img";
+    try {
+      assert.equal(bare.sandboxMap(), "/work/task-a=img");
+    } finally {
+      if (prev === undefined) delete process.env.NIF_BASH_SANDBOX_MAP;
+      else process.env.NIF_BASH_SANDBOX_MAP = prev;
+    }
+    // A path outside the mirrored subtree cannot be spelled under the harness
+    // root; it must fall back to its own path rather than become "null".
+    const outside = new NifflerHarness({ benchRoot: tmp, runRoot: path.join(tmp, "run3"),
+      baseUrl: "http://x", apiKey: "k", model: "m" });
+    outside.addWorkspace("/elsewhere/repo", "img-b");
+    assert.equal(outside.sandboxMap(), "/elsewhere/repo=img-b");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

@@ -6,6 +6,7 @@
 // then each round is a blocking `cli call session` (the session tool runs
 // the whole turn and returns the final reply). Usage is summed from the
 // persisted transcript (assistant messages carry `usage`).
+import { taskContainerName } from "../lib/task-container.mjs";
 import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
@@ -91,6 +92,7 @@ export class NifflerHarness {
     // the shared llm component can reach a second provider (e.g. Synthetic)
     // without touching the provider store; the worker keeps its own model.
     this.expertJudge = opts.expertJudge || null;
+    this.sandboxMapEntries = opts.sandboxMapEntries || [];
   }
 
   cliEnv() {
@@ -103,9 +105,42 @@ export class NifflerHarness {
       ...process.env,
       NIF_NATS_URL: `nats://127.0.0.1:${this.natsPort}`,
       NIF_ROOT: this.root,
+      NIF_BASH_SANDBOX_MAP: this.sandboxMap(),
+      NIF_BASH_CONTAINER_MAP: this.containerMap(),
     };
     if (this.xdgDir) env.XDG_CONFIG_HOME = this.xdgDir;
     return env;
+  }
+
+  // The sandbox map is NOT the parent env's: a cell works in the run-tree
+  // COPY of a task checkout (bench/run.mjs prepareRepo), which the --agent-env
+  // map — naming the prepared task root — cannot match, so the harness would
+  // hand the agent a shell that answers `exit 125` to every command (deepswe
+  // pilot10: 83/83 bash calls). run.mjs registers each cell's workspace (and
+  // its agent image) before the turn; the map is rebuilt on every harness
+  // (re)start from whatever is registered then.
+  addWorkspace(repo, image) {
+    if (!repo || !image) return;
+    if (!this.sandboxMapEntries.some((e) => e.repo === repo)) {
+      this.sandboxMapEntries.push({ repo, image });
+    }
+  }
+
+  // One line per cell: `<session workspace>=<agent image>`, spelled EXACTLY as
+  // workspaceFor() hands it to the session. Any other spelling (a symlink
+  // alias, the prepared-task path) is a directory the agent never names as
+  // its cwd, so bash would match no image and refuse every command.
+  sandboxMap() {
+    const entries = this.sandboxMapEntries || [];
+    if (!entries.length) return process.env.NIF_BASH_SANDBOX_MAP || "";
+    return entries
+      .map(({ repo, image }) => `${this.workspaceFor(repo) || repo}=${image}`)
+      .join("\n");
+  }
+
+  containerMap() {
+    return this.sandboxMapEntries.map(({ repo }) =>
+      (this.workspaceFor(repo) || repo) + "=" + taskContainerName(repo)).join("\n");
   }
 
   async start() {
@@ -198,6 +233,10 @@ export class NifflerHarness {
       NIF_OPENAI_BASE_URL: this.baseUrl,
       NIF_OPENAI_API_KEY: this.apiKey,
       NIF_OPENAI_MODEL: this.model,
+      // Re-spelled under this run's root (see sandboxMap): an entry the bash
+      // component cannot match costs the agent its entire shell.
+      NIF_BASH_SANDBOX_MAP: this.sandboxMap(),
+      NIF_BASH_CONTAINER_MAP: this.containerMap(),
       // Headless bench: no human to approve gated tools (edit/write).
       // This is the documented automation bypass; it only affects this
       // private bench harness (isolated NIF_ROOT + bus), never the dev's.

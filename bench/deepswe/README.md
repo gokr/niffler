@@ -44,16 +44,19 @@ a double deviation: the agent was denied the sanctioned environment AND
 denied validation the upstream agent performs. The port now matches the
 protocol:
 
-- **Commands run inside the task's agent image** — the upstream agent
-  container's semantics. `NIF_BASH_SANDBOX_MAP` (written by prepare.mjs to
-  `var/bench/deepswe/image-home/env.sh`, applied with `--agent-env`) maps
-  each workspace to its image; the bash component wraps every command in
-  `docker run --rm --network none` of that image with **only the workspace
-  bind-mounted at the same path**. The image's toolchains, package caches
-  and site-packages are simply there; held-out material and other
-  checkouts are invisible by construction. Deviation, documented: the
-  container is per command, so nothing outside the workspace persists
-  between commands (the workspace is the whole state).
+- **Commands use one persistent offline container per live cell**, for both
+  Niffler and Pi. The runner maps the copied cell workspace (not the prepared
+  source checkout) to its image. Niffler's bash uses `docker exec` through
+  `NIF_BASH_CONTAINER_MAP`; Pi's isolated `shellPath` uses the same exec
+  transport. Commands run as the host UID/GID, preserving host-side edit and
+  git ownership. `/tmp`, caches and background services survive between calls.
+  `/app` and each lane's workspace spelling bind-mount the same checkout,
+  preventing edits and validation from accidentally using different copies.
+  Containers are removed after a cell finishes and swept at run completion.
+  This is environment parity for shell commands, not whole-agent isolation:
+  both harnesses and their file tools still run on the host.
+  Earlier pilot runs are not fair comparisons: Pi used the host shell while
+  Niffler used fresh per-command containers (and initially an unmatched map).
 - **Dependencies as the task ships them.** prepare.mjs overlays the image's
   `/app` (minus `.git` — the `base` tag stays the diff baseline) on the
   checkout: `node_modules` and friends exactly as prepared.
@@ -134,10 +137,10 @@ mirrors), `tasks/` (the task root handed to run.mjs), `evaluations/`
 - **`--rounds 1` is canonical.** Multi-round feedback would feed hidden-test
   failure output back to the agent — report any such run as non-canonical
   (same rule as SWE-bench).
-- **Host workspace, not a container.** DeepSWE's official protocol runs the
-  agent inside a no-network container. We hand agents a plain git checkout on
-  the host (like bench/swe), with "no network / no test runs / stay in repo"
-  rules in the prompt. This is test hiding, not a hostile-process sandbox.
+- **Shell isolation, not whole-agent isolation.** Niffler and Pi commands run
+  in persistent no-network task containers with prepared dependencies. Their
+  harness processes and file tools still run on the host, with workspace
+  restrictions in the prompt; this is not a hostile-process sandbox.
 - **Commit protocol.** The official instruction asks agents to commit their
   work; verification diffs against the `base` tag, so committing or not makes
   no difference to grading.

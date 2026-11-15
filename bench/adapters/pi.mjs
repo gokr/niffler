@@ -3,6 +3,7 @@
 // One round = one `pi --mode json -p <prompt>` invocation. Round 2+ continue
 // the same session file via `--session`. Tokens come from the session JSONL
 // (authoritative; stdout events are only used for error detection).
+import { taskContainerName } from "../lib/task-container.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { run, parseJsonLines } from "../lib/util.mjs";
@@ -149,8 +150,17 @@ export async function round(opts) {
   if (thinking) args.push("--thinking", thinking);
   args.push("-p", prompt);
 
+  let cellCfg = cfgDir;
+  if (fs.existsSync(path.join(repo, "..", "container-shell"))) {
+    cellCfg = path.join(repo, "..", "pi-config");
+    fs.mkdirSync(cellCfg, { recursive: true });
+    fs.copyFileSync(path.join(cfgDir, "models.json"), path.join(cellCfg, "models.json"));
+    fs.writeFileSync(path.join(cellCfg, "settings.json"), JSON.stringify({
+      shellPath: path.resolve(repo, "..", "container-shell"),
+    }));
+  }
   const env = {
-    PI_CODING_AGENT_DIR: cfgDir,
+    PI_CODING_AGENT_DIR: cellCfg,
     DEEPSEEK_API_KEY: keys.DEEPSEEK_API_KEY || "missing",
     LLMGATEWAY_API_KEY: keys.LLMGATEWAY_API_KEY || "missing",
     SYNTHETIC_API_KEY: keys.SYNTHETIC_API_KEY || "missing",

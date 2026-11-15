@@ -113,6 +113,24 @@ function run2(cmd, args, options = {}) {
   }
 }
 
+// Canonical (symlink-resolved) spelling of the deepest existing ancestor of
+// `p`, with the not-yet-created tail appended. Same rule as the bash-side
+// realPathOf, so a map entry and the agent's workspace agree on one path.
+function realpathPrefix(p) {
+  let probe = path.resolve(p);
+  const tail = [];
+  while (true) {
+    try {
+      return path.join(fs.realpathSync(probe), ...tail);
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) return path.join(probe, ...tail);
+      tail.unshift(path.basename(probe));
+      probe = parent;
+    }
+  }
+}
+
 // One shared mirror per upstream repo; checkouts are shallow at base_commit.
 const byRepo = new Map();
 for (const row of rows) {
@@ -135,7 +153,19 @@ for (const row of rows) {
   const taskDir = path.join(out, id);
   const repoDir = path.join(taskDir, "repo");
   const mirror = path.join(mirrors, safeRepo(row.repository_url) + ".git");
-  fs.rmSync(taskDir, { recursive: true, force: true });
+  // A prepared task dir must be wiped even when it holds root-owned files:
+  // a sandboxed command that writes outside its bind-mounted workspace (an
+  // agent that wandered into a sibling checkout, or a container's own
+  // scratch) leaves entries this process cannot stat — and a plain rmSync
+  // then aborts the whole preparation. Rename aside instead; the stale
+  // directory is disposable, exactly as in bench/run.mjs resetWorkdir.
+  try {
+    fs.rmSync(taskDir, { recursive: true, force: true });
+  } catch {
+    try {
+      fs.renameSync(taskDir, taskDir + ".stale-" + Date.now());
+    } catch {}
+  }
   fs.mkdirSync(taskDir, { recursive: true });
 
   // Shallow checkout at exactly base_commit; no future refs exposed.
@@ -149,7 +179,15 @@ for (const row of rows) {
     console.log(`extracting ${id} workspace from its agent image…`);
     extractImageEnv(row.agent_image, repoDir);
   }
-  sandboxMap.push(`${repoDir}=${row.agent_image}`);
+  // The map is consumed by procutil's netScoped in a DIFFERENT process tree
+  // (the harness), so no run-time code can canonicalize it for us: resolve
+  // symlinks here, once, at write time. ROOT is routinely a path through a
+  // symlink (`/home/u/git/x` → `/mnt/...`), while the workspace handed to the
+  // agent is spelled from the run directory the harness was spawned with — a
+  // raw `repoDir` then matched nothing and every bash call in a run answered
+  // `exit 125` (deepswe pilot10: 83/83). `realpathSync` resolves the longest
+  // existing prefix, so a task dir created later still matches.
+  sandboxMap.push(`${realpathPrefix(repoDir)}=${row.agent_image}`);
 
   fs.writeFileSync(path.join(cards, id + ".json"), JSON.stringify(row, null, 2) + "\n");
   fs.writeFileSync(
@@ -164,6 +202,7 @@ for (const row of rows) {
         verify: "verify.sh",
         protected: row.protected || [],
         agentImage: row.agent_image,
+        environmentPrepared: !skipExtract,
         agentTimeoutSec: row.agent_timeout_sec,
         verifierTimeoutSec: row.verifier_timeout_sec,
       },

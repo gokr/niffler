@@ -14,6 +14,7 @@ import url from "node:url";
 import { execFileSync } from "node:child_process";
 import { run, readJson, writeJson, tail, nowIso, zeroUsage } from "./lib/util.mjs";
 import { resolveKeys } from "./lib/keys.mjs";
+import { startTaskContainer, stopTaskContainer, taskContainerName } from "./lib/task-container.mjs";
 import * as pi from "./adapters/pi.mjs";
 import * as oc from "./adapters/opencode.mjs";
 import * as cw from "./adapters/codewhale.mjs";
@@ -231,19 +232,24 @@ function git(repo, args) {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
+// rm that survives root-owned leftovers (see resetWorkdir and the post-diff
+// .git strip): a delete that cannot complete must not fail the cell.
+function removeTree(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    try {
+      fs.renameSync(dir, dir + ".stale-" + Date.now());
+    } catch {}
+  }
+}
+
 // Agents on this box may run docker bind-mounts that leave root-owned scratch
 // in a workdir (seen: cpython-39 .pyc from an agent-run container). A plain
 // rm then fails, which would crash the lane; fall back to renaming the
 // poisoned dir aside so the rerun starts clean.
 function resetWorkdir(workdir) {
-  try {
-    fs.rmSync(workdir, { recursive: true, force: true });
-  } catch {
-    try {
-      fs.renameSync(workdir, workdir + ".poisoned-" + Date.now());
-    } catch {}
-    fs.rmSync(workdir, { recursive: true, force: true });
-  }
+  removeTree(workdir);
   fs.mkdirSync(workdir, { recursive: true });
 }
 
@@ -422,12 +428,40 @@ const ADAPTERS = {
 const isNifflerHarness = (name) => name === "niffler" || name === "niffler-expert";
 const isDshHarness = (name) => name === "dsh";
 
+// Sandbox map for the harness combo's cells: which prepared agent image owns
+// each live workspace. run.mjs owns the cell→workspace relation (it copies the
+// tasks), so the entries are built here and handed to the adapter, which
+// spells them under its own run root.
+const sandboxMapEntries = new Map(); // harness|model -> [{repo, image}]
+// Task metadata (agent image, protected paths), filled by main() before any
+// combo boots — ensureCombo needs it at the module level.
+const taskMetaOf = new Map(); // taskId -> meta.json
+function sandboxMapEntriesFor(combo) {
+  const key = `${combo.harness}|${combo.model}`;
+  if (!sandboxMapEntries.has(key)) sandboxMapEntries.set(key, []);
+  return sandboxMapEntries.get(key);
+}
+
 // ---------- one task run ----------
 async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   const workdir = path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`);
   resetWorkdir(workdir);
   const repo = path.join(workdir, "repo");
   prepareRepo(taskId, repo);
+  if (taskMeta.agentImage && taskMeta.environmentPrepared !== true) {
+    throw new Error("Task dependencies not certified prepared; rerun prepare.mjs without --skip-extract");
+  }
+  if (taskMeta.agentImage && !["niffler", "pi"].includes(combo.harness)) {
+    throw new Error("Prepared-container tasks currently support niffler and pi only");
+  }
+  // One offline container per live cell, shared by all commands in it. Only
+  // niffler needs the alias: its workspace is spelled under the run root, so
+  // the mount must carry that second name for the agent's cwd to exist inside.
+  const taskContainer = taskMeta.agentImage
+    ? startTaskContainer(repo, taskMeta.agentImage,
+        combo.harness === "niffler" ? [shared.niffler.workspaceFor(repo)] : [])
+    : null;
+  if (taskContainer) shared.taskContainers.push(taskContainer);
   const sessionId = `bench-${RUN_ID}-${combo.harness}-${taskId}`.replace(
     /[^a-zA-Z0-9._-]/g,
     "-",
@@ -545,6 +579,11 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
           });
           adapterState.sessionId = res.sessionId;
         } else if (isNifflerHarness(combo.harness)) {
+          // The cell's workspace must be sandbox-mapped BEFORE the first turn:
+          // the harness reads the map at boot, and a workspace added after the
+          // components spawned cannot reach this cell's bash — every command
+          // would answer `exit 125`. Idempotent, so later rounds repeat it.
+          shared.niffler.addWorkspace(repo, taskMeta?.agentImage);
           res = await shared.niffler.round({
             sessionId,
             prompt,
@@ -839,6 +878,13 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     // leaked cell's verdict says nothing about capability. See transcriptShape.
     leaked: shape?.leaked === true,
     leakUrls: shape?.leakUrls || [],
+    // How the cell ran, so a slow or odd verdict can be attributed: a
+    // persistent offline container keeps caches and services between commands
+    // (unlike the per-command docker run), which changes what the agent sees.
+    environment: taskContainer
+      ? { mode: "persistent-offline-container", image: taskMeta.agentImage,
+          uid: process.getuid(), gid: process.getgid() }
+      : null,
     firstPromptTokens,
     footprintOver,
     expert,
@@ -848,6 +894,12 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     workdir,
   };
   writeJson(path.join(workdir, "result.json"), result);
+  // The cell is scored: release its container before anything else can throw,
+  // so a cleanup failure cannot turn a finished run into an `error` cell.
+  if (taskContainer) {
+    stopTaskContainer(taskContainer);
+    shared.taskContainers = shared.taskContainers.filter((name) => name !== taskContainer);
+  }
   if (shape?.leaked) {
     console.warn(
       `[${combo.harness}/${combo.model}/${taskId}] LEAK — ${shape.leakUrls.length} external URL(s) reached, verdict not attributable: ${shape.leakUrls[0]}`,
@@ -857,9 +909,12 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   // diff stats are captured the nested .git is pure scratch. Strip it by
   // default so VSCode and other editor scanners do not list every completed
   // benchmark task as a repository; --keep-repos preserves it for debugging.
-  if (!KEEP_REPOS) {
-    fs.rmSync(path.join(repo, ".git"), { recursive: true, force: true });
-  }
+  // Sandboxed commands run as the host UID inside the task image, so scratch
+  // they leave may still be unwritable for a plain rmSync — which used to
+  // abort the cell AFTER its verdict and record an `error` with no result.
+  // RemoveTree renames such a directory aside: .git is disposable once the
+  // diff is captured.
+  if (!KEEP_REPOS) removeTree(path.join(repo, ".git"));
   console.log(
     `[${combo.harness}/${combo.model}/${taskId}] ${verdict.toUpperCase()} ` +
       `${result.totalTimeS.toFixed(0)}s, ${result.rounds} rounds, ` +
@@ -888,6 +943,9 @@ async function ensureCombo(combo) {
       const shared = {
         piCfgDir: pi.setupPiConfig(comboRoot, cfg),
         ccCfgDir: cc.setupClaudeCodeConfig(comboRoot),
+        // Containers started for the cells of this combo, so the shutdown
+        // path can reap one whose cell threw before its own teardown.
+        taskContainers: [],
         droidSettings: combo.modelCfg.droid
           ? droid.setupDroidConfig(comboRoot, combo.modelCfg.droid)
           : null,
@@ -901,6 +959,7 @@ async function ensureCombo(combo) {
           model: combo.modelCfg.niffler.model,
           thinking: thinkingByHarness ? thinkingFor("niffler") : combo.modelCfg.niffler.thinking || "",
           maxTurnRounds,
+          sandboxMapEntries: sandboxMapEntriesFor(combo),
           // LLM requests must outlive the longest thinking stream: the
           // turn timeout alone once killed a 19m41s high-effort thinking
           // call at the 5-min default, and the retry re-did the whole turn
@@ -914,6 +973,19 @@ async function ensureCombo(combo) {
                 }
               : null,
         });
+        // Every cell this combo will run must be in the sandbox map BEFORE
+        // the harness boots: the map becomes an env var of the core process,
+        // and the components (bash included) inherit it once, at spawn — a
+        // workspace registered after boot could never be sandboxed and its
+        // every command would answer `exit 125`.
+        for (const taskId of tasks) {
+          const meta = taskMetaOf.get(taskId) ||
+            readJson(path.join(TASK_ROOT, taskId, "meta.json"));
+          shared.niffler.addWorkspace(
+            path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "repo"),
+            meta?.agentImage,
+          );
+        }
         console.log(`booting niffler harness (${combo.model}) on a private bus…`);
         try {
           await shared.niffler.start();
@@ -1042,9 +1114,12 @@ async function main() {
       cells.push({ combo: combos[(i + t) % combos.length], taskId: tasks[t] });
     }
   }
-  const taskMetaOf = new Map(
-    tasks.map((taskId) => [taskId, readJson(path.join(TASK_ROOT, taskId, "meta.json"))]),
-  );
+  // Fill the module-level map (ensureCombo needs it before any combo boots),
+  // not a function-local one: the map is read at harness boot time, which
+  // happens inside ensureCombo, not here.
+  for (const taskId of tasks) {
+    taskMetaOf.set(taskId, readJson(path.join(TASK_ROOT, taskId, "meta.json")));
+  }
   const taskPromptOf = new Map(
     tasks.map((taskId) => [taskId, fs.readFileSync(path.join(TASK_ROOT, taskId, "prompt.md"), "utf8")]),
   );
@@ -1088,11 +1163,24 @@ async function main() {
           path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "result.json"),
           { runId: RUN_ID, harness: combo.harness, model: combo.model, task: taskId, verdict: "error", error: String(err?.stack || err) },
         );
+      } finally {
+        // A cell that threw before its own teardown must not leak a container
+        // for the rest of the run — every one of them is a live docker.
+        const st = comboStates.get(`${combo.harness}|${combo.model}`);
+        const name = taskContainerName(path.join(RESULTS,
+          `${combo.harness}__${combo.model}__${taskId}`, "repo"));
+        if (st?.shared?.taskContainers?.includes(name)) {
+          stopTaskContainer(name);
+          st.shared.taskContainers = st.shared.taskContainers.filter((n) => n !== name);
+        }
       }
     }
   }
   await Promise.all(Array.from({ length: Math.min(JOBS, cells.length) }, worker));
   for (const st of comboStates.values()) {
+    // Reap any container a cell left behind (a crash between start and its
+    // own teardown), before the harness holding its mounts goes away.
+    for (const name of st.shared?.taskContainers || []) stopTaskContainer(name);
     if (st.shared?.niffler) {
       console.log(`stopping niffler harness (${st.combo.model})…`);
       await st.shared.niffler.stop();
