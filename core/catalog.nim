@@ -1132,9 +1132,24 @@ proc clientCount*(cat: Catalog): int =
   for comp in cat.components.values:
     if comp.client: inc result
 
+proc announceDeparture*(cat: Catalog, name: string, pid: int) =
+  ## Tell the bus that one registered pid is gone. A component normally
+  ## publishes its own reg.depart; when the SUPERVISOR observes the death
+  ## instead, this core is the supervisor of record for that pid and peers
+  ## depend on hearing it — a catalog that keeps a dead pid keeps advertising
+  ## a service nothing can reach (for a session runner that is fatal:
+  ## ensureRunner's presence test skips the replacement and every turn is
+  ## published into the void — the stuck conversation conv-86b2545d9f27,
+  ## 2026-10-14). reg.publish/reg.depart are bare JSON, not envelopes. The
+  ## reg.depart handler ignores a pid it does not hold (stale duplicate), so
+  ## the announcement converges in one pass and never loops.
+  cat.nc.publish("reg.depart", $ %*{"name": name, "pid": pid})
+
 proc dropReplica*(cat: Catalog, name: string, pid: int) =
   ## Called by the supervisor when one process dies without reg.depart. Keep
-  ## the logical component registered while another queue-group replica lives.
+  ## the logical component registered while another queue-group replica lives,
+  ## and announce the death so other catalogs on the bus drop the same pid
+  ## (announceDeparture).
   if not cat.components.hasKey(name): return
   var reg = cat.components[name]
   if pid > 0 and reg.pids.len > 0:
@@ -1142,6 +1157,7 @@ proc dropReplica*(cat: Catalog, name: string, pid: int) =
     for livePid in reg.pids:
       if livePid != pid: remaining.add(livePid)
     if remaining.len == reg.pids.len: return
+    cat.announceDeparture(name, pid)
     if remaining.len > 0:
       reg.pids = remaining
       reg.pid = remaining[0]
@@ -1155,6 +1171,44 @@ proc dropComponent*(cat: Catalog, name: string) =
   ## Remove an entire logical component (all replicas), used by explicit
   ## core.kill/core.remove. Crashes use dropReplica instead.
   cat.dropRegistration(name, "removed")
+
+proc pidAlive*(pid: int): bool =
+  ## Liveness probe for a registered pid: signal 0 asks the kernel whether the
+  ## process exists without delivering anything. Platforms without a cheap
+  ## equivalent (and any pid <= 0) assume presence, never death.
+  when defined(posix):
+    if pid <= 0: return false
+    result = kill(Pid(pid), 0) == 0
+  else:
+    result = pid > 0
+
+proc registrationAlive*(reg: ComponentReg): bool =
+  ## Does this registration still describe a running process? Presence in the
+  ## catalog is no proof of life: a component that dies without a reg.depart
+  ## (SIGKILL, a drain timeout, a death its own core never announced) leaves
+  ## its registration behind, and so does a replica mirrored from another
+  ## harness on the bus whose process is long gone. Callers that must not act
+  ## on a corpse ask here instead of testing "hasKey" — see
+  ## ensureRunner/dropPhantom. A registration naming no pid at all counts as
+  ## alive: spawning on missing information is the worse error. pid reuse can
+  ## keep a dead entry looking alive for a while — the same trade-off
+  ## reapDeadClients accepts for the cheap probe.
+  if reg.pids.len > 0:
+    for pid in reg.pids:
+      if pidAlive(pid): return true
+    return false
+  if reg.pid > 0: return pidAlive(reg.pid)
+  return true
+
+proc dropPhantom*(cat: Catalog, name: string): bool =
+  ## Drop a registration whose every pid is gone (registrationAlive) so a
+  ## liveness-testing caller can proceed; returns true when one was dropped.
+  ## Distinct from dropComponent: nothing is running here to stop, and the
+  ## entry is removed because it is a lie, not because a human asked.
+  if not cat.components.hasKey(name): return false
+  if registrationAlive(cat.components[name]): return false
+  cat.dropRegistration(name, "lost (phantom: no live pid)")
+  return true
 
 var lastClientSweep = 0.0
 
@@ -1179,7 +1233,7 @@ proc reapDeadClients*(cat: Catalog) =
     if not reg.client: continue
     var alive = false
     for pid in reg.pids:
-      if pid > 0 and kill(Pid(pid), 0) == 0: alive = true
+      if pidAlive(pid): alive = true
     if not alive and reg.pids.len > 0:
       dead.add(name)
   for name in dead:

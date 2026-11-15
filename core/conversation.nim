@@ -6648,13 +6648,29 @@ func toolSubject*(sessionId: string): string =
   ## live lease and re-enters the one dispatch gate (see dispatch.nim).
   "svc.session." & sanitizeSessionId(sessionId) & ".tool"
 
+proc runnerLive(ct: CoreTools, rname: string): bool =
+  ## True when `rname` is registered AND that registration still names a live
+  ## pid. A dead runner's leftover registration is a phantom: testing
+  ## presence alone makes the caller below skip the spawn, after which every
+  ## turn is published to a subject with no subscriber — the conversation
+  ## hangs with no error (conv-86b2545d9f27, 2026-10-14). Presence is the
+  ## readiness signal only while the process behind it exists.
+  if not ct.cat.components.hasKey(rname): return false
+  registrationAlive(ct.cat.components[rname])
+
 proc ensureRunner*(ct: CoreTools, sessionId: string): string =
   ## Return the scoped call subject for `sessionId`, spawning its session
   ## runner (a supervised child, policy never) if it is not alive. The
   ## runner announces itself as component "session-<id>" with 0 tools —
-  ## presence in the catalog is the readiness signal.
+  ## presence in the catalog is the readiness signal, once it names a live
+  ## process (runnerLive).
   let rname = runnerName(sessionId)
-  if not ct.cat.components.hasKey(rname):
+  if not ct.runnerLive(rname):
+    # Drop a registration whose pid is gone before judging readiness: it is
+    # not a child of ours to wait for, and letting it satisfy the test below
+    # is what strands the conversation. Nothing is running, so this only
+    # clears the stale entry (and announces it, so peers converge too).
+    discard ct.cat.dropPhantom(rname)
     var spawning = false
     for c in ct.sup.children:
       if c.name == rname: spawning = true
@@ -6680,15 +6696,15 @@ proc ensureRunner*(ct: CoreTools, sessionId: string): string =
       var spawning = false
       for c in ct.sup.children:
         if c.name == rname: spawning = true
-      if not spawning and not ct.cat.components.hasKey(rname):
+      if not spawning and not ct.runnerLive(rname):
         # the entry was reaped mid-wait: spawn the replacement now
         let bin = ct.root / "var" / "bin" / "session"
         if fileExists(bin):
           discard ct.sup.addChild(rname, bin, rpNever, @[sessionId])
           ct.sup.startChild(ct.sup.children[^1])
-    if ct.cat.components.hasKey(rname): break
+    if ct.runnerLive(rname): break
     sleep(100)
-  if not ct.cat.components.hasKey(rname):
+  if not ct.runnerLive(rname):
     raise newException(IOError,
       "session runner for " & sessionId & " did not come up")
   sessionSubject(sessionId)

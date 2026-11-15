@@ -349,6 +349,55 @@ proc main() =
       if data.contains("runner-invalid"):
         check("runner preserves invalid request id", response.id == "runner-invalid")
 
+  # --- a phantom runner registration must not strand a conversation --------
+  # Presence in the catalog is ensureRunner's readiness signal, but presence
+  # is not proof of life: a component that dies without a reg.depart (SIGKILL,
+  # a drain timeout, another harness's stale replica on a shared bus) leaves
+  # its registration behind. Trusting it made ensureRunner skip the spawn and
+  # publish the turn to a subject no process subscribes to — a conversation
+  # that hangs with no error and no reply (conv-86b2545d9f27, 2026-10-14).
+  # Inject exactly that corpse, on a conversation with no runner yet, and
+  # require the next session call to notice, drop it and bring one up.
+  const deadConv = "phantom-runner"
+  nc.publish("reg.publish", $ %*{"name": "session-" & deadConv,
+                                  "version": "0.1.0", "pid": 1 shl 30,
+                                  "tools": []})
+  discard natsConnection_FlushTimeout(nc.conn, 1000)
+  sleep(200)
+
+  proc runnerPids(name: string): seq[int] =
+    let st = call(nc, "core", "status", %*{}, 10_000)
+    if st{"components"} == nil or st{"components"}.kind != JArray: return
+    for c in st{"components"}:
+      if c{"name"}.getStr("") == name:
+        for p in c{"pids"}: result.add(p.getInt(0))
+
+  check("the injected phantom is registered",
+        runnerPids("session-" & deadConv) == @[1 shl 30],
+        $runnerPids("session-" & deadConv))
+
+  let phantomPrepared = call(nc, "core", "session_prepare",
+                             %*{"sessionId": deadConv}, 30_000)
+  check("session_prepare returns the conversation's subject",
+        phantomPrepared{"error"} == nil and
+        phantomPrepared{"subject"}.getStr("").contains(deadConv),
+        $phantomPrepared)
+  let realPids = runnerPids("session-" & deadConv)
+  check("the phantom pid is replaced by a live one",
+        realPids.len > 0 and (1 shl 30) notin realPids, $realPids)
+
+  # The reply is the real proof: only a subscribed runner answers, so this
+  # fails on the old behavior, where the call went into the void.
+  var phantomMsg: ptr natsMsg
+  let phantomSt = natsConnection_Request(addr phantomMsg, nc.conn,
+    "svc.session." & deadConv & ".call", "not json".cstring, 8, 8_000)
+  check("a phantom registration does not strand the conversation",
+        phantomSt == NATS_OK, $phantomSt)
+  if phantomSt == NATS_OK:
+    check("the replacement runner is the one answering",
+          decode($natsMsg_GetData(phantomMsg)).kind == ekError)
+    natsMsg_Destroy(phantomMsg)
+
   # fresh conversation: header fields present, zero messages
   let si0 = call(nc, "core", "session_info",
                  %*{"sessionId": "si-introspect"}, 10_000)

@@ -162,6 +162,40 @@ proc main() =
     check("runner catalogs do not answer admission",
       natsSubscription_NextMsg(addr reply, replies, 100) == NATS_TIMEOUT)
 
+  # --- phantom registrations read as dead, not as presence -----------------
+  #
+  # A registration whose every pid is gone — a component that died without a
+  # reg.depart (SIGKILL, a drain timeout, another harness's stale replica on a
+  # shared bus) — must read as DEAD, so a liveness-testing caller
+  # (ensureRunner) drops it and acts instead of trusting a corpse. Presence is
+  # not proof of life: trusting it made ensureRunner skip the spawn and publish
+  # the turn into a subject no process subscribes to, so the conversation hung
+  # with no error and no reply (conv-86b2545d9f27, 2026-10-14). A registration
+  # naming NO pid is unknown rather than dead: spawning on missing information
+  # is the worse error.
+  let cat4 = newCatalog(nc)
+  cat4.onChange = proc(c: Catalog) = discard
+  cat4.applyReg(%*{"name": "corpse", "pid": 1 shl 30})
+  check("a dead pid reads as not alive",
+        not registrationAlive(cat4.components["corpse"]))
+  check("dropPhantom removes a corpse", cat4.dropPhantom("corpse"))
+  check("the corpse is gone from the catalog",
+        not cat4.components.hasKey("corpse"))
+  cat4.applyReg(%*{"name": "alive", "pid": getCurrentProcessId()})
+  check("a live pid reads as alive",
+        registrationAlive(cat4.components["alive"]))
+  check("dropPhantom keeps a live registration",
+        not cat4.dropPhantom("alive"))
+  check("dropPhantom ignores an unknown name", not cat4.dropPhantom("absent"))
+  cat4.applyReg(%*{"name": "mixed", "pid": 1 shl 30,
+                   "pids": [1 shl 30, getCurrentProcessId()]})
+  check("one live replica keeps the group alive",
+        registrationAlive(cat4.components["mixed"]))
+  check("dropPhantom keeps a group with one live replica",
+        not cat4.dropPhantom("mixed"))
+  check("a pid-less registration is unknown, not dead",
+        registrationAlive(ComponentReg(name: "nopid")))
+
   report("CATALOG")
 
 main()
