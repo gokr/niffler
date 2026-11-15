@@ -118,11 +118,50 @@ proc main() =
           w.contains("/work/task-a:/work/task-a") and
           w.contains("-w /work/task-a/src"),
           w)
+    check("the mount is declared a safe git directory",
+          w.contains("safe.directory") and w.contains("/work/task-a"), w)
     check("longest matching prefix wins",
           netScoped("true", "/work/task-a/nested/deep").contains("x/y"), w)
+    putEnv("NIF_BASH_CONTAINER_MAP", "/work/task-a=nif-task-test")
+    let persistent = netScoped("echo preserved", "/work/task-a/src")
+    check("persistent mapping execs rather than recreates a container",
+          persistent.contains("docker exec --user") and
+          persistent.contains("nif-task-test") and
+          not persistent.contains("docker run"), persistent)
+    check("missing persistent mapping fails closed",
+          netScoped("true", "/work/task-b").contains("exit 125"))
+    putEnv("NIF_BASH_CONTAINER_MAP", "")
     let other = netScoped("true", "/work/elsewhere")
     check("no matching image refuses the command",
           other.contains("no sandbox image") and other.contains("exit 125"), other)
+    # A map written by one process and a cwd handed in by another must match
+    # on the REAL path: the deepswe bench writes a bench-root path containing
+    # a `var` symlink while the agent's cwd never traversed it, so every
+    # command in the run died with `exit 125`.
+    block sandboxSpelling:
+      let base = getTempDir() / ("nif-sandbox-" & $getCurrentProcessId())
+      let realDir = base / "tasks-x" / "t1" / "repo"
+      createDir(realDir)
+      defer: removeDir(base)
+      let linkDir = base / "linked"
+      createSymlink(realDir, linkDir)
+      putEnv("NIF_BASH_SANDBOX_MAP", linkDir & "=img-z\n")
+      # cwd spelled through the symlink, map entry spelled without it (and
+      # vice versa) must both resolve to the same image.
+      let viaLink = netScoped("true", linkDir)
+      let viaReal = netScoped("true", realDir)
+      check("symlinked cwd matches a real-path map entry",
+            viaLink.contains("docker run --rm --network none") and
+            viaLink.contains("img-z"), viaLink)
+      check("real cwd matches a symlinked map entry",
+            viaReal.contains("docker run --rm --network none") and
+            viaReal.contains("img-z"), viaReal)
+      check("the mounted root keeps the mapping's own spelling",
+            viaLink.contains(linkDir & ":" & linkDir), viaLink)
+      check("a subdir cwd still mounts the whole workspace root",
+            netScoped("true", linkDir / "src").contains("-w " & linkDir & "/src"),
+            netScoped("true", linkDir / "src"))
+      putEnv("NIF_BASH_SANDBOX_MAP", "")
     putEnv("NIF_BASH_SANDBOX_MAP", "")
     when defined(linux):
       putEnv("NIF_BASH_NET", "off")

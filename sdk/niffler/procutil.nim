@@ -129,6 +129,36 @@ proc killGroup*(pid: Pid, sig: cint) =
   ## grandchildren — `sleep 100 &` keeps running after bash dies).
   discard posix.kill(-pid, sig)
 
+proc realPathOf*(path: string): string =
+  ## Canonical absolute path with symlinks resolved — `expandFilename`
+  ## normalizes `.`/`..` but does NOT follow links on POSIX, and that gap is
+  ## exactly what broke the hosted-bench sandbox map: the bench root carries
+  ## a symlinked `var`, so a mapping entry and the agent's cwd naming the
+  ## same directory compared unequal and every command died with `exit 125`.
+  ## A path whose tail does not exist yet (a cwd inside a directory the
+  ## workspace has not created) resolves through its deepest EXISTING
+  ## ancestor, so ancestry still matches and the command fails later with
+  ## docker's own error instead of a misleading "no sandbox image".
+  proc resolve(p: cstring; buf: pointer): cstring {.
+    importc: "realpath", header: "<stdlib.h>".}
+  proc freeMem(p: pointer) {.importc: "free", header: "<stdlib.h>".}
+  var tail: seq[string] = @[]
+  var probe = normalizedPath(absolutePath(path))
+  while true:
+    let resolved = resolve(probe.cstring, nil)
+    if resolved != nil:
+      result = $resolved
+      freeMem(cast[pointer](resolved))
+      break
+    let parent = probe.parentDir
+    if parent == probe or parent.len == 0:  # hit the root unresolved
+      result = probe
+      break
+    tail.insert(probe.lastPathPart, 0)
+    probe = parent
+  for part in tail:
+    result = result / part
+
 proc netScoped*(script: string, cwd = ""): string =
   ## Wrap a command so it runs with no network — and optionally inside a
   ## task's prepared environment. Both modes fail loud: a silent fallback
@@ -143,7 +173,10 @@ proc netScoped*(script: string, cwd = ""): string =
   ##   nothing else on this machine — held-out materials and other
   ##   checkouts are unreachable by construction. Container state beyond
   ##   the workspace does not survive between commands (workspace is the
-  ##   only persistent state).
+  ##   only persistent state). With NIF_BASH_CONTAINER_MAP="<root>=<name>"
+  ##   the benchmark owns a persistent offline container instead: execute
+  ##   as the host UID/GID, keeping scratch and services between commands.
+  ##   Missing entries refuse rather than silently falling back.
   ##
   ## - NIF_BASH_NET=off: the lightweight variant — `unshare` netns on the
   ##   host userland (loopback up, no routes). Needs unprivileged user
@@ -152,26 +185,63 @@ proc netScoped*(script: string, cwd = ""): string =
   ## Exported for tests.
   let map = getEnv("NIF_BASH_SANDBOX_MAP", "").strip()
   if map.len > 0:
-    let dir = if cwd.len > 0: absolutePath(cwd) else: getCurrentDir()
+    # Both sides are canonicalized before matching. The map is written by
+    # another process (the bench's prepare.mjs) and the cwd arrives from the
+    # harness, so a symlinked or `/./`-laden spelling of the SAME directory
+    # used to miss: the whole run died with `exit 125` per command (deepswe
+    # pilot10: 83/83 bash calls failed because the bench root carries a
+    # `var` symlink and the agent's workspace did not). Match on the real
+    # path, mount the mapping's own spelling (what the writer chose), and
+    # build the `-w` from the canonical dir the match proved to be inside.
+    let dir = realPathOf(if cwd.len > 0: absolutePath(cwd) else: getCurrentDir())
     var image = ""
     var root = ""
+    var rootAbs = ""
     for line in map.splitLines():
       let eq = line.find('=')
       if eq <= 0: continue
-      let prefix = line[0 ..< eq].strip()
+      let raw = line[0 ..< eq].strip()
+      if raw.len == 0: continue
+      let prefix = realPathOf(absolutePath(raw))
       # Longest matching workspace root wins. The ROOT is what gets mounted
       # (a subdir cwd must still see the whole repo); the requested dir is
       # only the working directory inside it.
-      if prefix.len <= root.len: continue
+      if prefix.len <= rootAbs.len: continue
       if dir == prefix or dir.startsWith(prefix & "/"):
-        root = prefix
+        root = raw
+        rootAbs = prefix
         image = line[eq + 1 .. ^1].strip()
     if image.len == 0:
       return "echo 'NIF_BASH_SANDBOX_MAP: no sandbox image for " &
         dir.replace("'", "") & "' >&2; exit 125"
+    # `-w` must name a directory that exists in the container: the mounted
+    # root is the mapping's spelling, so a canonicalized dir that only
+    # differs by spelling is still mounted at the root's own path.
+    let workDir = if rootAbs.len > 0: root / dir[rootAbs.len .. ^1] else: dir
+    # The bind mount is host-owned while the container runs as root, so tools
+    # that verify repository ownership refuse the workspace: git answers every
+    # command with "detected dubious ownership in repository at ..." (deepswe
+    # agent runs had to `git config --global --add safe.directory '*'`
+    # themselves before anything worked). The image ships the upstream agent's
+    # container, where the workspace IS owned by the running user, so declare
+    # the mount safe on git's behalf — same command, minus a discovery round.
+    let containers = getEnv("NIF_BASH_CONTAINER_MAP", "").strip()
+    if containers.len > 0:
+      var container = ""
+      for line in containers.splitLines():
+        let eq = line.find('=')
+        if eq > 0 and realPathOf(line[0 ..< eq]) == rootAbs:
+          container = line[eq + 1 .. ^1].strip()
+      if container.len == 0:
+        return "echo 'No persistent task container mapped' >&2; exit 125"
+      return "docker exec --user " & $getuid() & ":" & $getgid() &
+        " -e HOME=/root -w " & quoteShell(workDir) & " " &
+        quoteShell(container) & " bash -c " & quoteShell(script)
+    let inner = "git config --global --add safe.directory " &
+                quoteShell(root) & " 2>/dev/null || true\n" & script
     return "docker run --rm --network none -v " &
-      quoteShell(root & ":" & root) & " -w " & quoteShell(dir) &
-      " " & quoteShell(image) & " bash -c " & quoteShell(script)
+      quoteShell(root & ":" & root) & " -w " & quoteShell(workDir) &
+      " " & quoteShell(image) & " bash -c " & quoteShell(inner)
   if getEnv("NIF_BASH_NET", "").strip() != "off":
     return script
   when defined(linux):
