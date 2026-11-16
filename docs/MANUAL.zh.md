@@ -231,6 +231,8 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是会话 UI：它只�
 
 基于文件的引擎（`sqlite`）以相同方式强制单写入者：一个进程拥有该文件（flock；进程崩溃时由内核释放），其他所有进程只讲 envelope。`tidb` 没有可锁的文件——集群按设计就是共享状态，行锁加上 rev 计数器在多个 harness 之间仲裁。
 
+无论使用哪个引擎，core 每条总线只接纳一个 `store` 进程：两个引擎都会在订阅前请求准入，第二个 store PID 会被拒绝并断开连接——即使它来自另一个 root 并拥有自己的数据文件（见 [WIRE.md](WIRE.md) “Subjects”）。
+
 `list` 是一个**页**，不是完整视图：`limit` 默认为 100，并被钳制到 1000，回复携带 `hasMore` 以及 `nextAfter` id 游标。将 `nextAfter` 作为 `after` 传回以遍历其余部分——`after` 是排他的，当 `hasMore` 为 false 时 `nextAfter` 不存在。存储保留完整历史，因此一段长对话无法在一次调用中装下；core 自身的全 kind 读取（resume、`session_info`、`conversation_delete`）会自动分页。
 
 存储契约是对每个引擎运行同一套测试：`make test-store`（默认引擎）、`make test-store-tidb`（需要 `NIF_STORE_TIDB_DSN`，否则打印 SKIP）；`t_store_paging` 固定了 resume 和迁移所依赖的 `after`/`hasMore`/`nextAfter` 游标语义。
@@ -327,7 +329,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外搜索服务器二进制的额外目录（冒号分隔；前导 `~` 表示你的 home 目录） | — |
 | `NIF_TRAFILATURA` | Trafilatura 可执行文件路径/名称；`off` 禁用外部提取 | 在 `PATH` 上自动检测 `trafilatura` |
 | `NIF_LOG_LEVEL` | SDK 结构化日志发布阈值（`debug`、`info`、`warn`、`error`） | `info` |
-| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 组件在总线不可达时容忍的秒数，超过后**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 众所周知的端口，因此在新端口上重启的 core 也能被找到）、重拨（Nim 采用指数退避）、重建每个订阅并重新发布 `reg.publish`。刻意高于 NATS 客户端自身的重连预算（约 2 分钟），因此更短的中断绝不触发它；不是正数的值会保留默认值。TypeScript SDK 目前尚不重新接入 | `180` |
+| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 组件在总线不可达时容忍的秒数，超过后**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`，因此在新端口上重启的 core 也能被找到；每个候选都必须由服务此 root 的 core 应答，且不猜测众所周知的端口）、重拨（Nim 采用指数退避）、重建每个订阅并重新发布 `reg.publish`。刻意高于 NATS 客户端自身的重连预算（约 2 分钟），因此更短的中断绝不触发它；不是正数的值会保留默认值。TypeScript SDK 目前尚不重新接入 | `180` |
 | `NIF_NATS_DIAL_TIMEOUT` | Go SDK 组件首次 NATS 握手（以及重新接入）允许的秒数。通过 `ssh … incus exec … cli relay` 到达的中继总线在 INFO 到达前要付出进程启动加全新 TCP 连接的开销，nats.go 默认的 2 秒无法满足；1–600 的值会被采用，其他值保留默认值 | `15` |
 | `NIF_LLM_MAX_RETRIES` | 对瞬时 LLM 失败（429/5xx/过载/连接断开）的额外尝试次数，带指数退避；每次重试宣告 `ev.session.<id>.retry`。认证/配额/错误请求错误始终快速失败 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 流式响应中途断开时的额外尝试次数——与一般情况分开预算，因为断开的流可能已经计费了输出 | `2` |

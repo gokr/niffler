@@ -237,6 +237,8 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是會話 UI：它只�
 
 檔案型引擎（`sqlite`）以相同方式強制單一寫入者：一個行程擁有該檔案（flock；行程崩潰時由核心釋放），其他所有行程只講 envelope。`tidb` 沒有可鎖的檔案——叢集按設計就是共享狀態，列鎖加上 rev 計數器在多個 harness 之間仲裁。
 
+無論使用哪個引擎，core 每條匯流排只接納一個 `store` 行程：兩個引擎都會在訂閱前請求准入，第二個 store PID 會被拒絕並中斷連線——即使它來自另一個 root 並擁有自己的資料檔（見 [WIRE.md](WIRE.md)「Subjects」）。
+
 `list` 是**一頁**，不是完整檢視：`limit` 預設為 100，並被限制在 1000 以內，回覆帶有 `hasMore` 以及 `nextAfter` id 游標。將 `nextAfter` 作為 `after` 傳回以走完其餘部分——`after` 為排他性，而當 `hasMore` 為 false 時 `nextAfter` 不存在。儲存保留完整歷史，因此一段長對話無法容納於單次呼叫；core 自身的全 kind 讀取（resume、`session_info`、`conversation_delete`）會自動分頁。
 
 儲存契約是對每個引擎執行同一套測試：`make test-store`（預設引擎）、`make test-store-tidb`（需要 `NIF_STORE_TIDB_DSN`，否則印出 SKIP）；`t_store_paging` 釘住 resume 與 migration 所依賴的 `after`/`hasMore`/`nextAfter` 游標語意。
@@ -333,7 +335,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外搜尋伺服器二進位檔的額外目錄（以冒號分隔；開頭的 `~` 表示你的 home 目錄） | — |
 | `NIF_TRAFILATURA` | Trafilatura 執行檔路徑/名稱；`off` 停用外部擷取 | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK 結構化日誌發布閾值（`debug`、`info`、`warn`、`error`） | `info` |
-| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 眾所周知的連接埠，因此在新連接埠上重啟的 core 也能被找到）、重新撥號（Nim 採指數退避）、重建每個訂閱並重新發佈 `reg.publish`。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。TypeScript SDK 目前尚不重新接入 | `180` |
+| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`，因此在新連接埠上重啟的 core 也能被找到；每個候選都必須由服務此 root 的 core 應答，且不猜測眾所周知的連接埠）、重新撥號（Nim 採指數退避）、重建每個訂閱並重新發佈 `reg.publish`。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。TypeScript SDK 目前尚不重新接入 | `180` |
 | `NIF_NATS_DIAL_TIMEOUT` | Go SDK 元件首次 NATS 握手（以及重新接入）允許的秒數。透過 `ssh … incus exec … cli relay` 到達的中繼匯流排，在 INFO 到達前需付出行程啟動加上全新 TCP 連線的成本，nats.go 預設的 2 秒無法滿足；1–600 的值會被採用，其他值保留預設值 | `15` |
 | `NIF_LLM_MAX_RETRIES` | 對暫時性 LLM 失敗（429/5xx/超載/連線中斷）的額外嘗試次數，採指數退避；每次重試會宣告 `ev.session.<id>.retry`。驗證/配額/錯誤請求錯誤一律快速失敗 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 串流回應中途中斷時的額外嘗試次數——與一般情況分開編列預算，因為中斷的串流可能已經計費輸出 | `2` |

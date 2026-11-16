@@ -577,6 +577,11 @@ process owns the file (flock; kernel-released on crash), everyone else speaks
 envelopes. `tidb` has no file to lock — the cluster is shared state by
 design, and row locks plus the rev counter arbitrate between harnesses.
 
+Independently of the engine, core admits exactly one `store` process per bus:
+both engines ask for admission before subscribing, and a second store PID is
+refused and disconnects — even from another root with its own data file (see
+[WIRE.md](WIRE.md) "Subjects").
+
 `list` is a **page**, not a complete view: `limit` defaults to 100 and is
 clamped to 1000, and the reply carries `hasMore` plus a `nextAfter` id cursor.
 Pass `nextAfter` back as `after` to walk the rest — `after` is exclusive, and
@@ -713,7 +718,7 @@ see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_D
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (colon-separated; a leading `~` means your home directory) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`). Core's `--log=<level>` flag sets it for core and every component it spawns | `info` |
-| `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
+| `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`, so a core restarted on a new port is found; every candidate must be answered by a core serving this root, and no well-known port is guessed), redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
 | `NIF_NATS_DIAL_TIMEOUT` | seconds allowed for a Go SDK component's initial NATS handshake (and reattach). A relayed bus reached through `ssh … incus exec … cli relay` pays process spawn plus a fresh TCP connect before INFO arrives, which nats.go's 2 s default cannot meet; values 1–600 are honoured, anything else leaves the default | `15` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.<id>.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | additional attempts when a streamed response drops mid-flight — budgeted separately from the general case because a dropped stream may already have billed output | `2` |

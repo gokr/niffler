@@ -552,7 +552,8 @@ reg.admit              # optional pre-subscription admission request (raw regist
 reg.publish            # component process announces itself on connect
                        #   {name, version, pid, tools: [ {name, schema} ], client?,
                        #    slash?: [SlashCommand]}; repeated logical name +
-                       #    identical contract joins its replica group
+                       #    identical contract joins its replica group, except
+                       #    `store` (one PID; see the admission note above)
 reg.depart             # {name, pid, ...}, graceful process departure; the logical
                        #   component remains while another replica PID is live
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
@@ -966,9 +967,10 @@ turns with `busy` — turns never nest.
 - Presence = connection; component death detected by core via NATS disconnect
   plus `reg.depart` (graceful) vs silence (crash). A Nim or Go SDK component
   whose connection stays unhealthy past `NIF_RECONNECT_GRACE_S` re-attaches —
-  it re-resolves the bus, rebuilds its subscriptions and re-publishes
-  `reg.publish` on the fresh connection — rather than requiring a process
-  restart (docs/MANUAL.md "Re-attaching after a bus outage").
+  it re-resolves the bus (every candidate must be answered by a core serving
+  this root, and no well-known port is guessed), rebuilds its subscriptions and
+  re-publishes `reg.publish` on the fresh connection — rather than requiring a
+  process restart (docs/MANUAL.md "Re-attaching after a bus outage").
 - Tool names are unique across the whole catalog — enforced by core at
   registration; conflicting registrations are refused in full. The LLM only
   sees tool names; core maps tool → component at dispatch. The namespace is deliberately
