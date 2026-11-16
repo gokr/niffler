@@ -13,6 +13,7 @@ import ../sdk/envelope
 import ../sdk/subjects
 import ../sdk/checkout
 import ../sdk/niffler/sandboxpolicy
+import ../sdk/niffler/procutil
 import approval
 import catalog
 import compaction
@@ -609,10 +610,14 @@ proc inheritSandboxPolicyFor*(ct: CoreTools, parentSession, childSession,
   if inherited.enabled:
     # A child-supplied cwd is not an authority grant. Resolve aliases before
     # checking containment; siblings must be explicitly approved by the human.
-    let workspace = expandFilename(childWorkspace)
+    # realPathOf, not expandFilename: a child workspace whose directory does not
+    # exist yet makes expandFilename RAISE, surfacing as an obscure OS error
+    # instead of a policy refusal. realPathOf resolves through the deepest
+    # existing ancestor, so an unchosen directory is simply compared.
+    let workspace = realPathOf(childWorkspace)
     var allowed = false
     for root in inherited.writeRoots:
-      let resolved = expandFilename(root)
+      let resolved = realPathOf(root)
       if workspace == resolved or workspace.startsWith(resolved & DirSep):
         allowed = true
     if not allowed:

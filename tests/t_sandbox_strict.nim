@@ -79,12 +79,14 @@ proc main() =
     child.close()
   check("bash registers", waitRegistered(nc, "bash"))
 
-  proc run(command: string, sandbox: JsonNode): JsonNode =
+  proc run(command: string, sandbox: JsonNode, workspace = ""): JsonNode =
     ## Dispatch with the private policy context core would inject. A direct bus
     ## call bypasses core, so the test supplies it — which is also how the
     ## launcher's own contract is exercised without a full conversation.
-    var args = %*{"command": command, "cwd": ws, "timeoutMs": 20000,
-                  "__workspace": {"root": ws}}
+    ## `workspace` overrides the runner-supplied root for containment checks.
+    let wsr = if workspace.len > 0: workspace else: ws
+    var args = %*{"command": command, "cwd": wsr, "timeoutMs": 20000,
+                  "__workspace": {"root": wsr}}
     if sandbox != nil: args["__sandbox"] = sandbox
     call(nc, "bash", "bash", args, 40000)
 
@@ -157,6 +159,22 @@ proc main() =
     wrongWorkspace{"text"}.getStr("").contains("outside sandbox write roots") and
     not fileExists(ws / "workspace-widened"), $wrongWorkspace)
 
+  # Containment must compare RESOLVED paths, not spellings. `ws/alias` is a
+  # symlink to `approved`, so a policy whose only write root is spelled
+  # `ws/alias` must reason about `approved` — a lexical check would read the
+  # spelling as inside `ws` and could authorize the wrong directory.
+  let alias = ws / "alias"
+  if not dirExists(alias) and not fileExists(alias): createSymlink(approved, alias)
+  let aliased = run("touch alias-ran", %*{"enabled": true,
+    "readRoots": [alias], "writeRoots": [alias], "denyPatterns": []}, workspace = alias)
+  check("a symlinked workspace resolves to its real target, not its spelling",
+    aliased{"sandbox"}{"state"}.getStr("") == "applied", $aliased)
+  let spelledIn = run("touch spelled-ran", %*{"enabled": true,
+    "readRoots": [approved], "writeRoots": [approved], "denyPatterns": []},
+    workspace = ws)
+  check("a workspace outside its write roots refuses even when nested nearby",
+    spelledIn{"sandbox"}{"state"}.getStr("") == "refused" and
+    not fileExists(ws / "spelled-ran"), $spelledIn)
   # --- 5. OFF stays off, and a disabled policy confines nothing --------
   # The pre-sandbox behaviour must survive: an unrelated conversation (no
   # __sandbox at all) runs unguarded and is not slower or refused.

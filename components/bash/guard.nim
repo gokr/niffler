@@ -1,6 +1,7 @@
 ## Opt-in shell guard. Policy comes from runner-owned workspace context or an
 ## operator-configured direct-call root, never from the command's cwd alone.
 import std/[os, json, strutils]
+import niffler/procutil
 
 proc normalizePath*(path: string): string =
   ## Trailing-slash-insensitive comparison form. Deliberately does NOT resolve
@@ -110,12 +111,14 @@ proc guardCommand*(args: JsonNode, command: string,
   if policyAsked:
     # The launcher always mounts workspace writable. Cwd/workspace context is
     # not itself a policy grant, so check the resolved path before launching.
-    let resolvedWorkspace = expandFilename(workspace)
+    # realPathOf follows symlinks AND tolerates a tail that does not exist yet;
+    # expandFilename raises on that, turning a policy check into an OS error.
+    let resolvedWorkspace = realPathOf(workspace)
     var allowed = false
     for root in geop{"writeRoots"}:
       if root.kind != JString or not root.getStr().isAbsolute():
         raise newException(ValueError, "invalid sandbox write root")
-      let resolvedRoot = expandFilename(root.getStr())
+      let resolvedRoot = realPathOf(root.getStr())
       if resolvedWorkspace == resolvedRoot or
           resolvedWorkspace.startsWith(resolvedRoot & DirSep):
         allowed = true
