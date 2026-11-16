@@ -823,8 +823,40 @@ func openAIMessages(messages []chatMessage) []openai.ChatCompletionMessage {
 // an empty ChatMessagePart.Text: an empty text part becomes {"type":"text"},
 // which strict providers reject (conv-d8e18e9fa617). Use an explicit, non-empty
 // marker instead. Assistant tool-call turns may still omit content.
+//
+// Two shapes need two guards, because they fail differently:
+//   - no content at all -> the "[empty message]" marker (a message with no
+//     content and no parts is what a strict provider calls missing content);
+//   - a parts message whose text part is empty -> that part must become
+//     spellable. Returning early on len(MultiContent) > 0 left it as
+//     {"type":"text"}, the very shape this function exists to prevent.
+//
+// Only EMPTY text parts are rewritten. A non-empty text part is content the
+// caller chose, and an image part is not text at all; rewriting either would
+// corrupt a real request to satisfy a validator. An image-only message must
+// not grow a text part either.
 func ensureContentKey(out *openai.ChatCompletionMessage, in chatMessage) {
-	if out.Content != "" || len(out.MultiContent) > 0 {
+	if len(out.MultiContent) > 0 {
+		// Copy on write. out is a struct copy of the caller's message, but
+		// MultiContent is a SLICE: the header is copied and the array is
+		// shared, so rewriting a part in place would mutate canonical
+		// history. Normalization is a wire concern only — the same reason
+		// the no-content path never touches in.
+		var fixed []openai.ChatMessagePart
+		for i, part := range out.MultiContent {
+			if part.Type == openai.ChatMessagePartTypeText && part.Text == "" {
+				if fixed == nil {
+					fixed = append([]openai.ChatMessagePart(nil), out.MultiContent...)
+				}
+				fixed[i].Text = " "
+			}
+		}
+		if fixed != nil {
+			out.MultiContent = fixed
+		}
+		return
+	}
+	if out.Content != "" {
 		return
 	}
 	if out.Role == openai.ChatMessageRoleAssistant && len(out.ToolCalls) > 0 {
