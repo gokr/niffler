@@ -103,7 +103,6 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   (Seatbelt) is unimplemented. See
   [SANDBOX-NEXT-SLICE.md](docs/research/SANDBOX-NEXT-SLICE.md) for the remaining
   acceptance gates.
-
 - **A background job can now say whether it will wake you.** The processes
   component already pushes a completion to its owning conversation and requests
   a bounded wake; nothing told a human whether that would happen for the job
@@ -119,6 +118,76 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   copy. WIRE.md's contradictory "the process-exited lane has no waker" paragraph
   is corrected: it does request a wake, and the durable notice remains the
   fallback when the wake is declined or fails.
+- Git worktree creation, listing, removal and pruning use a durable ownership
+  ledger; explicit commit, merge preview and merge tools complete the workflow.
+  Peer forks carry origin provenance and durable merge notices. Opt-in worktree
+  isolation narrows writes while retaining reads and explicit human grants.
+- Client tool controls run through the session dispatch gate, and new worktrees
+  are discovered on subsequent dispatches. Subagents inherit the caller's
+  workspace and grants.
+- Store full-text search indexes tool-call arguments on SQLite and TiDB.
+  `scripts/provider-triage.sh` also captures store identity and binding for diagnosis.
+- `git_worktree_list {status: true}` reports each tree's cleanliness
+  (`clean`, `changed`, `untracked`) and its divergence from the primary's
+  current branch (`ahead`/`behind`, the compared ref named once as `compare`),
+  measured by running git in that tree. Opt-in because it costs two extra git
+  calls per tree; the default listing stays metadata-only.
+- **Worktree provenance, a peer fork, and durable merge notices.** Hidden
+  client tool `agent_fork {source, cwd, fork?}` copies completed history at the
+  same balanced cut as a supervised fork, without a parent/job edge or a turn,
+  and reports `checkpointCopied: false` because compaction checkpoints are not
+  copied. Peer and supervised forks record immutable `sessionmeta.origin`
+  provenance; `session_info` reports `origin` forward and a deduplicated
+  `descendants` list backward, while `children` keeps its supervision-only
+  meaning. A successful `git_merge` leaves the caller's origin a durable
+  `worktreemerge` inbox, read through hidden `git_merge_notices {session,
+  ack?}`, pushed to a busy origin and pulled on an idle origin's next turn,
+  and deduplicated against canonical history; a notification failure is a
+  warning on the already-successful merge, never a reason to replay it.
+- **A live worktree acceptance run.** `scripts/worktree-acceptance.sh` drives
+  the workflow against a live harness the way a client does — seeded
+  conversation, add, repin, isolate, fence both directions, commit, preview,
+  merge — and refuses to run against a core older than the source (exit 3).
+  `docs/WORKTREES-ACCEPTANCE.md` documents the scripted run, the six-step human
+  run for the client surface, and what each failure means.
+
+### Changed
+
+- **The Chinese manuals (`docs/MANUAL.zh.md`, `docs/MANUAL.zh-TW.md`) are back
+  in step with the 0.5.0 English manual.** Both gained the shell guard and read
+  mask section with its TOC entry, all ten previously missing environment rows
+  (the six sandbox variables plus `NIF_BASH_SANDBOX_MAP`, `NIF_BASH_NET`,
+  `NIF_INSTANCE_ID` and `NIF_LOCK_TTL_MS`), `session {roots: …}`, and the
+  current Fleet contract (`fleet_task_continue`, `mode: "delegate"`, admission
+  states, the inbox, `fleet_instances`, `fleet_notices`, `fleet_update`). Two
+  structural defects were fixed on the way: 18 translated headings are English
+  again so internal `#anchor` links resolve in every language (heading counts
+  now 114/114/114, no broken anchors), and zh-TW's duplicate Simplified
+  "Embeddings" section and five Simplified lines in the GitHub-token section
+  are Traditional again.
+- **The worktree documentation now describes shipped behavior.** The tutorial's
+  Part 2 is rewritten as the primary workflow, with Part 1 reframed as the
+  manual fallback; the MANUAL gains a Worktrees section covering the verb table
+  and approval classes, the isolation fence, origin as provenance rather than
+  authority, the merge notice's commit/outbox gap, and the client surface.
+  `docs/FEATURES.md`, `docs/PLAN.md` and `docs/research/WORKTREES.md` record
+  all eight slices shipped, and the `zh`/`zh-TW` manuals are refreshed.
+- **The website now describes the 0.5.0 surface.** The feature section gained a
+  Fleet card covering goal delegation to an Incus container, Lima VM or SSH
+  host in `delegate` mode under the operator's ceiling; trust and safety gained
+  the opt-in Linux shell guard with read masks; per-conversation controls now
+  mention human-granted extra roots; and ecosystem gained the discoverable
+  per-component settings surface. All of it is localized in `en`, `zh` and
+  `zh-TW`.
+- **The website's bench section names the full harness set.** It now lists Pi,
+  Opencode, DeepSeek Harness, CodeWhale, Droid and Claude Code in `en`, `zh` and
+  `zh-TW`, instead of only three.
+- **The READMEs no longer claim `make test` runs the bench adapter suite.**
+  `make test` is documented as the complete code gate (bus-contract suite plus
+  Go unit tests), with `make test-bench` as the separate, opt-in Node bench
+  adapter suite that skips when Node is absent. The bench comparison list in
+  `README.md`, `README.zh.md`, `README.zh-TW.md` and `bench/README.md` now
+  names DeepSeek Harness and Droid.
 
 ### Fixed
 
@@ -139,6 +208,11 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   opaque write claims follow the actual target tree.
 - `read` select tolerates per-target errors and reports scan and output limits
   instead of letting one unreadable file or a large tree hide other matches.
+- A multi-part message whose text part is empty is spelled safely on the wire
+  instead of reaching a strict OpenAI-compatible provider as `{"type":"text"}`.
+  Only empty text parts are rewritten; non-empty text and image parts pass
+  through unchanged, an image-only message does not gain a text part, and
+  stored history is not mutated.
 - **`make setup` installs bubblewrap, and `make doctor` reports the real
   sandbox backend.** A fresh Linux clone got no confinement backend at all —
   `install-native-deps` never asked for `bubblewrap` — so the first conversation
@@ -155,8 +229,6 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   confinement matters ran with the host fully readable — visible only in a
   status field. `NIF_SANDBOX_ALLOW_DEGRADED=1` still permits that degradation
   for a *compat* launch, which never promised reads.
-
-
 - Worktree peer forks inherit the source conversation's provider/model pins
   instead of starting with an empty selection. The pair is snapshotted at birth
   and survives resume; later changes in either conversation remain independent.
@@ -172,60 +244,26 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   the declarative `writes.primary` flag, without widening bash/edit or root
   grants. Peer forks can retire the exact origin-created tree recorded in their
   durable lineage; foreign ownership, dirty-tree and unmerged-work guards remain.
-
 - Canonical transcript writes are create-only: a stale continuation refuses
   rather than overwriting an existing message. Full-kind reads reject malformed
   pages and stalled cursors instead of accepting a partial transcript.
 - Conversation header updates use strict reads and compare-and-set retries,
   preserving creation time, title and unrelated metadata across read failures
   and concurrent updates. Header creation is also create-only.
-
-### Added
-
-- Git worktree creation, listing, removal and pruning use a durable ownership
-  ledger; explicit commit, merge preview and merge tools complete the workflow.
-  Peer forks carry origin provenance and durable merge notices. Opt-in worktree
-  isolation narrows writes while retaining reads and explicit human grants.
-- Client tool controls run through the session dispatch gate, and new worktrees
-  are discovered on subsequent dispatches. Subagents inherit the caller's
-  workspace and grants.
-- Store full-text search indexes tool-call arguments on SQLite and TiDB.
-  `scripts/provider-triage.sh` also captures store identity and binding for diagnosis.
-- `git_worktree_list {status: true}` reports each tree's cleanliness
-  (`clean`, `changed`, `untracked`) and its divergence from the primary's
-  current branch (`ahead`/`behind`, the compared ref named once as `compare`),
-  measured by running git in that tree. Opt-in because it costs two extra git
-  calls per tree; the default listing stays metadata-only.
-
-### Changed
-
-- **The Chinese manuals (`docs/MANUAL.zh.md`, `docs/MANUAL.zh-TW.md`) are back
-  in step with the 0.5.0 English manual.** Both gained the shell guard and read
-  mask section with its TOC entry, all ten previously missing environment rows
-  (the six sandbox variables plus `NIF_BASH_SANDBOX_MAP`, `NIF_BASH_NET`,
-  `NIF_INSTANCE_ID` and `NIF_LOCK_TTL_MS`), `session {roots: …}`, and the
-  current Fleet contract (`fleet_task_continue`, `mode: "delegate"`, admission
-  states, the inbox, `fleet_instances`, `fleet_notices`, `fleet_update`). Two
-  structural defects were fixed on the way: 18 translated headings are English
-  again so internal `#anchor` links resolve in every language (heading counts
-  now 114/114/114, no broken anchors), and zh-TW's duplicate Simplified
-  "Embeddings" section and five Simplified lines in the GitHub-token section
-  are Traditional again.
-
-- **The website now describes the 0.5.0 surface.** The feature section gained a
-  Fleet card covering goal delegation to an Incus container, Lima VM or SSH
-  host in `delegate` mode under the operator's ceiling; trust and safety gained
-  the opt-in Linux shell guard with read masks; per-conversation controls now
-  mention human-granted extra roots; and ecosystem gained the discoverable
-  per-component settings surface. All of it is localized in `en`, `zh` and
-  `zh-TW`.
-
-- **The READMEs no longer claim `make test` runs the bench adapter suite.**
-  `make test` is documented as the complete code gate (bus-contract suite plus
-  Go unit tests), with `make test-bench` as the separate, opt-in Node bench
-  adapter suite that skips when Node is absent. The bench comparison list in
-  `README.md`, `README.zh.md`, `README.zh-TW.md` and `bench/README.md` now
-  names DeepSeek Harness and Droid.
+- **Write-path fields declared through `x-harness.writes.paths` are resolved
+  against the conversation workspace.** Both string and array forms (including
+  `git_commit`'s `paths`) now reach the component resolved, so an isolated
+  conversation is no longer refused `E_WRITE_OUTSIDE` for a file inside its own
+  tree — the documented `/worktree` merge flow would otherwise have broken for
+  every user.
+- **An isolated opaque writer outside its tree refuses instead of falling back
+  to the primary claim.** `roots: true` narrows to the conversation's own tree
+  and answers `E_WRITE_OUTSIDE`; an isolated bash with a cwd inside its tree
+  still works.
+- **Worktree isolation keeps the human's grants.** Isolation now drops only
+  automatically discovered roots, not `/roots add` grants, with the
+  conversation's own tree first; `session_info.workspace.writable` uses the same
+  rule as the write fence.
 
 ## [0.5.0] — 2026-10-29
 
