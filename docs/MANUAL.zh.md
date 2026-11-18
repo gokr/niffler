@@ -56,7 +56,7 @@
 | `manifest.yaml` | 引导清单：core 生成哪些组件、重启策略，以及可选的无状态 `replicas` 数量；`--minimal` 将其过滤为 `store`、`bash` 和 `llm` |
 | `var/` | **运行时状态与构建产物，已 gitignore** —— 包含持久存储和基准数据，不可整体删除 |
 | `var/bin/` | 构建出的二进制文件（系统核心 + 会话运行器 + 组件），以及 `builder.build` 编译的一切 —— agent 构建的组件也落在这里，与系统组件并列。由 `make build` 重建 |
-| `var/store.db` | 存储的数据文件（SQLite 是唯一基于文件的引擎）—— **单写入者**：恰好一个 `store` 进程可以打开它，并锁定 `var/store.db.lock`（flock，进程崩溃时由内核释放）。0.4.0 之前的 `var/barrel-db` 会在启动时被拒绝，绝不会被覆盖 |
+| `var/store.db` | 存储的数据文件（SQLite 是唯一基于文件的引擎）—— **单写入者**：恰好一个 `store` 进程可以打开它，并锁定 `var/store.db.lock`（flock，进程崩溃时由内核释放）。Core 还会在该 store 订阅之前拒绝第二个 `store` PID 的总线准入（协作式，因此请一起升级并重启 core 与 store；从不请求准入的旧二进制无法被隔离）。0.4.0 之前的 `var/barrel-db` 会在启动时被拒绝，绝不会被覆盖 |
 | `var/nats-url` | 最后生成的总线的总线地址；UI 桥读取它以找到 core |
 | `var/nats-monitor-url` | 当 core 生成总线时的 HTTP 监控端点；对于复用/远程总线则不存在 |
 | `var/logs/`、`var/captures/` | 轮转的结构化日志和显式的 observe 探针导出（见[观察与日志](#observation-and-logs)） |
@@ -231,6 +231,8 @@ stdin/stdout tty（`make run`）是**管理 shell**，不是会话 UI：它只�
 
 基于文件的引擎（`sqlite`）以相同方式强制单写入者：一个进程拥有该文件（flock；进程崩溃时由内核释放），其他所有进程只讲 envelope。`tidb` 没有可锁的文件——集群按设计就是共享状态，行锁加上 rev 计数器在多个 harness 之间仲裁。
 
+无论使用哪个引擎，core 每条总线只接纳一个 `store` 进程：两个引擎都会在订阅前请求准入，第二个 store PID 会被拒绝并断开连接——即使它来自另一个 root 并拥有自己的数据文件（见 [WIRE.md](WIRE.md) “Subjects”）。
+
 `list` 是一个**页**，不是完整视图：`limit` 默认为 100，并被钳制到 1000，回复携带 `hasMore` 以及 `nextAfter` id 游标。将 `nextAfter` 作为 `after` 传回以遍历其余部分——`after` 是排他的，当 `hasMore` 为 false 时 `nextAfter` 不存在。存储保留完整历史，因此一段长对话无法在一次调用中装下；core 自身的全 kind 读取（resume、`session_info`、`conversation_delete`）会自动分页。
 
 存储契约是对每个引擎运行同一套测试：`make test-store`（默认引擎）、`make test-store-tidb`（需要 `NIF_STORE_TIDB_DSN`，否则打印 SKIP）；`t_store_paging` 固定了 resume 和迁移所依赖的 `after`/`hasMore`/`nextAfter` 游标语义。
@@ -327,7 +329,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外搜索服务器二进制的额外目录（冒号分隔；前导 `~` 表示你的 home 目录） | — |
 | `NIF_TRAFILATURA` | Trafilatura 可执行文件路径/名称；`off` 禁用外部提取 | 在 `PATH` 上自动检测 `trafilatura` |
 | `NIF_LOG_LEVEL` | SDK 结构化日志发布阈值（`debug`、`info`、`warn`、`error`） | `info` |
-| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 组件在总线不可达时容忍的秒数，超过后**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → 众所周知的端口，因此在新端口上重启的 core 也能被找到）、重拨（Nim 采用指数退避）、重建每个订阅并重新发布 `reg.publish`。刻意高于 NATS 客户端自身的重连预算（约 2 分钟），因此更短的中断绝不触发它；不是正数的值会保留默认值。TypeScript SDK 目前尚不重新接入 | `180` |
+| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 组件在总线不可达时容忍的秒数，超过后**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`——绝不猜测众所周知的端口）、在订阅前验证应答的 core 服务此 root、重拨（Nim 采用指数退避）、重建每个订阅并重新发布 `reg.publish`；被拒绝的候选会在下一轮发现中重试，而不会被加入。刻意高于 NATS 客户端自身的重连预算（约 2 分钟），因此更短的中断绝不触发它；不是正数的值会保留默认值。TypeScript SDK 目前尚不重新接入 | `180` |
 | `NIF_NATS_DIAL_TIMEOUT` | Go SDK 组件首次 NATS 握手（以及重新接入）允许的秒数。通过 `ssh … incus exec … cli relay` 到达的中继总线在 INFO 到达前要付出进程启动加全新 TCP 连接的开销，nats.go 默认的 2 秒无法满足；1–600 的值会被采用，其他值保留默认值 | `15` |
 | `NIF_LLM_MAX_RETRIES` | 对瞬时 LLM 失败（429/5xx/过载/连接断开）的额外尝试次数，带指数退避；每次重试宣告 `ev.session.<id>.retry`。认证/配额/错误请求错误始终快速失败 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 流式响应中途断开时的额外尝试次数——与一般情况分开预算，因为断开的流可能已经计费了输出 | `2` |
@@ -2544,7 +2546,7 @@ await comp.requestEnvelope(subject, envelope, timeoutMs?)
 每个 SDK 都让 NATS 执行主题匹配，并且只分派绑定到投递该消息的订阅的处理程序。这避免了以前的叉积问题，即一次调用可能通过 call、event 和 tap 路径多次投递。Nim 保持无回调和无线程；Go 使用其现有的互斥锁，TypeScript 使用其 promise 链。关闭时，Go 先排空订阅（至其有界关闭宽限期），然后停止每个组件的投递循环并等待所有正在运行的处理器完成，以保留欠给调用方的回复——已接受但尚未启动的调用会被拒绝，而不是静默丢弃；TypeScript 等待排队的处理程序，而不会死锁显式关闭自身组件的处理程序。
 
 #### Re-attaching after a bus outage
-NATS 客户端会透明地重连到同一 URL，但总线在超出其重连预算后仍不可达——或 harness 在新端口上重启——过去会让组件**存活却失聪**：订阅不再投递，没有发出 `reg.depart`，目录仍宣告着无人能到达的工具，恢复只能靠杀死进程。Nim 和 Go SDK 现在监视连接健康（每 2 秒一次 `Flush` 探测），一旦连接不健康持续 `NIF_RECONNECT_GRACE_S`（默认 180 秒，刻意高于客户端自身的耐心），就**重新接入**：重新解析总线 URL、重拨（Nim 采用指数退避；Go 在其健康 tick 上重试）、重建每个订阅（call、event 与 tap）并重新发布 `reg.publish`——无需重启进程。
+NATS 客户端会透明地重连到同一 URL，但总线在超出其重连预算后仍不可达——或 harness 在新端口上重启——过去会让组件**存活却失聪**：订阅不再投递，没有发出 `reg.depart`，目录仍宣告着无人能到达的工具，恢复只能靠杀死进程。Nim 和 Go SDK 现在监视连接健康（每 2 秒一次 `Flush` 探测），一旦连接不健康持续 `NIF_RECONNECT_GRACE_S`（默认 180 秒，刻意高于客户端自身的耐心），就**重新接入**：重新解析总线 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`，绝不猜测众所周知的端口）、在订阅前用 core 公告的 root 验证每个候选、重拨（Nim 采用指数退避；Go 在候选被拒绝时会在其健康 tick 上继续重试发现）、重建每个订阅（call、event 与 tap）并重新发布 `reg.publish`——无需重启进程。总线已消失的组件会以“无处可去”明确失败，而不会迁移到应答众所周知的端口的任何 harness 上。
 
 延迟宣告的组件（Go SDK 的 `DeferAnnounce`，例如 `mcp-bridge`）必须在全新连接上重新发布自己的契约，因为它可能在不健康期间已经漂移；用 `onReattached`（Go 为 `OnReattached`）注册它。普通组件无需钩子——重新接入已经重新宣告了它们冻结的契约。TypeScript SDK 目前尚不重新接入。
 
@@ -2891,7 +2893,7 @@ make build
 | `diagnostic` | `<session>:<id>` | 为显示/存储而持久化的异步 LSP 判定（`{sessionId, path, bytes, text, clean, createdAt}`）。`clean: true` 的整文件判定仅供界面/存储使用，绝不进入模型历史——它在运行器空闲时仍会迟到传递；其他判定还会追加到转录。由 `conversation_delete` 清理 |
 | `selftest` | store 自检探针 | 一次性——由 store 自身的自检往返写入并删除 |
 
-后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，或 DSN 共享的 TiDB 引擎（`NIF_STORE_BACKEND=tidb`，`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个进程拥有该文件**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。
+后端是所选引擎——默认是位于 `var/store.db` 的 SQLite，或 DSN 共享的 TiDB 引擎（`NIF_STORE_BACKEND=tidb`，`NIF_STORE_TIDB_DSN`，无 flock——行锁和 rev 计数器在 harness 之间仲裁）。**恰好一个 `store` 进程服务一个 harness**——绝不要对同一个数据库运行两个基于文件的 `store` 进程（对同一 root 启动的第二个核心正是如此；实验时请使用临时的 `NIF_ROOT` 副本）。Core 在该 store 订阅之前拒绝第二个 `store` PID 的总线准入，即使它来自另一个 root；这是协作式准入，因此请一起升级并重启 core 与 store。
 
 `list` 是一页，而不是完整视图（见 [Store engines](#store-engines)）：核心中所有必须看到整个 kind 的地方都走 `storeListAll`——单次有上限的 `list` 在恢复时会静默截断长转录。`search` 则把“哪些会话提到过 …”变成服务端查询，而不是先下载再过滤：`cli call search '{"kind":"conversation","query":"…"}'`（要在转录文本中查找则用 `message`）返回与 `list` 相同的分页结构。
 
