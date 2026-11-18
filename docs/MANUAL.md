@@ -61,7 +61,7 @@ A one-file index of every shipped capability (not a reference) is
 | `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, `llm`, and `systemprompt` |
 | `var/` | **runtime state and build output, gitignored** — contains durable store and benchmark data; never delete wholesale |
 | `var/bin/` | built binaries (system core + session runner + components), plus everything `builder.build` compiles — agent-built components land here too, beside the system ones. Rebuilt by `make build` |
-| `var/store.db` | the store's data file (SQLite is the only file-backed engine) — **single-writer**: exactly one `store` process may open it, and it locks `var/store.db.lock` (flock, kernel-released on crash). A pre-0.4.0 `var/barrel-db` is refused at boot, never overwritten |
+| `var/store.db` | the store's data file (SQLite is the only file-backed engine) — **single-writer**: exactly one `store` process may open it, and it locks `var/store.db.lock` (flock, kernel-released on crash). Core also refuses bus admission to a second `store` PID before it subscribes (cooperative, so upgrade and restart core and stores together; legacy binaries that never ask are not fenced). A pre-0.4.0 `var/barrel-db` is refused at boot, never overwritten |
 | `var/nats-url` | bus address of the last spawned bus; the UI bridge reads it to find core |
 | `var/nats-monitor-url` | HTTP monitoring endpoint when core spawned the bus; absent for reused/remote buses |
 | `var/logs/`, `var/captures/` | rotating structured logs and explicit observe probe exports (see [Observation and logs](#observation-and-logs)) |
@@ -577,6 +577,17 @@ process owns the file (flock; kernel-released on crash), everyone else speaks
 envelopes. `tidb` has no file to lock — the cluster is shared state by
 design, and row locks plus the rev counter arbitrate between harnesses.
 
+On any one bus, core admits at most one `store` PID. Both shipped engines
+request `reg.admit` before subscribing to `svc.store.call`, on first connect and
+on re-attach; a second `store` — a stray test root, another clone, or a recovery
+that landed on the wrong bus — is refused and closes its connection without
+taking any store calls, even when its contract and root match. The existing PID
+may re-announce after recovery, and the flock still protects the SQLite file.
+Admission is a cooperative boundary, not authentication: retire old binaries
+that never request it, and restart core and stores together. It holds
+independently of the engine and of the root — a second data file does not buy
+a second store (see [WIRE.md](WIRE.md) "Subjects").
+
 `list` is a **page**, not a complete view: `limit` defaults to 100 and is
 clamped to 1000, and the reply carries `hasMore` plus a `nextAfter` id cursor.
 Pass `nextAfter` back as `after` to walk the rest — `after` is exclusive, and
@@ -714,7 +725,7 @@ see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_D
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (colon-separated; a leading `~` means your home directory) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`). Core's `--log=<level>` flag sets it for core and every component it spawns | `info` |
-| `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → the well-known port, so a core restarted on a new port is found), redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
+| `NIF_RECONNECT_GRACE_S` | seconds a Nim or Go SDK component tolerates an unreachable bus before it **re-attaches**: re-resolve the URL (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`, so a core restarted on a new port is found; components never fall back to a guessed well-known port), validate that the answering core serves this root before subscribing, redial (with exponential backoff in Nim), rebuild every subscription and re-publish `reg.publish`; a refused candidate is retried on the next discovery pass instead of joined. Deliberately above the NATS client's own reconnect budget (~2 min), so a shorter outage never triggers it; a value that is not a positive number leaves the default. The TypeScript SDK does not re-attach yet | `180` |
 | `NIF_NATS_DIAL_TIMEOUT` | seconds allowed for a Go SDK component's initial NATS handshake (and reattach). A relayed bus reached through `ssh … incus exec … cli relay` pays process spawn plus a fresh TCP connect before INFO arrives, which nats.go's 2 s default cannot meet; values 1–600 are honoured, anything else leaves the default | `15` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.<id>.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | additional attempts when a streamed response drops mid-flight — budgeted separately from the general case because a dropped stream may already have billed output | `2` |
@@ -841,6 +852,9 @@ families: `ev.log.<component>` from the SDKs, `ev.lsp.warm`, `ev.agent.*`,
 `ev.fabric.*`):
 
 ```
+reg.admit              optional pre-subscription admission request (raw registration
+                       JSON); core replies {ok, name, pid, reason} — a refused store
+                       never subscribes to its call subject
 reg.publish            component announces itself: {name, version, pid, tools:[{name, schema}]}
 reg.depart             graceful shutdown announcement
 svc.<component>.call   queue-grouped tool call request/reply
@@ -4684,6 +4698,14 @@ artefacts of the approval gate are the client-written grant record (store
 kind `approval`) and the program source core writes to
 `var/approval-sources/<digest>.nim` — no request/verdict history exists.
 
+Core's own `var/logs/core.log` does carry one bounded identity line per
+registration, admission and departure — including refused arrivals — with UTC
+timestamp, subject, PID, announced root (empty for legacy peers), version, name
+and client flag. Fields are truncated and JSON-quoted, so an announced path or
+name cannot forge a line. That is evidence of announced identity, not process
+liveness or database integrity, and it is not an audit log: no prompt prefix or
+conversation history changes, and no bus traffic is captured.
+
 ### `observe`: bounded live inspection
 
 `observe` has one raw `>` subscription. It preserves the original JSON node,
@@ -4858,10 +4880,16 @@ no `reg.depart` was sent, and the catalog kept advertising tools nothing could
 reach, so recovery meant killing the process. The Nim and Go SDKs now watch
 connection health (a `Flush` probe every 2 s) and, once the connection has been
 unhealthy for `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the
-client's own patience), **re-attach**: re-resolve the bus URL, redial (with
-exponential backoff in Nim; Go retries on its health tick), rebuild every
-subscription (call, event and tap) and re-publish `reg.publish` — no process
-restart.
+client's own patience), **re-attach**: re-resolve the bus URL (`NIF_NATS_URL`,
+then this root's `var/nats-url` — never a well-known-port guess), validate
+every candidate against the core's advertised root before any subscription
+exists (the same rule as the first connection), redial (with exponential
+backoff in Nim; Go keeps retrying discovery on its health tick when a
+candidate is refused), rebuild every subscription (call, event and tap) and
+re-publish `reg.publish` — no process restart. A refused candidate is skipped
+and retried, never subscribed; a component whose bus is gone fails explicitly
+as "nowhere to go" instead of migrating onto whatever harness answers the
+well-known port.
 
 A component that deferred its announce (the Go SDK's `DeferAnnounce`, e.g.
 `mcp-bridge`) must re-publish its own contract on the fresh connection, since
@@ -5391,10 +5419,12 @@ only a subset — this table is the complete list):
 Backend is the selected engine — SQLite at `var/store.db` by default,
 or the
 DSN-shared TiDB engine (`NIF_STORE_TIDB_DSN`, no flock — row locks and the
-rev counter arbitrate between harnesses). **Exactly one process owns that
-file** — never run two file-backed `store` processes against the same
+rev counter arbitrate between harnesses). **Exactly one `store` process serves
+a harness** — never run two file-backed `store` processes against the same
 database (a second core booted against the same root would do exactly that;
-use a temp `NIF_ROOT` copy for experiments).
+use a temp `NIF_ROOT` copy for experiments). Core refuses bus admission to a
+second `store` PID before it subscribes, including one from another root; this
+is cooperative, so upgrade and restart core and stores together.
 
 `list` is a page, not a complete view (see [Store engines](#store-engines)):
 everything in core that must see a whole kind goes through `storeListAll` —

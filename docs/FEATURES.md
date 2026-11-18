@@ -84,9 +84,11 @@ stopping"; [WIRE.md](WIRE.md) "Lifecycle".
   `NIF_AUTOSTART` service mode with idle-departure and boot-grace exits.
 - Supervisor: spawn/drain/remove, restart policy and backoff, child-log
   retention sweep, log tail shown when a child dies.
-- Catalog authority: registrations and departures, globally unique tool
-  names (duplicates refused in full), schema normalization for LLM validity,
-  full snapshot / component map / direct projection, replica and pid tracking.
+- Catalog authority: registrations and departures, pre-subscription admission
+  (`reg.admit`, refusing a second `store` PID), globally unique tool names
+  (duplicates refused in full), schema normalization for LLM validity,
+  full snapshot / component map / direct projection, replica and pid tracking,
+  and bounded timestamp/PID/root identity evidence in the rotating core log.
 - Dispatch seam: routing by bare tool name, workspace and session context
   injection, timeouts, approval, hidden/on-demand filtering, parallel fan-out,
   effect classification, delegation-depth guard, nested-call leases.
