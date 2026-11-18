@@ -964,7 +964,10 @@ calling `core.spawn`) are served from the dispatch's idle slot, and
 `session` calls never block core — each rides its private forwarding inbox
 (`routeSessionCall`) and is completed by `pumpSessionForwards`, so separate
 conversations' turns overlap while a mid-turn conversation refuses further
-turns with `busy` — turns never nest.
+turns with `busy` — turns never nest. A forward returns `session-runner-exited`
+if its runner dies without replying, or `session-forward-timeout` after 30
+minutes. Neither is a cancellation or a guarantee that no effects landed;
+clients must not automatically resubmit the turn.
 
 - Presence = connection; component death detected by core via NATS disconnect
   plus `reg.depart` (graceful) vs silence (crash). A Nim or Go SDK component

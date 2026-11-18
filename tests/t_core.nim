@@ -9,6 +9,7 @@
 ## persisted children.
 
 import std/[json, os, osproc, streams, strutils, times]
+from std/posix import Pid, kill, SIGKILL
 import natsnim
 import envelope
 import helpers
@@ -586,6 +587,47 @@ proc main() =
   while slowProc.running() and epochTime() < slowDeadline:
     sleep(100)
   check("slow session caller eventually completes", not slowProc.running())
+
+  # Lose a specific runner after a turn has started, not before dispatch.
+  const crashSession = "agent-crash-core-regression"
+  let crashCall = callEnvelope("session",
+    %*{"sessionId": crashSession, "content": "SLOW_CHILD"})
+  let crashInbox = "_INBOX.core-crash-" & newId()
+  var crashSub: ptr natsSubscription
+  doAssert natsConnection_SubscribeSync(addr crashSub, nc.conn,
+    crashInbox.cstring) == NATS_OK
+  defer: natsSubscription_Destroy(crashSub)
+  let crashWire = crashCall.encode()
+  doAssert natsConnection_PublishRequest(nc.conn, "svc.core.call".cstring,
+    crashInbox.cstring, crashWire.cstring, crashWire.len.cint) == NATS_OK
+  var crashStarted = false
+  let crashDeadline = epochTime() + 10.0
+  while epochTime() < crashDeadline:
+    var msg: ptr natsMsg
+    if natsSubscription_NextMsg(addr msg, turnSub, 200) != NATS_OK: continue
+    let event = decode($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if event.payload{"sessionId"}.getStr("") == crashSession and
+        event.payload{"phase"}.getStr("") == "start":
+      crashStarted = true
+      break
+  let crashPids = runnerPids("session-" & crashSession)
+  check("crash test found the active runner", crashStarted and crashPids.len == 1)
+  if crashStarted and crashPids.len == 1 and crashPids[0] > 0:
+    check("kill the active runner", kill(Pid(crashPids[0]), SIGKILL) == 0)
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, crashSub, 3_000)
+    check("the abandoned forward completes promptly", st == NATS_OK, $st)
+    if st == NATS_OK:
+      let response = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      check("runner loss reports an unknown outcome on the original request",
+        response.id == crashCall.id and response.kind == ekError and
+        response.error{"code"}.getStr("") == "session-runner-exited", $response.error)
+    let replacement = call(nc, "core", "session", %*{"sessionId": crashSession}, 10_000)
+    check("a replacement runner serves new requests for the same conversation",
+      replacement{"sessionId"}.getStr("") == crashSession and
+      runnerPids("session-" & crashSession) != crashPids, $replacement)
 
   let liveTurn = call(nc, "core", "session",
                       %*{"sessionId": "si-live", "content": "go"}, 120_000)
