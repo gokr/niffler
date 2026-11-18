@@ -1,6 +1,6 @@
 ## Core must answer invalid request envelopes in both idle and busy pumps.
 
-import std/[json, os, strutils]
+import std/[json, monotimes, os, strutils, times]
 import natsnim
 import envelope
 import ../core/[catalog, conversation, dispatch]
@@ -39,6 +39,25 @@ proc main() =
           response.error{"code"}.getStr("") == "bad-envelope")
         if data.contains("keep-id"):
           check("decodable id preserved", response.id == "keep-id")
+  # An expired forward with no reply is retired even without a process exit.
+  var lostReply: ptr natsSubscription
+  doAssert natsConnection_SubscribeSync(addr lostReply, nc.conn,
+    "test.lost-reply") == NATS_OK
+  let forward = callEnvelope("session", %*{"sessionId": "lost-reply"})
+  ct.pending.forwards.add(SessionForward(env: forward, reply: "test.replies",
+    sub: lostReply, runnerPid: getCurrentProcessId(),
+    deadline: getMonoTime() - initDuration(milliseconds = 1)))
+  ct.pumpSessionForwards()
+  check("an expired forward releases its inbox", ct.pending.forwards.len == 0)
+  var expired: ptr natsMsg
+  let expiredStatus = natsSubscription_NextMsg(addr expired, replies, 500)
+  check("an expired forward answers its caller", expiredStatus == NATS_OK)
+  if expiredStatus == NATS_OK:
+    let response = decode($natsMsg_GetData(expired))
+    natsMsg_Destroy(expired)
+    check("expiry reports an unknown outcome on the original request",
+      response.id == forward.id and response.kind == ekError and
+      response.error{"code"}.getStr("") == "session-forward-timeout")
   report("CORE REQUESTS")
 
 main()

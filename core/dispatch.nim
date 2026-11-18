@@ -259,7 +259,8 @@ type
     env*: Envelope
     reply*: string
     sub*: ptr natsSubscription
-    deadline*: float
+    runnerPid*: int
+    deadline*: MonoTime
 
   PendingCalls* = ref object
     forwards*: seq[SessionForward]
@@ -1522,6 +1523,7 @@ proc pumpSessionForwards*(ct: CoreTools) =
     var remove = false
     var response: Envelope
     var responseError = ""
+    var errorCode = "boom"
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, forward.sub, 1)
     if st == NATS_OK:
@@ -1537,13 +1539,20 @@ proc pumpSessionForwards*(ct: CoreTools) =
     elif st != NATS_TIMEOUT:
       responseError = "session runner inbox: " & getErrorString(st)
       remove = true
-    elif epochTime() >= forward.deadline:
-      responseError = "session request timed out after 1800000ms"
+    elif forward.runnerPid > 0 and not pidAlive(forward.runnerPid):
+      # Check the process that accepted this forward, not the catalog name:
+      # a replacement runner cannot reply to an older request.
+      errorCode = "session-runner-exited"
+      responseError = "session runner exited before replying; turn outcome unknown"
+      remove = true
+    elif getMonoTime() >= forward.deadline:
+      errorCode = "session-forward-timeout"
+      responseError = "session request timed out; turn outcome unknown"
       remove = true
 
     if remove:
       if responseError.len > 0:
-        response = errorEnvelope(forward.env.id, "boom", responseError)
+        response = errorEnvelope(forward.env.id, errorCode, responseError)
       try:
         if forward.reply.len > 0:
           ct.nc.publish(forward.reply, response.encode())

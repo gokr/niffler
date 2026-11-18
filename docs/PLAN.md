@@ -292,26 +292,11 @@ Current client source waits 31 minutes in `sessionRequest`; the Go SDK wraps a
 NATS request timeout with that exact subject. It means no terminal reply arrived,
 not proof that the turn stopped or that a particular component failed.
 
-Source findings to fix before the next large feature:
-
-- `routeSessionCall` sets `deadline: epochTime() + 1800.0 * 1000.0`, while
-  `pumpSessionForwards` compares it to `epochTime()` in seconds. The intended
-  30-minute forwarding deadline is about 21 days, so the TUI can time out first
-  instead of receiving core's named forwarding error.
-- The TUI's first-turn path retries any `sessionRequest` error after removing
-  `cwd`. Restrict retry to a proven safe refusal; a transport timeout has an
-  unknown execution outcome and must not resubmit content blindly.
-- Correlate request/session/runner identity and elapsed time across client and
-  core, and reconcile live/stored turn state after a lost reply. Never present a
-  transport timeout as confirmed cancellation. Check runner death, bus recovery
-  and lost reply separately from an actually long turn or approval wait.
-
-Gate: deterministic short-deadline forwarding expiry (no 31-minute sleep),
-runner loss/lost-reply coverage, no second content submission after an unknown
-outcome, and preservation of separate-conversation concurrency and mid-turn
-stop. Match the installed client's version and incident timestamp/session before
-claiming these source findings explain a particular occurrence. No runtime fix
-or live reproduction is claimed by this planning update.
+Core now bounds each forward with a monotonic 30-minute deadline and fails
+promptly when its runner exits. Tests cover expiry without a 30-minute sleep,
+runner loss and separate-conversation concurrency. Neither missing reply
+implies cancellation; reconcile the live/stored turn before retrying. Client-side
+reconciliation after a lost reply and bus recovery remain separate work.
 
 ### Pillar 1 — Fleet: from "works" to "trusted"
 

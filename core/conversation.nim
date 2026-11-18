@@ -6870,7 +6870,10 @@ proc routeSessionCall*(ct: CoreTools, env: Envelope, reply: string) =
       "session needs sessionId").encode())
     return
   try:
+    if ct.pending == nil:
+      raise newException(IOError, "session forwarding state is unavailable")
     let subject = ensureRunner(ct, sessionId)
+    let runnerPid = ct.cat.components[runnerName(sessionId)].pid
     let inbox = "_INBOX." & newId()
     var sub: ptr natsSubscription
     var st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
@@ -6884,12 +6887,9 @@ proc routeSessionCall*(ct: CoreTools, env: Envelope, reply: string) =
       natsSubscription_Destroy(sub)
       raise newException(IOError, "publish session request: " &
         getErrorString(st))
-    if ct.pending == nil:
-      natsSubscription_Destroy(sub)
-      raise newException(IOError, "session forwarding state is unavailable")
     ct.pending.forwards.add(SessionForward(
-      env: env, reply: reply, sub: sub,
-      deadline: epochTime() + 1800.0 * 1000.0))
+      env: env, reply: reply, sub: sub, runnerPid: runnerPid,
+      deadline: getMonoTime() + initDuration(minutes = 30)))
   except CatchableError as e:
     ct.nc.publish(reply, errorEnvelope(env.id, "boom", e.msg).encode())
 
