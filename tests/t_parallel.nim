@@ -560,6 +560,29 @@ proc main() =
             retryEvents[0]{"error"}.getStr("").contains("503"),
             $retryEvents[0])
 
+  block:
+    let sandbox = newCoreSandbox("parallel-truncated", ["store", "bash", "llm"])
+    compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "truncated")
+    defer: removeDir(sandbox.root)
+    let (server, url) = startNats()
+    defer: stopServer(server)
+    var nc = waitConnect(url)
+    defer: nc.close()
+    var coreProc: Process
+    boot(nc, coreProc, sandbox, url, "truncated")
+    defer: stopHard(coreProc)
+    let recovered = call(nc, "core", "session", %*{
+      "sessionId": "truncated-recover", "cwd": sandbox.root, "content": "go"}, 30_000)
+    check("a complete reissued batch runs", recovered{"reply"}.getStr("") == "reissue-done" and
+      fileExists(sandbox.root / "reissued.txt"), $recovered)
+    let repeated = call(nc, "core", "session", %*{
+      "sessionId": "truncated-twice", "cwd": sandbox.root, "content": "go"}, 30_000)
+    check("a second truncated batch terminates the turn",
+      repeated{"outcome"}.getStr("") == "error" and
+      repeated{"turnError"}.getStr("").contains("reissue also truncated"), $repeated)
+    check("even parseable calls in truncated batches never reach bash",
+      not fileExists(sandbox.root / "forbidden.txt"))
+
   report("PARALLEL")
 
 main()

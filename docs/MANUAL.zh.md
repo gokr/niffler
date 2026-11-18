@@ -1040,6 +1040,8 @@ API-key provider 只能使用 `openai-chat` 或 `anthropic`：`openai-codex` 需
 
 输出上限按协议拼写，拼错的上限会静默失败。Niffler 的默认拼写是 `max_completion_tokens`；DeepSeek 只认 `max_tokens`，因此以默认方式发送的上限会被忽略，服务器自己的默认值（按模型为 8K/64K/128K）生效——对 DeepSeek 端点请发送 `max_tokens`。Anthropic 通道始终以 `max_tokens` 接收解析后的窗口；Codex 通道则完全不被告知上限。流的结束方式在 `finish_reason` 中报告：`length` 表示输出上限截断了回复（`llm` 会记录截断警告），`tool_calls` 表示模型停下来调用工具，Anthropic 的 `max_tokens` 停止映射为 `length`（其 `tool_use` 停止映射为 `tool_calls`）；Codex 的 `max_output_tokens` 结束及其 `response.incomplete` 事件也映射为 `length`，而无法识别的原因会原样传递以供日志记录。两个 OpenAI 兼容的错误结束，`aborted` 和 `insufficient_system_resource`，以 HTTP 200 到达，并作为可重试的流错误呈现，而不是作为回复。一个从不报告 `finish_reason` 的适配器会丢失这两个信号——没有截断警告，而在上限处被截断的空补全会作为普通空回复重试，而不是以 `the provider cut the reply at the output cap before any content` 结束该轮；`llm-openai` 示例不返回任何内容。
 
+若 `length` 同时带有工具调用，core 不执行这批调用。它为每个调用记录错误，并允许模型将调用拆成更小的批次重发一次。再次截断会以错误结束本轮。
+
 ### Subscription OAuth (ChatGPT Plus/Pro, Claude Pro/Max)
 
 `provider` 组件实现了与 Pi 和 opencode 相同的 PKCE 登录流程（固定的 localhost 回调端口、手动重定向/代码回退，以及面向无头机器的 OpenAI 设备码流程）。已启动的流程在 15 分钟后过期；`provider_oauth_start` 返回其 `expiresAt`（epoch 毫秒），因此被放弃的登录永远无法在之后完成：

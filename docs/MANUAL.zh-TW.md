@@ -1217,6 +1217,8 @@ Niffler 的預設拼寫是 `max_completion_tokens`；DeepSeek 只認
 completion 會被當作普通空回覆重試，而非以 `the provider cut the reply at the output cap before any
 content` 結束回合；`llm-openai` 範例不回報任何一個。
 
+若 `length` 同時帶有工具呼叫，core 不執行這批呼叫。它為每個呼叫記錄錯誤，並允許模型將呼叫拆成較小的批次重送一次。再次截斷會以錯誤結束本輪。
+
 ### Subscription OAuth (ChatGPT Plus/Pro, Claude Pro/Max)
 
 `provider` 元件實作與 Pi 及 opencode 相同的 PKCE 登入流程（固定的 localhost 回呼埠、手動重新導向/代碼備援，以及供無介面機器使用的 OpenAI 裝置代碼流程）。已啟動的流程會在 15 分鐘後過期；`provider_oauth_start` 會傳回其 `expiresAt`（epoch 毫秒），因此被放棄的登入永遠無法在之後完成：

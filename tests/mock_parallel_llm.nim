@@ -62,11 +62,26 @@ proc(c: Component, args: JsonNode): JsonNode =
         raise newException(ValueError, "missing tool results")
       let calls = message{"tool_calls"}
       if calls != nil and calls.kind == JArray:
-        for call in calls: outstanding.add(call{"id"}.getStr(""))
+        for call in calls:
+          discard parseJson(call{"function", "arguments"}.getStr("{}"))
+          outstanding.add(call{"id"}.getStr(""))
   if outstanding.len > 0:
     raise newException(ValueError, "missing tool results")
   let sid = args{"sessionId"}.getStr("")
   workingRounds[sid] = workingRounds.getOrDefault(sid) + 1
+  if scenario == "truncated":
+    let round = workingRounds[sid]
+    if round == 1 or (round == 2 and sid == "truncated-twice"):
+      return %*{"finish_reason": "length", "tool_calls": [
+        {"id": "cut-valid-" & $round, "type": "function", "function": {
+          "name": "bash", "arguments": "{\"command\":\"touch forbidden.txt\"}"}},
+        {"id": "cut-bad-" & $round, "type": "function", "function": {
+          "name": "bash", "arguments": "{"}}]}
+    if round == 2:
+      return %*{"finish_reason": "tool_calls", "tool_calls": [
+        {"id": "reissued", "type": "function", "function": {
+          "name": "bash", "arguments": "{\"command\":\"touch reissued.txt\"}"}}]}
+    return %*{"content": "reissue-done"}
   if workingRounds[sid] == 1:
     var calls = newJArray()
     var n = 0
