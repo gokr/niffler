@@ -7,7 +7,7 @@
 ##
 ## This is not a NATS test: the launcher is a helper binary, not a component.
 
-import std/[os, osproc, strutils, json]
+import std/[json, os, osproc, strutils, tempfiles]
 import ../sandbox/policy
 
 var failures = 0
@@ -38,8 +38,7 @@ proc runLauncher(bin: string, args: seq[string],
 
 proc pureChecks() =
   ## policy.nim is pure path/argv logic — no privileges, no spawning.
-  let ws = getTempDir() / "sb-policy"
-  createDir(ws)
+  let ws = createTempDir("niffler-sb-policy-", "")
   defer: removeDir(ws)
 
   var req = LaunchRequest(workspace: ws, argv: @["true"])
@@ -76,8 +75,11 @@ proc enforcementChecks(root: string) =
   if not fileExists(bin):
     skip("enforcement", "launcher not built at " & bin)
     return
-  let base = getTempDir() / "sb-enforce"
-  removeDir(base)
+  # Unique per process: a fixed /tmp name collided with a sibling suite run
+  # (two jobs under `make test-server -j`), and the removal of one run's tree
+  # made another's masked read fail as "Permission denied" instead of
+  # "hidden" — a red gate that said nothing about the launcher.
+  let base = createTempDir("niffler-sb-enforce-", "")
   createDir(base / "ws")
   createDir(base / "outside")
   defer: removeDir(base)
@@ -158,8 +160,19 @@ proc enforcementChecks(root: string) =
     "--", "sh", "-c", "cat " & quoteShell(base / "ws" / ".env") &
       " " & quoteShell(base / "ws" / "secret-link")])
   if backend == "bwrap":
+    # The CONTRACT is that neither spelling reveals the secret. How the mask
+    # expresses that is not the launcher's promise: this sandbox answers a
+    # masked read with the conventional "Permission denied" (exit 1 from cat),
+    # while another backend could hide the path with ENOENT. Asserting the
+    # secret's absence — not an exact exit code — is what makes the check
+    # portable; it caught a real host difference where the read failed exactly
+    # as intended and the assertion still called it a failure.
     check("masking a symlink hides canonical target and symlink spelling",
-       aliasCode in [0, 1] and not aliasOutput.contains("TOP-SECRET"), aliasOutput)
+       not aliasOutput.contains("TOP-SECRET"), aliasOutput)
+    # ...and the guard itself must stay a HARD refusal, never a silent empty
+    # success: whatever errno a backend picks, the command did not read it.
+    check("a masked read refuses rather than returning empty bytes",
+       aliasCode != 0, aliasOutput)
   createHardlink(base / "ws" / ".env", base / "ws" / "hard-alias")
   let (hardCode, hardOutput) = runLauncher(bin, @[
     "run", "--workspace", base / "ws", "--mask", base / "ws" / ".env",
@@ -237,8 +250,7 @@ proc main() =
   # reads matter most runs with the host fully readable — visible only to
   # whoever inspected a status field. Refusal is the honest outcome.
   block strictNeverDegrades:
-    let ws = getTempDir() / "sb-strict-degrade"
-    createDir(ws)
+    let ws = createTempDir("niffler-sb-strict-", "")
     defer: removeDir(ws)
     # NIF_BWRAP points at nothing so the probe cannot find a usable bwrap, and
     # degraded mode is allowed — which is exactly the trap: before this check,
