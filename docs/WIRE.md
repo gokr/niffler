@@ -2154,10 +2154,15 @@ Strict providers re-validate tool-call pairing on **every** request: each entry
 of an assistant message's `tool_calls` must be answered by a `tool` message
 carrying that `tool_call_id`, and every `tool` message must answer a call that
 is pending. A transcript can lose that shape with nobody editing it — a
-message write is best-effort (an outage consumes the id and drops the record),
-a runner can be killed mid-batch, a fork copies whatever the store holds — and
+legacy runners could skip failed message writes, a runner can be killed
+mid-batch, or a fork can copy damaged history — and
 the damage is then **permanent**: every later request re-sends the same prefix
 and is refused identically, so the conversation can never run again.
+
+Canonical appends are create-only and ordered. If the store does not confirm
+an append, the turn stops with an explicit persistence error; the runner
+reloads the durable transcript before another turn. It does not assume a
+missing acknowledgement means the write did not commit.
 
 Because of that the runner repairs the **projection** when it loads one
 (`healToolPairing`, once per load, not per round):

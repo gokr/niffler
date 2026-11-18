@@ -20,6 +20,9 @@ for tool in ["get", "put", "list", "del"]:
         if fault{"putKind"}.getStr("") == kind:
           return %*{"ok": false, "code": "unavailable", "error": "injected write failure"}
         let v = a["value"]
+        if kind == "message" and fault{"messageRole"}.getStr("") == v{"role"}.getStr(""):
+          writeFile(control, "{}")
+          return %*{"ok": false, "code": "unavailable", "error": "injected one-shot append refusal"}
         if (fault{"state"}.getStr("") != "" and v{"state"}.getStr("") == fault["state"].getStr()) or
             (fault{"message"}.getBool(false) and kind == "message") or
             (fault{"ack"}.getBool(false) and v{"delivered"}.getBool(false)):
