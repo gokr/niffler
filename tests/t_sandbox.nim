@@ -38,8 +38,7 @@ proc runLauncher(bin: string, args: seq[string],
 
 proc pureChecks() =
   ## policy.nim is pure path/argv logic — no privileges, no spawning.
-  let ws = getTempDir() / "sb-policy"
-  createDir(ws)
+  let ws = createTempDir("niffler-sb-policy-", "")
   defer: removeDir(ws)
 
   var req = LaunchRequest(workspace: ws, argv: @["true"])
@@ -76,8 +75,11 @@ proc enforcementChecks(root: string) =
   if not fileExists(bin):
     skip("enforcement", "launcher not built at " & bin)
     return
-  let base = getTempDir() / "sb-enforce"
-  removeDir(base)
+  # Unique per process: a fixed /tmp name collided with a sibling suite run
+  # (two jobs under `make test-server -j`), and the removal of one run's tree
+  # made another's masked read fail as "Permission denied" instead of
+  # "hidden" — a red gate that said nothing about the launcher.
+  let base = createTempDir("niffler-sb-enforce-", "")
   createDir(base / "ws")
   createDir(base / "outside")
   defer: removeDir(base)
@@ -237,8 +239,7 @@ proc main() =
   # reads matter most runs with the host fully readable — visible only to
   # whoever inspected a status field. Refusal is the honest outcome.
   block strictNeverDegrades:
-    let ws = getTempDir() / "sb-strict-degrade"
-    createDir(ws)
+    let ws = createTempDir("niffler-sb-strict-", "")
     defer: removeDir(ws)
     # NIF_BWRAP points at nothing so the probe cannot find a usable bwrap, and
     # degraded mode is allowed — which is exactly the trap: before this check,
