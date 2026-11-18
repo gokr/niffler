@@ -347,7 +347,9 @@ Inside the tree nothing else changes: `read`, `edit`, `replace_across`, `bash`,
 undo, the sandbox policy and the readscope masks all address *this* checkout, and
 `git_worktree_list` answers "whose tree is this, is it dirty, is it
 locked" from git plus the store ledger — the fact git cannot know, because the
-ledger records which conversation a tree belongs to.
+ledger records which conversation a tree belongs to. The dirt and divergence
+cost two extra git calls per tree, so they are opt-in with `status: true`; the
+default listing stays metadata-only.
 
 The human's side is one command with one sentence of feedback:
 
