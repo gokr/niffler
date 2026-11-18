@@ -191,6 +191,9 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Fixed
 
+- A failed transcript append stops the turn. The runner reloads committed
+  history before accepting another turn rather than skipping the missing write.
+
 - Core refuses to execute tool batches cut off by the model’s output cap and
   lets the model reissue the intended calls once.
 

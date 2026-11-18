@@ -132,35 +132,14 @@ proc main() =
   check("a conversation with no tool calls is untouched",
         pr.added == 0 and pr.dropped == 0 and $pr.m == $plain)
 
-  # --- a failed write is remembered, not silently swallowed ---------------
-  # persistMsg is best-effort: the id is consumed and the record is gone. What
-  # must NOT happen is losing the fact — the pair it belonged to is damaged, and
-  # the only moment the harness knows WHICH one is while the write fails. No
-  # bus here, so every store call raises: the persister must record the loss
-  # (and not raise out of persistMsg).
-  var deadCt = CoreTools()
-  var dead = newPersister(deadCt)   # its header write fails too — caught
-  let deadConv = dead.convId
-  discard dead.persistMsg(%*{"role": "tool", "tool_call_id": "call-x",
-                             "name": "bash", "content": "gone"})
-  check("a failed write is recorded with the id it consumed",
-        dead.lostWrites.len == 1 and
-        dead.lostWrites[0]{"id"}.getStr("") == deadConv & ":000001" and
-        dead.lostWrites[0]{"role"}.getStr("") == "tool" and
-        dead.lostWrites[0]{"toolCallId"}.getStr("") == "call-x" and
-        dead.lostWrites[0]{"name"}.getStr("") == "bash",
-        $dead.lostWrites)
-  discard dead.persistMsg(%*{"role": "assistant", "content": newJNull(),
-                             "tool_calls": %*[{"id": "call-y"}]})
-  check("a second loss keeps its own id and carries no tool_call_id",
-        dead.lostWrites.len == 2 and
-        dead.lostWrites[1]{"id"}.getStr("") == deadConv & ":000002" and
-        dead.lostWrites[1]{"toolCallId"} == nil)
-  # An unreachable store must not crash the flush either: the ledger write
-  # fails, the repair is still re-derived from the transcript on the next load.
-  flushLostWrites(deadCt, dead.convId, dead)
-  check("flushing a loss against a dead store neither raises nor keeps it queued",
-        dead.lostWrites.len == 0)
+  # An unavailable store must not consume a sequence or mutate the projection.
+  var dead = newPersister(CoreTools())
+  var messages: seq[JsonNode]
+  var refused = false
+  try: ctxAppend(dead, messages, user("not durable"))
+  except TranscriptWriteError: refused = true
+  check("a failed append leaves sequence and projection untouched",
+        refused and dead.seqNo == 0 and messages.len == 0)
 
   report("TOOLPAIR UNIT")
 
