@@ -220,8 +220,11 @@
             With git mutations enabled, <code>/worktree add NAME [--fork]</code>
             starts a branch beside the primary — optionally with a peer
             conversation that has its own permissions. Review the work and use
-            <code>/worktree merge</code> to merge it back cleanly; removal
-            guards foreign trees, dirty work and unmerged changes.</p>
+            Preview the merge with <code>git_merge_preview</code> (computed by
+            <code>merge-tree</code>, no working tree touched) and use
+            <code>/worktree merge</code> to land it cleanly; the fork's origin
+            conversation then gets a durable notice. Removal guards foreign
+            trees, dirty work and unmerged changes.</p>
           <p data-i18n-html="f.worktree.note">Worktrees are in the development version, not the current v0.5.0 release. See the <a href="https://github.com/gokr/niffler/blob/main/CHANGELOG.md#unreleased">unreleased changes</a> and <a href="https://github.com/gokr/niffler/blob/main/docs/MANUAL.md#worktrees">worktree manual</a>.</p>
         </article>
         <article>
