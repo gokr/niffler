@@ -92,7 +92,7 @@ A one-file index of every shipped capability (not a reference) is
 | `locks` | Nim | optional | Cooperative write coordination for session-dispatched tools. File tools claim paths; wildcard paths claim their base directory; opaque writers claim a subtree. Read-effect tools and session-context orchestration take no outer claim: nested calls acquire individually. Conflicts return `E_WRITE_BUSY` naming the holder. Acquiring happens after approval; session leases last at least the transport timeout + 60 seconds (minimum 10 minutes). Terminal replies release; unknown timeout/cancel outcomes retain claims until expiry. Startup recovery is fail-closed and retryable; failed durable release retains the claim. The index is in memory, write-through to one store document per lease. Run one instance only (no replicas). Absent component means unarbitrated mode. Not an OS sandbox: direct bus calls, detached processes, native guest I/O and other harness instances are outside the guarantee. `lock_acquire`/`lock_release` are `hidden`: core's dispatch gate is their only caller and a model cannot invoke them — taking a lease is not a capability, it is what the gate does before a write. `lock_status` is on-demand, for diagnosing a refusal or an orphaned claim. See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md). |
 | `edit` | Nim | optional | the file tools: `read` (an image path — png/jpeg/gif/webp/bmp, recognized by its bytes rather than its extension — returns the image itself for the model to look at instead of the `E_NOT_TEXT` binary refusal, with a caption naming file, format, byte size and dimensions; over `READ_IMAGE_MAX_BYTES` (3.5 MB) the file is *reported*, never silently downscaled, and `capture`/`save_as` calls skip the image path entirely, so a var-capable call cannot smuggle pixels into a variable; see [Images](#images-dropped-and-tool-produced)); `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump; a *select* item ({glob|path, pattern?, word?, context?, max?}) locates-then-fetches in one call — with no pattern it lists the matched paths like find/ls, while a literal pattern returns verbatim hit regions ±context lines (grep semantics) ready to copy into `edit`'s `old_string`; `glob` accepts `f*.go` (one directory), `**/*.go` (recursive) and `dir/**` (everything below that directory, not the whole root); one unreadable target (a binary, a directory, an oversized file) is a per-item `error` row in `items[]` and a `[skipped: …]` line in the text, never a failed batch; a zero-hit file is reported in `items[]` but does not spend the 64-file answer cap (so a pattern over a wide glob still reaches the hits), a glob past the 512-file scan cap and a call past the byte budget (192 KB of rendered regions per call) each add an explicit `[read limit: …]` notice, and a regex-shaped `pattern` that finds nothing gets a literal-match hint — matching itself is always grep -F), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `replace_across` (sed-style literal s///g across a bounded file set in one call — `paths` and/or `glob` (`f*.go` in one directory, `**/*.go` recursively), rules applied in order like a sed pipeline with an optional `word` (\b) span, every occurrence per file and zero-match files passing like sed; a zero *total* match is refused with `E_NO_MATCH` so a mistyped needle cannot silently succeed, per-file counts come back, and each changed file gets its own undo entry that `undo_last_edit` reverts individually; bounded by a 512-file glob-accident circuit breaker and a 32 MB per-call undo pre-image budget (`E_TOO_LARGE`) — the counting pass writes nothing until every refusal has passed), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); `read`, `edit`, `replace_across` and `write` additionally carry the session-variable pipeline controls (`save_as` captures a response field, `resolve_vars: true` substitutes `$name` in that call's arguments — every other `$` stays literal; see [WIRE.md](WIRE.md) `x-harness.variables`); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover`, `warmup` — plus `lsp_servers` (list the merged registry) and `lsp_registry` (`add`/`remove` an entry, approval-gated) — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
-| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
+| `git` | Nim | optional | repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free), plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). With the declared `git.mutations` setting on (the default) it also registers the approval-gated worktree/merge/commit verbs (`git_worktree`, `git_worktree_list`, `git_merge_preview`, `git_merge`, `git_commit`) — see [Worktrees](#worktrees). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions, nine tools: `agent_run`/`agent_spawn` (fresh or continued children, background jobs, durable settlement notices) plus `agent_status`/`agent_wait`/`agent_stop`/`agent_steer`/`agent_ask`/`agent_notices`/`agent_list` — see [Fabric and subagents](#fabric-and-subagents) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `jev` | Nim | optional | advisory discovery over a local decision model (docs/research/JEV-SPIKE.md): `jev_recommend {task, query, kind: "tools"|"skills"}` fetches a fresh shortlist via `core.discover`/`skill_list` and asks the configured System One backend which entry fits; `jev_suggest` takes a caller-supplied 1–24 candidate list, `jev_decide` asks raw typed (`noul`/`choice`/`score`) questions. All three are on-demand, read-effect and **advisory only** — they grant no permission, load no schemas/skills and invoke nothing; a backend outage is a fail-open result and the probability is uncalibrated. Local-only: `NIF_JEV_URL` must be a loopback `/v1/systemone` endpoint (no redirects). The backend (Von) is started by the `von` launcher or by hand — see [Advisory discovery (`jev`) and the Von launcher](#advisory-discovery-jev-and-the-von-launcher). Per-turn **shadow** observations are on by default (`NIF_JEV_SHADOW=0` opts out; `NIF_JEV_SHADOW_KIND`/`_SKILL_QUERY`/`_TOOL_QUERY` tune them) and land in store kind `jevshadow`, never in a conversation; an absent backend writes no record — one warning, then silent cooldowns |
@@ -593,7 +593,9 @@ clamped to 1000, and the reply carries `hasMore` plus a `nextAfter` id cursor.
 Pass `nextAfter` back as `after` to walk the rest — `after` is exclusive, and
 `nextAfter` is absent when `hasMore` is false. The store keeps full histories,
 so a long conversation does not fit in one call; core's own full-kind reads
-(resume, `session_info`, `conversation_delete`) page automatically.
+(resume, `session_info`, `conversation_delete`) page automatically, and fail
+closed on a partial read — `hasMore: true` with no advancing cursor is an
+error, never end-of-data (`storeListAll`, core/dispatch.nim).
 
 The store contract is one test run against every engine: `make test-store`
 (the default engine), `make test-store-tidb`
@@ -1529,7 +1531,7 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   mode, budgets and provider pins are separate controls, and a granted root is
   not an isolation boundary.
 
-- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?, roots?, stop?}` accepts a
+- `session {sessionId, content?, provider?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?, roots?, stop?, invoke?}` accepts a
   conversation-scoped provider and model override. `provider` names a stored
   provider nickname (empty clears it back to the harness-global default); a
   model-only call resolves and pins the provider it belongs to in the same
@@ -2730,8 +2732,9 @@ own opaque `bash` claim (so every primary `bash` would serialize against every
 worktree write), and it dirties `git status` unless an ignore rule is added — a
 sibling needs neither. The layout is not configurable.
 
-Enable the mutation verbs with the declared setting `git.mutations` (or
-`NIF_GIT_MUTATIONS=1`); without it only the read tools register:
+The mutation verbs register when the declared setting `git.mutations` (or
+`NIF_GIT_MUTATIONS`) is on; it defaults to on, and turning it off leaves only
+the read tools:
 
 | Tool | Approval | What it does |
 |---|---|---|
@@ -2762,8 +2765,12 @@ thinks you meant, so the next call is unambiguous.
 A conversation's *workspace set* is its primary plus the trees that belong to the
 same project; the write fence admits the whole set, so by default a conversation
 in a worktree can also write the primary. `isolation: "worktree"` narrows the
-**claim** set to the conversation's own tree, so a write to the primary is
-refused with the existing `[E_WRITE_OUTSIDE]`.
+**claim** set to the conversation's own tree plus any explicit `/roots` grants,
+so a write to a discovered tree such as the primary is refused with the existing
+`[E_WRITE_OUTSIDE]`. Grants survive isolation because the two kinds of root are
+different facts: discovery is automatic, while a grant was a human's deliberate
+decision in this conversation (`claimRootsFor` orders the conversation's own
+tree first).
 
 - **Human-only.** It is not in the `session` tool's schema, exactly like `roots`,
   so the model cannot widen or narrow its own scope.
@@ -2775,6 +2782,13 @@ refused with the existing `[E_WRITE_OUTSIDE]`.
   would make the tree a cage.
 - **It is a fence, not a mutex.** Two conversations in one tree still proceed on
   different files — `locks` keeps its path striping.
+- **Two lifecycle calls get a per-call primary claim.** `git_merge` and
+  `git_worktree {op: "remove"}` declare `writes: {"primary": true}`: when the
+  call's `repo` resolves to exactly the conversation's linked primary checkout,
+  core leases that root for this call only. It changes no root grant, no
+  `isolation` state and no bash/edit fence, and approval plus lock contention
+  still apply. Other repositories, sibling trees and primary subdirectories are
+  still refused (WIRE.md "x-harness schema extensions").
 - Persisted in the header, restored on resume, mutable between calls, and
   reported as `isolation` on the session status readback and in
   `session_info.workspace`.
@@ -2801,16 +2815,21 @@ authority, the client is a shortcut.
 ### Provenance (`origin`) and merge notices
 
 A conversation seeded from another's history records `sessionmeta.origin =
-{session, atSeq, reason, worktree?}`. It is **provenance, never authority**: it
+{session, atSeq, reason, worktree?}`. It is **provenance, not supervision**: it
 grants no continuation rights, no approval routing, no depth exemption and no
-idle retirement. A *supervised* fork (`agent_spawn {fork}`) carries both edges —
-`parent` for supervision and `origin` for provenance; a **peer** fork
-(`agent_fork`, a hidden client tool) carries only `origin`, because nothing is
-supervising it.
+idle retirement. The one exception is tree retirement — a peer fork may remove
+the exact tree its recorded `origin` created for it, verified from the store
+rather than from a tool argument; unrelated conversations, sibling trees, dirty
+trees and unmerged work are still refused. A *supervised* fork
+(`agent_spawn {fork}`) carries both edges — `parent` for supervision and
+`origin` for provenance; a **peer** fork (`agent_fork`, a hidden client tool)
+carries only `origin`, because nothing is supervising it. New peer forks
+receive a normal `conv-…` session id (`agent-…` stays the supervised-subagent
+prefix), and existing ids are not renamed.
 
-`session_info` reports `origin` forward and `descendants` backward
-(`{sessionId, supervised, origin?}`), so "what came of this exploration?" is one
-call from where it started.
+`session_info` reports `origin` forward and a deduplicated `descendants` list
+backward (`{sessionId, supervised, origin?, fork?, closed?}`), so "what came of
+this exploration?" is one call from where it started.
 
 After a successful merge, the merging conversation's origin receives a durable
 `worktreemerge` record (source, worktree, branch, commit, files, target branch).
@@ -2846,8 +2865,12 @@ conversation is pristine or its workspace was never chosen and the tree is clean
 record, and the new conversation has *read* it); **refuse** when the old tree is
 dirty, offering `--fork` to leave those edits where they are. `close` removes the
 tree and switches back to the origin. Client-side git work goes through the
-session-scoped `invoke` control rather than a direct component call, so approvals
-and session attribution behave exactly as they do for the model.
+session-scoped `invoke` control (`session {invoke: {tool, arguments}}`) rather
+than a direct component call, so approvals, write fences and session attribution
+behave exactly as they do for the model. It is human-only — not in the model's
+session schema, refused in an unattended task session, and hidden tools stay
+unreachable through it — and it runs no LLM turn (WIRE.md "Client tool
+controls").
 
 ## Background processes (`processes`)
 

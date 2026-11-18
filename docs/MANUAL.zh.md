@@ -1201,8 +1201,8 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
 写入串行化），并且除非添加忽略规则，它会弄脏 `git status` —— 同级目录两者都不需要。
 该布局不可配置。
 
-用已声明的设置 `git.mutations`（或 `NIF_GIT_MUTATIONS=1`）启用变更动词；
-没有它时只注册读取工具：
+变更动词在已声明的设置 `git.mutations`（或 `NIF_GIT_MUTATIONS`）开启时注册；
+该设置默认开启，关闭后只注册读取工具：
 
 | 工具 | 审批 | 作用 |
 |---|---|---|
@@ -1228,7 +1228,9 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
 
 会话的*工作区集合*是它的 primary 加上属于同一项目的各工作树；写围栏放行整个集合，
 所以默认情况下工作树中的会话也能写 primary。`isolation: "worktree"` 把**声明**集合
-收窄为会话自己的工作树，因此对 primary 的写入会以既有的 `[E_WRITE_OUTSIDE]` 拒绝。
+收窄为会话自己的工作树加上任何显式的 `/roots` 授权，因此对 primary 之类的自动发现树的
+写入会以既有的 `[E_WRITE_OUTSIDE]` 拒绝。授权在隔离下保留，因为这两类根是不同的事实：
+发现是自动的，而授权是本会话中人类的明确决定（`claimRootsFor` 把会话自己的树放在首位）。
 
 - **仅限人类。** 与 `roots` 一样不在 `session` 工具 schema 中，所以模型无法自己放宽或收窄范围。
 - **没有可隔离对象时拒绝。** 工作区是普通检出或子模块的会话会被拒绝并说明原因，
@@ -1237,6 +1239,11 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
   拒绝它们会把工作树变成牢笼。
 - **它是围栏，不是互斥锁。** 同一棵树中的两个会话仍可在不同文件上并行 ——
   `locks` 保持路径分条。
+- **两个生命周期调用获得一次性 primary 声明。** `git_merge` 与
+  `git_worktree {op: "remove"}` 声明 `writes: {"primary": true}`：只有当调用的
+  `repo` 恰好解析为会话所链接的 primary 检出时，core 才为本次调用租用该根。
+  它不改变任何 root 授权、`isolation` 状态或 bash/edit 围栏，审批与锁竞争仍然适用。
+  其他仓库、同级树与 primary 子目录仍会被拒绝（WIRE.md「x-harness schema extensions」）。
 
 持久化在 header 中，恢复时还原，调用之间可变，并在会话状态回读和
 `session_info.workspace` 中报告为 `isolation`。
@@ -1259,13 +1266,17 @@ git worktree 是同一仓库的第二个检出。Niffler 把它当作一等公�
 ### 溯源（`origin`）与合并通知
 
 由另一会话历史播种的会话会记录 `sessionmeta.origin = {session, atSeq, reason, worktree?}`。
-它**只是溯源，绝非权限**：不授予继续权、不路由审批、不豁免深度、不做空闲退休。
+它**只是溯源，不是监督**：不授予继续权、不路由审批、不豁免深度、不做空闲退休。
+唯一的例外是工作树退休 —— 对等分叉可以移除其记录的 `origin` 为它创建的那棵确切工作树，
+依据存储而非工具参数校验；无关会话、同级树、脏树与未合并的工作仍会被拒绝。
 *受监督*的分叉（`agent_spawn {fork}`）同时携带两条边 —— 监督用 `parent`、溯源用
 `origin`；**对等**分叉（`agent_fork`，隐藏的客户端工具）只携带 `origin`，
-因为没有任何东西在监督它。
+因为没有任何东西在监督它。新的对等分叉使用普通的 `conv-…` 会话 id
+（`agent-…` 仍是受监督子代理的前缀），既有 id 不会被重命名。
 
-`session_info` 向前报告 `origin`，向后报告 `descendants`（`{sessionId, supervised, origin?}`），
-所以"这次探索产生了什么？"从起点出发只需一次调用。
+`session_info` 向前报告 `origin`，向后报告去重后的 `descendants` 列表
+（`{sessionId, supervised, origin?, fork?, closed?}`），所以"这次探索产生了什么？"
+从起点出发只需一次调用。
 
 成功合并后，发起合并会话的 origin 会收到持久的 `worktreemerge` 记录（来源、工作树、
 分支、commit、文件、目标分支）。它在父会话的下一个回合作为机制消息投递 —— 父会话空闲时
