@@ -171,7 +171,14 @@ proc main() =
   p.convId = "origin"
   var messages: seq[JsonNode]
   fault(%*{"message": true})
-  discard drainNotices(ct, p, messages, nil)
+  # A notice that cannot be made durable must not be acknowledged, and the
+  # failure must reach the caller instead of continuing over a holed
+  # transcript (docs/WIRE.md "Tool-call pairing": an append is create-only and
+  # a turn never reports success over an unpersisted message).
+  var noticeRefused = false
+  try: discard drainNotices(ct, p, messages, nil)
+  except TranscriptWriteError: noticeRefused = true
+  check("a failed notice append raises instead of continuing", noticeRefused)
   check("failed notice append never acks", not c.storeGet("fleetjob", id).value{"delivered"}.getBool(false))
   fault(%*{"ack": true})
   discard drainNotices(ct, p, messages, nil)
