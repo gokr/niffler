@@ -561,7 +561,7 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, provider?, model?,
                        #   thinking?, title?, cwd?, profile?, discovery?, tools?,
                        #   maxRounds?, maxCalls?, maxTokens?, stop?, approvals?,
-                       #   limits?, compact?, export?, wake?};
+                       #   limits?, compact?, export?, wake?, invoke?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
                        #   the conversation override. provider pins the conversation
@@ -579,6 +579,8 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   approvals?/limits? are the human's mutable conversation
                        #   controls; compact? runs the compactor now (no turn);
                        #   export? returns the exact provider request (no turn);
+                       #   invoke? runs one tool through the runner's own gate
+                       #   (no turn — see "Client tool controls");
                        #   wake? runs a notice-only turn — see "Autonomous wake".
                        #   attachments? is a turn's dropped images — see
                        #   "Attachments (images in a turn)".
@@ -1039,11 +1041,12 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   possible future addition.
 
 A stop applies to a turn that is running when it arrives, or not at all. A
-session call carrying `invoke` (a client tool control, not a turn) therefore
-never consumes one: a stale `__cancel` left on the steer channel is discarded
-at the control's entry, and a control arriving while its approval waits is
-ignored rather than read as the human's verdict. Live turns keep the whole
-contract above, and a denial a human actually made still refuses the tool.
+session call carrying `invoke` (a client tool control, not a turn — see
+"Client tool controls") therefore never consumes one: a stale `__cancel` left
+on the steer channel is discarded at the control's entry, and a control
+arriving while its approval waits is ignored rather than read as the human's
+verdict. Live turns keep the whole contract above, and a denial a human
+actually made still refuses the tool.
 
 ## Settlement notices
 
@@ -1353,15 +1356,20 @@ default selection behavior. Later source changes do not propagate;
 the peer can change its own selection independently. Source selection read
 failures refuse the fork rather than silently choosing defaults. It does not
 inherit the source's grants or supervision. Hidden tools are unavailable
-through model discovery/invoke and nested session calls.
+through model discovery/invoke and nested session calls. New peers receive a
+normal `conv-…` session id; `agent-…` remains the supervised-subagent prefix,
+and existing ids are not renamed.
 
 Both peer and supervised forks record immutable `sessionmeta.origin`:
 `{session, atSeq, reason:"fork"|"worktree", worktree?:{path,branch,primary}}`.
 `atSeq` is the source message id at the balanced cut. Only supervised forks
-also record `parent`. Origin is provenance, never authority: it grants no
-continuation, approval routing, depth or idle-retirement relationship.
-`session_info` reports `origin` forward and a deduplicated `descendants` array
-backward (`{sessionId,supervised,origin?,fork?,closed?}`). `children` retains its
+also record `parent`. Origin is provenance, not supervision: it grants no
+continuation, approval routing, depth or idle-retirement relationship. Its sole
+authority is worktree retirement — a peer fork may remove only the exact tree
+its `origin.worktree` recorded creating, and core verifies that lineage from the
+store, never from a tool argument. `session_info` reports `origin` forward and a
+deduplicated `descendants` array backward
+(`{sessionId,supervised,origin?,fork?,closed?}`). `children` retains its
 supervision-only meaning.
 
 After a successful `git_merge`, the caller's origin receives a durable
@@ -1540,6 +1548,23 @@ header (`approvals`, `limits`), so a resumed runner re-applies exactly what
 the human last chose, and both are echoed by the status readback and the turn
 result (`approvals`, `limits`) for UIs. Invalid values are refused with a
 clear error (unknown mode, unknown limit key, out-of-range value).
+
+### Client tool controls
+
+`session {invoke: {tool, arguments}}` runs one ordinary tool through this
+conversation's runner gate, with no LLM turn. It exists for client actions that
+must carry conversation context — the TUI's `/worktree` verbs — because a direct
+`core.invoke` has no conversation context: worktree ownership would be recorded
+as unknown and a merge notice would have no origin to name.
+
+Workspace, approval mode and isolation are taken from the conversation for the
+duration of the call and restored afterwards, so approvals, write fences and
+session attribution behave exactly as they do for a model dispatch. The control
+is human-only: it is absent from the model-facing session schema, refused in a
+task-scoped (unattended) session, and hidden tools stay unreachable through the
+inner invoke. The reply is `{ok: true, result: <tool result>}`; malformed
+arguments answer `invoke needs tool and object arguments`. Because it runs no
+turn, it never consumes a stop — "Cancellation" states the rule.
 
 ### Attachments (images in a turn)
 
