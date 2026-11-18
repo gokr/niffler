@@ -7,7 +7,7 @@
 ##
 ## This is not a NATS test: the launcher is a helper binary, not a component.
 
-import std/[os, osproc, strutils, json]
+import std/[json, os, osproc, strutils, tempfiles]
 import ../sandbox/policy
 
 var failures = 0
