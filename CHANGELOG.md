@@ -77,6 +77,18 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Added
 
+- **A foreign harness home no longer runs checkout code unasked.** Cloning a
+  repo and opening it with any UI used to autostart that manifest's components
+  and restore its persisted spawn records before any tool call — the same
+  execution `plugin_install` and `mcp_add` already gate. Boot now consults
+  `NIF_TRUST` (`always`/`never`/`ask`) and the recorded `var/home-trust`
+  marker; an untrusted home still starts, and is fully inspectable, but only
+  the core-owned bootstrap set (`store`, `bash`, `builder`, `llm`,
+  `systemprompt`) runs and the boot log names each skipped component. A home
+  that has already run keeps working, so upgrading never disables an existing
+  installation. This is a first-open boundary, not a sandbox: `make build`
+  still compiles the checkout, and a prebuilt binary is trusted once started.
+
 - **Long-term memory, scoped per repository** (`components/memory`, optional):
   durable facts a conversation chooses to keep, so a later conversation in the
   same repo does not rediscover them. The scope key is the repository's

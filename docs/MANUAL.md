@@ -789,6 +789,7 @@ see [The `.env` file](#the-env-file)) and inherit core's environment. `NIF_BIN_D
 | `NIF_LOG_RETENTION_DAYS` | days core retains child logs before sweeping | `7` |
 | `NIF_LOG_ROTATE_MB` | per-file rotation threshold for `var/logs`, checked at boot and hourly; oversized files rotate to `<name>.log.1` (one generation kept), so this is not a hard instantaneous cap | `5` |
 | `NIF_SPAWN_WAIT_MS` | how long `core.spawn` waits for the new component to register in the catalog before failing the call (clamped 250–120000); the wait ends early when the catalog records a refusal, so the knob only bounds a silent component | `5000` |
+| `NIF_TRUST` | whether this harness home may run code the checkout carries: `always` trusts it, `never` refuses, `ask` prompts on a tty (and refuses otherwise). Unset falls back to `var/home-trust` (a human's recorded answer) and then to "untrusted" — but a home that has already run (`var/store.db` + `var/logs`) stays trusted so an upgrade cannot disable a working installation. An untrusted home still boots and is inspectable; only NON-bootstrap manifest autostart components and persisted spawn records are skipped, and the boot log names each one | unset |
 
 **Build and script knobs** — read by the scripts around the harness, never by
 components: `NIF_BIN_DIR` (bin directory `scripts/install.sh` links the PATH

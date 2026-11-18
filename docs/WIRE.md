@@ -527,6 +527,20 @@ Rules:
 
 ## Subjects
 
+## Harness home trust
+
+Boot executes two kinds of checkout-owned code: `autostart` manifest
+components and persisted spawn records. A home that has never run (no
+`var/store.db`/`var/logs`), has no `var/home-trust` marker and is given no
+`NIF_TRUST` starts only the core-owned bootstrap set — `store`, `bash`,
+`builder`, `llm`, `systemprompt` — and logs each component it skipped. The set
+is a CORE constant, deliberately not the manifest's own `required` flag (a
+foreign manifest could set that). `NIF_TRUST=always` restores full autostart;
+`never` refuses; `ask` prompts only with a tty and refuses otherwise. This is
+not a subscription or envelope contract — nothing on the bus changes — and it
+is not a sandbox: it gates whether a checkout's code STARTS on first open.
+
+
 Both shipped store engines request `reg.admit` before subscribing to
 `svc.store.call`, on initial connection and full re-attachment. Core atomically
 reserves the registration before replying; a second store PID is refused even

@@ -25,6 +25,16 @@ import identity
 
 const minimalComponents = ["store", "bash", "llm", "systemprompt"]
 
+const bootstrapComponents = ["store", "bash", "builder", "llm", "systemprompt"]
+  ## The set that starts even in an untrusted home (HomeTrust). It is a CORE
+  ## constant, deliberately not the manifest's own `required` flag: the
+  ## manifest is checkout-controlled, so a foreign repo could mark every
+  ## component required and dissolve the gate. These five are what a home
+  ## needs to be inspected and repaired from inside itself. Their binaries are
+  ## still named by the manifest, so this is an honest boundary about CODE
+  ## EXECUTION ON FIRST OPEN, not a sandbox against a repo that ships prebuilt
+  ## binaries — `make build` compiles the checkout too.
+
 var gStop = false
 
 type CoreOptions = object
@@ -230,6 +240,88 @@ proc tail(s: string, n: int): string =
   while start > 0 and (s[start].uint8 and 0xC0) == 0x80:
     inc start  # skip a continuation byte: start at the rune's first byte
   return "…" & s[start .. ^1]
+
+type
+  HomeTrust* = enum
+    htTrusted, htUntrusted
+    ## Does this harness home get to run CODE the checkout carries?
+    ##
+    ## A clone is the home of an instance (AGENTS.md), so boot executes two
+    ## kinds of code nobody approved: `autostart` components a manifest names,
+    ## and spawned-component records a previous conversation left behind. A
+    ## checkout someone merely opened is not evidence that its manifest may
+    ## run — that is the same decision `plugin_install`/`mcp_add` already put
+    ## behind an approval, made one layer earlier. The marker records the
+    ## human's answer; a home with no marker is untrusted.
+    ##
+    ## Deliberately narrow: this gates CODE, not data. Store contents, the
+    ## workspace and read-only inspection of the checkout stay available, and
+    ## the required bootstrap set plus their declared replicas always start —
+    ## otherwise nothing could be inspected and there would be no way to
+    ## repair a home from inside it.
+
+const homeTrustMarker = "home-trust"
+  ## `var/home-trust`, written when a human (or NIF_TRUST=always) vouches
+  ## for this home. Its CONTENT is the decision, so an empty or unreadable
+  ## file is not trust: unreadable is never root.
+
+proc homeTrustMarkerPath(root: string): string =
+  root / "var" / homeTrustMarker
+
+proc interactiveStdin(): bool =
+  ## Is a human at the other end of this process? A non-interactive boot has
+  ## nobody to ask, and the safe answer then is "don't run it".
+  isatty(stdin)
+
+proc homeTrust*(root: string): tuple[trust: HomeTrust,
+                                                          note: string] =
+  ## Resolve the trust decision for one boot, cheaply and without prompting
+  ## unless there is a human to answer. Order: an explicit NIF_TRUST wins
+  ## (always|never|ask), then an existing marker, then the interactive ask.
+  let asked = getEnv("NIF_TRUST", "").strip().toLowerAscii()
+  case asked
+  of "", "ask":
+    let marker = homeTrustMarkerPath(root)
+    if fileExists(marker):
+      let verdict = readFile(marker).strip()
+      if verdict in ["trusted", "always"]:
+        return (htTrusted, "trusted by " & marker)
+      return (htUntrusted, "marked untrusted by " & marker &
+        " — remove var/" & homeTrustMarker & " or set NIF_TRUST=always")
+    if asked == "ask" and not interactiveStdin():
+      return (htUntrusted, "NIF_TRUST=ask with no interactive stdin")
+    # A home that has already RUN is not "untouched": its manifest components
+    # have executed before, so gating a later boot would disable a working
+    # installation on upgrade without protecting anything new. The evidence is
+    # the store database a previous boot created in var/ (gitignored, so a
+    # clone cannot carry one in). A foreign checkout someone merely OPENED has
+    # none — that is the case this gate exists for.
+    if fileExists(root / "var" / "store.db") and dirExists(root / "var" / "logs"):
+      return (htTrusted, "home has run before (var/store.db and var/logs exist)")
+    if not interactiveStdin():
+      return (htUntrusted, "no trust marker and no interactive stdin")
+    echo "This harness home has never been trusted:"
+    echo "  " & root
+    echo "Its manifest autostart components and restored spawn records run"
+    echo "code from this checkout. Allow that for THIS home?"
+    echo "Answer yes to trust it from now on (var/" & homeTrustMarker & ")."
+    stdout.write("Trust this home? [y/N] ")
+    stdout.flushFile()
+    let answer = stdin.readLine().strip().toLowerAscii()
+    if answer in ["y", "yes"]:
+      try:
+        writeFile(homeTrustMarkerPath(root), "trusted\n")
+      except CatchableError as e:
+        return (htTrusted, "trusted for this boot; marker not written: " & e.msg)
+      return (htTrusted, "trusted by this boot's answer")
+    return (htUntrusted, "declined at the boot prompt")
+  of "always", "1", "yes", "true":
+    return (htTrusted, "NIF_TRUST=" & asked)
+  of "never", "0", "no", "false":
+    return (htUntrusted, "NIF_TRUST=" & asked)
+  else:
+    return (htUntrusted, "unrecognised NIF_TRUST='" & asked &
+      "' — refusing to guess (always|never|ask)")
 
 proc rebuildShipped(root: string): bool =
   ## Recover mode: rebuild the shipped binaries from source. The git repo
@@ -485,9 +577,32 @@ proc main() =
              "niffler-store-migrate), or start this checkout on a fresh " &
              "SQLite store.", 1)
 
+  # The trust decision, made once and reported once: see HomeTrust. It gates
+  # which components BOOT, not what the store or the workspace may serve.
+  var trustNote = ""
+  var trust = htUntrusted
+  if not recovering:
+    let decision = homeTrust(root)
+    trust = decision.trust
+    trustNote = decision.note
+    if trust == htTrusted:
+      coreLog("core: harness home trusted (" & trustNote & ")")
+    else:
+      coreLog("core: harness home UNTRUSTED (" & trustNote & ") — only the " &
+        "required bootstrap set starts; manifest autostart components and " &
+        "restored spawn records are skipped. Set NIF_TRUST=always or create " &
+        "var/" & homeTrustMarker & " to allow them.")
+  var skipped = 0
   for c in manifest{"components"}:
     let name = c{"name"}.getStr("")
     if minimalMode and name notin minimalComponents:
+      continue
+    # Anything outside the core-owned bootstrap set is checkout code, so an
+    # untrusted home does not start it.
+    if trust == htUntrusted and name notin bootstrapComponents:
+      coreLog("core: skipping manifest autostart component '" & name &
+        "' — untrusted home")
+      inc skipped
       continue
     # Store engine selection (docs/research/STORE_V2.md): both engines
     # register as component "store" with identical tools — the manifest keeps
@@ -532,6 +647,9 @@ proc main() =
       if not cat.components.hasKey(name): allIn = false
     if allIn: break
     sleep(100)
+  if skipped > 0:
+    coreLog("core: " & $skipped & " manifest component(s) not started " &
+      "because this home is untrusted")
   let missing = required.filterIt(not cat.components.hasKey(it))
   if missing.len > 0:
     coreLog("core: WARNING not all required components registered: " & missing.join(", "))
@@ -615,6 +733,11 @@ proc main() =
         coreLog("core: WARNING recover wipe failed: " & e.msg)
     if minimalMode:
       coreLog("core: minimal mode — persisted spawned components stay stopped")
+    elif trust == htUntrusted:
+      # A spawn record is code a previous conversation installed. Restoring it
+      # in an untrusted home is the second half of the same unapproved
+      # execution, so it waits for the same decision (the records survive).
+      coreLog("core: untrusted home — persisted spawned components stay stopped")
     else:
       try:
         for item in ct.storeListItems("component"):
