@@ -160,8 +160,19 @@ proc enforcementChecks(root: string) =
     "--", "sh", "-c", "cat " & quoteShell(base / "ws" / ".env") &
       " " & quoteShell(base / "ws" / "secret-link")])
   if backend == "bwrap":
+    # The CONTRACT is that neither spelling reveals the secret. How the mask
+    # expresses that is not the launcher's promise: this sandbox answers a
+    # masked read with the conventional "Permission denied" (exit 1 from cat),
+    # while another backend could hide the path with ENOENT. Asserting the
+    # secret's absence — not an exact exit code — is what makes the check
+    # portable; it caught a real host difference where the read failed exactly
+    # as intended and the assertion still called it a failure.
     check("masking a symlink hides canonical target and symlink spelling",
-       aliasCode in [0, 1] and not aliasOutput.contains("TOP-SECRET"), aliasOutput)
+       not aliasOutput.contains("TOP-SECRET"), aliasOutput)
+    # ...and the guard itself must stay a HARD refusal, never a silent empty
+    # success: whatever errno a backend picks, the command did not read it.
+    check("a masked read refuses rather than returning empty bytes",
+       aliasCode != 0, aliasOutput)
   createHardlink(base / "ws" / ".env", base / "ws" / "hard-alias")
   let (hardCode, hardOutput) = runLauncher(bin, @[
     "run", "--workspace", base / "ws", "--mask", base / "ws" / ".env",
