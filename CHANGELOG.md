@@ -191,8 +191,8 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Fixed
 
-- The sandbox contract test uses per-process temp directories, so two suites
-  running in parallel no longer mask each other’s fixtures.
+- Core refuses to execute tool batches cut off by the model’s output cap and
+  lets the model reissue the intended calls once.
 
 - Core timestamps its lifecycle logs and checks `var/logs` at boot and hourly
   for oversized files, retaining one rotated generation. `NIF_LOG_ROTATE_MB`

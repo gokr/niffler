@@ -2241,6 +2241,11 @@ completion cut at the cap retried as an ordinary empty reply instead of ending
 the turn with `the provider cut the reply at the output cap before any
 content`; the `llm-openai` example returns none.
 
+When `length` accompanies tool calls, core dispatches none of the batch. It
+records a failure for every call and gives the model one chance to reissue
+the calls in smaller batches. A second truncated batch ends the turn with an
+error.
+
 ### Subscription OAuth (ChatGPT Plus/Pro, Claude Pro/Max)
 
 The `provider` component implements the same PKCE login flows Pi and opencode
