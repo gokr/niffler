@@ -3813,6 +3813,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ct.steerStream.cancelRequested = false
   var rounds = 0
   var emptyRounds = 0
+  var truncatedBatches = 0
     ## Consecutive rounds whose reply carried neither content nor tool calls
     ## (the guard at the end of the round loop below): re-asked a bounded
     ## number of times, then reported as a turn error.
@@ -4430,6 +4431,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     let toolCalls = resp{"tool_calls"}
     let hasToolCalls = toolCalls != nil and toolCalls.kind == JArray and
                        toolCalls.len > 0
+    let truncatedBatch = hasToolCalls and resp{"finish_reason"}.getStr("") == "length"
+    if truncatedBatch:
+      for tc in toolCalls:
+        tc{"function"}["arguments"] = %"{}"
     if content.len > 0 or hasToolCalls:
       emptyRounds = 0   # a real round: the empty-reply streak is broken
       let assistantMsg = %*{"role": "assistant",
@@ -4530,6 +4535,25 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                            "reply": content})
       emitTurnDone()
       return content
+
+    if truncatedBatch:
+      inc truncatedBatches
+      let msg = "provider output cap cut off the tool-call batch; no tools from it ran"
+      for tc in toolCalls:
+        ctxAppend(p, messages, %*{"role": "tool", "tool_call_id": tc{"id"},
+          "name": tc{"function", "name"}, "content": "ERROR: " & msg})
+      if onEvent != nil:
+        onEvent("status", %*{"sessionId": sessionId, "turnId": turnId,
+          "truncatedToolBatch": true, "finishReason": "length"})
+      if truncatedBatches > 1:
+        turnError = msg & " (reissue also truncated)"
+        p.persistMsg(%*{"role": "error", "content": turnError,
+                        "error": "truncated-tool-batch", "turnId": turnId})
+        finishTurn("error", err = turnError)
+        return ""
+      ctxAppend(p, messages, %*{"role": "user", "content":
+        "[Harness: " & msg & ". Reissue the intended calls in smaller batches.]"})
+      continue
 
     # --- Tool-call execution: parallel-safe calls (x-harness.parallel) fan
     # out over the bus; the rest (approval-gated, session-context, parse

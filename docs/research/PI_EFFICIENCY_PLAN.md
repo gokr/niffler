@@ -96,13 +96,11 @@ serialized unless explicitly registered concurrency-safe.
 - **Effort:** small. Saves a human round-trip on every transient provider
   hiccup.
 
-### B4. Length-stop / truncated-tool-call policy
-- **What:** when the provider reports a length finish on a message that
-  contains `tool_calls`, neutralize the whole batch with a re-issue notice
-  (pi `failToolCallsFromTruncatedMessage`) instead of executing partially-valid
-  args. Wire the finish-reason through `components/llm/main.go` (today it is
-  not surfaced to the runner).
-- **Effort:** small–medium (needs the llm adapter to return the stop reason).
+### B4. Length-stop / truncated-tool-call policy (implemented)
+
+An explicit `length` stop carrying tool calls neutralizes the entire batch.
+Core records a paired error per call and allows one reissue per turn.
+`tests/t_parallel.nim` checks refusal, reissue and repeated truncation.
 
 ### B5. Auto-download of rg/fd (grep/files)
 - **What:** `components/grep/main.nim` — when `rg`/`fd` is missing, download a
