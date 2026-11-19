@@ -525,21 +525,23 @@ Rules:
   final `result` frame with `done: true` (custom field). `ev.*` streams
   (LLM tokens) are chunked events on a dedicated subject instead.
 
-## Subjects
-
 ## Harness home trust
 
 Boot executes two kinds of checkout-owned code: `autostart` manifest
 components and persisted spawn records. A home that has never run (no
 `var/store.db`/`var/logs`), has no `var/home-trust` marker and is given no
-`NIF_TRUST` starts only the core-owned bootstrap set — `store`, `bash`,
-`builder`, `llm`, `systemprompt` — and logs each component it skipped. The set
-is a CORE constant, deliberately not the manifest's own `required` flag (a
-foreign manifest could set that). `NIF_TRUST=always` restores full autostart;
-`never` refuses; `ask` prompts only with a tty and refuses otherwise. This is
-not a subscription or envelope contract — nothing on the bus changes — and it
-is not a sandbox: it gates whether a checkout's code STARTS on first open.
+`NIF_TRUST` is untrusted. A non-interactive boot then starts only the
+core-owned bootstrap set — `store`, `bash`, `builder`, `llm`, `systemprompt` —
+and logs each component it skipped; an interactive boot asks first and records
+a yes in `var/home-trust`. A home that has already run is treated as trusted,
+so an upgrade cannot disable a working installation. The set is a CORE
+constant, deliberately not the manifest's own `required` flag (a foreign
+manifest could set that). `NIF_TRUST=always` restores full autostart; `never`
+refuses; `ask` follows the same interactive ask and refuses without a tty. This
+is not a subscription or envelope contract — nothing on the bus changes — and
+it is not a sandbox: it gates whether a checkout's code STARTS on first open.
 
+## Subjects
 
 Both shipped store engines request `reg.admit` before subscribing to
 `svc.store.call`, on initial connection and full re-attachment. Core atomically
@@ -2167,11 +2169,11 @@ messages, `rank` orders by relevance, `snippet` marks the matched span.
 Strict providers re-validate tool-call pairing on **every** request: each entry
 of an assistant message's `tool_calls` must be answered by a `tool` message
 carrying that `tool_call_id`, and every `tool` message must answer a call that
-is pending. A transcript can lose that shape with nobody editing it — a
-legacy runners could skip failed message writes, a runner can be killed
-mid-batch, or a fork can copy damaged history — and
-the damage is then **permanent**: every later request re-sends the same prefix
-and is refused identically, so the conversation can never run again.
+is pending. A transcript can lose that shape with nobody editing it — legacy
+runners could skip failed message writes, a runner can be killed mid-batch, or
+a fork can copy damaged history — and the damage is then **permanent**: every
+later request re-sends the same prefix and is refused identically, so the
+conversation can never run again.
 
 Canonical appends are create-only and ordered. If the store does not confirm
 an append, the turn stops with an explicit persistence error; the runner
@@ -2182,8 +2184,10 @@ Because of that the runner repairs the **projection** when it loads one
 (`healToolPairing`, once per load, not per round):
 
 - a call with no result gets one synthesized `tool` message — an honest
-  "[no result was recorded ... re-run it if you still need the result]", never
-  a fabricated success — placed after the batch's real results;
+  "[no result was recorded ... its OUTCOME IS UNKNOWN: the work may have taken
+  effect. Check the workspace/receipts before repeating it, and prefer
+  re-issuing a read over re-running a write]", never a fabricated success —
+  placed after the batch's real results;
 - a `tool` message answering no pending call, or a duplicate of one already
   answered, is dropped from the request.
 

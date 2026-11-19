@@ -397,6 +397,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | `NIF_LOG_ROTATE_MB` | `var/logs` 中單一檔案的上限；超過後輪轉為 `<name>.log.1`（保留一代） | `5` |
 | `NIF_LOG_RETENTION_DAYS` | core 掃掠前保留子行程日誌的天數 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在使呼叫失敗前，等待新元件在目錄中註冊的時間（限制 250–120000）；當目錄記錄到拒絕時等待會提早結束，因此此旋鈕只約束沉默的元件 | `5000` |
+| `NIF_TRUST` | 此 harness home 是否可以執行 checkout 攜帶的程式碼：`always` 信任，`never` 拒絕，`ask` 在有 tty 時詢問（否則拒絕）。未設定時先查 `var/home-trust`（人類記錄的答覆），再把已執行過的 home（存在 `var/store.db` + `var/logs`）視為已信任，以免升級停用可用的安裝；否則在有 tty 時詢問（無人可問時不信任）。不受信任的 home 仍會啟動並可檢查；只跳過非 bootstrap 的 manifest 自啟動元件與持久化 spawn 記錄，啟動日誌會逐一列出 | 未設定 |
 
 **建置與腳本旋鈕**——由 harness 周圍的腳本讀取，絕不由元件讀取：`NIF_BIN_DIR`（`scripts/install.sh` 將 PATH 項目連結進去的 bin 目錄）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 以 flock 鎖定的鎖檔——建置時排他，測試執行時共享）、`NIF_NATS_CLI`（`examples/dialog/dialog.sh` 驅動的 nats CLI——此處唯一一個元件確實會讀取的項目：僅在 `nats` 既不在 `PATH` 也不在 `$HOME/go/bin` 時才會查詢它）、`NIF_CONF_KEEP`，加上測試輔助 `NIF_STORE_BIN` 與 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 與 `NIF_LSP_BIN_DIRS` 是執行時變數，留在上表。鎖只涵蓋 `make`：`builder.build` 在其外執行，因此執行時元件建置可能與 `make build` 競爭——而 `make clean` 會在其下刪除 `var/bin` 與 `var/build`。當 agent 正在建置元件時，請停止 harness。
 
