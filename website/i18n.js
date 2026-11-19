@@ -126,6 +126,8 @@
       "ed.failclosed.p": "timeouts deny, unknown limits refuse, a missing component degrades explicitly — never silently",
       "ed.leastpriv.h": "Least privilege",
       "ed.leastpriv.p": "MCP environment allowlists and guard processes, no bus access or secrets in fabric's executor, redacted listings",
+      "ed.hometrust.h": "First-open trust",
+      "ed.hometrust.p": "opening a cloned harness home runs only the core bootstrap set — <code>store</code>, <code>bash</code>, <code>builder</code>, <code>llm</code>, <code>systemprompt</code> — until <code>NIF_TRUST</code> or a recorded <code>var/home-trust</code> answer trusts it; an already-run home keeps working, and the boot log names each skipped component",
       "ed.shellguard.h": "Opt-in shell guard",
       "ed.shellguard.p": "Linux only and off by default: one bash command gets a read-only host view, private /tmp, no network and no bus — and read masks hide operator-named paths from reads and writes whether or not the guard is on. A mask is not a confidentiality boundary.",
 
@@ -292,6 +294,8 @@
       "ed.failclosed.p": "超时即拒绝、未知限额即回绝、缺失组件明确降级——绝不悄悄进行",
       "ed.leastpriv.h": "最小权限",
       "ed.leastpriv.p": "MCP 环境变量白名单与守护进程，fabric 的执行器没有总线访问权也不带密钥，列表一律脱敏",
+      "ed.hometrust.h": "首次打开需信任",
+      "ed.hometrust.p": "打开克隆来的 harness home 时，只运行核心 bootstrap 集合——<code>store</code>、<code>bash</code>、<code>builder</code>、<code>llm</code>、<code>systemprompt</code>——直到 <code>NIF_TRUST</code> 或已记录的 <code>var/home-trust</code> 答复将其信任；已运行过的 home 继续可用，启动日志会逐一列出被跳过的组件",
       "ed.shellguard.h": "可选的 Shell 护栏",
       "ed.shellguard.p": "仅限 Linux 且默认关闭：单条 bash 命令得到只读的主机视图、私有 /tmp、没有网络也没有总线——而读取掩码无论护栏是否开启都会对读取与写入隐藏操作员指定的路径。掩码不是保密边界。",
 
@@ -458,6 +462,8 @@
       "ed.failclosed.p": "逾時即拒絕、未知限額即回絕、缺失元件明確降級——絕不悄悄進行",
       "ed.leastpriv.h": "最小權限",
       "ed.leastpriv.p": "MCP 環境變數白名單與守護行程，fabric 的執行器沒有匯流排存取權也不帶金鑰，列表一律去識別化",
+      "ed.hometrust.h": "首次開啟需信任",
+      "ed.hometrust.p": "開啟複製而來的 harness home 時，只執行核心 bootstrap 集合——<code>store</code>、<code>bash</code>、<code>builder</code>、<code>llm</code>、<code>systemprompt</code>——直到 <code>NIF_TRUST</code> 或已記錄的 <code>var/home-trust</code> 答覆將其信任；已執行過的 home 繼續可用，啟動日誌會逐一列出被跳過的元件",
       "ed.shellguard.h": "可選的 Shell 護欄",
       "ed.shellguard.p": "僅限 Linux 且預設關閉：單條 bash 命令得到唯讀的主機檢視、私有 /tmp、沒有網路也沒有匯流排——而讀取遮罩無論護欄是否開啟都會對讀取與寫入隱藏操作員指定的路徑。遮罩不是保密邊界。",
 
