@@ -99,6 +99,39 @@ proc main() =
   check("failed inheritance leaves no off child policy",
     ct.storeGetItem("sandboxpolicy", "sb-child-write:policy").value == nil)
 
+  block:
+    let sandbox = newCoreSandbox("append-outage", ["store", "bash", "llm"])
+    defer: removeDir(sandbox.root)
+    copyFileWithPermissions(sandbox.repoRoot / "var/bin/fixture-fleet-fault-store",
+      sandbox.sandboxBin("store-sqlite"))
+    discard fixtureBin(sandbox, "llm", sandbox.repoRoot / "tests/mock_llm.nim",
+                       "fixture-mock-llm")
+    let (bus, busUrl) = startNats()
+    defer: stopServer(bus)
+    var client = waitConnect(busUrl)
+    defer: client.close()
+    let core = startComponent(sandbox.sandboxBin("niffler"), busUrl, sandbox.root,
+      extra = [("NIF_MOCK_ROUNDS", "0"), ("NIF_AUTO_APPROVE", "1")],
+      logFile = sandbox.root / "var/core.log")
+    defer: stopProcess(core)
+    doAssert waitCoreUp(client)
+    writeFile(sandbox.root / "fault.json", $(%*{"messageRole": "assistant"}))
+    let args = %*{"sessionId": "outage", "content": "first"}
+    let failed = call(client, "core", "session", args, 30_000)
+    check("the active turn reports persistence failure, not success",
+          failed{"outcome"}.getStr() == "error" and
+          failed{"turnError"}.getStr().contains("transcript persistence failed"), $failed)
+    let after = call(client, "store", "list", %*{"kind": "message", "idPrefix": "outage:"})
+    check("failure stops the transcript at the committed user message",
+          after{"items"}.len == 1 and after{"items"}[0]{"id"}.getStr() == "outage:000001", $after)
+    args["content"] = %"second"
+    let resumed = call(client, "core", "session", args, 30_000)
+    check("the same runner reloads and completes a subsequent turn",
+          resumed{"outcome"}.getStr() == "success", $resumed)
+    let kept = call(client, "store", "get", %*{"kind": "message", "id": "outage:000002"})
+    check("resume uses the next contiguous canonical id",
+          kept{"value", "content"}.getStr() == "second", $kept)
+
   report("TRANSCRIPT SAFETY")
 
 main()
