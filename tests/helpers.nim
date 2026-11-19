@@ -261,6 +261,12 @@ proc startComponent*(bin: string, url: string, root = "",
   # test core self-terminates after the boot grace — mid-suite, at
   # whatever check happens to land at second ~60.
   env["NIF_AUTOSTART"] = ""
+  # A test sandbox is created BY this suite (its manifest and binaries are
+  # ours), so it is trusted by construction — the boot trust gate
+  # (core/niffler.nim HomeTrust) would otherwise strip every non-bootstrap
+  # component from every test root. Mirrors the NIF_AUTOSTART scrub above;
+  # t_core's own trust-gate block overrides it explicitly.
+  env["NIF_TRUST"] = "always"
   env["NIF_MODELS_OFFLINE"] = "1"
   env["NIF_MODELS_CACHE_DIR"] = root2 / "var" / "models"
   env["NIF_LOGFILE_DIR"] = root2 / "var" / "logs"

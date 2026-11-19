@@ -100,6 +100,10 @@ components:
       environment[key] = value
   environment["NIF_ROOT"] = testRoot
   environment["NIF_AUTO_APPROVE"] = "1"
+  # The trust gate (core/niffler.nim HomeTrust) would strip this test's
+  # components from a root it has never seen. This suite builds and trusts its
+  # own home, exactly as t_core's sandboxes do.
+  environment["NIF_TRUST"] = "always"
   environment["NIF_NATS_SPAWN"] = "1"
   let core = startProcess(testRoot / "var" / "bin" / "niffler",
                           workingDir = testRoot, env = environment,
