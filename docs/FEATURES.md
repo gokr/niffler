@@ -482,6 +482,11 @@ See [MANUAL.md](MANUAL.md) "Approvals"; [WIRE.md](WIRE.md) "Approvals".
   fail-closed behavior where a limit is unknown.
 - The explicit trust boundary: the gate protects core-mediated callers only,
   and direct bus callers are documented as trusted peers.
+- First-open home trust: a harness home that has never run starts only the
+  core-owned bootstrap set (`store`, `bash`, `builder`, `llm`, `systemprompt`)
+  unless `NIF_TRUST` or a recorded `var/home-trust` decision allows more;
+  manifest autostart components and restored spawn records wait. Not a
+  sandbox — `make build` still compiles the checkout.
 
 ## SDKs
 
