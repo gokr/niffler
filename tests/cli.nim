@@ -83,6 +83,10 @@ proc main() =
   env["NIF_ROOT"] = root
   env["NIF_NATS_URL"] = natsUrl
   env["NIF_AUTO_APPROVE"] = "1"
+  # This suite builds its own root, so it is trusted by construction: the boot
+  # trust gate (core/niffler.nim HomeTrust) would otherwise strip every
+  # non-bootstrap component from a root core has never seen.
+  env["NIF_TRUST"] = "always"
   let coreProc = startProcess(coreBin, workingDir = root, env = env,
                               options = {poUsePath})
   defer:
