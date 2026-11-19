@@ -162,6 +162,13 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   merge — and refuses to run against a core older than the source (exit 3).
   `docs/WORKTREES-ACCEPTANCE.md` documents the scripted run, the six-step human
   run for the client surface, and what each failure means.
+- **The DeepSWE bench lanes use one persistent offline container per live
+  cell.** `NIF_BASH_CONTAINER_MAP` maps a prepared workspace root to its
+  container, so matching commands run via `docker exec` as the host UID/GID
+  instead of a fresh `docker run --rm` per call: `/tmp`, caches and background
+  services survive between commands, and host-side edit and git ownership are
+  preserved. A matched root with no container entry refuses (exit 125). Both
+  Niffler and Pi use the same exec transport.
 
 ### Changed
 
@@ -282,6 +289,20 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   automatically discovered roots, not `/roots add` grants, with the
   conversation's own tree first; `session_info.workspace.writable` uses the same
   rule as the write fence.
+- **Sandbox authority checks and the benchmark sandbox map compare resolved
+  real paths, not spellings.** A workspace reached through a symlink that
+  resolves outside an approved write root is refused, and the map matches an
+  entry and a `cwd` that name the same directory differently (a symlinked or
+  `/./`-laden spelling used to fail every command with exit 125). A path whose
+  tail does not exist yet is compared through its deepest existing ancestor
+  instead of raising an unhandled OS error.
+- **A catalog registration with no live process is no longer treated as a ready
+  runner.** A component killed without `reg.depart` leaves its registration
+  behind; core now drops a pid the kernel reports dead, announces the departure
+  to peers, and probes liveness at every `ensureRunner` site, so the next
+  session call spawns a replacement instead of publishing turns into a subject
+  with no subscriber and hanging with no error. A registration naming no pid
+  counts as unknown, never dead.
 
 ## [0.5.0] — 2026-10-29
 
