@@ -943,13 +943,16 @@ proc reindexNodes(p: var Persister) =
     p.nodes[i].projectionIndex = i
 
 proc lostToolResultText(name: string): string =
-  ## The body of a synthesized tool result (healToolPairing): it says the
-  ## output is GONE rather than pretending the call returned nothing — the
-  ## model can re-run the call, the harness cannot recover the bytes.
+  ## The body of a synthesized tool result (healToolPairing): the harness
+  ## cannot recover the bytes, and it also cannot know whether the call ran.
+  ## It therefore reports an UNKNOWN OUTCOME, never "re-run it" — the dispatch
+  ## may already have landed an edit, started a job or installed a plugin, so
+  ## inviting a retry invited double effects (issue #143).
   "ERROR: no result was recorded for this tool call (" & name &
-    ") — its message never reached the store (a store outage or a runner " &
-    "killed mid-persist). The call produced no recorded output; re-run it " &
-    "if you still need the result."
+    ") — the call was in flight when its runner died, or its result never " &
+    "reached the store. Its OUTCOME IS UNKNOWN: the work may have taken " &
+    "effect. Check the workspace/receipts before repeating it, and prefer " &
+    "re-issuing a read over re-running a write."
 
 proc healToolPairing*(convId: string, messages: var seq[JsonNode],
                       nodes: var seq[CtxNode]):

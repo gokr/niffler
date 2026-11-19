@@ -75,6 +75,12 @@ proc main() =
         d.m[3]{"content"}.getStr("").contains("no result was recorded") and
         d.m[3]{"content"}.getStr("").contains("bash") and
         d.m[3]{"name"}.getStr("") == "bash")
+  # Issue #143: a lost result means UNKNOWN, never "safe to retry". The call
+  # may already have written a file or started a job, and the harness cannot
+  # tell; inviting a retry is what produced double effects.
+  check("a lost result reports an unknown outcome, not a retry hint",
+        d.m[3]{"content"}.getStr("").contains("OUTCOME IS UNKNOWN") and
+        not d.m[3]{"content"}.getStr("").toLowerAscii.contains("re-run it"))
   var orphanKept = false
   for m in d.m:
     if m{"role"}.getStr("") == "tool" and

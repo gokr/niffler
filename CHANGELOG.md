@@ -203,6 +203,11 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Fixed
 
+- A tool result lost with its runner no longer tells the model to "re-run it".
+  The dispatch may already have taken effect, so the synthesized result now
+  reports an unknown outcome and asks for verification, preferring a re-read
+  over re-running a write.
+
 - A failed transcript append stops the turn. The runner reloads committed
   history before accepting another turn rather than skipping the missing write.
 
