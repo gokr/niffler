@@ -696,8 +696,15 @@ proc main() =
   for item in snapshot{"components"}.listOf:
     if item{"name"}.getStr("") == "provider":
       providerSnapshot = item
+  # `providerSnapshot{"tools"}` is nil when the component is absent from the
+  # snapshot, and `.len` on a missing node is a SIGSEGV rather than a failed
+  # check — which is how this surfaced on CI (exit 139) instead of naming the
+  # real problem.
+  let snapshotTools = if providerSnapshot == nil: newJArray()
+                      else: providerSnapshot{"tools"}
   check("full catalog keeps all provider tools and hides credential access",
-        providerSnapshot != nil and providerSnapshot{"tools"}.len == 15 and
+        snapshotTools != nil and snapshotTools.kind == JArray and
+        snapshotTools.len == 15 and
         ($providerSnapshot).contains("provider_active") and
         ($providerSnapshot).contains("provider_update") and
         ($providerSnapshot).contains("\"hidden\":true"), $providerSnapshot)
