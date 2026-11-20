@@ -480,6 +480,11 @@ See [MANUAL.md](MANUAL.md) "Approvals"; [WIRE.md](WIRE.md) "Approvals".
   directories, symlink and credential refusals, redaction in listings.
 - Argument and schema validation with bounds, stable error codes, and
   fail-closed behavior where a limit is unknown.
+- First-open trust gate: a never-run harness home starts only the core-owned
+  bootstrap components (`store`, `bash`, `builder`, `llm`, `systemprompt`);
+  manifest autostart components and restored spawn records wait for
+  `NIF_TRUST` or a recorded `var/home-trust` answer. It gates code execution
+  when a checkout is first opened, not a sandbox.
 - The explicit trust boundary: the gate protects core-mediated callers only,
   and direct bus callers are documented as trusted peers.
 
