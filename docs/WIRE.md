@@ -527,20 +527,6 @@ Rules:
 
 ## Subjects
 
-## Harness home trust
-
-Boot executes two kinds of checkout-owned code: `autostart` manifest
-components and persisted spawn records. A home that has never run (no
-`var/store.db`/`var/logs`), has no `var/home-trust` marker and is given no
-`NIF_TRUST` starts only the core-owned bootstrap set — `store`, `bash`,
-`builder`, `llm`, `systemprompt` — and logs each component it skipped. The set
-is a CORE constant, deliberately not the manifest's own `required` flag (a
-foreign manifest could set that). `NIF_TRUST=always` restores full autostart;
-`never` refuses; `ask` prompts only with a tty and refuses otherwise. This is
-not a subscription or envelope contract — nothing on the bus changes — and it
-is not a sandbox: it gates whether a checkout's code STARTS on first open.
-
-
 Both shipped store engines request `reg.admit` before subscribing to
 `svc.store.call`, on initial connection and full re-attachment. Core atomically
 reserves the registration before replying; a second store PID is refused even
@@ -656,6 +642,19 @@ ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, lo
                        #   event leaves last-known values, never a failed write
 ev.log.<component>     # {component, level, msg, ctx?, at}; SDK log threshold applies
 ```
+
+## Harness home trust
+
+Boot executes two kinds of checkout-owned code: `autostart` manifest
+components and persisted spawn records. A home that has never run (no
+`var/store.db`/`var/logs`), has no `var/home-trust` marker and is given no
+`NIF_TRUST` starts only the core-owned bootstrap set — `store`, `bash`,
+`builder`, `llm`, `systemprompt` — and logs each component it skipped. The set
+is a CORE constant, deliberately not the manifest's own `required` flag (a
+foreign manifest could set that). `NIF_TRUST=always` restores full autostart;
+`never` refuses; `ask` prompts only with a tty and refuses otherwise. This is
+not a subscription or envelope contract — nothing on the bus changes — and it
+is not a sandbox: it gates whether a checkout's code STARTS on first open.
 
 ## Slash commands (declarative UI surface)
 
@@ -2182,8 +2181,11 @@ Because of that the runner repairs the **projection** when it loads one
 (`healToolPairing`, once per load, not per round):
 
 - a call with no result gets one synthesized `tool` message — an honest
-  "[no result was recorded ... re-run it if you still need the result]", never
-  a fabricated success — placed after the batch's real results;
+  "no result was recorded ... OUTCOME IS UNKNOWN: the work may have taken
+  effect; check the workspace/receipts before repeating it, and prefer
+  re-issuing a read over re-running a write" (issue #143), never a fabricated
+  success and never a "re-run it" hint — placed after the batch's real
+  results;
 - a `tool` message answering no pending call, or a duplicate of one already
   answered, is dropped from the request.
 
