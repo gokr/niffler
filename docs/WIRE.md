@@ -2196,7 +2196,8 @@ Canonical history is **never** rewritten to do this: the store keeps its gap,
 function of stored history, so a resumed turn's prefix is byte-identical to the
 live one (prompt caching survives; one rebuild on the first affected load).
 The repaired entries are recorded durably in kind `toolpairrepair` (id = the
-conversation id, merged by call id / message id so re-deriving adds nothing),
-and writes that failed during a turn are recorded there as `action:"lost"` with
-the id the write consumed — the fact of a loss, not a copy of it. `context_status`
-reports the ledger as `toolPairRepair`.
+conversation id, merged by call id / message id so re-deriving adds nothing).
+Its entries are the derived repairs (`action:"synthesized"` / `"dropped"`); a
+canonical append the store refuses now STOPS the turn instead of being skipped
+and recorded after the fact, so there is no "lost write" ledger entry to carry.
+`context_status` reports the ledger as `toolPairRepair`.
