@@ -391,6 +391,7 @@ Niffler 没有单一配置文件。环境用于启动决策，存储文档和会
 | `NIF_LOG_ROTATE_MB` | `var/logs` 单文件轮转阈值，启动时及每小时检查；超限文件轮转为 `<name>.log.1`（保留一代），并非即时硬上限 | `5` |
 | `NIF_LOG_RETENTION_DAYS` | core 在清扫前保留子进程日志的天数 | `7` |
 | `NIF_SPAWN_WAIT_MS` | `core.spawn` 在新组件于目录中注册之前等待多久才使调用失败（钳制 250–120000）；当目录记录拒绝时等待提前结束，因此该旋钮仅约束静默组件 | `5000` |
+| `NIF_TRUST` | 此 harness home 是否可以运行 checkout 携带的代码：`always` 信任，`never` 拒绝，`ask` 在有 tty 时询问（否则拒绝）。未设置时先查 `var/home-trust`（人类记录的答复），再把已运行过的 home（存在 `var/store.db` + `var/logs`）视为已信任，以免升级禁用可用的安装；否则在有 tty 时询问（无人可问时不信任）。不受信任的 home 仍会启动并可检查；只跳过非 bootstrap 的 manifest 自启动组件与持久化 spawn 记录，启动日志会逐一列出 | 未设置 |
 
 **构建和脚本旋钮**——由 harness 周围的脚本读取，组件从不读取：`NIF_BIN_DIR`（`scripts/install.sh` 将 PATH 条目链接到的 bin 目录）、`NIF_BUILD_LOCK`（`scripts/with-build-lock.sh` 加 flock 的锁文件——构建时排他，测试运行时共享）、`NIF_NATS_CLI`（`examples/dialog/dialog.sh` 驱动的 nats CLI——此处唯一一个组件确实读取的条目：仅当 `nats` 既不在 `PATH` 上也不在 `$HOME/go/bin` 中时才查询它）、`NIF_CONF_KEEP`，加上测试辅助 `NIF_STORE_BIN` 和 `NIF_REPO_ROOT`。`NIF_LSP_BIN` 和 `NIF_LSP_BIN_DIRS` 是运行时变量，留在上表中。锁仅覆盖 `make`：`builder.build` 在其之外运行，因此运行时组件构建可能与 `make build` 竞争——而 `make clean` 在其下删除 `var/bin`（但保留 `var/build` 源码）。当 agent 正在构建组件时停止 harness。
 
