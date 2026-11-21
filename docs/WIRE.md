@@ -2168,7 +2168,7 @@ Strict providers re-validate tool-call pairing on **every** request: each entry
 of an assistant message's `tool_calls` must be answered by a `tool` message
 carrying that `tool_call_id`, and every `tool` message must answer a call that
 is pending. A transcript can lose that shape with nobody editing it — a
-legacy runners could skip failed message writes, a runner can be killed
+legacy runner could skip failed message writes, a runner can be killed
 mid-batch, or a fork can copy damaged history — and
 the damage is then **permanent**: every later request re-sends the same prefix
 and is refused identically, so the conversation can never run again.
@@ -2182,8 +2182,9 @@ Because of that the runner repairs the **projection** when it loads one
 (`healToolPairing`, once per load, not per round):
 
 - a call with no result gets one synthesized `tool` message — an honest
-  "[no result was recorded ... re-run it if you still need the result]", never
-  a fabricated success — placed after the batch's real results;
+  "[no result was recorded ... its OUTCOME IS UNKNOWN: the work may have taken
+  effect ... prefer re-issuing a read over re-running a write]", never a
+  fabricated success — placed after the batch's real results;
 - a `tool` message answering no pending call, or a duplicate of one already
   answered, is dropped from the request.
 
@@ -2192,7 +2193,7 @@ Canonical history is **never** rewritten to do this: the store keeps its gap,
 function of stored history, so a resumed turn's prefix is byte-identical to the
 live one (prompt caching survives; one rebuild on the first affected load).
 The repaired entries are recorded durably in kind `toolpairrepair` (id = the
-conversation id, merged by call id / message id so re-deriving adds nothing),
-and writes that failed during a turn are recorded there as `action:"lost"` with
-the id the write consumed — the fact of a loss, not a copy of it. `context_status`
-reports the ledger as `toolPairRepair`.
+conversation id, merged by call id / message id so re-deriving adds nothing).
+Its entries are the derived repairs (`action:"synthesized"`/`"dropped"`); a
+failed canonical append now stops the turn rather than being recorded as a lost
+write. `context_status` reports the ledger as `toolPairRepair`.
