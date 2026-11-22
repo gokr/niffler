@@ -55,7 +55,7 @@ window.NARRATION = [
   {
     id: "s8",
     seconds: 15.5,
-    text: "Failure is designed, not hoped for. Two conversations writing one file are arbitrated by a lease that names its holder. A tool result lost to an outage is repaired when the history loads, not fatal forever."
+    text: "Failure is designed, not hoped for. Two conversations writing one file are arbitrated by a lease that names its holder. A tool result missing from stored history is repaired when it loads, not fatal forever — and a write the store refuses stops the turn instead of vanishing."
   },
   {
     id: "s9",
