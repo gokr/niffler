@@ -986,8 +986,24 @@ minutes. Neither is a cancellation or a guarantee that no effects landed;
 clients must not automatically resubmit the turn.
 
 - Presence = connection; component death detected by core via NATS disconnect
-  plus `reg.depart` (graceful) vs silence (crash). A Nim or Go SDK component
-  whose connection stays unhealthy past `NIF_RECONNECT_GRACE_S` re-attaches —
+  plus `reg.depart` (graceful) vs silence (crash). A crash is **propagated**:
+  when the supervisor reaps a child that did not publish its own departure it
+  emits the same `reg.depart` shape (`{name, pid}`), so every `reg.>`
+  follower — session runners included — drops exactly that process (surviving
+  replicas stay registered; the last pid dying drops the component).
+- **An in-flight call against a dead component fails fast.** A dispatch
+  waiting on `svc.<comp>.call` compares the live pid set against the one it
+  could have reached at dispatch, and completes within ~2 s (polled every
+  `500 ms`) with `[component-exited] <comp> died while '<tool>' was in flight —
+  the call was lost with it. The conversation is intact: once <comp>
+  re-registers, retry the call.` Only a **reap** is a signal: a slow but
+  registered component keeps its full cap, a replica group with a survivor is
+  never failed, and a process that died and was **restarted** counts as dead
+  for that call — a new process never received the old request, so "a replica
+  is alive again" is not recovery. This is not a timeout: the error says the
+  work stopped, and the remedy is a retry, not a longer cap.
+- A Nim or Go SDK component whose connection stays unhealthy past
+  `NIF_RECONNECT_GRACE_S` re-attaches —
   it re-resolves the bus (every candidate must be answered by a core serving
   this root, and no well-known port is guessed), rebuilds its subscriptions and
   re-publishes `reg.publish` on the fresh connection — rather than requiring a

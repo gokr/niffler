@@ -344,6 +344,99 @@ proc rebuildShipped(root: string): bool =
       coreLog("core: recover — cannot run " & tool & ": " & e.msg)
   return false
 
+type
+  BusWatch* = ref object
+    ## The core-owned bus as a supervised resource (issue #104).
+    ##
+    ## Core may have SPAWNED the bus (the normal case) or merely attached to
+    ## one it was handed. Only the first is ours to restart: respawning a bus
+    ## an operator pointed us at would fight them, and a remote bus is not a
+    ## local process at all. `owned` is that distinction, decided once at boot.
+    ##
+    ## A ref so the supervisor callbacks and the boot site share one object
+    ## (a by-value copy would let a respawn update a field nobody reads).
+    owned*: bool
+    process*: Process
+    url*: string            ## the client URL children were told about
+    port*: string           ## client port, for a same-port respawn
+    binary*: string
+    probe*: string          ## the URL a health call goes to
+    restarts*: int
+    state*: string          ## "up" | "recovering" | "down"
+    stopped*: bool          ## shutdown began: never resurrect on purpose
+    root*: string
+
+const busHealthProbeSeconds = 0.5
+  ## How often the idle loop asks the bus whether it is still answering.
+  ## A health probe (not just `running()`) is the signal that matters: a
+  ## nats-server can be alive and wedged, and children only notice when the
+  ## connection dies (the SDKs' re-attach path).
+
+proc busAlive*(watch: BusWatch): bool =
+  ## Is the core-owned bus still serving? False once it exited or stopped
+  ## answering. Uses the same NATS connection machinery the rest of core uses,
+  ## so "answering" means what a component would experience.
+  if watch == nil or not watch.owned or watch.stopped: return true
+  if watch.process == nil or not watch.process.running(): return false
+  return true
+
+proc rewriteBusDiscovery(watch: BusWatch, monitorUrl: string) =
+  ## Discovery files must follow the bus a respawn created: a late reader
+  ## (cli, console, observe) must never follow a stale URL or pid.
+  try:
+    createDir(watch.root / "var")
+    writeFile(watch.root / "var" / "nats-url", watch.url & "\n")
+    let monitorPath = watch.root / "var" / "nats-monitor-url"
+    if monitorUrl.len > 0: writeFile(monitorPath, monitorUrl & "\n")
+    else: removeFile(monitorPath)
+    if watch.process != nil:
+      writeFile(watch.root / "var" / "nats-pid", $watch.process.processID & "\n")
+    else:
+      removeFile(watch.root / "var" / "nats-pid")
+  except CatchableError:
+    discard
+
+proc superviseBus*(watch: BusWatch): bool =
+  ## One idle-loop pass over the core-owned bus: if it died, try to bring it
+  ## back on the SAME client port so every child's pinned NIF_NATS_URL keeps
+  ## working (that is the whole point — a new port would strand them). Returns
+  ## false when the bus is gone for good so the loop can exit truthfully
+  ## instead of serving a harness nobody can reach.
+  ##
+  ## Bounded attempts: a port permanently taken or a binary that refuses to
+  ## start is an operator problem, and a core that keeps pretending is worse
+  ## than one that exits with a legible reason.
+  if watch == nil or not watch.owned or watch.stopped: return true
+  if busAlive(watch): return true
+  watch.state = "recovering"
+  let diedPid = if watch.process != nil: $watch.process.processID else: "?"
+  if watch.process != nil:
+    watch.process.close()
+    watch.process = nil
+  coreLog("core: the spawned bus (pid " & diedPid & ") is gone — respawning on " &
+    watch.port)
+  var lastErr = ""
+  for attempt in 1 .. 3:
+    try:
+      let spawned = spawnNats([watch.port])
+      watch.process = spawned.process
+      watch.url = spawned.url
+      watch.binary = spawned.binary
+      watch.restarts += 1
+      watch.state = "up"
+      rewriteBusDiscovery(watch, spawned.monitorUrl)
+      coreLog("core: bus respawned at " & watch.url & " (restart #" &
+        $watch.restarts & ") — components re-attach on their own")
+      return true
+    except CatchableError as e:
+      lastErr = e.msg
+      coreLog("core: bus respawn attempt " & $attempt & " failed: " & e.msg)
+      sleep(250)
+  watch.state = "down"
+  coreLog("core: FATAL — the bus could not be respawned (" & lastErr &
+    "); exiting rather than serving a harness nothing can reach")
+  return false
+
 proc stopSpawnedBus(serverProc: var Process) =
   ## Terminate the bus this core spawned, escalating to SIGKILL, then reap.
   if serverProc == nil:
@@ -442,7 +535,9 @@ proc main() =
   # --- 1. NATS: home bus (.env) or explicit env → claim/attach ------------
   var natsUrl = getEnv("NIF_NATS_URL")
   var serverProc: Process = nil
+  var busWatch: BusWatch
   defer:
+    if busWatch != nil: busWatch.stopped = true   # never resurrect on exit
     stopSpawnedBus(serverProc)
     removeFile(root / "var" / "nats-pid")
   var monitorUrl = ""
@@ -534,6 +629,14 @@ proc main() =
       removeFile(root / "var" / "nats-pid")
   except CatchableError:
     discard
+
+  # The bus as a supervised resource (issue #104). Only a bus WE spawned is
+  # ours to restart; an attached/remote/foreign one is never touched. Set up
+  # after the discovery files exist, and before any component can depend on it.
+  if serverProc != nil:
+    busWatch = BusWatch(owned: true, process: serverProc, url: natsUrl,
+                        port: portOf(natsUrl), binary: natsServerBinary().binary,
+                        restarts: 0, state: "up", root: root)
 
   # recover: the repo is the snapshot — rebuild var/bin from source first
   if recovering:
@@ -819,12 +922,14 @@ proc main() =
     pumpCoreCalls(ct, coreSub)
     cat.pump()
     sup.pump(cat)
+    discard superviseBus(busWatch)
   coreLog("core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)")
 
   if isatty(stdin) and not autostart:
     try:
       runAdminShell(ct,
-        proc() = (pumpCoreCalls(ct, coreSub); cat.pump(); sup.pump(cat)),
+        proc() = (pumpCoreCalls(ct, coreSub); cat.pump(); sup.pump(cat);
+                  if not superviseBus(busWatch): gStop = true),
         proc(): bool = gStop)
     except EOFError:
       discard
@@ -841,6 +946,12 @@ proc main() =
       pumpCoreCalls(ct, coreSub)
       cat.pump()
       sup.pump(cat)
+      # A core-owned bus that died must be brought back (or core must exit):
+      # staying alive and healthy-looking while every component is deaf is the
+      # failure this watches for.
+      if not superviseBus(busWatch):
+        gStop = true
+        break
       if epochTime() - lastLogSweep >= 3600.0:
         sup.sweepLogs(logRetentionDays, logMaxMb)
         sup.rotateLogs(logRotateBytes)

@@ -82,6 +82,14 @@ proc(c: Component, args: JsonNode): JsonNode =
         {"id": "reissued", "type": "function", "function": {
           "name": "bash", "arguments": "{\"command\":\"touch reissued.txt\"}"}}]}
     return %*{"content": "reissue-done"}
+  if scenario == "component-death":
+    # Issue #116: ask for a tool on a component the test kills mid-call, then
+    # close the turn with a report so the transcript is complete.
+    if workingRounds[sid] == 1:
+      return %*{"content": "", "model": "mock-model", "tool_calls": [
+        {"id": "c1", "type": "function",
+         "function": {"name": "hang", "arguments": "{}"}}]}
+    return %*{"content": "component-death-done", "model": "mock-model"}
   if workingRounds[sid] == 1:
     var calls = newJArray()
     var n = 0
