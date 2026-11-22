@@ -254,7 +254,15 @@ proc startComponent*(bin: string, url: string, root = "",
   for (k, v) in envPairs():
     env[k] = v
   env["NIF_ROOT"] = root2
-  env["NIF_NATS_URL"] = url
+  # An EMPTY url means "this core owns its bus". osproc processes inherit the
+  # parent's environment, so writing "" would leave the launching shell's real
+  # NIF_NATS_URL in place for os getEnv (empty reads as unset) — a test run
+  # from inside a harness would then attach to the developer's live bus instead
+  # of spawning its own, and every call would go somewhere else. Delete it.
+  if url.len == 0:
+    env.del("NIF_NATS_URL")
+  else:
+    env["NIF_NATS_URL"] = url
   env["NIF_NATS_SPAWN"] = "0"
   # A test core is never UI-autostarted. Without this, running the suite
   # from inside a harness-spawned shell inherits NIF_AUTOSTART=1 and every

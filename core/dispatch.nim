@@ -150,6 +150,12 @@ type
   TurnCancelled* = object of CatchableError
   ComponentCallError = object of ValueError
     ## An acknowledged terminal component error, not a transport timeout.
+  ComponentExitedError* = object of IOError
+    ## The component that owns an in-flight call lost its last live replica
+    ## while the call was in flight (issue #116). Distinct from a timeout: the
+    ## work stopped because the process died, not because it was slow, so the
+    ## remedy is "wait for it to come back and retry", not "raise the cap".
+    ## The `code` a client sees is `component-exited`.
   # Turn-bound advisory channel (svc.session.<id>.advise): the expert peer's
   # request/reply surface. pumpAdvise answers each request immediately —
   # accepted only while the named turn is still live — and queues accepted
@@ -1707,6 +1713,60 @@ proc pumpBusyCall*(ct: CoreTools) =
     ct.nc.publish(reply, errorEnvelope(env.id, "busy",
       "the conversation is mid-turn — retry when the turn finishes").encode())
 
+const componentDeparturePollMs = 500
+  ## How often a blocked dispatch asks the catalog whether the component it is
+  ## waiting on still has a live replica (issue #116). 500 ms keeps the
+  ## acceptance target (~2 s to notice a reap) with a negligible cost: the
+  ## probe is a `kill(pid, 0)` per replica, only while a call is in flight.
+
+proc livePids*(ct: CoreTools, comp: string): seq[int] =
+  ## The pids of `comp` the kernel still reports alive, read from the CURRENT
+  ## registration. Empty when the component is unknown or entirely gone.
+  if comp.len == 0 or ct.cat == nil: return
+  if not ct.cat.components.hasKey(comp): return
+  let reg = ct.cat.components[comp]
+  var candidates = reg.pids
+  if reg.pid > 0 and candidates.find(reg.pid) < 0: candidates.add(reg.pid)
+  for pid in candidates:
+    if pidAlive(pid): result.add(pid)
+
+proc dispatchLost*(ct: CoreTools, comp: string,
+                   sentTo: seq[int]): bool =
+  ## Did the in-flight call to `comp` lose every process it could have reached?
+  ##
+  ## `sentTo` is the live pid set captured at dispatch. The call is lost when
+  ## the CURRENT live set shares no pid with it: either the group died, or it
+  ## died and was RESTARTED — and a restarted process is a different process
+  ## that never received this request, so "a replica is alive again" is not
+  ## recovery. Comparing sets (rather than "is anything alive?") is what makes
+  ## the answer honest under a supervisor restart, and it stays safe for a
+  ## multi-replica group: a surviving replica that could have taken the call
+  ## keeps the caller waiting (issue #116 acceptance 4).
+  ##
+  ## An empty `sentTo` means the registration named no pid at dispatch, so
+  ## there is nothing to compare and the caller is left to its own timeout.
+  if sentTo.len == 0: return false
+  let now = ct.livePids(comp)
+  for pid in now:
+    if sentTo.find(pid) >= 0: return false
+  return true
+
+proc departureCheck(ct: CoreTools, tool, subject: string,
+                    sentTo: seq[int]): string =
+  ## The structured error for a call whose component just died, or "" while it
+  ## is reachable. Prefers the tool's own component (toolIndex) and falls back
+  ## to the subject so an explicit `svc.<comp>.call` is covered too.
+  if ct.cat == nil: return ""
+  var comp = ct.cat.toolIndex.getOrDefault(tool)
+  if comp.len == 0 and subject.startsWith("svc.") and subject.endsWith(".call"):
+    comp = subject["svc.".len ..< subject.len - ".call".len]
+  # Core is the caller here: a "dead core" check would be core probing itself.
+  if comp.len == 0 or comp == "core": return ""
+  if not ct.dispatchLost(comp, sentTo): return ""
+  return "[component-exited] " & comp & " died while '" & tool &
+    "' was in flight — the call was lost with it. The conversation is intact: " &
+    "once " & comp & " re-registers, retry the call."
+
 proc streamPollMs*(ct: CoreTools): int64 =
   ## Reply-wait timeout for a dispatch. The live token pump (pumpTokenStream)
   ## only runs in the idle slot *between* waits, so the wait length is the
@@ -2065,6 +2125,23 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       " (" & $data.len & " bytes; bus max_payload " &
       $natsConnection_GetMaxPayload(ct.nc.conn) & " bytes)")
   let deadline = epochTime() + timeoutMs.float / 1000.0
+  # Liveness of the CALLEE, checked on a coarse cadence inside this loop
+  # (issue #116): a component that dies mid-call can never answer, so waiting
+  # out the tool's own cap (up to 15 minutes for delegated tools) reports a
+  # lie — "timed out" for work that stopped instantly. Only a real reap is a
+  # signal; a merely slow but registered component keeps its full cap, and a
+  # multi-replica group with a survivor is never failed.
+  var departAt = epochTime() + componentDeparturePollMs.float / 1000.0
+  # The processes this request could have reached, captured NOW (before any
+  # death) so the probe can tell "the same group is still there" from "a
+  # restarted process that never saw this request".
+  var sentTo: seq[int]
+  block:
+    var comp = ct.cat.toolIndex.getOrDefault(tool)
+    if comp.len == 0 and subject.startsWith("svc.") and
+        subject.endsWith(".call"):
+      comp = subject["svc.".len ..< subject.len - ".call".len]
+    if comp.len > 0 and comp != "core": sentTo = ct.livePids(comp)
   while epochTime() < deadline:
     var msg: ptr natsMsg
     let ns = natsSubscription_NextMsg(addr msg, sub, streamPollMs(ct))
@@ -2087,6 +2164,15 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     ct.cat.pump()
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
+    if epochTime() >= departAt:
+      departAt = epochTime() + componentDeparturePollMs.float / 1000.0
+      # Probe AFTER the supervisor pumped: a death reaped just now is visible
+      # here in the same tick, so the caller learns within ~2 polls of the reap.
+      let gone = departureCheck(ct, tool, subject, sentTo)
+      if gone.len > 0:
+        publishToolCancel(ct, subject, tool,
+          if ct.activeTurn != nil: ct.activeTurn.session else: "")
+        raise newException(ComponentExitedError, gone)
     pumpTokenStream(ct)
     pumpSteer(ct)
     pumpBusyCall(ct)
@@ -3134,6 +3220,13 @@ proc dispatchToolCalls*(ct: CoreTools,
   # Collect replies. Round-robin polling keeps core's service surface alive (a
   # component calling back into core mid-wave cannot deadlock) and streams LLM
   # tokens / steering while the wave is in flight.
+  var departAt = epochTime() + componentDeparturePollMs.float / 1000.0
+  # Per-call pid sets the wave could have reached, captured before collection
+  # starts (see dispatchLost for why a set and not a boolean).
+  var sentTo = newSeq[seq[int]](calls.len)
+  for i in 0 ..< calls.len:
+    let comp = ct.cat.toolIndex.getOrDefault(calls[i].tool)
+    if comp.len > 0 and comp != "core": sentTo[i] = ct.livePids(comp)
   while true:
     var allDone = true
     let now = epochTime()
@@ -3176,6 +3269,19 @@ proc dispatchToolCalls*(ct: CoreTools,
     ct.cat.pump()
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
+    if epochTime() >= departAt:
+      departAt = epochTime() + componentDeparturePollMs.float / 1000.0
+      # Same liveness contract as the single-call path, per pending call: a
+      # wave fails only the calls whose own component died, so a surviving
+      # component's work still completes (issue #116 acceptance 4).
+      for i in 0 ..< calls.len:
+        if pending[i].done: continue
+        let comp = ct.cat.toolIndex.getOrDefault(pending[i].tool)
+        let gone = departureCheck(ct, pending[i].tool,
+                                  "svc." & comp & ".call", sentTo[i])
+        if gone.len > 0:
+          pending[i].done = true
+          pending[i].error = gone
     pumpTokenStream(ct)
     pumpSteer(ct)
     pumpBusyCall(ct)

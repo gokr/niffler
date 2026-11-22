@@ -5007,6 +5007,18 @@ runner's `session: llm call dur=`. The `llm` line lands in
 `.log`, and session timing goes to `var/logs/session-<id>.log`
 (see `bench/README.md`, "Model-call overhead").
 
+#### A component died mid-call
+
+A tool call whose component loses its last live replica is completed with
+`[component-exited] <comp> died while '<tool>' was in flight — the call was
+lost with it. The conversation is intact: once <comp> re-registers, retry the
+call.` It arrives within a couple of seconds, not after the tool's cap, and it
+is a different thing from a timeout: the work stopped because the process
+died. Retry once the component is back (the supervisor restarts an
+`on-failure` child on its own). A component that is merely slow, or a replica
+group that still has a live member, keeps its full timeout — presence, never a
+timer, is the signal.
+
 ### Monitoring
 
 When core spawns nats-server it uses distinct loopback client and HTTP ports,
@@ -5029,6 +5041,22 @@ A reused or remote bus has no discoverable HTTP endpoint; configure
 `NIF_OBSERVE_MONITOR_URL` explicitly. `NIF_NATS_SPAWN=1` forces an isolated
 core-owned bus on a random port (primarily for tests and diagnostics) —
 never 4222; an explicit `NIF_NATS_URL` in the environment wins.
+
+#### A spawned bus is supervised
+
+A bus core **spawned** is a supervised resource. Core's idle loop checks it on
+every pass; if it dies (OOM killer, a stray `pkill -f nats-server`, a crash)
+core respawns it **on the same client port** and rewrites `var/nats-url`,
+`var/nats-monitor-url` and `var/nats-pid`. The same port matters: every child
+inherited a pinned `NIF_NATS_URL` from core's environment, and the Nim and Go
+SDKs re-attach to exactly that address, so a respawn on a new port would strand
+them. Three failed attempts end core with a non-zero exit and a legible reason
+rather than leaving a harness nothing can reach.
+
+A bus core **attached to** — an explicit `NIF_NATS_URL`, a remote gateway, a
+bus it found already running — is never respawned: it is not ours to restart.
+Shutdown disables the watcher before stopping the bus, so a normal exit never
+starts one nobody will stop (`var/nats-pid` is removed as before).
 
 A request carries a whole conversation, so the bundled bus is started with
 `max_payload: 8388608` (8 MiB — about 2M tokens of JSON; above that

@@ -210,6 +210,21 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Fixed
 
+- **A component that dies mid-call fails its call in ~2 s instead of stalling
+  the turn.** The dispatch wait loop now compares the live pid set against the
+  one it could have reached, and answers `[component-exited]` naming the
+  component, saying the conversation is intact and that a retry works once it
+  re-registers. Only a reap counts: a slow-but-registered component keeps its
+  full cap, a replica group with a survivor is never failed, and a process that
+  died and was **restarted** counts as dead for that call — a new process never
+  received the old request.
+- **A spawned nats-server is supervised.** If the bus core owns dies, core
+  respawns it on the same client port and rewrites `var/nats-url`,
+  `var/nats-monitor-url` and `var/nats-pid`, so children re-attach instead of
+  staying deaf; three failed attempts end core with a legible non-zero exit.
+  An attached or remote bus is never touched, and shutdown never resurrects
+  one on purpose.
+
 - A tool result lost with its runner no longer tells the model to "re-run it".
   The dispatch may already have taken effect, so the synthesized result now
   reports an unknown outcome and asks for verification, preferring a re-read
