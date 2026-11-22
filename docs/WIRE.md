@@ -440,8 +440,8 @@ notice text. Positive failure counts also add top-level `compactFailures` and
 `compactReason`.
 
 `toolPairRepair` is null or the conversation's durable tool-pairing ledger
-`{appliedThrough,count,firstAt,at,repaired:[{action:"synthesized"|"dropped"|
-"lost",callId?,id?,toolCallId?,name?,assistant?,at}]}` (store kind
+`{appliedThrough,count,firstAt,at,repaired:[{action:"synthesized"|"dropped",
+callId?,id?,toolCallId?,name?,assistant?,at}]}` (store kind
 `toolpairrepair`, id = the conversation id). It records what a load-time repair
 had to do because stored history lost a record — see "Tool-call pairing
 (repaired projections)" below. `count` is the ledger length; `appliedThrough` is the highest
