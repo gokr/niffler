@@ -22,9 +22,10 @@ processes, its namespace authority, or its own mind.
 ### 1. Bus bootstrap — `core/niffler.nim`
 
 NATS spawn/attach, port pick, `.env` load, manifest read, the first-open
-home-trust decision, `var/nats-url`. Everything else is defined relative to the
-bus — components *are* bus subscribers — so this runs before any component can
-exist. Irreducible by definition.
+home-trust decision, `var/nats-url`, and supervision of a bus it spawned
+(respawn on the same client port when it dies). Everything else is defined
+relative to the bus — components *are* bus subscribers — so this runs before
+any component can exist. Irreducible by definition.
 
 ### 2. Supervisor — `core/supervisor.nim`
 

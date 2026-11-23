@@ -72,7 +72,10 @@ stopping"; [WIRE.md](WIRE.md) "Lifecycle".
 - Bus bootstrap: core spawns the bundled `nats-server` build when no bus is
   configured, at an 8 MiB `max_payload`, and writes `var/nats-url` /
   `var/nats-monitor-url`. The bundled `var/bin/nats-server` is the only bus
-  used; a missing binary is an error naming `make build`.
+  used; a missing binary is an error naming `make build`. A spawned bus is
+  supervised: if it dies, core respawns it on the same client port and
+  rewrites `var/nats-url` / `var/nats-monitor-url` / `var/nats-pid` so
+  children re-attach; an attached or remote bus is never touched.
 - Home-bus claiming vs. explicit attach: environment URL → `.env` home bus →
   the well-known port; identity-checked adoption of only a core serving *this*
   root; loud yield to a foreign core or bare NATS server; isolated random bus
@@ -91,7 +94,10 @@ stopping"; [WIRE.md](WIRE.md) "Lifecycle".
   and bounded timestamp/PID/root identity evidence in the rotating core log.
 - Dispatch seam: routing by bare tool name, workspace and session context
   injection, timeouts, approval, hidden/on-demand filtering, parallel fan-out,
-  effect classification, delegation-depth guard, nested-call leases.
+  effect classification, delegation-depth guard, nested-call leases. An
+  in-flight call whose component loses its last live replica fails fast with
+  a `[component-exited]` result instead of waiting out the tool cap; a slow
+  but registered component keeps its full timeout.
 - Core's own tools: `session` (hidden), `session_prepare`, `spawn`, `kill`,
   `remove`, `catalog`, `status`, `doctor`, `prompt_preview`, `session_info`,
   `context_status`, `discover`, `invoke`, `profile`, `ui` (hidden),
