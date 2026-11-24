@@ -1523,7 +1523,7 @@ let statusSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
    description = "Non-blocking lookup of a background subagent job: returns its durable status (running/done/failed/stopped/stopping), session id, and — when terminal — the final reply or error. Does not wait; use agent_wait for that.")
-statusSchema["x-harness"] = %*{"onDemand": true}
+statusSchema["x-harness"] = %*{"onDemand": true, "writes": {"none": true}}
 discard comp.tool("agent_status", statusSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -1547,7 +1547,8 @@ let waitSchema = toolSchema(%*{
                 "description": "Give up waiting after this many ms (default 600000)"}
 }, required = @["jobId"],
    description = "Block until a background subagent job reaches a terminal state (done/failed/stopped) and return its durable result — including for jobs that finished long ago (late waits read the store). Terminal states carry the child's final reply, or the failure reason for failed jobs.")
-waitSchema["x-harness"] = %*{"timeoutMs": 900_000, "onDemand": true}
+waitSchema["x-harness"] = %*{"timeoutMs": 900_000, "onDemand": true,
+                           "writes": {"none": true}}
 discard comp.tool("agent_wait", waitSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -1585,7 +1586,7 @@ let stopSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
    description = "Cancel a running background subagent job: aborts its in-flight LLM request and ends the child turn (between tool rounds, promptly after the current tool returns). The job's terminal record says \"stopped\" — the reply, if any, is kept. Re-calling is harmless; stopping an already-terminal job just returns the record.")
-stopSchema["x-harness"] = %*{"onDemand": true}
+stopSchema["x-harness"] = %*{"onDemand": true, "writes": {"none": true}}
 discard comp.tool("agent_stop", stopSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -1753,7 +1754,8 @@ let noticesSchema = toolSchema(%*{
   "peek": {"type": "boolean",
             "description": "Report pending notices without marking them delivered"}
 }, description = "Drain the pending settlement notices for a conversation: one entry per background child that finished, was stopped, or failed. Each entry carries jobId, the child session id, a bounded summary of the child's final reply, how many bytes the full reply has, and where to get the rest (agent_status {jobId}). Notices are delivered automatically while your turn is running; this drains the ones that arrived while you were idle. Draining marks them delivered — pass peek to look without consuming.")
-noticesSchema["x-harness"] = %*{"onDemand": true, "sessionId": true}
+noticesSchema["x-harness"] = %*{"onDemand": true, "sessionId": true,
+                              "writes": {"none": true}}
 discard comp.tool("agent_notices", noticesSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     var target = toolArgs{"session"}.getStr("")
@@ -1812,7 +1814,8 @@ let listSchema = toolSchema(%*{
   "sessionId": {"type": "string",
                 "description": "Read-only UI override for the parent conversation; normal model calls omit it and use injected session context"}
 }, description = "List your subagent children by durable session id, with what each is doing. Entries carry the child session id, its status, the jobId of its last activation, and the task it was given. Status is running (working right now), idle (resident between turns), or ready (exists in storage only — resumable, NOT finished and not a result waiting to be collected). Use it to remember which children you started and to decide how to reach one: agent_steer for a running turn, agent_wait/agent_status for a job's result, agent_spawn/agent_run with session to give it more work. You are told when a child settles (see the settlement notices), so this is for orientation, not for polling.")
-listSchema["x-harness"] = %*{"onDemand": true, "sessionId": true}
+listSchema["x-harness"] = %*{"onDemand": true, "sessionId": true,
+                           "writes": {"none": true}}
 discard comp.tool("agent_list", listSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     var caller = toolArgs{"__session"}{"session"}.getStr("")
