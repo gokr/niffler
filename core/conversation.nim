@@ -1306,8 +1306,9 @@ proc derivableStubEnabled*(): bool =
   ## still declare `x-harness.derivable` for anything of its own to qualify, so
   ## the tier is already opt-in per tool; this turns it off globally for an
   ## operator who would rather pay the window pressure than lose re-runnable
-  ## results. `NIF_STUB_DERIVABLE=0` disables it.
-  getEnv("NIF_STUB_DERIVABLE", "1") != "0"
+  ## results. Disable it with the declared `core.stubDerivable` setting (0)
+  ## or the historical `NIF_STUB_DERIVABLE=0` spelling.
+  coreSettingBool("stubDerivable", "NIF_STUB_DERIVABLE", true)
 
 const stubProtectRecent* = 4
   ## Messages at the very end of the projection the stub rung never touches:
@@ -3823,9 +3824,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # An empty completion (no content, no tool calls) is not an answer — it is
   # re-asked this many times before the turn fails as an explicit error.
   # NIF_EMPTY_REPLY_RETRIES=0 disables the re-ask (fail immediately).
-  let emptyReplyRetries = block:
-    try: parseInt(getEnv("NIF_EMPTY_REPLY_RETRIES", "2"))
-    except CatchableError: 2
+  # The declared `core` settings domain (config_patch core), with the
+  # historical env spelling as the migration fallback.
+  let emptyReplyRetries = max(0, coreSettingInt("emptyReplyRetries",
+                                                "NIF_EMPTY_REPLY_RETRIES", 2))
   # ---- conversation controls: the human's soft turn limits (/limit) --------
   # A soft limit is different in kind from the budgets above: reaching it asks
   # the human over the approval transport (tool "turn-limit", purpose
@@ -4865,8 +4867,104 @@ proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: str
     return (false, "", "cwd is not a directory: " & requested)
   (true, candidate, "")
 
+proc workspaceGone(workspace: string): bool =
+  ## Has the conversation's own workspace directory disappeared?
+  ##
+  ## A worktree can be removed while the conversation that lived in it keeps
+  ## going (`git_worktree {op: rm}`, `/worktree rm`, a hand-deleted tree).
+  ## From then on nothing in the conversation can run — bash refuses with
+  ## "cwd is not a directory" and every path-shaped argument resolves against
+  ## a tree that is not there — INCLUDING the control calls that could repair
+  ## it, which is the dead end this predicate opens. An empty workspace is not
+  ## "gone": it still means the harness-root default.
+  if workspace.strip().len == 0: return false
+  not dirExists(normalizedPath(workspace))
+
+proc announceWorkspace(ct: CoreTools, sessionId, workspace: string) =
+  ## Tell components that key off workspace identity — repomap builds a map per
+  ## workspace, lsp warms servers for the languages present — which tree this
+  ## conversation is in NOW. Fire-and-forget: a warmup failure must never fail
+  ## discovery.
+  try:
+    ct.nc.publish("ev.workspace.opened",
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+               payload: %*{"workspace": workspace,
+                           "conversationId": sessionId}).encode())
+  except CatchableError as e:
+    echo "core: WARNING workspace.opened publish failed: " & e.msg
+
+proc recordLostWorkspace(ct: CoreTools, sessionId: string,
+                         entry: var Session): bool =
+  ## A conversation whose workspace directory has vanished falls back to the
+  ## harness root and is recorded as UNPINNED (a fallback is not a choice).
+  ## Returns true when it moved.
+  ##
+  ## Without this a removed worktree was unrecoverable: re-resolution required
+  ## the stored path to exist, so every call failed outright — and the control
+  ## call that could repin it failed the same way. The conversation could not
+  ## be repaired from inside itself, and a new conversation could not continue
+  ## its transcript. Falling back is the honest answer for a directory nobody
+  ## can work in; it stays repinnable because nobody chose it, and the pinned
+  ## flag described a decision about a path that no longer exists.
+  if not workspaceGone(entry.workspace): return false
+  let lost = entry.workspace
+  entry.workspace = ct.root
+  echo "core: WARNING conversation " & sessionId & " workspace " & lost &
+       " no longer exists — falling back to the harness root " & ct.root
+  var update = %*{"cwd": entry.workspace, "cwdPinned": false}
+  # Worktree isolation without its worktree is the same stale fact as the dead
+  # path, and the more dangerous half: the fence would confine writes to a tree
+  # that does not exist. `isolation: worktree` is only accepted for a LINKED
+  # worktree (the narrow grant's premise), so a fallback to the harness root
+  # cannot keep it — clear it back to shared rather than leave a policy nobody
+  # can satisfy.
+  block:
+    var storedIso = entry.isolationScope
+    if storedIso.len == 0:
+      try:
+        storedIso = ct.storeGetItem("conversation", sessionId)
+          .value{"isolation"}.getStr("")
+      except CatchableError:
+        storedIso = ""
+    if storedIso.strip().toLowerAscii() == "worktree":
+      entry.isolationScope = "shared"
+      update["isolation"] = %""
+      echo "core: WARNING conversation " & sessionId &
+           " isolation reset to shared — its worktree is gone"
+  # Park the loss for the next TURN: a control call (a status readback, a
+  # `/workspace` repin) is often what settles it, and that call runs no turn to
+  # carry the notice. The turn path reads this back, appends one `workspace-lost`
+  # message and clears it.
+  update["workspaceLost"] = %*{"lost": lost, "at": epochTime()}
+  try:
+    ct.updateConversationHeader(sessionId, update)
+  except CatchableError as e:
+    echo "core: WARNING cannot persist the workspace fallback: " & e.msg
+  true
+
+proc appendWorkspaceRecovery(p: var Persister, messages: var seq[JsonNode],
+                             lost, landed: string, onEvent: proc(kind: string,
+                               data: JsonNode) {.closure.}) =
+  ## Append (never splice) the record of a workspace that died under a live
+  ## conversation, so the model's history explains the change instead of
+  ## silently relocating its work. A user-role notice with structural
+  ## provenance, exactly like the settlement notices.
+  let content = "[workspace no longer exists: " & lost &
+                " — this conversation now works in " & landed &
+                "]\nThe tree it was working in was removed (a deleted or closed " &
+                "worktree). Paths from earlier turns refer to the old " &
+                "workspace; ask the human where the work should continue " &
+                "if that is unclear."
+  ctxAppend(p, messages, %*{"role": "user", "content": content,
+                            "notice": %*{"kind": "workspace-lost",
+                                          "id": "workspace-lost:" & lost,
+                                          "lost": lost, "landed": landed}})
+  if onEvent != nil:
+    onEvent("notice", %*{"kind": "workspace-lost", "lost": lost,
+                          "landed": landed, "content": content})
+
 proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
-                    requested: string, args: JsonNode): string =
+                    requested: string): string =
   ## Apply an explicit `cwd` request to a conversation's workspace. Returns ""
   ## when the request was accepted (or is a no-op), or the refusal message.
   ##
@@ -4886,7 +4984,12 @@ proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
   ##   prompt embeds the harness root, never the workspace path, so moving costs
   ##   no prompt-cache rebuild.
   ## - CHOSEN (turns exist and a workspace was picked) is immutable: a resume
-  ##   must resolve context and paths exactly as the original turn did.
+  ##   must resolve context and paths exactly as the original turn did —
+  ##   EXCEPT when the chosen directory no longer exists (a removed worktree).
+  ##   Immutability protects a resume's identical context; it cannot protect a
+  ##   tree that is gone, and the alternative is a conversation nobody can work
+  ##   in or repair. A request from a dead workspace is therefore accepted, and
+  ##   leaves the conversation unpinned again so it can be repinned once more.
   ##
   ## "Pristine" is asked of the STORE, not of entry.messages: a runner that only
   ## answered a control call holds an empty list for a conversation with
@@ -4897,12 +5000,29 @@ proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
   let resolved = resolveWorkspace(ct.root, requested)
   let refusal = "conversation cwd is immutable once turns exist (currently " &
                 entry.workspace & "); start a new conversation to work elsewhere"
-  if not resolved.ok: return resolved.error
+  # A DEAD workspace is what makes a repin request admissible at all; the
+  # caller has already settled the fallback (recordLostWorkspace), so a request
+  # that does not resolve is the caller's own bad path and stays refused.
+  let dead = workspaceGone(entry.workspace)
+  if not resolved.ok:
+    # EXCEPT when the request is the corpse itself: a client that was STARTED in
+    # the removed tree sends its own launch directory as this conversation's
+    # `cwd` on every fresh turn and retry, and answering "cwd is not a
+    # directory" to a path core already knows is gone re-creates the dead end.
+    # An echo of the dead workspace is not a typo — accept it and let the
+    # fallback below land the conversation somewhere real.
+    if dead and explicit:
+      let asked = normalizedPath(
+        if requested.isAbsolute(): requested else: ct.root / requested)
+      if asked == normalizedPath(entry.workspace): return ""
+    return resolved.error
   # An EMPTY cwd is not a workspace choice: it would resolve to the harness root
   # and weld that back in through the side door. It stays refused rather than
   # read as "no request", which is the rule a client must not have to know —
-  # omit the key to leave the workspace alone.
-  if not explicit: return refusal
+  # omit the key to leave the workspace alone. From a dead workspace an empty
+  # cwd is the recovery request: land on the root rather than stay in a tree
+  # that is not there.
+  if not explicit and not dead: return refusal
   if resolved.path == entry.workspace:
     # Explicitly choosing the default is still a choice, even though there is
     # no path change. Persist it so a later resume cannot silently move it.
@@ -4917,9 +5037,13 @@ proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
   let pristine = not hasTurns and
     (entry.messages.len == 0 or
      (entry.messages.len == 1 and entry.messages[0]{"role"}.getStr("") == "system"))
-  if not pristine and workspaceChosen(ct, sessionId):
+  if not pristine and workspaceChosen(ct, sessionId) and not dead:
     return refusal
   entry.workspace = resolved.path
+  # A move out of a DEAD workspace lands UNPINNED: the human's real choice was
+  # the tree they removed, not this replacement, and an unpinned workspace
+  # stays repinnable — which is the whole point of getting here.
+  let pin = not dead
   if pristine and entry.messages.len == 1:
     # The constitution was already frozen (legacy control-call freeze):
     # re-resolve it against the corrected workspace and refresh both the
@@ -4929,23 +5053,17 @@ proc repinWorkspace(ct: CoreTools, sessionId: string, entry: var Session,
                                  birthHeader{"persona"}.getStr(""))
     try:
       ct.updateConversationHeader(sessionId,
-        %*{"systemPrompt": sp, "cwd": entry.workspace, "cwdPinned": true})
+        %*{"systemPrompt": sp, "cwd": entry.workspace, "cwdPinned": pin})
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
     entry.messages[0]{"content"} = %sp
   else:
     try:
       ct.updateConversationHeader(sessionId,
-        %*{"cwd": entry.workspace, "cwdPinned": true})
+        %*{"cwd": entry.workspace, "cwdPinned": pin})
     except CatchableError as e:
       echo "core: WARNING cannot persist cwd (store down?): " & e.msg
-  try:
-    ct.nc.publish("ev.workspace.opened",
-      Envelope(v: 1, id: newId(), kind: ekEvent,
-               payload: %*{"workspace": entry.workspace,
-                           "conversationId": sessionId}).encode())
-  except CatchableError as e:
-    echo "core: WARNING workspace.opened publish failed: " & e.msg
+  announceWorkspace(ct, sessionId, entry.workspace)
 
 func steerSubject*(sessionId: string): string
   ## Forward declaration: `session {stop: true}` publishes to this subject, and
@@ -5225,26 +5343,39 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     return %*{"error": "session needs sessionId"}
 
   var entry: Session
+  # A workspace directory can vanish under a live conversation (a removed
+  # worktree). Settle that FIRST, in both branches, so no later step has to
+  # reason about a workspace that cannot be entered: a conversation must never
+  # be wedged by a tree somebody deleted, least of all the one whose control
+  # calls are the only way to repair it.
+  # Did this call find the conversation's workspace directory gone? The header
+  # update further down must not record the fallback as a CHOICE: a client that
+  # was launched in the removed tree keeps sending that path as its `cwd`, and
+  # pinning whatever replaced it would lock the conversation again on the first
+  # turn after a recovery. The loss itself is parked in the header by
+  # recordLostWorkspace, so the next turn appends the notice whichever call
+  # settled it.
+  var recoveredWorkspace = false
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
+    let before = entry.workspace
+    let wasDead = workspaceGone(before)
+    # The repin runs while a dead workspace is still the recorded one: that is
+    # what makes the request admissible at all (see repinWorkspace).
     if hasCwd:
-      let before = entry.workspace
-      let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""), args)
+      let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""))
       if refusal.len > 0: return %*{"error": refusal}
-      # A live conversation that MOVED must announce the new workspace, exactly
-      # as a freshly loaded one does below. Without this, components that key
-      # off workspace identity — repomap builds a map per workspace, lsp warms
-      # servers for the languages present — kept serving the tree the
-      # conversation had left: "the workspace is X but the repo map shown is
-      # from Y".
-      if entry.workspace != before:
-        try:
-          ct.nc.publish("ev.workspace.opened",
-            Envelope(v: 1, id: newId(), kind: ekEvent,
-                     payload: %*{"workspace": entry.workspace,
-                                 "conversationId": sessionId}).encode())
-        except CatchableError as e:
-          echo "core: WARNING workspace.opened publish failed: " & e.msg
+    # Anything still dead after the request falls back to the harness root.
+    if wasDead: recoveredWorkspace = true
+    discard recordLostWorkspace(ct, sessionId, entry)
+    # A live conversation that MOVED must announce the new workspace, exactly
+    # as a freshly loaded one does below. Without this, components that key
+    # off workspace identity — repomap builds a map per workspace, lsp warms
+    # servers for the languages present — kept serving the tree the
+    # conversation had left: "the workspace is X but the repo map shown is
+    # from Y". A workspace-loss fallback moves too and is announced here.
+    if entry.workspace != before:
+      announceWorkspace(ct, sessionId, entry.workspace)
   else:
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.
@@ -5261,8 +5392,18 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
                          header{"cwd"}.getStr("")
                        else: args{"cwd"}.getStr("")
     let workspace = resolveWorkspace(ct.root, requestedCwd)
-    if not workspace.ok: return %*{"error": workspace.error}
-    entry.workspace = workspace.path
+    if workspace.ok:
+      entry.workspace = workspace.path
+    elif header{"cwd"}.getStr("").len > 0 and workspaceGone(requestedCwd):
+      # The conversation's OWN stored workspace is gone (a removed worktree).
+      # Keep it as the recorded workspace for the repin below, which is the one
+      # request that must not be refused for being immutable, and fall back
+      # after it. A path the CALLER supplied is not this conversation's corpse,
+      # so a bad one fails here (a typo is not a workspace).
+      entry.workspace = requestedCwd
+    else:
+      return %*{"error": workspace.error}
+    let arrivedFromDead = workspaceGone(entry.workspace)
     # An explicit cwd on this call is a repin request even when the conversation
     # is being loaded here for the first time: the ordinary shape for a client
     # that just opened an old conversation is exactly this branch (no turn has
@@ -5270,19 +5411,15 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     # no-op on every freshly-opened conversation. The same rule decides it as in
     # the loaded branch (see repinWorkspace), including the refusal.
     if args{"cwd"}.getStr("").strip().len > 0:
-      let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""), args)
+      let refusal = repinWorkspace(ct, sessionId, entry, args{"cwd"}.getStr(""))
       if refusal.len > 0: return %*{"error": refusal}
+    if arrivedFromDead: recoveredWorkspace = true
+    discard recordLostWorkspace(ct, sessionId, entry)
     # Announce the workspace (any directory — a conversation workspace need
     # not be a git repo) so components can pre-warm against it; e.g. the lsp
     # component starts servers for the languages present at bootstrap, not
     # mid-turn. Fire-and-forget: warmup failures must never fail discovery.
-    try:
-      ct.nc.publish("ev.workspace.opened",
-        Envelope(v: 1, id: newId(), kind: ekEvent,
-                 payload: %*{"workspace": entry.workspace,
-                             "conversationId": sessionId}).encode())
-    except CatchableError as e:
-      echo "core: WARNING workspace.opened publish failed: " & e.msg
+    announceWorkspace(ct, sessionId, entry.workspace)
     var sp = header{"systemPrompt"}.getStr("")
     if sp.len == 0:
       sp = args{"systemPrompt"}.getStr("")
@@ -5313,8 +5450,9 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
       # that later opened that conversation ran in the wrong tree with no way
       # back. `cwdPinned` is the record of the choice; without it a conversation
       # stays repinnable (see workspaceChosen).
-      if args{"cwd"}.getStr("").strip().len > 0 or
-          header{"cwdPinned"}.getBool(false):
+      if not recoveredWorkspace and
+          (args{"cwd"}.getStr("").strip().len > 0 or
+           header{"cwdPinned"}.getBool(false)):
         headerUpdate["cwd"] = %entry.workspace
         headerUpdate["cwdPinned"] = %true
       if personaName.len > 0:
@@ -6654,6 +6792,37 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
     else:
       %*{"role": "user", "content": turnContent}
   let failuresBeforeTurn = entry.persister.persistenceFailures
+  # A workspace that died under this conversation is appended to the transcript
+  # as the FIRST thing in the turn that follows its recovery, so the model reads
+  # its own relocation instead of discovering it through a failing tool. History
+  # only — the frozen prefix (system prompt + tool schemas) is untouched, so a
+  # recovery costs no prompt-cache rebuild.
+  #
+  # Read from the HEADER, not from this call's local flag: a control call (a
+  # status readback, a `/workspace` repin) can be what settles the loss, and
+  # that call runs no turn. recordLostWorkspace parks the fact there, so the
+  # notice lands on the next turn whichever call repaired the workspace, exactly
+  # once.
+  block:
+    var pending: JsonNode = nil
+    try:
+      pending = loadConversationHeader(ct, sessionId){"workspaceLost"}
+    except CatchableError:
+      pending = nil
+    if pending != nil and pending.kind == JObject:
+      let lostPath = pending{"lost"}.getStr("")
+      if lostPath.len > 0 and lostPath != entry.workspace:
+        let before = entry.persister.persistenceFailures
+        appendWorkspaceRecovery(entry.persister, entry.messages, lostPath,
+                                entry.workspace, onEvent)
+        if entry.persister.persistenceFailures == before:
+          # Cleared by writing null, which readers treat as "nothing pending" —
+          # leaving it set would append the same relocation again on the next
+          # turn, and a second notice reads as a second move.
+          try:
+            ct.updateConversationHeader(sessionId, %*{"workspaceLost": nil})
+          except CatchableError as e:
+            echo "core: WARNING cannot clear the workspace-loss marker: " & e.msg
   try:
     ctxAppend(entry.persister, entry.messages, userMsg)
   except TranscriptWriteError as e:
@@ -6989,7 +7158,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
           "session_prepare", "sandbox_inherit",
           "session_info", "activity_list", "prompt_preview",
           "context_status", "doctor", "admission_get",
-          "conversation_delete", "toolset", "profile":
+          "conversation_delete", "toolset", "profile", "core_config":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))

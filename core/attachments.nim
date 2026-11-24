@@ -30,9 +30,10 @@
 ## keeps the `chat` call, a `/export` reply and a compaction snapshot all far
 ## below the 8MiB bus max_payload.
 
-import std/[base64, json, os, strutils]
+import std/[base64, json, strutils]
 
 import ../sdk/niffler/jsonx
+import ./dispatch   # coreSettingInt: the declared `core` settings domain
 
 const
   attachMaxCount* = 8
@@ -64,16 +65,11 @@ const
     ## image and says the original is still stored.
 
 proc projectionBudget*(): int =
-  ## Harness default with a test/ops override. Exported so a deployment can
-  ## trade context for more concurrent images without a rebuild.
-  let raw = getEnv("NIF_ATTACH_BUDGET", "").strip()
-  if raw.len > 0:
-    try:
-      let v = parseInt(raw)
-      if v > 0: return v
-    except ValueError:
-      discard
-  attachDefaultBudget
+  ## The declared `core.attachBudget` setting, with the historical env spelling
+  ## as the migration fallback and the built-in default last. Exported so a
+  ## deployment can trade context for more concurrent images.
+  let v = coreSettingInt("attachBudget", "NIF_ATTACH_BUDGET", attachDefaultBudget)
+  if v > 0: v else: attachDefaultBudget
 
 # --- validation --------------------------------------------------------------
 

@@ -77,6 +77,19 @@ just protected.
 shared-namespace decision that [CONFIG.md](CONFIG.md) §11.7 deliberately left
 open, and a store document is already instance-scoped.
 
+### Core can own a domain
+
+An owner does not have to be a component. `config` routes an owner request to
+`svc.<owner>.call`, and core answers `svc.core.call`, so `owner: "core"` with
+`ownerTool: "core_config"` is an ordinary owner: core keeps the values in its
+own store document (`core-settings`/`main`), answers `get`/`patch`/`reset`, and
+is the only writer. The `core` domain is the worked example.
+
+That is why "core enforces this variable" is no longer a reason for it to be
+env-only. The three knobs core enforces today (image budget, empty-reply
+re-asks, derivable-result stubbing) are a declared domain whose historical env
+spellings remain the migration fallback.
+
 ## Tools
 
 | tool | effect | approval | notes |

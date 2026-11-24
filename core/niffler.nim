@@ -6,8 +6,8 @@
 ## core/tty.nim).
 ## Core speaks exactly one protocol.
 
-import std/[json, os, osproc, sequtils, streams, strutils, tables, tempfiles,
-            terminal, times]
+import std/[json, os, osproc, sequtils, streams, strutils, tables,
+            tempfiles, terminal, times]
 import yaml/tojson
 import natsnim
 when defined(posix):
@@ -923,6 +923,18 @@ proc main() =
     cat.pump()
     sup.pump(cat)
     discard superviseBus(busWatch)
+  # Core's own configuration domain: load the persisted values now that the
+  # store is up (readers fall back to env until this runs), and publish the
+  # declaration so `config_list` shows it. Both are best effort — the `config`
+  # component is optional, and a harness without it uses env defaults.
+  # This is BOOT work, not idle work: it must not ride approval.onIdle above,
+  # where a request/reply would stall every core call for the timeout.
+  loadCoreSettings(ct)
+  try:
+    discard dispatchSubjectCall(ct, "svc.config.call", "config_declare",
+                                %*{"declaration": coreConfigDeclaration}, 1_000)
+  except CatchableError:
+    discard
   coreLog("core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)")
 
   if isatty(stdin) and not autostart:

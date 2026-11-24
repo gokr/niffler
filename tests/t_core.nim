@@ -500,6 +500,41 @@ proc main() =
   check("a pre-marker header with a real cwd stays immutable",
         legacyPin{"error"}.getStr("").contains("immutable"), $legacyPin)
 
+  # A CHOSEN workspace whose directory is DELETED under the conversation (the
+  # reported shape: a merged branch's worktree removed while the conversation
+  # kept going). Immutability must not turn into a dead end — the stored path
+  # cannot be entered, so the only way back is the control call that would
+  # normally be refused. The conversation falls back to the harness root as an
+  # UNCHOSEN workspace, so the human can pick a live directory again.
+  createDir(root / "doomed-ws")
+  discard call(nc, "core", "session",
+               %*{"sessionId": "ws-dead", "cwd": root / "doomed-ws"}, 10_000)
+  discard call(nc, "store", "put", %*{
+    "kind": "message", "id": "ws-dead:000001",
+    "value": %*{"role": "user", "content": "x"}}, 10_000)
+  removeDir(root / "doomed-ws")
+  let deadInfo = call(nc, "core", "session_info",
+                      %*{"sessionId": "ws-dead"}, 10_000)
+  check("session_info reports a vanished workspace as missing",
+        deadInfo{"workspace"}{"missing"}.getBool(false) and
+        not dirExists(deadInfo{"workspace"}{"root"}.getStr("")), $deadInfo)
+  let deadStatus = call(nc, "core", "session",
+                        %*{"sessionId": "ws-dead"}, 10_000)
+  check("a dead workspace falls back to the harness root",
+        deadStatus{"error"} == nil and
+        deadStatus{"cwd"}.getStr("") == root, $deadStatus)
+  let deadPin = call(nc, "core", "session",
+                     %*{"sessionId": "ws-dead", "cwd": "ws"}, 10_000)
+  check("a dead workspace is repinnable despite turns",
+        deadPin{"error"} == nil and deadPin{"cwd"}.getStr("") == root / "ws",
+        $deadPin)
+  # The typo rule is untouched: an explicit path that does not exist is still
+  # refused (a corpse is recoverable, a misspelling is not a workspace).
+  let deadTypo = call(nc, "core", "session",
+                      %*{"sessionId": "ws-dead", "cwd": "nope"}, 10_000)
+  check("a nonexistent explicit workspace is still refused",
+        deadTypo{"error"}.getStr("").contains("not a directory"), $deadTypo)
+
   # seed messages directly (persistMsg shape) and recount by role
   var seedOk = true
   var seqNo = 0
@@ -641,6 +676,57 @@ proc main() =
         toolMsg{"value"}{"name"}.getStr("") == "session_info" and
         toolMsg{"value"}{"content"}.getStr("").contains("\"sessionId\":\"si-live\""),
         $toolMsg)
+
+  # The end-to-end shape of the same recovery: a conversation that has already
+  # run turns in a worktree the human then removed must still be able to run a
+  # turn, and that turn must run in the tree it fell back to.
+  createDir(root / "ws-lost")
+  let lostNew = call(nc, "core", "session",
+                     %*{"sessionId": "ws-lost", "cwd": "ws-lost"}, 120_000)
+  check("ws-lost session created",
+        lostNew{"error"} == nil and lostNew{"cwd"}.getStr("") == root / "ws-lost",
+        $lostNew)
+  # The client shape that produced the report: niffler-tui keeps sending its
+  # LAUNCH directory as `cwd` on a fresh turn. Echoing a path core already knows
+  # is gone is not a typo — it must not re-create the dead end.
+  removeDir(root / "ws-lost")
+  let echoTurn = call(nc, "core", "session",
+                      %*{"sessionId": "ws-lost", "content": "go",
+                         "cwd": root / "ws-lost"}, 120_000)
+  check("a client echoing its dead launch directory still gets a turn",
+        echoTurn{"reply"}.getStr("") == "ws-lost-done", $echoTurn)
+  createDir(root / "ws-lost")
+  let lostBefore = call(nc, "core", "session",
+                        %*{"sessionId": "ws-lost", "content": "go"}, 120_000)
+  check("ws-lost first turn ran in its own workspace",
+        lostBefore{"reply"}.getStr("") == "ws-lost-done", $lostBefore)
+  removeDir(root / "ws-lost")
+  # The status readback is what settles the loss here (it runs no turn), so the
+  # notice must survive that: it is parked in the header and lands on whatever
+  # turn comes next, exactly once.
+  let lostStatus = call(nc, "core", "session",
+                        %*{"sessionId": "ws-lost"}, 10_000)
+  check("a control call settles the loss too",
+        lostStatus{"error"} == nil and lostStatus{"cwd"}.getStr("") == root,
+        $lostStatus)
+  let lostTurn = call(nc, "core", "session",
+                      %*{"sessionId": "ws-lost", "content": "go"}, 120_000)
+  check("a turn still runs after its workspace was deleted",
+        lostTurn{"reply"}.getStr("") == "ws-lost-done", $lostTurn)
+  let lostNotice = call(nc, "store", "list", %*{
+    "kind": "message", "idPrefix": "ws-lost:", "limit": 1000}, 10_000)
+  var sawNotice = false
+  var bashRanAtRoot = false
+  for item in lostNotice{"items"}:
+    let value = item{"value"}
+    if value{"notice"}{"kind"}.getStr("") == "workspace-lost":
+      sawNotice = value{"notice"}{"lost"}.getStr("") == root / "ws-lost"
+    if value{"name"}.getStr("") == "bash" and
+        value{"content"}.getStr("").strip().endsWith(root):
+      bashRanAtRoot = true
+  check("the relocation is appended to the transcript", sawNotice, $lostNotice)
+  check("the recovered turn runs in the fallback workspace", bashRanAtRoot,
+        $lostNotice)
 
   # workspace injection: in a workspace-pinned conversation the runner
   # rewrites tool args at dispatch — bash receives cwd = the workspace and

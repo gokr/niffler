@@ -312,6 +312,153 @@ proc storeGetItem*(ct: CoreTools, kind, id: string,
   if r{"code"}.getStr("") != "not-found":
     raise newException(IOError, r{"error"}.getStr("store get failed"))
 
+# --- core's own configuration domain --------------------------------------
+# Core is a bus citizen (svc.core.call) and `config` routes an owner request to
+# `svc.<owner>.call`, so core can own a declared domain exactly like a
+# component: `owner: "core"`, `ownerTool: "core_config"`.
+#
+# This closes the gap that kept a handful of core-enforced knobs env-only.
+# CONFIG-CONTRACT.md's rule is that an env var a component ENFORCES is a
+# setting; core was the exception only because nobody had wired an owner tool,
+# not for any architectural reason.
+#
+# Values live in their own store document (kind `core-settings`, id `main`) —
+# config never writes it, core does — and readers fall back to the historical
+# env spelling so an existing deployment is unchanged. The cache is
+# process-scoped and loaded once at boot: core passes CoreTools BY VALUE
+# through dispatch, so a field would be copied away (same reason
+# deniedApprovals above is module-level).
+
+const coreSettingsKind* = "core-settings"
+const coreSettingsId* = "main"
+
+var coreSettingsCache: JsonNode = nil
+var coreSettingsRev = 0
+
+proc loadCoreSettings*(ct: CoreTools) =
+  ## Read the persisted values once, at boot. Best effort: an absent store or
+  ## an unreachable one leaves the env fallbacks in force, which is exactly how
+  ## a component behaves when its owner record is missing.
+  try:
+    let (value, rev) = ct.storeGetItem(coreSettingsKind, coreSettingsId)
+    coreSettingsCache = if value == nil or value.kind != JObject: newJObject()
+                        else: value.copy()
+    coreSettingsRev = rev
+  except CatchableError:
+    coreSettingsCache = nil     # unknown: keep asking env
+
+proc coreSettingInt*(name, envName: string, dflt: int): int =
+  ## One integer setting. The stored value wins; the env spelling is the
+  ## migration fallback; the default is last. A value that is present but
+  ## unparseable falls through rather than inventing zero.
+  if coreSettingsCache != nil and coreSettingsCache{name} != nil and
+      coreSettingsCache{name}.kind == JInt:
+    return coreSettingsCache{name}.getInt(dflt)
+  let raw = getEnv(envName, "").strip()
+  if raw.len > 0:
+    try: return parseInt(raw)
+    except ValueError: discard
+  dflt
+
+proc coreSettingBool*(name, envName: string, dflt: bool): bool =
+  if coreSettingsCache != nil and coreSettingsCache{name} != nil and
+      coreSettingsCache{name}.kind == JBool:
+    return coreSettingsCache{name}.getBool(dflt)
+  let raw = getEnv(envName, "").strip().toLowerAscii()
+  if raw in ["1", "true", "yes", "on"]: return true
+  if raw in ["0", "false", "no", "off"]: return false
+  dflt
+
+let coreConfigDeclaration* = %*{
+  "domain": "core", "version": 1, "owner": "core", "ownerTool": "core_config",
+  "title": "Core turn and context limits",
+  "description": "Knobs core itself enforces: how much of the context window " &
+    "images may occupy, how many times an empty completion is re-asked, and " &
+    "whether re-obtainable tool results may be elided. Values take effect on " &
+    "the next turn; no restart needed.",
+  "kind": coreSettingsKind, "id": coreSettingsId,
+  "scope": "instance", "application": "next turn",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "attachBudget": {"type": "integer", "minimum": 1000, "default": 5000000,
+        "x-config": {
+          "title": "Image budget per request (estimated tokens)",
+          "description": "Ceiling on image parts in one provider request. Newest images win; older ones become a text marker naming the file. Raise it to carry more concurrent screenshots, lower it to protect the window"}},
+      "emptyReplyRetries": {"type": "integer", "minimum": 0, "maximum": 10,
+        "default": 2, "x-config": {
+          "title": "Re-asks after an empty completion",
+          "description": "An empty completion (no content, no tool calls) is not an answer; it is re-asked this many times before the turn fails. 0 fails immediately"}},
+      "stubDerivable": {"type": "boolean", "default": true, "x-config": {
+        "title": "Elide re-obtainable tool results",
+        "description": "Allow the context manager to stub tool results whose producing tool declares them re-obtainable (x-harness.derivable). Tier 1 (results a later write superseded) is unaffected"}}},
+    "additionalProperties": false}}
+
+proc coreConfigOp*(ct: CoreTools, args: JsonNode): JsonNode =
+  ## The owner protocol `config` calls: get / patch / reset, compare-and-set on
+  ## the store revision so a stale edit is a visible conflict rather than a
+  ## lost decision. Core is the ONLY writer of this document.
+  let op = args{"op"}.getStr("")
+  case op
+  of "get":
+    var values = newJObject()
+    if coreSettingsCache != nil:
+      for key in ["attachBudget", "emptyReplyRetries", "stubDerivable"]:
+        if coreSettingsCache{key} != nil: values[key] = coreSettingsCache[key]
+    return %*{"ok": true, "values": values, "rev": coreSettingsRev}
+  of "patch":
+    let patch = args{"patch"}
+    if patch == nil or patch.kind != JObject:
+      return %*{"ok": false, "error": "patch must be an object"}
+    for key in patch.keys:
+      if key notin ["attachBudget", "emptyReplyRetries", "stubDerivable"]:
+        return %*{"ok": false, "error": "unknown core setting " & key}
+    var next = if coreSettingsCache == nil: newJObject() else: coreSettingsCache.copy()
+    for key, v in patch:
+      case key
+      of "attachBudget", "emptyReplyRetries":
+        if v.kind != JInt: return %*{"ok": false, "error": key & " must be an integer"}
+        if key == "attachBudget" and v.getInt(0) < 1000:
+          return %*{"ok": false, "error": "attachBudget must be at least 1000"}
+        if key == "emptyReplyRetries" and
+            (v.getInt(0) < 0 or v.getInt(0) > 10):
+          return %*{"ok": false, "error": "emptyReplyRetries must be 0..10"}
+      of "stubDerivable":
+        if v.kind != JBool: return %*{"ok": false, "error": key & " must be a boolean"}
+      else: discard
+      next[key] = v
+    # A caller-supplied expectRev is authoritative: it is the human's/UI's view
+    # of the revision, and honouring our own cached one instead would turn a
+    # stale edit into a silent overwrite — the lost-update shape the revision
+    # exists to prevent.
+    var expectRev = if coreSettingsRev == 0 and coreSettingsCache == nil: -1
+                    else: coreSettingsRev
+    if args{"expectRev"} != nil and args{"expectRev"}.kind == JInt:
+      expectRev = args{"expectRev"}.getInt(expectRev)
+    let r = dispatchSubjectCall(ct, "svc.store.call", "put",
+      %*{"kind": coreSettingsKind, "id": coreSettingsId, "value": next,
+         "expectRev": expectRev}, 8000)
+    if not r{"ok"}.getBool(false):
+      if r{"code"}.getStr("") == "rev-conflict":
+        return %*{"ok": false, "code": "rev-conflict",
+                  "error": "core settings changed since rev " & $coreSettingsRev &
+                           "; reload and re-apply"}
+      return %*{"ok": false, "error": r{"error"}.getStr("store put failed")}
+    coreSettingsCache = next
+    coreSettingsRev = r{"rev"}.getInt(coreSettingsRev + 1)
+    return %*{"ok": true, "values": next, "rev": coreSettingsRev}
+  of "reset":
+    let r = dispatchSubjectCall(ct, "svc.store.call", "put",
+      %*{"kind": coreSettingsKind, "id": coreSettingsId, "value": newJObject(),
+         "expectRev": coreSettingsRev}, 8000)
+    if not r{"ok"}.getBool(false):
+      return %*{"ok": false, "error": r{"error"}.getStr("store put failed")}
+    coreSettingsCache = newJObject()
+    coreSettingsRev = r{"rev"}.getInt(coreSettingsRev + 1)
+    return %*{"ok": true, "values": newJObject(), "rev": coreSettingsRev}
+  else:
+    return %*{"ok": false, "error": "core_config op must be get, patch or reset"}
+
 type StoreRevisionConflictError* = object of IOError
   ## The store refused a conditional write; distinguish it from an outage.
 
@@ -653,6 +800,10 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     if not ct.approval.ask(tool, args):
       return %*{"error": "approval denied for " & tool}
   case tool
+  of "core_config":
+    ## Core's own declared configuration domain (see coreConfigOp). Hidden
+    ## infrastructure: `config` is its only caller.
+    return coreConfigOp(ct, args)
   of "activity_list":
     ## Latest durable completion per conversation, not a time-ordered log.
     let limit = args{"limit"}.getInt(100)
@@ -1285,6 +1436,15 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         for r in claimRootsFor(wsPath, iso, grants): writable.add(%r)
         ws["writable"] = writable
         info["workspace"] = ws
+      elif wsPath.len > 0:
+        # The stored workspace directory is GONE (a removed or closed worktree,
+        # a deleted tree). Report that plainly instead of falling through to the
+        # harness-root default, which would read as if the conversation were
+        # happily working at the root. The next session call settles the
+        # fallback (recordLostWorkspace); until then this is the only honest
+        # answer, and a client can show the human what happened.
+        info["workspace"] = %*{"root": wsPath, "missing": true,
+                               "fallback": ct.root}
       # children are counted from the CHILDREN's records, not the caller's
       # own (a root parent has no sessionmeta of its own but still has
       # children) — a count, not the roster (agent_list is the roster tool)
@@ -3013,7 +3173,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
               "session_info", "activity_list", "prompt_preview", "context_status",
               "doctor", "ui", "admission_get", "sandbox_inherit",
-              "conversation_delete", "toolset", "profile"] and
+              "conversation_delete", "toolset", "profile", "core_config"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:

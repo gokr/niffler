@@ -334,6 +334,27 @@ proc main() =
   check("client tool control cannot invoke hidden tools",
     ($hiddenControl).contains("not available"), $hiddenControl)
 
+  # --- the worktree is REMOVED under the conversation ---------------------
+  # The reported dead end (and the dangerous half of it): the tree the fence
+  # confines writes to no longer exists, and the header still claims both the
+  # path and `isolation: worktree`. Core must settle BOTH, or the conversation
+  # is stuck in a workspace it cannot enter under a policy it cannot satisfy.
+  doAssert execShellCmd("git -C " & quoteShell(repo) & " worktree remove --force " &
+    quoteShell(wt)) == 0
+  let afterLoss = sessionCall(p, isid, %*{})
+  check("a removed worktree falls back to the harness root",
+        afterLoss{"error"} == nil and
+        afterLoss{"cwd"}.getStr("") == p.sandbox.root,
+        "got=" & afterLoss{"cwd"}.getStr("") & " want=" & p.sandbox.root &
+        " full=" & $afterLoss)
+  check("the fallback is recorded as unchosen, so it stays repinnable",
+        not afterLoss{"cwdPinned"}.getBool(true), $afterLoss)
+  check("worktree isolation is cleared with the worktree it confined writes to",
+        afterLoss{"isolation"}.getStr("") == "shared", $afterLoss)
+  let repinned = sessionCall(p, isid, %*{"cwd": ws})
+  check("a conversation that lost its worktree can be repinned",
+        repinned{"error"} == nil and repinned{"cwd"}.getStr("") == ws, $repinned)
+
   report("ROOTS TEST")
 
 main()

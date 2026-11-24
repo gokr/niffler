@@ -557,6 +557,18 @@ comp.tool(%*{"hidden": true}):
         # inject its own id (t_core asserts the tool result carries it)
         return toolCall("t1", "session_info", %*{})
       return %*{"content": "introspect-done"}
+    if sessionId == "ws-lost":
+      # A workspace whose directory was deleted under the conversation: the
+      # runner must still be able to run turns there, and the model must read the
+      # relocation notice rather than infer it from a failing tool. One bash
+      # round BEFORE the directory is removed (stage 0), then the done reply, then
+      # another bash round AFTER it in the next turn (stage 2) — the stage index
+      # is cumulative across the conversation's turns, not per turn.
+      case stage
+      of 0: return toolCall("t1", "bash", %*{"command": "pwd"})
+      of 1: return %*{"content": "ws-lost-done"}
+      of 2: return toolCall("t3", "bash", %*{"command": "pwd"})
+      else: return %*{"content": "ws-lost-done"}
     if sessionId == "ws-test":
       if stage == 0:
         # workspace injection: bash gets cwd=<conversation workspace>
