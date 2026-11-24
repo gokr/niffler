@@ -275,6 +275,10 @@
           </div>
         </div>
       </div>
+      <div class="note-row" style="margin-top:18px">
+        <span class="mono dimc">component dies mid-call → <b>[component-exited]</b> in ~2 s · conversation intact · retry once it re-registers</span>
+        <span class="mono dimc">spawned nats-server dies → respawned on the same port · children re-attach</span>
+      </div>
     </section>
 
     <!-- ============ s9 — SDKs ============ -->
