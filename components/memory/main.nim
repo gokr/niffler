@@ -36,7 +36,7 @@
 ## may not write — a child's half-finished inference is the least trustworthy
 ## thing in the system.
 
-import std/[algorithm, json, math, os, sets, strutils, tables, times]
+import std/[algorithm, json, math, os, sets, strutils, times]
 import niffler/sdk
 import niffler/configowner
 import subjects
@@ -335,7 +335,7 @@ let comp = newComponent("memory", "0.1.0")
 # env var a component enforces is a setting; the env spelling stays only as the
 # migration fallback).
 let memoryDecl = declaration(
-  "memory", "memory", "memory_scopes", "Long-term memory",
+  "memory", "memory", "memory_config", "Long-term memory",
   "Whether recalled facts are appended to a conversation automatically, and " &
   "how much of them. Off keeps every tool working and makes recall explicit " &
   "(memory_recall).",
@@ -357,7 +357,22 @@ let memoryDecl = declaration(
            "description": "Hard ceiling on one recall block"}}},
      "additionalProperties": false})
 
-var settings = newOwnerSnapshot(OwnerStore(kind: "memory-settings", id: "main"))
+let ownerStore = OwnerStore(kind: "memory-settings", id: "main")
+var settings = newOwnerSnapshot(ownerStore)
+var settingsLoaded = false
+
+proc ensureSettings(c: Component) =
+  ## Load persisted settings on first use, never from the idle pump.
+  if not settingsLoaded:
+    settings.refresh(c)
+    settingsLoaded = true
+
+discard comp.tool("memory_config", ownerToolSchema("memory",
+    "Owner-side memory settings protocol; called by config."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    result = c.ownerOp(ownerStore, args)
+    settings.refresh(c)
+    settingsLoaded = true)
 
 proc autoRecall(): string =
   let mode = settings.str("autoRecall", "NIF_MEMORY_AUTO_RECALL", "both")
@@ -648,6 +663,7 @@ proc doRemember(c: Component, args: JsonNode): JsonNode =
             "written. Retry, or use a more specific subject.", "rev-conflict")
 
 proc doSearch(c: Component, args: JsonNode): JsonNode =
+  c.ensureSettings()
   let query = args{"query"}.getStr("").strip()
   let qTokens = tokens(query)
   if qTokens.len == 0:
@@ -765,6 +781,7 @@ proc buildRecallBlock(c: Component, args: JsonNode): JsonNode =
   ## §4). Formatting is deliberate: each line names its subject and scope, so a
   ## reader can judge where a fact came from and audit it — the visibility rule
   ## that makes an automatically-inserted fact honest.
+  c.ensureSettings()
   let limit = max(1, min(50, args{"limit"}.getInt(recallFacts())))
   let budget = recallChars()
   let query = args{"query"}.getStr("").strip()
@@ -819,6 +836,7 @@ proc buildRecallBlock(c: Component, args: JsonNode): JsonNode =
               "mode": autoRecall()})
 
 proc doScopes(c: Component, args: JsonNode): JsonNode =
+  c.ensureSettings()
   let workspace = args{"workspace"}.getStr("")
   let conversation = args{"__session"}{"session"}.getStr("")
   var resolvedScopes = newJArray()
@@ -984,12 +1002,14 @@ proc publishRecall(c: Component, workspace, conversation, why: string) =
 
 discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
                                            payload: JsonNode):
+  c.ensureSettings()
   if autoRecall() notin ["birth", "both"]: return
   publishRecall(c, payload{"workspace"}.getStr(""),
                 payload{"conversationId"}.getStr(""), "birth")
 
 discard comp.on("ev.session.>") do (c: Component, subject: string,
                                     payload: JsonNode):
+  c.ensureSettings()
   if autoRecall() notin ["compaction", "both"]: return
   # Only a prefix rebuild that REMOVED history justifies a second block;
   # "reset:tools" (a sticky invoke grew the direct set) did not lose anything,

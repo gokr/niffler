@@ -83,7 +83,7 @@ proc main() =
     fail("missing fixture " & script)
     report("MEMORY EMBED CHAIN TEST")
 
-  let sandbox = newCoreSandbox("memoryembed", ["store", "memory", "llm", "provider"])
+  let sandbox = newCoreSandbox("memoryembed", ["store", "memory", "llm", "provider", "config"])
   let keep = getEnv("NIF_KEEP_SANDBOX", "").len > 0
   if keep: echo "sandbox kept at ", sandbox.root
   defer:
@@ -105,8 +105,7 @@ proc main() =
 
   let core = startComponent(sandbox.sandboxBin("niffler"), url,
     root = sandbox.root,
-    extra = [("NIF_AUTO_APPROVE", "1"), ("NIF_LLM_EMBED_TIMEOUT_MS", "20000"),
-             ("NIF_MEMORY_EMBED_PROVIDER", "localembed")],
+    extra = [("NIF_AUTO_APPROVE", "1"), ("NIF_LLM_EMBED_TIMEOUT_MS", "20000")],
     logFile = sandbox.root / "var" / "test-logs" / "core.log")
   defer: stopProcess(core)
   var ready = false
@@ -265,6 +264,27 @@ proc main() =
                               queryVec.mapIt(it.getFloat(0.0)))
   check("a vector's distance to itself is 0 (the metric is sane)",
         matchDist < 1.0e-9, $matchDist)
+
+  # The owner publishes its declaration on an idle tick after registration.
+  var declarationReady = false
+  for _ in 0 ..< 100:
+    let declaration = call(nc, "store", "get", %*{
+      "kind": "configdecl", "id": "memory"}, 3_000)
+    if declaration{"value"}{"ownerTool"}.getStr("") == "memory_config":
+      declarationReady = true
+      break
+    sleep(100)
+  check("memory declares its real settings owner", declarationReady,
+    "memory declaration was not published")
+
+  # Configure through the real settings surface, not an env-only shortcut.
+  let configured = call(nc, "config", "config_patch", %*{
+    "domain": "memory", "patch": {"embedProvider": "localembed"}}, 30_000)
+  check("config patch persists memory's embedding provider",
+    configured{"values"}{"embedProvider"}.getStr("") == "localembed", $configured)
+  let configRead = call(nc, "config", "config_get", %*{"domain": "memory"}, 15_000)
+  check("memory settings are readable through config",
+    configRead{"values"}{"embedProvider"}.getStr("") == "localembed", $configRead)
 
   # Exercise memory itself, not just the underlying embed/store primitives.
   let workspace = sandbox.root / "facts"
