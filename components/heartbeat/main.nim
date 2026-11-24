@@ -31,8 +31,9 @@
 ## Nothing is persisted when a heartbeat is not admitted: the record keeps its
 ## `nextAt` and the tick tries again after its retry interval.
 
-import std/[json, os, sets, strutils, times]
+import std/[json, sets, strutils, times]
 import niffler/sdk
+import niffler/configowner
 import subjects   # sanitizeSessionId: the steer/turn lanes are per conversation
 
 let comp = newComponent("heartbeat", "0.1.0")
@@ -43,26 +44,58 @@ const
   minIntervalSecs = 10.0       ## refuse a record that would spin
   maxPromptBytes = 8_192
 
+# The three knobs below change behaviour a user notices (does the harness wake
+# itself, how often, how much), so they are a declared domain rather than
+# env-only — CONFIG-CONTRACT.md: an env var a component enforces is a setting.
+# The env spellings survive only as the migration fallback for a harness whose
+# store has no explicit value yet, which is why every reader below still passes
+# one. A stock harness with no `config` component keeps working from env alone.
+let heartbeatDecl = declaration(
+  "heartbeat", "heartbeat", "heartbeat_config", "Scheduled turns",
+  "Whether this harness runs scheduled turns for conversations nobody is " &
+  "driving, how often it looks for one that is due, and how many it will " &
+  "admit per record per day. Disabling keeps every record intact, so this is " &
+  "a pause rather than a delete.",
+  "heartbeat-settings", appImmediate,
+  %*{"type": "object", "properties": {
+       "enabled": {"type": "boolean", "default": true, "x-config": {
+         "title": "Run scheduled turns",
+         "description": "Off stops the ticking loop and makes core decline every heartbeat before it runs; records are kept"}},
+       "tickMs": {"type": "integer", "minimum": 100, "default": defaultTickMs,
+         "x-config": {
+           "title": "Poll interval (ms)",
+           "description": "How often the component checks for a due record; a heartbeat's own granularity is its interval, so this only decides how late one may start"}},
+       "maxPerDay": {"type": "integer", "minimum": 0, "maximum": 96,
+         "default": 4, "x-config": {
+           "title": "Turns per record per day",
+           "description": "Admitted heartbeat turns per record per rolling day; 0 disables heartbeats while leaving the records in place"}}},
+     "additionalProperties": false})
+
+let ownerStore = OwnerStore(kind: "heartbeat-settings", id: "main")
+var settings = newOwnerSnapshot(ownerStore)
+var settingsLoaded = false
+
+proc ensureSettings(c: Component) =
+  ## Load persisted settings on first use, never from the idle pump.
+  if not settingsLoaded:
+    settings.refresh(c)
+    settingsLoaded = true
+
 proc tickMs(): int =
   ## The idle-seam period. A heartbeat's own granularity is its interval, so
   ## this only decides how late one may start; tests set it small.
-  try:
-    let v = parseInt(getEnv("NIF_HEARTBEAT_TICK_MS", $defaultTickMs))
-    if v >= 100: return v
-  except ValueError: discard
+  let v = settings.num("tickMs", "NIF_HEARTBEAT_TICK_MS", defaultTickMs)
+  if v >= 100: return v
   defaultTickMs
 
 proc tickingEnabled(): bool =
-  ## NIF_HEARTBEAT=0 turns the whole component dormant: records stay intact and
-  ## a restart re-enables it, which is what makes this a pause and not a
-  ## delete.
-  getEnv("NIF_HEARTBEAT", "1") != "0"
+  ## Off turns the whole component dormant: records stay intact and a restart
+  ## re-enables it, which is what makes this a pause and not a delete.
+  settings.flag("enabled", "NIF_HEARTBEAT", true)
 
 proc maxPerDay(): int =
-  try:
-    let v = parseInt(getEnv("NIF_HEARTBEAT_MAX_PER_DAY", "4"))
-    if v >= 0: return v
-  except ValueError: discard
+  let v = settings.num("maxPerDay", "NIF_HEARTBEAT_MAX_PER_DAY", 4)
+  if v >= 0: return v
   4
 
 proc intervalOf(doc: JsonNode): float =
@@ -329,9 +362,35 @@ discard comp.tap("ev.session.*.turn",
     else: discard)
 
 let tickInterval = tickMs()
+
+# ONE idle handler for this component. AGENTS.md is explicit: a second `onIdle`
+# REPLACES the first, silently — an earlier draft registered the declaration
+# publish on its own seam and killed the ticking loop, with the failure
+# surfacing only as a downstream test timing out. Both jobs are folded here.
+var declared = false
 discard comp.onIdle(tickInterval) do (c: Component):
+  # Re-publish the declaration until it lands: `config` is optional and may
+  # start after this component. Best effort with a SHORT timeout (the seam runs
+  # on the pump thread — a long wait there stalls every message we owe).
+  if not declared:
+    declared = c.declareConfig(heartbeatDecl)
   if not tickingEnabled(): return
   tick(c)
 
-echo "heartbeat: ticking every " & $tickInterval & "ms (NIF_HEARTBEAT=0 pauses)"
+# The owner tool. Settings load lazily (never from the idle pump: a store read
+# there would stall every message the component owes), and follow
+# ev.config.updated so a config_patch needs no restart.
+ensureSettings(comp)
+
+comp.watchConfig(settings, "heartbeat")
+
+discard comp.tool("heartbeat_config", ownerToolSchema("heartbeat",
+    "Owner-side heartbeat settings protocol; called by config."),
+  proc(c: Component, args: JsonNode): JsonNode =
+    result = c.ownerOp(ownerStore, args)
+    settings.refresh(c)
+    settingsLoaded = true)
+
+echo "heartbeat: ticking every " & $tickInterval & "ms (settings domain " &
+     "heartbeat: enabled/tickMs/maxPerDay; NIF_HEARTBEAT=0 still pauses)"
 comp.run()
