@@ -92,6 +92,20 @@ proc(c: Component, args: JsonNode): JsonNode =
          "function": {"name": "bash", "arguments":
            """{"command":"echo SID=[$NIF_SESSION_ID] MODEL=[$NIF_MODEL] PROVIDER=[$NIF_PROVIDER]"}"""}}]}
     return %*{"content": "provenance-done", "model": "mock-model"}
+  if scenario == "stuck" or scenario == "stuck-progress":
+    # Issue #135. "stuck" repeats one call whose RESULT never changes; the turn
+    # must end `stuck` after one steer. "stuck-progress" repeats the SAME call
+    # but the result changes every time (a counter file), which is a legitimate
+    # poll and must NOT be failed — the detector compares result digests.
+    let round = workingRounds[sid]
+    if round > 40:
+      return %*{"content": "gave up", "model": "mock-model"}
+    let args =
+      if scenario == "stuck": """{"command":"echo same"}"""
+      else: """{"command":"n=$(cat n.txt 2>/dev/null || echo 0); echo $((n+1)) > n.txt; cat n.txt"}"""
+    return %*{"content": "", "model": "mock-model", "tool_calls": [
+      {"id": "s" & $round, "type": "function",
+       "function": {"name": "bash", "arguments": args}}]}
   if scenario == "component-death":
     # Issue #116: ask for a tool on a component the test kills mid-call, then
     # close the turn with a report so the transcript is complete.
