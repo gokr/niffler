@@ -15,8 +15,12 @@
 import std/[algorithm, json, math, monotimes, os, sequtils, sets, strutils,
     tables, times, unicode]
 import checksums/sha2
+{.push warning[Deprecated]: off.}
+import std/sha1   # same identity hash catalog.schemaFingerprint uses
+{.pop.}
 import natsnim
 import ../sdk/envelope
+import ../sdk/niffler/canonicaljson
 import ../sdk/checkout
 import ../sdk/niffler/jsonx
 import ../sdk/niffler/agentdefs
@@ -340,7 +344,7 @@ type
     ## that conversation's own accounting.
     turnId*: string
     outcome*: string       ## success | cancelled | budget-exhausted |
-                           ## limit-exhausted | error | aborted
+                           ## limit-exhausted | stuck | error | aborted
     startedAt*: float
     durationMs*: int
     rounds*: int           ## provider responses that returned successfully
@@ -2880,7 +2884,7 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
                     sessionId, turnId: string,
                     it: ToolCallItem, oc: ToolCallOutcome,
                     toolStartedAt: float, toolDurationMs: int,
-                    vision = true) =
+                    vision = true, progress: ProgressWatch = nil) =
   ## Shared post-processing for one executed tool call (serial or from a
   ## parallel wave): catalog pump, discovery recording, transcript append,
   ## persistence (with lifecycle telemetry), and the "done" toolcall event.
@@ -2990,6 +2994,17 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
                              "error": oc.error,
                              "durationMs": toolDurationMs,
                              "at": epochTime()})
+  # Feed the no-progress detector (issue #135). The digest covers the RESULT as
+  # well as the call, so a poll whose answer changes is progress; a death
+  # contributes "" and breaks the run instead of counting as a repeat.
+  if progress != nil:
+    var digest = ""
+    # canonicalJson before hashing: two results that differ only in key order
+    # are the SAME answer, and std/json preserves insertion order.
+    if oc.ok: digest = $secureHash(canonicalJson(oc.value))
+    elif oc.value != nil and oc.value{"__partial"}.getBool(false):
+      digest = $secureHash(canonicalJson(oc.value))
+    progress.noteProgress(it.name, it.args, digest)
 
 proc sourceName(source: NodeSource): string =
   case source
@@ -3863,6 +3878,9 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                  %*{"limit": detail})
     finishTurn("limit-exhausted", err = msg)
 
+  # No-progress detection for this turn (issue #135). One watch per turn, so a
+  # repeat in a PREVIOUS turn never counts here.
+  var progress = newProgressWatch()
   while rounds < max(effMaxRounds, 1):
     rounds += 1
     # A cancel (agent_stop) ends the turn before the next LLM round: the
@@ -3874,6 +3892,38 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       turnError = msg
       finishTurn("cancelled", err = msg)
       return ""
+    # No-progress detection (issue #135). Checked at the round boundary, before
+    # another LLM request is paid for: the fingerprint ring has already seen the
+    # call AND its result, so this fires only when the same call keeps producing
+    # the same answer. One steer is spent naming the repeat; if the trajectory
+    # has not changed after the same threshold again, the turn ends `stuck`
+    # rather than reporting a spend cap that misattributes the cause.
+    if progress != nil and progress.limit > 0 and progress.run >= progress.limit:
+      let repeats = progress.run
+      let tool = if progress.last.len > 0:
+                   progress.last.split('|')[0] else: "a tool"
+      if not progress.steered:
+        progress.steered = true
+        progress.run = 0
+        if ct.steerStream != nil:
+          ct.steerStream.queue.add(
+            "You have called `" & tool & "` " & $repeats &
+            " times with identical arguments and the identical result. That is " &
+            "not making progress. Change approach: use a different tool, " &
+            "different arguments, or explain what is blocking you and stop.")
+          echo "core: stuck detection — steered the turn away from a " &
+            "repeating `" & tool & "` call (" & $repeats & "x)"
+      else:
+        let msg = "turn made no progress: `" & tool & "` was called " &
+          $repeats & " times with identical arguments and identical results " &
+          "— the trajectory was steered once and did not change"
+        if onEvent != nil:
+          onEvent("status", %*{"sessionId": sessionId, "turnId": turnId,
+                   "stuck": true, "reason": msg, "tool": tool,
+                   "repeats": repeats})
+        turnError = msg
+        finishTurn("stuck", err = msg)
+        return ""
     # Per-turn token budget (subagent jobs): once the cumulative usage of
     # the completed rounds reaches the cap, no further LLM round starts —
     # the turn ends as budget-exhausted instead of spending more tokens.
@@ -4644,7 +4694,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                           parseFailed: false, rawArgs: ""),
                          (if k < outcomes.len: outcomes[k]
                           else: ToolCallOutcome(error: "no outcome")),
-                         waveStartedAt, waveDurationMs, turnVision)
+                         waveStartedAt, waveDurationMs, turnVision,
+                         progress)
         continue
       let it = items[idx]
       inc idx
@@ -4723,7 +4774,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           oc = ToolCallOutcome(error: e.msg)
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
       commitToolItem(ct, p, messages, exposure, onEvent, sessionId, turnId,
-                     it, oc, toolStartedAt, toolDurationMs, turnVision)
+                     it, oc, toolStartedAt, toolDurationMs, turnVision,
+                     progress)
 
   # The only way out of the round loop without a return is the round budget:
   # end the turn loudly. A silent empty reply here reads exactly like a hang

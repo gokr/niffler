@@ -90,8 +90,14 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   restart; `onReattached` is the hook for components that defer their own
   announce. Previously a TS component stayed alive and deaf, invisible to the
   catalog, until it was killed by hand.
-
-- **A foreign harness home no longer runs checkout code unasked.** Cloning a
+- **A looping turn now ends `stuck` instead of burning the round budget.**
+  Core tracks dispatch fingerprints — tool, canonicalized arguments and a
+  **digest of the result** — and when `NIF_STUCK_REPEATS` (default 4)
+  identical dispatches occur it steers once, then ends the turn `stuck`,
+  naming the call and the repeat count. The result digest is what makes it
+  safe: a poll whose answer changes, or a re-read of a changed file, is
+  progress however repetitive the call looks, and a dispatch that died is not
+  a repeat. `budget-exhausted` remains for genuine spend caps.- **A foreign harness home no longer runs checkout code unasked.** Cloning a
   repo and opening it with any UI used to autostart that manifest's components
   and restore its persisted spawn records before any tool call — the same
   execution `plugin_install` and `mcp_add` already gate. Boot now consults

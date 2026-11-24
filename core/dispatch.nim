@@ -1728,6 +1728,76 @@ const componentDeparturePollMs = 500
   ## acceptance target (~2 s to notice a reap) with a negligible cost: the
   ## probe is a `kill(pid, 0)` per replica, only while a call is in flight.
 
+type
+  ProgressWatch* = ref object
+    ## No-progress detection for one turn (issue #135).
+    ##
+    ## A model that keeps re-issuing the same call with the same arguments and
+    ## getting the same result is looping: it burns the whole round budget (1000
+    ## by default) and reports `budget-exhausted`, honest about spend and
+    ## dishonest about cause. A ring of fingerprints detects it so the turn can
+    ## end `stuck` instead.
+    ##
+    ## A fingerprint is (tool, canonicalized args, result digest). Tool+args
+    ## alone is NOT sufficient and would be dangerous: re-reading a file that
+    ## changed between calls, polling a build whose output differs, or two
+    ## agent children returning different replies are all identical at the call
+    ## level and completely healthy. Requiring the RESULT to repeat as well is
+    ## what makes this safe to act on — a call whose answer keeps changing is
+    ## progress, however repetitive the request looks.
+    prints*: seq[string]   ## ring of recent fingerprints, oldest first
+    run*: int              ## consecutive identical fingerprints, most recent
+    last*: string          ## the most recent fingerprint
+    steered*: bool         ## the single steer has been spent
+    limit*: int            ## identical-run threshold (NIF_STUCK_REPEATS)
+
+const stuckRingSize = 32
+  ## Fingerprints kept. Only the CURRENT consecutive run decides anything, so
+  ## this is a memory bound, not a threshold.
+
+proc stuckRepeats*(): int =
+  ## Identical-run threshold. 0 disables detection. Default 4: three repeats
+  ## of an identical call-and-result is still plausibly a retry, the fourth is
+  ## a loop. Configurable because a deliberate poll loop is a legitimate shape.
+  try:
+    result = max(parseInt(getEnv("NIF_STUCK_REPEATS", "4")), 0)
+  except CatchableError:
+    result = 4
+
+proc canonicalArgs*(args: JsonNode): string =
+  ## Stable text for an argument object. std/json preserves insertion order, so
+  ## two calls built the same way serialize identically. A differing key order
+  ## would only make detection MISS a loop (a false negative), never end
+  ## healthy work (a false positive) — the safe direction.
+  if args == nil: return ""
+  $args
+
+proc noteProgress*(watch: ProgressWatch, tool: string, args: JsonNode,
+                   resultDigest: string) =
+  ## Feed one completed dispatch into the detector.
+  ##
+  ## Deaths are deliberately NOT repetitions (issue #135 acceptance 5): a call
+  ## that died with `[component-exited]` or a transport failure means the turn
+  ## is being interrupted, not that it is going nowhere. `resultDigest` is ""
+  ## for those and the run resets.
+  if watch == nil or watch.limit <= 0: return
+  if resultDigest.len == 0:
+    watch.run = 0
+    watch.last = ""
+    return
+  let fp = tool & "|" & canonicalArgs(args) & "|" & resultDigest
+  if fp == watch.last:
+    inc watch.run
+  else:
+    watch.run = 1
+    watch.last = fp
+  watch.prints.add(fp)
+  if watch.prints.len > stuckRingSize:
+    watch.prints.delete(0)
+
+proc newProgressWatch*(): ProgressWatch =
+  ProgressWatch(prints: @[], run: 0, last: "", limit: stuckRepeats())
+
 proc livePids*(ct: CoreTools, comp: string): seq[int] =
   ## The pids of `comp` the kernel still reports alive, read from the CURRENT
   ## registration. Empty when the component is unknown or entirely gone.

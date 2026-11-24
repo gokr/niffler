@@ -883,9 +883,28 @@ accounting, so summing frames can never double count.
 - **`outcome`** is `success`, `cancelled` (a `__cancel` control),
   `budget-exhausted` (a hard job budget: rounds, tool calls, tokens),
   `limit-exhausted` (a human soft limit the human declined or never answered),
-  `error` (LLM failure, empty reply, context-recovery-required) or `aborted`
-  (the turn left through an unexpected path). `turnError` keeps its string
-  detail; `reply` is empty for everything but `success`.
+  `stuck` (no progress: the same call returned the same result repeatedly —
+  see "No-progress detection"), `error` (LLM failure, empty reply,
+  context-recovery-required) or `aborted` (the turn left through an unexpected
+  path). `turnError` keeps its string detail; `reply` is empty for everything
+  but `success`. `stuck` is deliberately NOT `budget-exhausted`: the spend cap
+  is honest about what a turn consumed and dishonest about why, and a client
+  that retries a budget ending is doing something different from steering a
+  loop.
+- **No-progress detection.** A turn tracks a bounded ring of dispatch
+  fingerprints — tool, canonicalized arguments, and a digest of the committed
+  result. When `NIF_STUCK_REPEATS` (default 4, `0` disables) consecutive
+  dispatches share one fingerprint, core injects **one** steer naming the
+  repeated call through the normal steer lane; if the trajectory has not
+  changed after the same threshold again, the turn ends `stuck` with a
+  `turnError` naming the tool, the repeat count and that no progress was
+  observed. The result digest is what makes this safe: re-reading a file that
+  changed, polling a build whose output differs, or two `agent_run` children
+  returning different replies are identical at the call level and are
+  progress, not loops. A dispatch that ended in a death (`component-exited`,
+  `session-runner-exited`) or a transport failure contributes no digest and
+  breaks the run, so being interrupted never counts as going nowhere. Usage of
+  the completed rounds is reported as for any partial turn.
 - **Partial turns are honest.** A cancelled or budget-ended turn still reports
   the usage of the rounds that completed, and `providerResponses` /
   `toolCalls` say how far it got. A failed (retried) request contributes

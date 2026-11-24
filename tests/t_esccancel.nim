@@ -62,7 +62,18 @@ proc main() =
   var core = startComponent(sandbox.sandboxBin("niffler"), url, root = root,
                             extra = [("NIF_AUTO_APPROVE", "1"),
                                      ("NIF_MOCK_ROUNDS", "3"),
-                                     ("NIF_MOCK_TOOLCMD", "sleep 4")],
+                                     # Each scripted round must produce
+                                     # DIFFERENT output, because this fixture
+                                     # models a long working turn. A literal
+                                     # identical call with an identical result
+                                     # repeated 4x is indistinguishable from a
+                                     # loop, and no-progress detection
+                                     # (issue #135) now ends such a turn
+                                     # `stuck` — correctly. Appending a line
+                                     # per round is what a real build does.
+                                     ("NIF_MOCK_TOOLCMD",
+                                      "sleep 4; echo round >> rounds.txt; " &
+                                      "wc -l < rounds.txt")],
                             logFile = root / "var" / "test-logs" / "core.log")
   defer:
     if core.running(): core.terminate()
