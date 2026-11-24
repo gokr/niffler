@@ -1,6 +1,14 @@
 # Memory milestone: policy and visible activity
 
-Implemented on the memory-validation branch; not yet merged or client-certified.
+Status: **implemented on the `fix-prs` tree (`d4f99c9` for semantic recall +
+visible activity, `5d56d0d` for the settings owner protocol) — not yet on `main`.**
+`d4f99c9` is merged; `5d56d0d` is not, so a `main` harness has memory's recall
+knobs only as env fallbacks and no `memory_config` owner tool until that commit
+lands. Re-check this banner against `main` after the merge. The harness side is
+implemented and covered by contracts; what is also still open is real-use
+validation, threshold calibration and the client release (the renderer lives in
+the separate `niffler-tui` checkout, which has passed build/test/vet but has had
+no interactive terminal smoke and is not released yet).
 
 ## Collection policy
 
@@ -15,12 +23,14 @@ separately from deterministic integration tests.
 ## Consultation policy
 
 Standing facts are bounded at birth and after compaction. The runner also makes
-one best-effort query-focused recall at task entry (three facts), without editing
-the frozen prefix. Existing recalled history prevents re-injection on ordinary
-resume. Explicit searches remain available for surprising failures or decisions;
-there is no automatic topic detector or every-tool-call lookup.
+one best-effort query-focused recall at task entry (three facts, keyed on the
+turn's own text), without editing the frozen prefix. Existing recalled history
+prevents re-injection on ordinary resume. Explicit searches remain available for
+surprising failures or decisions; there is no automatic topic detector or
+every-tool-call lookup.
 
-`memory.maxDistance` excludes semantic hits beyond a cosine distance ceiling
+`memory.autoRecall` (`birth`/`compaction`/`both`/`off`) gates both automatic
+paths. `memory.maxDistance` excludes semantic hits beyond a cosine distance ceiling
 (default 0.5). This is a conservative starting value, not a calibrated universal
 threshold. Calibrate against the chosen embedding model with positive and
 unrelated queries before claiming retrieval quality.
@@ -56,7 +66,10 @@ and harness changes are not yet released; use compatible builds together.
 
 The earlier vector/local-runtime slice passed the full 118-test server gate.
 The policy/activity slice subsequently passed its narrow tests and the full
-119-test server gate. The subsequent activity-ID addition passed test-memory-feed.
-The local CPU nomic smoke confirms
-768-dimensional inference, not curation quality, threshold calibration or Mac
-support. TiDB remains deferred.
+119-test server gate, and the later sandbox and workspace-recovery slices have
+pushed that suite past 120. `t_memory_embed_chain` now configures
+`memory.embedProvider` through the real `config` component (`config_patch`)
+and asserts the owner publishes `memory_config`, so an env-only shortcut cannot
+pass it. The subsequent activity-ID addition passed test-memory-feed. The local
+CPU nomic smoke confirms 768-dimensional inference, not curation quality,
+threshold calibration or Mac support. TiDB remains deferred.

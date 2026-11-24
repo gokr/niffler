@@ -13,11 +13,14 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 ## Why Niffler
 
 - **模組化到行程邊界。** 就像 Pi 和 DeepSeek Harness，但再低一層：每個能力都是自己的 OS 行程，位於單一線路協定之後（透過 NATS 傳遞 JSON 封套），而代理會在對話中途建置、生成與移除元件——不需拆除程式碼，也不會有洩漏的子行程。請參閱 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
-- **電池內含。** `fabric`（可程式化的工具呼叫）、`agent`/`expert`（子代理與諮詢同儕）、`git`、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank 移植）、`skills`、`plugins`、`processes`、`observe`/`logfile`——這些是其他 harness 留給外掛的工作。請參閱[隨附元件](docs/MANUAL.md#shipped-components)。
+- **電池內含。** `fabric`（可程式化的工具呼叫）、`agent`/`expert`（子代理與諮詢同儕）、`git`（檢查加上 worktree/merge 動詞）、`memory`（依儲存庫劃定範圍的持久事實）、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank 移植）、`skills`、`plugins`、`config`、`processes`、`observe`/`logfile`——這些是其他 harness 留給外掛的工作。請參閱[隨附元件](docs/MANUAL.md#shipped-components)。
+- **同層 worktree 是一等工作流。** `git_worktree add|remove|prune` 加上 `git_merge_preview`/`git_merge`/`git_commit`、一個持久的擁有權帳本、每對話隔離與 peer fork 溯源——因此實驗在自己的檢出中執行，並回到發起它的對話中收尾。請參閱 [worktree 教學](docs/WORKTREES-TUTORIAL.md)。
+
 - **實驗性功能維持可選加入。** `jev`（基於本機決策模型的建議式探索）以惰性的隨需顧問形式隨附於 manifest，其執行時是你用 spawn 記錄啟用的受監督啟動器——`make build`/`make setup` 絕不被強加重量級相依。請參閱[建議式探索](docs/MANUAL.md#advisory-discovery-jev-and-the-von-launcher)。
 - **開放模型，所有供應商。** 任何 OpenAI 相容端點——本機、開放權重或代管——透過 `.env` 或由儲存支援的供應商登錄檔；ChatGPT/Claude 訂閱 OAuth 以及由 models.dev 支援的目錄。請參閱[供應商](docs/MANUAL.md#provider-registry-provider)與[模型目錄](docs/MANUAL.md#model-catalog-models)。
 - **漸進式工具揭露。** 一組小型、凍結的直接工具集；其他一切只需一次 `discover`/`invoke`，以歷史形式附加，而非提示詞膨脹。請參閱 [MANUAL](docs/MANUAL.md#progressive-tool-discovery)。
 - **人類保持在迴圈中。** 需核准的工具，附帶 manifest 摘要與每個會話的 `ask`/`auto` 模式；在無法觸及人類時，呼叫會被拒絕，絕不會默默允許。請參閱[核准](docs/MANUAL.md#approvals)。
+- **可選的命令柵欄，誠實標註。** 可選的 Linux shell 守護在 bubblewrap 下以兩種 reach 之一執行 `bash`——`compat`（主機可讀、寫入受限）或 `strict`（僅工作區與已批准根）——而每對話沙箱策略（人類專屬、帶 revision、出生時繼承）讓前景 `bash` 呼叫以 strict 執行並遮罩其 deny 模式。檔案系統工具目前不受管轄，回讀也如實說明；請參閱[Shell guard and read masks](docs/MANUAL.md#shell-guard-and-read-masks)。
 - **多語言。** 主要是 Nim 和 Go，但沒有元件被綁定到特定語言：Nim、Go 和 TypeScript 的 SDK，以及一個完全沒有 SDK 的樹內 bash 示範（`examples/dialog`）。請參閱 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 - **匯流排就是 API。** `niffler-tui`、桌面 UI、`cli` 和 `console` 是平等的匯流排用戶端；數個可以同時連接，且各自獨立建置與安裝（TUI 是自己的外掛）。請參閱[啟動與停止](docs/MANUAL.md#starting-and-stopping)。
 - **為長時間執行而打造。** 凍結的提示詞/工具前綴讓提示詞快取保持溫熱；耐久的壓縮與有界的溢位復原讓會話保持存活；軟性 `/limit` 預算與硬性失控防護並存。請參閱[上下文視窗](docs/MANUAL.md#context-window)。
@@ -84,6 +87,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 | `make uninstall` | 移除已安裝的 PATH 項目 |
 | `make ram` | 回報執行中 stack（harness、元件、匯流排、客戶端）的記憶體用量 |
 | `make install-jev` | 安裝 `jev` 顧問背後的 Von 執行環境（可選，約 5.4 GB） |
+| `make install-embed` / `make embed-up` / `make embed-down` | `memory` 的可選本機 nomic 嵌入器（約 107 MB，無需 Ollama）及其受監督啟動器 |
 | `make smoke` | 遺留的一次性端對端腳本（優先用 `make test`） |
 
 ### Chat commands (web UI and `niffler-tui`)
@@ -111,7 +115,7 @@ niffler-tui                   # terminal chat; boots this clone's harness
 - [手冊](docs/MANUAL.md) — 安裝細節、設定、工具、供應商、UI、復原、測試與疑難排解（另有[简体中文](docs/MANUAL.zh.md) · [繁體中文](docs/MANUAL.zh-TW.md)）。
 - [線路協定](docs/WIRE.md) — JSON 封套、主體、錯誤、取消與會話上下文。
 - [架構](docs/ARCHITECTURE.md) — 為何核心、元件與 NATS 是分開的，以及貢獻者必須保留的不變條件。
-- [開放工作](docs/PLAN.md) — 寫入仲裁、沙箱與 fleet 的狀態、下一步建議與驗收門檻。
+- [開放工作](docs/PLAN.md) — 寫入仲裁、沙箱、memory 與 fleet 的狀態、下一步建議與驗收門檻。
 - [研究索引](docs/research/README.md) — 設計歷史與先前技術研究；研究筆記不是操作指示。
 - [Fabric 指南](docs/FABRIC_GUIDE.md) — 可程式化協調與子代理。
 - [模型來源外掛](docs/MODEL_SOURCES.md) — 目錄修正元件的實作範例。

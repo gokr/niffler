@@ -17,10 +17,11 @@ home.
   removes components mid-conversation — no teardown code, no leaked
   children. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Batteries included.** `fabric` (programmable tool calls), `agent`/`expert`
-  (subagents and an advisory peer), `git`, `mcp`, `lsp`, `repomap` (Aider's
-  tree-sitter + PageRank port), `skills`, `plugins`, `processes`,
-  `observe`/`logfile` — work other harnesses leave to plugins. See the
-  [shipped components](docs/MANUAL.md#shipped-components).
+  (subagents and an advisory peer), `git` (inspection plus the worktree/merge
+  verbs), `memory` (durable facts scoped per repository), `mcp`, `lsp`,
+  `repomap` (Aider's tree-sitter + PageRank port), `skills`, `plugins`,
+  `config`, `processes`, `observe`/`logfile` — work other harnesses leave to
+  plugins. See the [shipped components](docs/MANUAL.md#shipped-components).
 - **Opt-in experiments stay opt-in.** `jev` (advisory discovery over a local
   decision model) ships in the manifest as an inert on-demand advisor, and its
   runtime is a supervised launcher you enable with a spawn record — no
@@ -31,12 +32,24 @@ home.
   ChatGPT/Claude subscription OAuth and a models.dev-backed catalog. See
   [providers](docs/MANUAL.md#provider-registry-provider) and the
   [model catalog](docs/MANUAL.md#model-catalog-models).
+- **Sibling worktrees as a first-class workflow.** `git_worktree add|remove|prune`
+  plus `git_merge_preview`/`git_merge`/`git_commit`, a durable ownership ledger,
+  per-conversation isolation and peer-fork provenance — so an experiment runs in
+  its own checkout and closes back into the conversation that started it. See the
+  [worktree tutorial](docs/WORKTREES-TUTORIAL.md).
 - **Progressive tool disclosure.** A small, frozen direct toolset; everything
   else is one `discover`/`invoke` away, appended as history instead of prompt
   bloat. See [MANUAL](docs/MANUAL.md#progressive-tool-discovery).
 - **The human stays in the loop.** Approval-gated tools with manifest digests
   and a per-conversation `ask`/`auto` mode; with no human reachable the call
   is denied, never silently allowed. See [approvals](docs/MANUAL.md#approvals).
+- **Optional command containment, honestly labelled.** An opt-in Linux shell
+  guard runs `bash` under bubblewrap at one of two reaches — `compat` (host
+  readable, writes confined) or `strict` (workspace and approved roots only) —
+  and a per-conversation sandbox policy (human-only, revisioned, inherited at
+  birth) makes a foreground `bash` call strict with its deny patterns masked.
+  The filesystem tools are not governed yet and the readback says so; see
+  [shell guard and read masks](docs/MANUAL.md#shell-guard-and-read-masks).
 - **Polyglot.** Mostly Nim and Go, but no component is bound to a language:
   SDKs for Nim, Go and TypeScript, and an in-tree bash demo (`examples/dialog`)
   with no SDK at all. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -139,6 +152,7 @@ desktop UI is a plugin (`gokr/niffler-ui`), so its own build targets live there.
 | `make uninstall` | remove the installed PATH entries |
 | `make ram` | report the RAM of the running stacks (harness, components, bus, clients) |
 | `make install-jev` | install the Von runtime behind the optional `jev` advisor (~5.4 GB) |
+| `make install-embed` / `make embed-up` / `make embed-down` | optional local nomic embedder for `memory` (~107 MB, no Ollama) and its supervised launcher |
 | `make smoke` | legacy one-shot end-to-end script (prefer `make test`) |
 
 ### Chat commands (web UI and `niffler-tui`)
@@ -179,8 +193,8 @@ current feature status or historical design notes without mixing their roles.
   separate, and the invariants contributors must preserve.
 - [Features](docs/FEATURES.md) — the complete capability inventory (an
   index, not a reference).
-- [Open work](docs/PLAN.md) — write arbitration, sandbox and fleet status,
-  recommended next slices and acceptance gates.
+- [Open work](docs/PLAN.md) — write arbitration, sandbox, memory and fleet
+  status, recommended next slices and acceptance gates.
 - [Run9 Fleet acceptance](docs/FLEET_RUN9_ACCEPTANCE.md) — live model-driven
   installation, bounded remote tasks, restart verification and operating limits.
 - [Research index](docs/research/README.md) — design history and prior-art

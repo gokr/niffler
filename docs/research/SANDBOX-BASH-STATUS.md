@@ -6,6 +6,12 @@ and partial tool mask checks are experimental behavior, not completion of the
 unimplemented. This file owns current behavior; older sandbox plans are history.
 A configured mask is not approved-root read confinement.
 
+Two distinct things consult this file's machinery, and they have different
+reach: the **operator env guard** (`NIF_BASH_SANDBOX=on`, `compat` unless
+`NIF_SANDBOX_STRICT=1`) and a **conversation's own policy** (`session {sandbox}`,
+human-only, always `strict`). Neither shuts the other off: a policy saying
+`enabled: false` cannot un-guard an operator who asked for `on`.
+
 ## Read scope (tools, not just commands)
 
 A shell guard constrains a COMMAND through a mount policy. It cannot constrain
@@ -84,16 +90,33 @@ not every automatically discovered sibling checkout.
 
 ## Current behavior
 
-- System bwrap: read-only host root, writable workspace, private tmpfs `/tmp`,
-  fresh `/proc`, minimal `/dev`, isolated network, dropped capabilities.
+- A guarded launch asks the launcher for one of two reaches, and the launch
+  status always records which one ran (`reach: compat|strict`):
+  - **`compat`** — read-only host root, writable workspace, private tmpfs
+    `/tmp`, fresh `/proc`, minimal `/dev`, isolated network, dropped
+    capabilities. The default for the **operator env** guard
+    (`NIF_BASH_SANDBOX=on`), because silently tightening it would break
+    toolchains an operator already runs.
+  - **`strict`** — the host root is not mounted at all; only reviewed runtime
+    binds (system executables and shared libraries), the workspace, the
+    policy's WRITE roots and private scratch exist. A conversation whose own
+    sandbox policy is `enabled` always gets this; an operator raises the env
+    guard to it with `NIF_SANDBOX_STRICT=1`.
 - Child environment is cleared and sets only fixed PATH, HOME, TMPDIR, LANG.
-  User toolchains outside system PATH may require a future explicit allowance.
-- Arbitrary host reads remain possible except explicitly masked paths. This
-  is **not** a workspace-only filesystem view or chroot.
+  User toolchains outside system PATH (or under `/usr/local`, nix) may require
+  an explicit policy write root or a reviewed runtime bind.
+- Under `compat`, arbitrary host reads remain possible except explicitly masked
+  paths. It is **not** a workspace-only filesystem view or chroot; that is what
+  `strict` gives you, and only for `bash`.
+- The **filesystem tools are not governed by a conversation policy**: `read`,
+  `grep`/`files`, `edit`, `write` and their siblings still act under the
+  workspace set plus the operator masks. This is why status readbacks keep
+  saying `enforced: false`.
 - Background calls refuse until startup evidence and lifecycle integrate with
   the processes component. Benchmark container-map combination also refuses.
 - Requested masks refuse under Landlock; a degraded backend must never silently
-  ignore them. Landlock without masks remains a separate opt-in prototype.
+  ignore them. Landlock without masks remains a separate opt-in prototype, and a
+  **strict** request never degrades to it at all.
 - Existing off-mode execution is unchanged. Guarded timeout still reports 124;
   tested descendants do not survive timeout.
 - `sandbox.state` is `applied` when the ACTUAL launch acknowledged. A bootstrap
@@ -144,12 +167,13 @@ Self-check writes use a random owned workspace directory, never a fixed user
 filename. Status records also use a private random directory, not predictable
 shared-temp filenames.
 
-Remaining before calling the target complete: persisted conversation policy,
-uniform propagation and approved-root enforcement, migration of the experimental
-mask-triggered refusals to the agreed per-tool policy, guarded background
-integration, concurrent alias/race hardening and actual macOS implementation. Seatbelt has no
-implementation at all yet. Guarded background execution still refuses pending
-lifecycle integration.
+Remaining before calling the target complete: filesystem-tool enforcement for
+the approved group, network permission as its own per-conversation policy,
+migration of the experimental mask-triggered refusals to the agreed per-tool
+policy, guarded background integration, concurrent alias/race hardening and
+actual macOS implementation (Seatbelt has no implementation at all yet).
+Persisted conversation policy, uniform propagation and the strict reachable set
+for foreground Linux `bash` are implemented.
 
 No blanket whole-harness protection: the checks itemized above are partial
 mask coverage, not a complete read boundary. Native Fabric, plugins, MCP and

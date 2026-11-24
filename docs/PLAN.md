@@ -19,10 +19,16 @@ behavior.
 
 ## Baseline
 
-Reconciled against local `main` at `4ddfed8`, after `v0.5.0`. This is
-source and recorded-test status, not a fresh runtime certification or evidence
-that a remote worker has been updated. Active worktree branches are independent
-and are not counted as merged until they land on main.
+Reconciled against the `fix-prs` tree at `5d56d0d` (2026-11-17, after
+`v0.5.0`) — **which is not `main`**. `main` is `a019a7a`, and it lacks two
+verified commits this tree carries: `b360171` (workspace-loss recovery) and
+`5d56d0d` (memory's config-owner wiring), while carrying 12 commits this tree
+lacks. Everything below is therefore accurate for the `fix-prs` tree and must be
+re-read after those two land (or are dropped): the memory items marked
+"implemented" depend on `5d56d0d`, and the workspace-recovery item depends on
+`b360171`. This is source and recorded-test status, not a fresh runtime
+certification or evidence that a remote worker has been updated. Active worktree
+branches are independent and are not counted as merged until they land on main.
 
 ## Current priorities
 
@@ -31,15 +37,22 @@ and are not counted as merged until they land on main.
    paged report, continuation and live remote cancellation. Fix the actual
    blockers found and prioritize actionable blocked/approval notices. See
    [Fleet simplification](FLEET-SIMPLIFICATION.md) and Pillar 1 below.
-2. **Validate memory in a separate worktree:** dogfood cross-conversation and
-   cross-worktree recall, correction, stale facts, scope, safety and visibility.
-   Record evidence before choosing new retrieval features; scoped vector search
-   is not yet implemented. See [MEMORY.md](research/MEMORY.md).
-3. **Next substantial boundary work:** a vertical conversation-sandbox slice,
-   including persisted human-controlled policy, uniform dispatch propagation and
-   filesystem enforcement. Worktree allocation and writer liveness remain
-   separate gaps. Scope the release from verified results, not the week estimates
-   in an older schedule.
+2. **Validate memory in real use — the slice is merged.** The semantic-retrieval
+   and visible-activity slices landed on `main` (`d4f99c9`, `5d56d0d`), so this
+   is *dogfooding an implemented feature*, not waiting on a branch:
+   cross-conversation and cross-worktree recall, correction, stale facts, scope,
+   safety and visibility. Record evidence before choosing further retrieval
+   features. Scoped semantic retrieval exists (opt-in, SQLite only, text
+   fallback everywhere else); what is missing is calibration and real-use
+   evidence, not the code. See [MEMORY.md](research/MEMORY.md) and
+   [MEMORY-MILESTONE.md](MEMORY-MILESTONE.md).
+3. **Next boundary work is filesystem enforcement, not the foundation.**
+   Persisted human-controlled policy (fail-closed), uniform dispatch
+   propagation and strict Linux `bash` reach have landed (see "Pillar 3"
+   below); what remains of the conversation sandbox is the filesystem tools
+   (item 3), network permission, and Seatbelt. Worktree allocation and writer
+   liveness remain separate gaps. Scope the release from verified results, not
+   the week estimates in an older schedule.
 
 ## Bus ownership hardening
 
@@ -81,14 +94,30 @@ explicit provider/model selection at birth (not serving/echo names), through
 normal runner controls. The agent-fork contract covers persisted/live pins,
 resume and independent later source/peer changes; moves keep the same session.
 
+**Workspace loss is no longer a dead end.** Worktree retirement used to be able
+to wedge a live conversation: the header kept the removed path, re-resolution
+required it to exist, and workspace immutability refused the control call that
+would have repointed it — the reported shape was every call answering `cwd is
+not a directory`, `/workspace` and `/worktree` included. Every session call now
+settles the loss first: fall back to the harness root, record it as UNCHOSEN so
+it stays repinnable, announce `ev.workspace.opened`, append one
+`workspace-lost` notice to the transcript (history only — no prefix rebuild),
+accept an explicit `cwd` from a dead workspace whatever the turn count, reset
+worktree `isolation` to `shared` (its fence confined writes to the deleted
+tree), and report `workspace {missing: true, fallback}` through `session_info`.
+An explicit path that merely does not exist is still refused. Contracts:
+`tests/t_core.nim` (control-call and full-turn recovery, both branches of
+`handleSessionCall`) and `tests/t_roots.nim` (a removed worktree resets
+isolation and stays repinnable).
+
 ## Larger features
 
 | Feature | Implemented on main | Still open |
 |---|---|---|
 | Write arbitration | Durable `locks` peer; session dispatch claims; path-bound and opaque writers; harness-state claims for plugins; explicit no-claim declarations; nested Fabric calls; worktree ownership and lifecycle; restart/outage/TTL contracts | Automatic worktree allocation by policy; fencing or confirmed termination for writers that outlive leases; evidence-based completion adjudication is a separate feature |
-| Sandboxing | Opt-in synchronous Linux bwrap shell guard; launch-time checks, environment clearing, network isolation and configured masks; partial component mask checks; pure versioned conversation-policy model | Persisted effective conversation policy and human controls; uniform dispatch propagation; approved-root enforcement; conditional grants; migration from global masks; background execution; Seatbelt and real Mac validation |
+| Sandboxing | Opt-in synchronous Linux bwrap shell guard at two reaches (`compat`: host readable; `strict`: workspace + approved roots); launch-time checks, environment clearing, network isolation, configured masks; partial component mask checks; fail-closed per-conversation policy (revisioned, human-only, inherited at birth) propagated through every dispatch path; policy-driven foreground `bash` enforces deny patterns and write roots under strict reach | Filesystem-tool enforcement (item 3); network permission as its own policy; conditional grants; revocation reaching live children; guarded background execution; Seatbelt and real Mac validation; migration off the global masks |
 | Fleet | SSH/Incus/Lima provisioning and lifecycle; pinned receipts; named trusted-worker delegation, paged reports, continuation, durable notices and inbox; queued and active cancellation paths | Real-worker delegated-goal and remote-cancel acceptance; blocked/approval interaction; optional artifact retrieval, retention and authentication; see [FLEET-SIMPLIFICATION.md](FLEET-SIMPLIFICATION.md) |
-| Long-term memory | Optional repo-scoped fact component, revision history, bounded append-only recall, worktree-shared scope, text ranking and contract/live tests | Independent real-use validation of recall quality, correction, safety and visibility; opt-in SQLite semantic retrieval and local nomic installer implemented in the memory-validation branch (not yet merged) ([MEMORY.md](research/MEMORY.md)) |
+| Long-term memory | Optional repo-scoped fact component, revision history, bounded append-only recall (birth, post-compaction and one task-entry query recall), worktree-shared scope, visible activity records, declared settings domain, text ranking plus opt-in SQLite semantic retrieval with revision-checked derived vectors, local nomic installer/launcher, and contract/live tests | Independent real-use validation of recall quality, correction, safety and visibility; threshold calibration against a chosen embedder; TiDB vector retrieval; client renderer release |
 | Vision path | Tool results may carry `images` (`docs/WIRE.md` "Tool results"): core validates them against the byte-sniffed allowlist, stores them as attachment docs under the tool message, and materializes them through the same budget/projection rule as a dropped image; `read` answers an image path with the image plus a caption; elision drops refs with text so a superseded screenshot leaves the projection | Re-encoding an oversized capture (reported today, never silently downscaled — needs an image codec in a component plus a bound on its output); provider-specific degradation beyond the honest elision marker; TUI-side rendering of tool images |
 
 ### Write arbitration: usable foundation, not a sandbox
@@ -110,13 +139,18 @@ this pillar names — automatic *allocation* (a conversation does not yet get a
 tree by policy, only by asking) — plus fencing for writers that outlive leases.
 See [WRITE-ARBITRATION.md](research/WRITE-ARBITRATION.md).
 
-### Sandboxing: prototype shipped, conversation product unfinished
+### Sandboxing: guard, policy and strict bash shipped; filesystem tools unfinished
 
-The implementation is on `main`, not an unmerged branch. The current guard is
-explicitly opt-in and off by default. Its read-only host-root mount still permits
-arbitrary host reads except configured masks: it is not a workspace-only view
-or a hostile-agent security boundary. Guarded background commands refuse;
-Seatbelt is not implemented. Availability is not enforcement attestation.
+The implementation is on `main`, not an unmerged branch. There are two entry
+points and they are not the same authority: the operator env guard
+(`NIF_BASH_SANDBOX=on`, default `compat` reach — writes confined, host still
+readable except masks) and a per-conversation policy
+(`session {sandbox}`, human-only, always `strict` reach — the host root is not
+mounted). Do not describe the first as read confinement, and do not describe
+either as whole-conversation confinement: the filesystem tools still act under
+the workspace set. Guarded background commands refuse; Seatbelt is not
+implemented. Availability is not enforcement attestation, and a readback that
+says `configured` is not `applied`.
 
 Use [SANDBOX-BASH-STATUS.md](research/SANDBOX-BASH-STATUS.md) for current
 experimental behavior and [SANDBOX-CONVERSATION-POLICY.md](research/SANDBOX-CONVERSATION-POLICY.md)
@@ -324,7 +358,7 @@ must not be treated as safe before an appropriate authenticated boundary exists.
 
 The authoritative plan is [WORKTREES.md](research/WORKTREES.md) (basis
 `v0.5.0`), plus [WORKTREES-TUTORIAL.md](WORKTREES-TUTORIAL.md) for the
-workflows in operator language (both parts document shipped behaviour). Prior art:
+workflows in operator language. Prior art:
 [CODEWHALE.md](research/CODEWHALE.md) D1, [OPENHANDS.md](research/OPENHANDS.md)
 §3.15. This section records only what 0.6.0 requires of it and why it is not
 optional.
@@ -585,14 +619,16 @@ Cheap, measured, and independent — each rides along any week of the above.
 | **Semantic refactor through LSP** (BACKLOG) | two real defects where a rename rewrote JSON keys and missed call sites | ~5 days |
 
 Deferred on purpose, so this plan is not read as a wish list: goal/loop
-autonomy, memory v2/vector retrieval pending evidence, checkpoints and rewind,
-ACP endpoint, MCP per-conversation scoping, OS keyring, team/mailbox. Memory v1
-itself is implemented and under separate validation.
+autonomy, memory retrieval beyond what shipped pending real-use evidence,
+checkpoints and rewind, ACP endpoint, MCP per-conversation scoping, OS keyring,
+team/mailbox. Memory's text recall, semantic retrieval, settings domain and
+visibility records are implemented; its outstanding item is validation and
+calibration, not code.
 
 ### Sequence
 
-The current order is at the top of this document: Fleet acceptance and memory
-validation in separate worktrees, then the remaining sandbox boundary work
+The current order is at the top of this document: Fleet acceptance and
+memory validation in real use, then the remaining sandbox boundary work
 informed by those results. Worktree creation, the stop hotfix and the sandbox
 foundation (pillar 3 items 1, 2 and 4) have landed; their remaining gaps are not
 new implementation milestones. Filesystem enforcement (item 3) and
@@ -608,14 +644,12 @@ predetermined.
    artifact-first numbering in [FLEET.md](FLEET.md). The outcome is to assign a
    goal to another Niffler and get a useful report, not just remote management
    or badges.
-2. **Finish one vertical conversation-sandbox slice.** Persist and resume the
-   effective policy; provide a human-only update seam; propagate it through
-   serial/parallel/invoke/nested dispatch; enforce it first on filesystem tools.
-   Prove off/on/off, two simultaneous conversations, child inheritance and
-   revocation decisions, traversal/cache/undo/diff paths and new-file parents.
-   Then replace the shell's readable host root with reviewed runtime/data roots.
-   Conditional approvals, background lifecycle and Seatbelt each get their own
-   acceptance gate; a skipped Mac test is not a pass.
+2. **Finish the conversation-sandbox slice.** Items 1, 2 and 4 are done
+   (persist/resume with a human-only seam, uniform dispatch propagation, strict
+   foreground Linux bash). What remains is item 3 — the filesystem tools —
+   with traversal/cache/undo/diff paths and new-file parents, plus network
+   permission, conditional approvals, background lifecycle and Seatbelt; each
+   gets its own acceptance gate, and a skipped Mac test is not a pass.
 3. **Expose context health and recovery.** Read-effect `context_status` now
    reports persisted window/usage, shared thresholds, `trimThrough`, structured
    loss attribution, projection coverage and retained snapshot metadata. Usage

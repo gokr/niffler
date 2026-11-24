@@ -1,16 +1,18 @@
 # Conversation sandbox — agreed contract and implementation sequence
 
-Status: agreed design; the pure versioned snapshot model
-(`sdk/niffler/sandboxpolicy.nim`) and its contract tests exist. `/roots` already
-uses this codec for durable granted-root records, with agent grant inheritance;
-that is not persisted effective sandbox enablement or deny-rule enforcement.
-The full policy is not yet wired through session controls and uniform dispatch.
-Defaults and configured/not-enforced sandbox status remain model-level only.
-The next staged implementation task is [SANDBOX-NEXT-SLICE.md](SANDBOX-NEXT-SLICE.md).
-This supersedes conflicting policy
-choices in SANDBOX-PLAN.md and the experimental sandbox branch. The existing
-implementation status is recorded in SANDBOX-BASH-STATUS.md; it must not be
-mistaken for this contract.
+Status: agreed design, and **items 1, 2 and 4 are implemented on `main`** — the
+versioned snapshot model (`sdk/niffler/sandboxpolicy.nim`), the persisted
+per-conversation policy with its human-only `session {sandbox}` control,
+uniform dispatch propagation, birth inheritance, and strict Linux `bash`
+enforcement of write roots and deny patterns. Readbacks still say
+`enforced: false` and `state: "configured"` because this contract's last
+enforcement item — the filesystem tools — is not built. What is shipped and
+what is only promised is recorded stage by stage in
+[SANDBOX-NEXT-SLICE.md](SANDBOX-NEXT-SLICE.md); current `bash` behavior is in
+SANDBOX-BASH-STATUS.md. `/roots` continues to use the same codec for durable
+granted-root records with agent grant inheritance; that is still not the sandbox
+policy, and the two remain separate documents. This supersedes conflicting
+policy choices in SANDBOX-PLAN.md and the experimental sandbox branch.
 
 ## Authority and lifetime
 

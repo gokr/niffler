@@ -1,20 +1,25 @@
 # Sandbox next slice — durable policy, uniform transport, strict Linux bash
 
-Status: **experimental; stages A–C are not yet accepted as complete.** A
-policy record, dispatch injection and strict Linux launcher exist, but the
-failure paths and actual session-to-bash behavior require the milestone gate
-below. Filesystem-tool and network enforcement, escape-capable tool gates, and
-Seatbelt (needs a Mac) remain open. This
+Status: **stages A–C are implemented on `main` and covered by contracts; the
+milestone they belong to is closed.** A policy record, dispatch injection and
+strict Linux launcher exist and a real assembled harness proves them
+(`tests/t_sandbox_live.nim`: policy-free conversation unguarded → `session
+{sandbox}` → the same `bash` call confined under strict reach, the default
+`.env` denial masked, a host file outside the workspace unreadable, workspace
+writes still working, and a FRESH runner still confining). What remains open is
+filesystem-tool enforcement (item 3), network permission as its own policy,
+conditional grants, guarded background execution and Seatbelt on a real Mac.
+This
 decomposes [PLAN.md](../PLAN.md) pillar 3 items 1 → 2 → 4 into independently
 testable changes. [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md)
 owns the target policy; [SANDBOX-BASH-STATUS.md](SANDBOX-BASH-STATUS.md) owns
 current behavior.
 
-> **Review warning:** the historical stage descriptions below include claims
-> not yet established by the merge gate. In particular, session-driven bash
-> policy propagation, forbidden-file enforcement, read-only roots, failed
-> inheritance and store outages need end-to-end evidence. Do not rely on this
-> branch as a security boundary until those gaps are closed.
+> **Claim boundary:** the merge gate below is satisfied for stages A–C. It is
+> still not a security boundary for a conversation: the filesystem tools are
+> unconfined and every readback says `enforced: false`. Do not shorten the
+> milestone to "sandboxed" — that word would cover `read`, `grep` and `edit`,
+> which no policy governs yet.
 
 Implemented (stage A, `core/dispatch.nim` + `core/conversation.nim`,
 contract: `tests/t_sandbox_conversation.nim`): a per-conversation policy
@@ -25,9 +30,11 @@ and `/` refused as removals; a human-only guard that refuses any session whose
 durable `sessionmeta.parent` is set (refusing too when that lineage cannot be
 read, because unreadable is not root); birth inheritance through the hidden
 `sandbox_inherit` core tool; a status readback carrying the whole policy; and
-`ensureWorkspace`/`addGrant`/`removeGrant` on the codec. **Nothing is confined
-yet**: every readback reports `enforced: false` and `state: "configured"`, and
-no component enforces it. Stage C (strict bash roots) is unstarted.
+`ensureWorkspace`/`addGrant`/`removeGrant` on the codec. Stage B carries it to
+every dispatch path and stage C makes a policy-enabled foreground `bash` run
+confined; both are described below. **Whole-conversation enforcement is still
+not claimed**: readbacks report `enforced: false` and `state: "configured"`
+because the filesystem tools are ungoverned.
 
 ### Stage B — what now travels with a dispatch
 
@@ -52,9 +59,10 @@ each with a contract test in `tests/t_sandbox_propagation.nim`:
   2 s rather than for a runner's lifetime: the decision is a human's, and
   another process can change it at any time.
 
-Note what this stage still does NOT do: no component acts on `enabled`. The
-recorder fixture reports what it received and enforces nothing, which is why
-the readback keeps saying `configured`.
+Note what this stage alone still does NOT do: the recorder fixture reports what
+it received and enforces nothing, which is why the readback keeps saying
+`configured`. Stage C is what makes `enabled` mean something — and only for
+one foreground `bash` launch.
 
 ### What stage A deliberately left open
 
@@ -73,7 +81,8 @@ Named so a later reader does not have to rediscover them:
   (a fence synced from both would grant write for a read approval). Component
   read acceptance comes from one workspace set derived from WRITE grants, so
   making `readRoots` mean something requires that plumbing to carry a
-  read/write distinction. That is stage B work.
+  read/write distinction. That is stage B work, and it is still open: `bash`
+  refuses a policy naming a read-only root rather than pretending to honor it.
 - **`grants` stays opaque.** The codec round-trips it, nothing interprets it;
   the per-tool conditional-grant seam (stage D) is what will.
 - **Bash policy support: denies are enforced, read-only roots are not.** The
@@ -116,14 +125,17 @@ Honest limits, each a named follow-on rather than an implied gap:
 
 ## Merge milestone: fail-closed foundation
 
-Before merging, prove durable revisioned policy and child inheritance under
-store read/write failure; distinct read and write roots and deny precedence;
-serial, parallel, invoke and nested propagation; and an actual session-driven
-foreground bash launch with positive workspace and negative host controls.
-Unsupported requested restrictions must refuse before execution, never silently
-run with weaker protection. Verify live on Linux and run `make build && make
-test`. Status must say shell-only, not whole-conversation confinement. The user
-has additionally decided sandboxed network defaults to off, with fetch and bash
+**Met** (contracts: `t_sandbox_conversation`, `t_sandbox_propagation`,
+`t_sandbox_strict`, `t_bash_guard`, `t_sandbox_live`, plus
+`t_transcript_safety` for the outage paths). The milestone proved durable
+revisioned policy and child inheritance under store read/write failure; distinct
+read and write roots and deny precedence; serial, parallel, invoke and nested
+propagation; and an actual session-driven foreground bash launch with positive
+workspace and negative host controls. Unsupported requested restrictions refuse
+before execution, never silently run with weaker protection. Status says
+shell-only, not whole-conversation confinement.
+
+The user has decided sandboxed network defaults to off, with fetch and bash
 permissions separate; network-capable tools are not yet governed by that target.
 See [SANDBOX-CONVERSATION-POLICY.md](SANDBOX-CONVERSATION-POLICY.md).
 

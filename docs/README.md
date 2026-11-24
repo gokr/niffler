@@ -25,12 +25,23 @@ material across them.
   Coordination is not filesystem authorization or OS fencing.
 - **Sandboxing:** [current experimental behavior](research/SANDBOX-BASH-STATUS.md)
   versus [agreed conversation-policy target](research/SANDBOX-CONVERSATION-POLICY.md).
-  The older sandbox notes retain superseded proposals, not current promises.
+  Persisted conversation policy, uniform dispatch propagation and strict Linux
+  `bash` reach are implemented; the filesystem tools are not governed yet, so a
+  readback still says `enforced: false`. The older sandbox notes retain
+  superseded proposals, not current promises.
+- **Memory:** [long-term memory chapter](MANUAL.md#long-term-memory), the
+  [design record](research/MEMORY.md) and the
+  [milestone status](MEMORY-MILESTONE.md). Text recall, semantic retrieval,
+  visible activity and the settings domain are implemented and merged; what is
+  open is real-use validation, threshold calibration and a released client
+  renderer.
 - **Fleet:** [manual](MANUAL.md#ssh-and-lima-provisioning),
   [component reference](../components/fleet/README.md) and
   [active delivery plan](FLEET.md).
-  Provisioning and read-only task delegation are implemented; unattended coding
-  tasks and the full inbox/artifact workflow remain open.
+  Provisioning, goal delegation with durable admission, the paged report, the
+  continuation verb and the human inbox are implemented; what remains is live
+  acceptance against a real worker (including remote cancellation and the
+  blocked/approval interaction).
 
 ## Maintenance
 
