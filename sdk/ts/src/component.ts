@@ -86,6 +86,12 @@ export class Component {
   private closing: Promise<void> | null = null;
   private closeRequested = false;
   private stopRun: (() => void) | null = null;
+  /** Re-attach hook (parity with Nim onReattached / Go OnReattached). */
+  private reattachedHandlers: ((c: Component) => void | Promise<void>)[] = [];
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
+  /** When the connection first started failing, in epoch ms (0 = healthy). */
+  private unhealthySince = 0;
+  private reattaching = false;
 
   constructor(name: string, version: string) {
     this.name = name;
@@ -285,7 +291,27 @@ export class Component {
       reconnectTimeWait: 1000,
     });
     this.closing = null;
+    this.subscribeSurface();
 
+    this.announce("reg.publish");
+    console.log(
+      `${this.name} v${this.version} online on ${url} (${this.tools.length} tools)`
+    );
+    // Idle work (registered before connect) starts with the connection and is
+    // cleared by close().
+    this.startIdle();
+    this.startHealthWatch();
+  }
+
+  /**
+   * Build every subscription this component needs on the CURRENT connection:
+   * the queue-grouped call subject, the passive event bindings (including the
+   * SDK-managed drain), and the raw wire taps. Extracted so a re-attach
+   * rebuilds exactly what connect built — a second, hand-copied list would
+   * drift and silently lose a surface after an outage.
+   */
+  private subscribeSurface(): void {
+    if (!this.nc) return;
     // queue-grouped call subject: N replicas, one gets each call
     const callSub = this.nc.subscribe("svc." + this.name + ".call", {
       queue: this.name,
@@ -333,18 +359,161 @@ export class Component {
       };
       this.subs.push(sub);
     }
-
-    this.announce("reg.publish");
-    console.log(
-      `${this.name} v${this.version} online on ${url} (${this.tools.length} tools)`
-    );
-    // Idle work (registered before connect) starts with the connection and is
-    // cleared by close().
-    this.startIdle();
   }
 
   connected(): boolean {
     return this.nc !== null && !this.nc.isClosed();
+  }
+
+  /**
+   * Register a hook run after a successful re-attach (parity with the Nim
+   * SDK's `onReattached` and Go's `OnReattached`). A component that defers
+   * its own announce (mcp-bridge) must re-publish its contract here; an
+   * ordinary component needs nothing, because the SDK re-announces the tool
+   * registration itself.
+   */
+  onReattached(handler: (c: Component) => void | Promise<void>): this {
+    this.reattachedHandlers.push(handler);
+    return this;
+  }
+
+  /**
+   * Watch connection health so a bus outage past the client's own reconnect
+   * budget does not leave this process alive but deaf (issue #98 — the last
+   * SDK without this).
+   *
+   * nats.js `maxReconnectAttempts: -1` retries the SAME server forever, which
+   * cannot recover a harness that restarted on a new port. A periodic flush
+   * measures the truth: a timeout means the client may still recover it; a
+   * failure persisting past `NIF_RECONNECT_GRACE_S` (default 180s, the same
+   * knob as Nim and Go) triggers a re-attach.
+   */
+  private startHealthWatch(): void {
+    if (this.healthTimer) return;
+    this.healthTimer = setInterval(() => {
+      void this.checkHealth();
+    }, 2000);
+    // Never hold the process open for the health watch alone.
+    this.healthTimer.unref?.();
+  }
+
+  private stopHealthWatch(): void {
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
+    }
+  }
+
+  private graceMs(): number {
+    const raw = Number(process.env.NIF_RECONNECT_GRACE_S ?? "180");
+    return (Number.isFinite(raw) && raw > 0 ? raw : 180) * 1000;
+  }
+
+  private async checkHealth(): Promise<void> {
+    const nc = this.nc;
+    if (this.reattaching || this.closeRequested || nc === null) return;
+    // A closed connection is the terminal case, not a health signal.
+    if (nc.isClosed()) return;
+    let healthy = true;
+    try {
+      await nc.flush();
+    } catch {
+      healthy = false;
+    }
+    if (healthy) {
+      this.unhealthySince = 0;
+      return;
+    }
+    if (this.unhealthySince === 0) {
+      this.unhealthySince = Date.now();
+      return;
+    }
+    if (Date.now() - this.unhealthySince >= this.graceMs()) {
+      this.unhealthySince = 0;
+      await this.reattach();
+    }
+  }
+
+  /** Bus URLs to try, most likely first (mirrors the Nim/Go candidate order). */
+  private reattachCandidates(): string[] {
+    const out: string[] = [];
+    const explicit = process.env.NIF_NATS_URL;
+    if (explicit) out.push(explicit);
+    const discovered = readDiscoveryUrl();
+    if (discovered && !out.includes(discovered)) out.push(discovered);
+    return out;
+  }
+
+  /**
+   * Tear the dead connection down and re-attach: re-resolve the bus (a
+   * restarted harness usually binds a NEW port, which the client's own
+   * reconnect can never follow), redial, rebuild every subscription and
+   * re-announce the registration — all without a process restart.
+   */
+  private async reattach(): Promise<void> {
+    if (this.reattaching) return;
+    this.reattaching = true;
+    console.error(
+      `${this.name}: bus connection lost beyond the reconnect budget — re-attaching`
+    );
+    try {
+      for (const sub of this.subs) {
+        try {
+          sub.unsubscribe();
+        } catch {
+          /* the old connection is dying anyway */
+        }
+      }
+      this.subs = [];
+      try {
+        await this.nc?.close();
+      } catch {
+        /* already gone */
+      }
+      this.nc = null;
+      let backoffMs = 500;
+      while (!this.closeRequested) {
+        for (const url of this.reattachCandidates()) {
+          try {
+            const mine = harnessRoot();
+            const answered = mine ? await coreRoot(url) : "";
+            if (answered && path.resolve(answered) !== path.resolve(mine)) {
+              // Same guard as connect(): never join another root's bus.
+              continue;
+            }
+            this.nc = await connect({
+              servers: url,
+              maxReconnectAttempts: -1,
+              reconnectTimeWait: 1000,
+            });
+            this.subscribeSurface();
+            this.announce("reg.publish");
+            console.error(
+              `${this.name}: reattached to ${url} after the outage — resubscribed and re-announced`
+            );
+            for (const h of this.reattachedHandlers) {
+              try {
+                await h(this);
+              } catch (err) {
+                console.error(`${this.name}: reattached handler failed:`, err);
+              }
+            }
+            return;
+          } catch (err) {
+            try {
+              await this.nc?.close();
+            } catch {
+              /* ignore */
+            }
+            this.nc = null;
+          }
+        }
+        await new Promise((r) => setTimeout(r, backoffMs));
+        backoffMs = Math.min(backoffMs * 2, 5000);
+      }
+    } finally {
+      this.reattaching = false;
+    }
   }
 
   /** Announce departure, drain subscriptions, close the connection. */
@@ -365,6 +534,10 @@ export class Component {
     const nc = this.nc;
     this.closing = (async () => {
       this.stopIdle();
+      // Stop watching health BEFORE departing: a close is not an outage, and a
+      // watcher firing during teardown would try to re-attach a component that
+      // is deliberately going away.
+      this.stopHealthWatch();
       this.announce("reg.depart");
       for (const s of this.subs) {
         await s.drain();

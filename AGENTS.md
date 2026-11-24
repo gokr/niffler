@@ -95,8 +95,9 @@ working in every language.
   `onReattached` / `OnReattached` to re-publish its own contract on the fresh
   connection; a Go client that must reconcile durable state after *any*
   recovered connection (a short reconnect included) registers `OnReconnected`.
-  The
-  TypeScript SDK does not re-attach yet.
+  The TypeScript SDK does the same with a periodic `flush()` probe and the
+  same `NIF_RECONNECT_GRACE_S`, and exposes `onReattached` for components that
+  defer their own announce — all three SDKs now cover a bus outage.
 - **An external runtime the harness must own gets a launcher component,
   enabled by a spawn record — never a manifest autostart.** `von` (the Python
   decision runtime behind `jev`) is the worked example: built by `make build`
