@@ -10,7 +10,7 @@ bin           = @[]
 # yaml for the bootstrap manifest, natsnim (pure Nim, no libnats) for the
 # bus.
 
-requires "nim >= 2.2.12"
+requires "nim >= 2.4.2"
 requires "yaml"
 requires "htmlparser"
 requires "checksums"
