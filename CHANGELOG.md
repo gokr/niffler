@@ -6,6 +6,22 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-24
+
+A conversation became harder to waste and harder to wedge. A denied approval
+no longer burns the turn that produced it, a conversation whose workspace
+`directory` was deleted repairs itself instead of becoming unreachable, a
+turn that stops making progress ends `stuck` instead of spending the round
+budget, a tool call to a component that dies fails in ~2 s instead of stalling,
+and a lost tool result reports an unknown outcome rather than inviting a retry
+of a write that may already have landed.
+
+Beside that, two more knobs moved out of the environment and into declared
+settings: core now owns a `core` domain (the knobs core itself enforces) and
+`heartbeat` owns its own, both keeping the `NIF_*` spellings as the migration
+fallback. Memory's own settings finally speak the config owner protocol, so a
+`config_patch memory` is no longer accepted and ignored.
+
 - Memory gains opt-in provider-backed semantic search/query recall, revision-checked
   derived vectors and text fallback. SQLite filters instance and literal idPrefix
   before exact cosine top-k. Subagent remember/forget writes now refuse.
@@ -77,6 +93,20 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Added
 
+- **Core now owns a declared `core` settings domain.** `config` routes an owner
+  request to `svc.<owner>.call` and core answers `svc.core.call`, so
+  `owner: "core"` was always possible — nobody had wired the owner tool, and the
+  consequence was three undocumented variables (`NIF_ATTACH_BUDGET`,
+  `NIF_EMPTY_REPLY_RETRIES`, `NIF_STUB_DERIVABLE`) that an operator could only
+  discover by reading core's source. `config_patch core` now sets `attachBudget`,
+  `emptyReplyRetries` and `stubDerivable` with schema validation,
+  compare-and-set revisions and `next turn` application timing; the env spellings
+  stay as the migration fallback, so an existing deployment is unchanged.
+  Contract: `tests/t_core_config.nim`.
+- **The optional `heartbeat` component owns a declared `heartbeat` config
+  domain** (`enabled`, `tickMs`, `maxPerDay`) like its siblings, instead of
+  enforcing three env-only variables. `NIF_HEARTBEAT*` stays as the migration
+  fallback. Disabling keeps every record intact: it is a pause, not a delete.
 - **A command run inside a turn knows its own provenance.** `bash` exports
   `NIF_SESSION_ID`, `NIF_MODEL`, `NIF_PROVIDER` and `NIF_REASONING_LEVEL` from
   the runner's resolved turn identity, so a script can report what drove it or
@@ -230,6 +260,44 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Fixed
 
+- **A denied approval no longer costs a turn.** When `bash` (or any gated tool)
+  needed approval and the prompt went unanswered, the model retried — and each
+  retry waited out another full approval timeout (300 s) before failing the same
+  way. Measured on four audit subagents: every one burned its entire tool-call
+  budget on repeat denials and returned no findings, and the reported outcome
+  (`budget-exhausted`) named the wrong cause. The gate now memoizes a denial for
+  the rest of the turn, so a repeat refuses in milliseconds with an explicit
+  "already denied in this turn" message; the memo clears at every turn start and
+  before a client `invoke`, which is still asked. A denial deliberately does NOT
+  end the turn — it stays an ordinary tool error. Proven end to end by
+  `tests/t_approval_breaker.nim`: six denials complete in ~1.8 s where six
+  timeouts cost 30 minutes.
+- **`agent_wait`, `agent_status`, `agent_stop`, `agent_notices` and
+  `agent_list` no longer take a write lease on the workspace.** None of them
+  writes a filesystem path, but a tool that declares no `x-harness.writes` is
+  treated as an opaque writer and claims the conversation workspace root. A
+  parent that waited on its own children therefore leased the very tree their
+  `bash` needed, and the children failed with `[E_WRITE_BUSY] … is being modified
+  by conversation <the parent>` — a self-inflicted deadlock that looked like tool
+  trouble. All five now declare `writes: {"none": true}`.
+- **A conversation whose workspace directory was deleted is recoverable.** A
+  merged branch's worktree removed with `git_worktree {op: rm}` (or `/worktree
+  rm`) left the conversation permanently wedged: every call answered `session
+  turn: cwd is not a directory: …`, and the control calls that would have
+  repointed it — `/workspace`, even `/worktree` — failed the same way, so there
+  was no way out from inside the session. The stored `cwd` is now re-resolved
+  against an existing-directory requirement before anything else happens, and a
+  dead workspace falls back to the harness root, recorded as **unchosen**
+  (`cwdPinned: false`, so it is repinnable again), announcing `ev.workspace.opened`
+  and appending a `workspace-lost` notice to the transcript so the model reads why
+  its earlier paths stopped resolving (history only — the frozen prefix is
+  untouched, so no cache rebuild). Worktree `isolation` is reset to `shared` at
+  the same time, because a fence that confines writes to a deleted tree is the
+  same stale fact as the dead path. An explicit `cwd` from a dead workspace is
+  accepted whatever the turn count says, while an explicit path that simply does
+  not exist is still refused, and `session_info` reports
+  `workspace {root, missing: true, fallback}`. Covered by `tests/t_core.nim` and
+  `tests/t_roots.nim`.
 - **A component that dies mid-call fails its call in ~2 s instead of stalling
   the turn.** The dispatch wait loop now compares the live pid set against the
   one it could have reached, and answers `[component-exited]` naming the
