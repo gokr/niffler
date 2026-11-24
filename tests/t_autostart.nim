@@ -87,7 +87,13 @@ proc main() =
     nc.publish("reg.depart", fakeUiGone)
     check("last interactive departure stops the autostarted core",
           waitCoreGone(url, 8))
-    check("spawned bus stops with its core", waitBusGone(url, 5))
+    # Core's own teardown is prompt (~0.65 s: supervisor drain, connection
+    # close, SIGTERM to the bus). What takes the rest is nats-server's own
+    # shutdown drain, which is sensitive to machine load: measured 0.2 s on an
+    # idle box and ~6 s while a build and a test pool shared the CPU. A 5 s
+    # bound therefore failed a core that had stopped correctly — the check
+    # still fails loudly if the bus never stops at all.
+    check("spawned bus stops with its core", waitBusGone(url, 15))
     nc.close()
 
   # --- C: a manually started core ignores client churn --------------------
