@@ -229,7 +229,9 @@ See [MANUAL.md](MANUAL.md) "Shipped components" (the per-component reference).
 
 - `bash` — general shell execution: process-group leader, timeout and exit-code
   contract, combined output with caps and spill files, heredoc handling,
-  background hand-off, cancellation.
+  background hand-off, cancellation, and the live turn's resolved provenance
+  (`NIF_SESSION_ID`, `NIF_MODEL`, `NIF_PROVIDER`, `NIF_REASONING_LEVEL`) exported
+  into the command's environment.
 - `processes` — owned long-running commands: start, incremental poll (filter
   and tail), kill the group, list; spool files, process cap, crash-safe
   registry sweep, and durable exit notices pushed to the owning conversation.
