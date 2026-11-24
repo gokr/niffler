@@ -77,6 +77,13 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
 
 ### Added
 
+- **A command run inside a turn knows its own provenance.** `bash` exports
+  `NIF_SESSION_ID`, `NIF_MODEL`, `NIF_PROVIDER` and `NIF_REASONING_LEVEL` from
+  the runner's resolved turn identity, so a script can report what drove it or
+  call back into the harness without a model-authored session id. Values the
+  turn did not resolve are absent rather than empty, and a direct
+  `cli call bash ...` gets none — it is not inside a turn.
+
 - **A foreign harness home no longer runs checkout code unasked.** Cloning a
   repo and opening it with any UI used to autostart that manifest's components
   and restore its persisted spawn records before any tool call — the same

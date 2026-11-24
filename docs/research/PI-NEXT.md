@@ -53,11 +53,16 @@ Pi injects per-command, resolved at command start
 (`docs/environment-variables.md`): `PI_SESSION_ID`, `PI_SESSION_FILE`,
 `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL`.
 
-Niffler injects nothing — **[verified]**: `components/bash/main.nim` has no
-`putEnv`/env assembly at all, and the MANUAL environment table contains no such
-variables. The values are already available at dispatch (`__session` context),
-so this is child-process environment assembly plus a documented set of
-`NIF_SESSION_ID`, `NIF_MODEL`, `NIF_PROVIDER`, `NIF_REASONING_LEVEL`.
+**Shipped** (issue #101): `bash` now exports `NIF_SESSION_ID`, `NIF_MODEL`,
+`NIF_PROVIDER` and `NIF_REASONING_LEVEL` into the child's environment
+(`components/bash/main.nim` `provenanceEnv`, via `runCmd(env = …)` in
+`sdk/niffler/procutil.nim`). The values come from the runner's *resolved* turn
+identity (`ActiveTurn.model/provider/thinkingEffort`, published to dispatch as
+`__session.provenance`), not from a re-read of a different source, so a command
+reporting them is truthful. An unresolved value is absent rather than empty, the
+values are harness-owned, and a direct `cli call bash` (not inside a turn) gets
+none. Pinned by `tests/t_bash.nim` (injection, absence, scope, overwrite) and
+`tests/t_provenance.nim` (a real turn's resolved model reaching the command).
 
 Why it is worth more than it looks: a command can then self-report provenance,
 or call back into the harness (`cli call ...`) without the model smuggling ids

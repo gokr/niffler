@@ -82,6 +82,16 @@ proc(c: Component, args: JsonNode): JsonNode =
         {"id": "reissued", "type": "function", "function": {
           "name": "bash", "arguments": "{\"command\":\"touch reissued.txt\"}"}}]}
     return %*{"content": "reissue-done"}
+  if scenario == "provenance":
+    # Issue #101 end-to-end: one bash call that reports the provenance it was
+    # handed. Drives the REAL dispatch seam and the runner's resolved turn
+    # identity, not a hand-built __session.
+    if workingRounds[sid] == 1:
+      return %*{"content": "", "model": "mock-model", "tool_calls": [
+        {"id": "p1", "type": "function",
+         "function": {"name": "bash", "arguments":
+           """{"command":"echo SID=[$NIF_SESSION_ID] MODEL=[$NIF_MODEL] PROVIDER=[$NIF_PROVIDER]"}"""}}]}
+    return %*{"content": "provenance-done", "model": "mock-model"}
   if scenario == "component-death":
     # Issue #116: ask for a tool on a component the test kills mid-call, then
     # close the turn with a report so the transcript is complete.

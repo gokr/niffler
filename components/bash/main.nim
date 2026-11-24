@@ -94,6 +94,34 @@ proc drainCancels(mySession: string): bool =
   cancelledSessions.keepItIf(epochTime() - it.at <= cancelFreshSeconds)
   cancelled
 
+const provenanceVars = [("model", "NIF_MODEL"),
+                        ("provider", "NIF_PROVIDER"),
+                        ("reasoning", "NIF_REASONING_LEVEL")]
+  ## Provenance a session-dispatched command may report about itself (issue
+  ## #101). Names mirror Pi's, so a script that works there works here.
+
+proc provenanceEnv(toolArgs: JsonNode): seq[(string, string)] =
+  ## Build the child-environment provenance for one command.
+  ##
+  ## Harness-owned by construction: these come from the runner's RESOLVED turn
+  ## identity (`__session.provenance`), never from this component's inherited
+  ## environment — so a parent-process value for the same name cannot spoof
+  ## them, and the child's own shell cannot be handed one.
+  ##
+  ## Only a session-dispatched call carries `__session` at all; a direct
+  ## `cli call bash ...` has none and therefore gets nothing, which is the
+  ## documented scope. A value the runner did not resolve is ABSENT rather than
+  ## exported empty, so `env | grep NIF_` never shows a variable whose value is
+  ## really "unknown".
+  if toolArgs == nil: return
+  let prov = toolArgs{"__session"}{"provenance"}
+  if prov == nil or prov.kind != JObject: return
+  let sid = toolArgs{"__session"}{"session"}.getStr("")
+  if sid.len > 0: result.add(("NIF_SESSION_ID", sid))
+  for (field, varName) in provenanceVars:
+    let v = prov{field}.getStr("")
+    if v.len > 0: result.add((varName, v))
+
 proc wasCancelled(sessionId: string): bool =
   ## True when a fresh cancel for sessionId was stashed earlier — its
   ## request was queued behind another session's command when the cancel
@@ -207,7 +235,8 @@ discard comp.tool("bash", bashSchema,
                    "cd -- " & quoteShell(cwd) & " || exit $?\n" & command
                  else: command
     let (code, captured) = runCmd(scoped, timeoutMs,
-      proc(): bool = drainCancels(sessionId))
+      proc(): bool = drainCancels(sessionId),
+      env = provenanceEnv(toolArgs))
     var full = captured
     # hard capture bound: beyond this even the spill file is cut
     if full.len > maxCaptureBytes:
