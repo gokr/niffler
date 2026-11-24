@@ -24,7 +24,11 @@ proc main() =
   var nc = waitConnect(url)
   defer: nc.close()
 
-  let bashProc = startComponent(bin, url, root = tmp)
+  # A decoy in the COMPONENT's own environment: the provenance injected by a
+  # dispatch must win over it (harness-owned, issue #101 AC 4). Without this
+  # the "no inherited value leaks in" claim would be untested.
+  let bashProc = startComponent(bin, url, root = tmp,
+                                extra = [("NIF_MODEL", "DECOY-MODEL")])
   defer:
     if bashProc.running():
       bashProc.terminate()
@@ -179,6 +183,70 @@ proc main() =
         check("no routes out of the namespace", routes == 0, r.output)
       else:
         echo "NOTE: unprivileged user namespaces blocked here — netns wrap untestable"
+
+  # --- session provenance (issue #101) ------------------------------------
+  # A command dispatched inside a turn must be able to report which session,
+  # model, provider and effort drove it — and must call back into the harness
+  # without the model pasting an id into the command string. The values come
+  # from the runner's RESOLVED turn identity, so they are truthful, and they
+  # are absent (not empty) when nothing was resolved.
+  let provSession = "provenance-session"
+  let rp = call(nc, "bash", "bash", %*{
+    "command": "echo sid=[$NIF_SESSION_ID] model=[$NIF_MODEL] " &
+               "prov=[$NIF_PROVIDER] reas=[$NIF_REASONING_LEVEL]",
+    "timeoutMs": 10000,
+    "__session": {"session": provSession,
+                  "provenance": {"model": "deepseek-chat",
+                                 "provider": "deepseek",
+                                 "reasoning": "high"}}})
+  let pt = rp{"text"}.getStr("")
+  check("a session command sees NIF_SESSION_ID",
+        pt.contains("sid=[" & provSession & "]"), pt)
+  check("a session command sees the resolved model", pt.contains("model=[deepseek-chat]"), pt)
+  check("a session command sees the resolved provider", pt.contains("prov=[deepseek]"), pt)
+  check("a session command sees the reasoning effort", pt.contains("reas=[high]"), pt)
+
+  # A value the turn never resolved must be ABSENT, never exported empty:
+  # `env | grep NIF_MODEL` answering with an empty value would tell a script
+  # the model is "" rather than unknown.
+  let rn = call(nc, "bash", "bash", %*{
+    "command": "echo m=[$NIF_MODEL]",
+    "timeoutMs": 10000,
+    "__session": {"session": provSession, "provenance": {"provider": "deepseek"}}})
+  # The component's own environment carries a DECOY NIF_MODEL (see the
+  # startComponent above), which a child inherits regardless — that is the
+  # component's environment, not provenance. What must NOT happen is the
+  # runner's unresolved value being injected as an empty string, which would
+  # overwrite the decoy with "" and tell a script the model is empty rather
+  # than unspecified. So: an unresolved model leaves the child's own value
+  # alone (here, the decoy), and only a RESOLVED value overrides it — which
+  # the "injected value wins over any inherited one" check proves.
+  check("an unresolved model is never injected as an empty value",
+        rn{"text"}.getStr("").contains("m=[DECOY-MODEL]"), $rn)
+
+  # Scope: a DIRECT call (no __session, the `cli call bash` shape) gets no
+  # ambient identity. It is not inside a turn, so there is nothing truthful
+  # to export.
+  let rd = call(nc, "bash", "bash", %*{
+    "command": "echo sid=[$NIF_SESSION_ID] r=[$NIF_REASONING_LEVEL]",
+    "timeoutMs": 10000})
+  # A direct call is not inside a turn, so nothing truthful can be exported
+  # and dispatch injects nothing: the names read as empty, and the component's
+  # own decoy NIF_MODEL is not promoted into provenance either.
+  check("a direct call gets no ambient session or reasoning",
+        rd{"text"}.getStr("").contains("sid=[]") and
+        rd{"text"}.getStr("").contains("r=[]"), $rd)
+
+  # Harness-owned: what this component's own environment holds for those names
+  # must never leak in. The component is started with NIF_MODEL set to a decoy
+  # below, and the direct call above already proves it does not surface.
+  let rq = call(nc, "bash", "bash", %*{
+    "command": "echo model=[$NIF_MODEL]",
+    "timeoutMs": 10000,
+    "__session": {"session": provSession,
+                  "provenance": {"model": "deepseek-chat"}}})
+  check("the injected value wins over any inherited one",
+        rq{"text"}.getStr("").contains("model=[deepseek-chat]"), $rq)
 
   # drain: component exits
   drain(nc)

@@ -3550,10 +3550,20 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ct.activeTurn.session = sessionId
     ct.activeTurn.id = turnId
     ct.activeTurn.advisories = 0
+    # Provenance starts from what we already know and is REPLACED by the
+    # resolved values below, once resolution answers (issue #101). Starting
+    # empty means a turn that never resolves exports nothing, rather than a
+    # value carried over from the previous turn.
+    ct.activeTurn.model = ""
+    ct.activeTurn.provider = ""
+    ct.activeTurn.thinkingEffort = thinkingEffort
   defer:
     if ct.activeTurn != nil:
       ct.activeTurn.session = ""
       ct.activeTurn.id = ""
+      ct.activeTurn.model = ""
+      ct.activeTurn.provider = ""
+      ct.activeTurn.thinkingEffort = ""
   # Task-entry semantic recall: only the first substantive request, not every
   # turn/tool call. Missing memory is optional and must never fail a turn.
   # Query recall remains append-only; the ordinary drain records its activity.
@@ -3690,6 +3700,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     status["turnId"] = %turnId
     resolvedProvider = status{"provider"}.getStr("")
     selectedModel = status{"model"}.getStr(selectedModel)
+    # Publish the RESOLVED identity for child-process provenance (issue #101).
+    # This is the same pair the request below carries, not a re-read of a
+    # different source — "env | grep NIF_" in a command must be truthful.
+    if ct.activeTurn != nil:
+      ct.activeTurn.provider = resolvedProvider
+      ct.activeTurn.model = selectedModel
     # Capability comes back on the same status frame; the Persister already
     # recorded it (resolveTurnConfig), so the turn reads it from there and an
     # older llm component that omits the field leaves the safe default.

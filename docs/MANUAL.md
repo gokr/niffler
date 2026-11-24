@@ -5058,6 +5058,26 @@ bus it found already running — is never respawned: it is not ours to restart.
 Shutdown disables the watcher before stopping the bus, so a normal exit never
 starts one nobody will stop (`var/nats-pid` is removed as before).
 
+#### Command provenance
+
+A command run through `bash` inside a live turn can see what drove it, exported
+into the child's environment (issue #101):
+
+| variable | value |
+|---|---|
+| `NIF_SESSION_ID` | the conversation id the command was dispatched for |
+| `NIF_MODEL` | the model the turn actually resolved and used |
+| `NIF_PROVIDER` | that model's provider |
+| `NIF_REASONING_LEVEL` | the turn's thinking effort, when one is set |
+
+The values come from the runner's *resolved* turn identity, so
+`env | grep NIF_` in a command is truthful, and a script can call back into the
+harness (`cli call ...`) or tag its output with its own provenance without the
+model pasting an id into the command string. A value the turn never resolved is
+absent rather than empty, and a direct `cli call bash ...` — which is not inside
+a turn — gets none of them. They are child-process environment only: nothing
+enters the system prompt, a tool schema or the cached request prefix.
+
 A request carries a whole conversation, so the bundled bus is started with
 `max_payload: 8388608` (8 MiB — about 2M tokens of JSON; above that
 nats-server only warns): the bundled `var/bin/nats-server` takes it as an

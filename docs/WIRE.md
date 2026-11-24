@@ -1137,6 +1137,20 @@ than a loss. Same convention as the tool-spill paths (`bash`, `mcp`, `fetch`).
 Delivery is two-lane by **parent state**, and the durable record is written
 before either is attempted:
 
+- **Session provenance in a child process** (issue #101). A tool declaring
+  `x-harness.sessionId` receives, besides `__session.session`, a
+  `__session.provenance` object carrying the live turn's **resolved**
+  `model`, `provider` and `reasoning` — the same values the LLM request
+  carried, not a re-read of a different source. A component exports them to a
+  child process environment as `NIF_SESSION_ID`, `NIF_MODEL`, `NIF_PROVIDER`
+  and `NIF_REASONING_LEVEL`, so a command can report what drove it or call back
+  into the harness without a model-authored id. A value the turn never resolved
+  is **absent**, never an empty or stale variable, and the values are
+  harness-owned (an inherited value for the same name is never promoted into
+  provenance). Direct callers (`cli call bash ...`) and component-to-component
+  calls get nothing: they are not inside a turn. Child-environment only — never
+  in the request prefix or a schema, so prompt caching is unaffected.
+
 - **parent runner mid-turn** → the steer subject
   (`svc.session.<parent>.steer`) with a `notice` payload object instead of a
   `content` string. The runner queues it separately from user steer and

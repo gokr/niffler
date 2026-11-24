@@ -171,6 +171,15 @@ type
     session*: string         ## active conversation ("" = no live turn)
     id*: string              ## turnId of the live turn
     advisories*: int         ## accepted advisor messages this turn
+    model*: string           ## the turn's RESOLVED model ("" = unresolved)
+    provider*: string        ## the turn's resolved provider ("" = unresolved)
+    thinkingEffort*: string  ## "" (provider default) | low | medium | high | max
+    ## Provenance only (issue #101): these are the values the LLM call actually
+    ## used, so a command that prints them is truthful. They are read at
+    ## dispatch time and exported to a child process environment — never part
+    ## of the request prefix, never in a schema, so the prompt cache is
+    ## untouched. An unresolved value stays "" and is then omitted from the
+    ## child env entirely rather than exported empty or stale.
   # Nested-call proxy state (svc.session.<id>.tool): session-context tools
   # (fabric, agent) receive {session, lease} in args; the runner's pump
   # validates nested calls against the live lease before re-entering the one
@@ -1751,6 +1760,19 @@ proc dispatchLost*(ct: CoreTools, comp: string,
     if sentTo.find(pid) >= 0: return false
   return true
 
+proc turnProvenance*(ct: CoreTools): JsonNode =
+  ## The live turn's resolved model/provider/reasoning, for a child process
+  ## environment (issue #101). Empty object when nothing is resolved — a
+  ## genuinely-unset value must never become an empty or stale variable.
+  ## One definition for both dispatch paths so the serial and parallel
+  ## results cannot drift.
+  result = newJObject()
+  if ct.activeTurn == nil: return
+  if ct.activeTurn.model.len > 0: result["model"] = %ct.activeTurn.model
+  if ct.activeTurn.provider.len > 0: result["provider"] = %ct.activeTurn.provider
+  if ct.activeTurn.thinkingEffort.len > 0:
+    result["reasoning"] = %ct.activeTurn.thinkingEffort
+
 proc departureCheck(ct: CoreTools, tool, subject: string,
                     sentTo: seq[int]): string =
   ## The structured error for a call whose component just died, or "" while it
@@ -3029,6 +3051,15 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   if schema != nil and schema{"x-harness"}{"sessionId"}.getBool(false):
     callArgs["__session"] = %*{"session":
       (if ct.nested != nil: ct.nested.session else: "")}
+    # Provenance for the child process (issue #101): the RESOLVED model,
+    # provider and thinking effort of the live turn, so a command can report
+    # what drove it or call back into the harness without a model-authored id.
+    # Only session-dispatched calls get this (the same gate as the session id):
+    # a direct `cli` call is not inside a turn and must not inherit an ambient
+    # identity. Values are copied, not read later, because the turn's fields
+    # are cleared when it ends.
+    let prov = turnProvenance(ct)
+    if prov.len > 0: callArgs["__session"]["provenance"] = prov
 
   # Workspace-declaring tools (x-harness.workspace) also learn the
   # conversation's workspace *set*: the primary plus its git worktrees and
@@ -3188,6 +3219,8 @@ proc dispatchToolCalls*(ct: CoreTools,
     if schema != nil and schema{"x-harness"}{"sessionId"}.getBool(false):
       callArgs{"__session"} = %*{"session":
         (if ct.nested != nil: ct.nested.session else: "")}
+      let prov = turnProvenance(ct)
+      if prov.len > 0: callArgs["__session"]["provenance"] = prov
     injectWorkspaceContext(ct, schema, callArgs)
     injectSandboxContext(ct, schema, callArgs)
     let env = callEnvelope(call.tool, callArgs)

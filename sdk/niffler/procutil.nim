@@ -251,7 +251,8 @@ proc netScoped*(script: string, cwd = ""): string =
     "echo 'NIF_BASH_NET=off needs Linux unshare(1)' >&2; exit 125"
 
 proc runCmd*(cmd: string, timeoutMs: int = 120_000,
-             cancelled: proc(): bool = nil, workingDir: string = ""): RunResult =
+             cancelled: proc(): bool = nil, workingDir: string = "",
+             env: seq[(string, string)] = @[]): RunResult =
   ## Run `cmd` via bash -c and return its exit code plus the combined
   ## stdout+stderr, captured through a temp file (pipes deadlock chatty
   ## children). The command runs as the leader of its own process group, so
@@ -259,6 +260,13 @@ proc runCmd*(cmd: string, timeoutMs: int = 120_000,
   ## wrapper. On timeout the exit code is 124; when the optional `cancelled`
   ## probe turns true (checked every 50ms) it is 130. Output is whatever the
   ## command produced before dying.
+  ##
+  ## `env` entries are exported into the CHILD only (the fork happens before
+  ## any of this is visible to the parent), so a caller can hand a command
+  ## session provenance (issue #101) without mutating this process's own
+  ## environment — which other calls, the SDK and the component's own logs
+  ## share. An empty value is an error the caller must not make: absence is
+  ## how "unset" is expressed here.
   inc callCounter
   cloexecInheritedFds()
   let tmpPath = getTempDir() /
@@ -300,6 +308,19 @@ proc runCmd*(cmd: string, timeoutMs: int = 120_000,
       discard prctl(prSetPdeathsig, sigTermSignal)
       if posix.getppid() != ppidBefore:
         posix.exitnow(128)            # parent already gone: run nothing
+    # Provenance for THIS command only. Set after the fork, so the parent's
+    # environment is untouched; a child that cannot set one of these must not
+    # run with a half-identity, so treat failure as a refusal.
+    #
+    # libc setenv directly, like the prctl above: Nim's os.putEnv is not
+    # async-signal-safe and may allocate, and this is a forked child before
+    # exec where the only safe calls are libc ones. The declaration lives here
+    # because std/posix does not export setenv.
+    proc cSetenv(name, value: cstring, overwrite: cint): cint
+      {.importc: "setenv", header: "<stdlib.h>".}
+    for (k, v) in env:
+      if cSetenv(k.cstring, v.cstring, 1) != 0:
+        posix.exitnow(126)
     if workingDir.len > 0 and posix.chdir(workingDir) != 0:
       posix.exitnow(126)
     discard posix.execvp("bash", argv)
