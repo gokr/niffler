@@ -104,6 +104,7 @@ SQLITE_VEC_INC = shim="$${TMPDIR:-/tmp}/niffler-sqlite-inc"; mkdir -p "$$shim"; 
         test-models test-embed-chain test-provider test-observe test-logfile test-hooks test-core test-discover test-cli test-jev test-von \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg test-heartbeat test-fleet-admission test-taskpolicy test-codingartifact test-server-lifecycle test-fleet \
         test-retry-unit test-ctx-accounting test-context-status test-compaction \
+        test-arbitration test-approval-breaker test-core-config \
         test-toolpair-unit test-toolpair-heal test-dotenv test-dotenv-ts \
         test-autostart test-smoke smoke clean gotest \
         install uninstall install-tui \
@@ -800,6 +801,8 @@ test-sandbox: build var/bin/test_t_sandbox var/bin/niffler-sandbox
 	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_sandbox
 	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" NIF_SANDBOX_ALLOW_DEGRADED=1 ./var/bin/test_t_sandbox
 test-arbitration: build var/bin/test_t_arbitration ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_arbitration
+test-approval-breaker: build var/bin/test_t_approval_breaker ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_approval_breaker
+test-core-config: build var/bin/test_t_core_config ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_core_config
 test-edit-lsp-slow: build var/bin/test_t_edit_lsp_slow var/bin/fixture-slow-lsp ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit_lsp_slow
 test-vars:    build var/bin/test_t_vars    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_vars
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp

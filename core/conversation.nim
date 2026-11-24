@@ -3573,6 +3573,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ct.activeTurn.model = ""
     ct.activeTurn.provider = ""
     ct.activeTurn.thinkingEffort = thinkingEffort
+    # A new turn asks again: the memo of denied approvals is per turn, because a
+    # human may have changed their mind since the last one (and a resumed turn
+    # after a fix is exactly when they have).
+    clearApprovalDenials()
   defer:
     if ct.activeTurn != nil:
       ct.activeTurn.session = ""
@@ -4774,6 +4778,16 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               oc = ToolCallOutcome(ok: true, value: receipt)
         except CatchableError as e:
           oc = ToolCallOutcome(error: e.msg)
+      # NOTE: a denied approval is NOT a reason to end the turn. Two shipped
+      # contracts require that a denied tool result stays a tool result and the
+      # conversation continues (t_controls' stale-cancel case and
+      # t_session_usage both rely on it).
+      #
+      # The real cost of the subagent incident was not the denial but the
+      # repeated approval TIMEOUTS: each retry waited the full 300 s again. That
+      # is fixed at the gate instead — `approvalDeniedThisTurn` (see
+      # dispatch.nim) remembers the decision for the rest of the turn, so every
+      # repeat refuses in milliseconds while the turn proceeds normally.
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
       commitToolItem(ct, p, messages, exposure, onEvent, sessionId, turnId,
                      it, oc, toolStartedAt, toolDurationMs, turnVision,
@@ -6595,6 +6609,11 @@ proc handleSessionCall*(ct: CoreTools, inputArgs: JsonNode,
         ct.approval.session = sessionId
         ct.approval.approvalMode = entry.approvalMode
       ct.nested.isolation = entry.isolationScope
+      # A client invoke is a FRESH human interaction, not a retry inside a
+      # model turn: last turn's denial memo must not suppress its prompt (a
+      # human pressing the control expects to be asked). t_controls asserts
+      # exactly that — "client invoke: approval still required after stop".
+      clearApprovalDenials()
       defer:
         if ct.approval != nil: ct.approval.approvalMode = previousMode
         ct.nested.isolation = previousIsolation

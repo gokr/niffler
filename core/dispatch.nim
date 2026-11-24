@@ -2980,6 +2980,37 @@ proc opaqueClaimRoot*(args, wsPolicy: JsonNode, roots: openArray[string],
           if isolation == "worktree": return ""
   primary
 
+# --- approval-denial memo (per turn, per conversation) ----------------------
+# A denied approval is a DECISION, not a transient error: re-asking inside the
+# same turn cannot produce a different answer, so the gate refuses immediately
+# from this memo instead of making the model wait out another full approval
+# timeout.
+#
+# Measured failure this fixes: four audit subagents called `bash`, the first
+# prompt went unanswered for its full 300 s and was denied, and the model
+# retried — each retry burning another timeout until the tool-call budget ended
+# the turn with no work done. A denial still does NOT end the turn (two shipped
+# contracts require that a denial is just a tool result), but a repeat now costs
+# milliseconds.
+#
+# Module-level on purpose, NOT a CoreTools field: CoreTools is passed BY VALUE
+# through dispatchToolCall/runTurn and some paths construct it with nil streams
+# (transcriptFor), so a ref field either gets copied away or dereferenced while
+# nil. Process-scoped state keyed by the conversation is the honest shape here —
+# one runner process serves exactly one conversation.
+var deniedApprovals: HashSet[string]
+
+proc approvalDeniedThisTurn*(session, tool: string): bool =
+  deniedApprovals.contains(session & "\x00" & tool)
+
+proc noteApprovalDenial*(session, tool: string) =
+  deniedApprovals.incl(session & "\x00" & tool)
+
+proc clearApprovalDenials*() =
+  ## Called at every turn start: a new turn asks again, because a human may have
+  ## changed their mind since the last one.
+  deniedApprovals.clear()
+
 proc writePathsFor*(schema, args: JsonNode, workspace: string,
                     harnessRoot: string = "",
                     roots: openArray[string] = [],
@@ -3202,7 +3233,16 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     raise newException(IOError, "tool '" & tool & "' deadline expired")
   # approval gate: x-harness.approval == "always" needs a human (or NIF_AUTO_APPROVE)
   if schema != nil and schema{"x-harness"}{"approval"}.getStr("") == "always":
+    # A denial already given this turn is final for this turn: refuse at once
+    # rather than making the same call wait out another full approval timeout.
+    # The message says "already denied in this turn" so a model (and a human
+    # reading the transcript) can tell a fresh refusal from a cached one.
+    let gateSession = if ct.nested != nil: ct.nested.session else: ""
+    if approvalDeniedThisTurn(gateSession, tool):
+      raise newException(ValueError, "approval denied for tool '" & tool &
+        "' (already denied in this turn — ask the human, or continue without it)")
     if ct.approval == nil or not ct.approval.ask(tool, callArgs):
+      noteApprovalDenial(gateSession, tool)
       raise newException(ValueError, "approval denied for tool '" & tool & "'")
     if hasDeadline and getMonoTime() >= deadline:
       raise newException(IOError,
