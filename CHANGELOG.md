@@ -83,6 +83,13 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   call back into the harness without a model-authored session id. Values the
   turn did not resolve are absent rather than empty, and a direct
   `cli call bash ...` gets none — it is not inside a turn.
+- **The TypeScript SDK re-attaches after a bus outage, closing the last SDK
+  gap.** A connection unhealthy past `NIF_RECONNECT_GRACE_S` makes it
+  re-resolve the bus (so a harness restarted on a new port is found), redial,
+  rebuild every subscription and re-publish `reg.publish` without a process
+  restart; `onReattached` is the hook for components that defer their own
+  announce. Previously a TS component stayed alive and deaf, invisible to the
+  catalog, until it was killed by hand.
 
 - **A foreign harness home no longer runs checkout code unasked.** Cloning a
   repo and opening it with any UI used to autostart that manifest's components

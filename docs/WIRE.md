@@ -1002,7 +1002,7 @@ clients must not automatically resubmit the turn.
   for that call — a new process never received the old request, so "a replica
   is alive again" is not recovery. This is not a timeout: the error says the
   work stopped, and the remedy is a retry, not a longer cap.
-- A Nim or Go SDK component whose connection stays unhealthy past
+- An SDK component whose connection stays unhealthy past
   `NIF_RECONNECT_GRACE_S` re-attaches —
   it re-resolves the bus (every candidate must be answered by a core serving
   this root, and no well-known port is guessed), rebuilds its subscriptions and
