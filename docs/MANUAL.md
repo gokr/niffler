@@ -242,6 +242,9 @@ exported) and stdin, and descriptors above stderr closed before the spawn. A
 fresh shell per call means `cd` does not persist; `cwd` (the conversation
 workspace) is realized as `cd -- <cwd> || exit $?`, so a missing workspace
 directory fails the call instead of running somewhere else.
+A call dispatched inside a live turn also gets session provenance exported over
+that environment (`NIF_SESSION_ID`, `NIF_MODEL`, `NIF_PROVIDER`,
+`NIF_REASONING_LEVEL`); see [Command provenance](#command-provenance).
 
 Commands optionally run inside a sandbox (the SDK's `netScoped` wrapper,
 `sdk/niffler/procutil.nim`). With `NIF_BASH_SANDBOX_MAP` set, every command —
@@ -4913,26 +4916,26 @@ The NATS client reconnects transparently to the same URL, but a bus that stays
 down past its reconnect budget — or a harness restarted on a new port — used to
 leave a component **alive but deaf**: its subscriptions never delivered again,
 no `reg.depart` was sent, and the catalog kept advertising tools nothing could
-reach, so recovery meant killing the process. The Nim and Go SDKs now watch
-connection health (a `Flush` probe every 2 s) and, once the connection has been
-unhealthy for `NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the
-client's own patience), **re-attach**: re-resolve the bus URL (`NIF_NATS_URL`,
+reach, so recovery meant killing the process. The Nim, Go and TypeScript SDKs
+now watch connection health (a flush probe every 2 s; TypeScript uses a
+periodic `flush()`) and, once the connection has been unhealthy for
+`NIF_RECONNECT_GRACE_S` (default 180 s, deliberately above the client's own
+patience), **re-attach**: re-resolve the bus URL (`NIF_NATS_URL`,
 then this root's `var/nats-url` — never a well-known-port guess), validate
 every candidate against the core's advertised root before any subscription
 exists (the same rule as the first connection), redial (with exponential
-backoff in Nim; Go keeps retrying discovery on its health tick when a
-candidate is refused), rebuild every subscription (call, event and tap) and
-re-publish `reg.publish` — no process restart. A refused candidate is skipped
-and retried, never subscribed; a component whose bus is gone fails explicitly
-as "nowhere to go" instead of migrating onto whatever harness answers the
-well-known port.
+backoff in Nim and TypeScript; Go keeps retrying discovery on its health tick
+when a candidate is refused), rebuild every subscription (call, event and tap)
+and re-publish `reg.publish` — no process restart. A refused candidate is
+skipped and retried, never subscribed; a component whose bus is gone fails
+explicitly as "nowhere to go" instead of migrating onto whatever harness
+answers the well-known port.
 
 A component that deferred its announce (the Go SDK's `DeferAnnounce`, e.g.
 `mcp-bridge`) must re-publish its own contract on the fresh connection, since
 it may have drifted while disconnected; register it with `onReattached`
-(`OnReattached` in Go). Ordinary components need no hook — the re-attach
-already re-announced their frozen contract. The TypeScript SDK does not
-re-attach yet.
+(`OnReattached` in Go, `onReattached` in TypeScript). Ordinary components need
+no hook — the re-attach already re-announced their frozen contract.
 
 ```nim
 proc onReattached*(c: Component, handler: ReattachedHandler): Component
@@ -4940,6 +4943,10 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component
 
 ```go
 func (c *Component) OnReattached(h func(*Component)) *Component
+```
+
+```ts
+onReattached(handler: (c: Component) => void | Promise<void>): this
 ```
 
 The re-attach above fires only after the grace elapses. A Go client that must
@@ -5049,8 +5056,8 @@ A bus core **spawned** is a supervised resource. Core's idle loop checks it on
 every pass; if it dies (OOM killer, a stray `pkill -f nats-server`, a crash)
 core respawns it **on the same client port** and rewrites `var/nats-url`,
 `var/nats-monitor-url` and `var/nats-pid`. The same port matters: every child
-inherited a pinned `NIF_NATS_URL` from core's environment, and the Nim and Go
-SDKs re-attach to exactly that address, so a respawn on a new port would strand
+inherited a pinned `NIF_NATS_URL` from core's environment, and all three SDKs
+re-attach to exactly that address, so a respawn on a new port would strand
 them. Three failed attempts end core with a non-zero exit and a legible reason
 rather than leaving a harness nothing can reach.
 
