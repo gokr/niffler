@@ -1144,6 +1144,11 @@ included):
 - A tool approval that no client answers times out after 5 minutes
   (`timeoutMs`, 300 s) and is denied (the log says `timed out after Ns —
   denying`); a `/limit` keep-going question has its own shorter window (120 s).
+- A denied gated tool is remembered for the rest of the turn: a repeat refuses
+  immediately with `approval denied for tool '<name>' (already denied in this
+  turn — ask the human, or continue without it)` instead of waiting out another
+  approval timeout. The memo clears at every turn start and before a client
+  `invoke` (a fresh human interaction is still asked).
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
 - `NIF_APPROVALS_DEFAULT=auto` is the milder alternative for a resident
   instance nobody watches: it sets the gate mode of conversations nobody has
@@ -1451,7 +1456,8 @@ against the byte-sniffed MIME allowlist (a component's claim is a hint, the
 bytes decide), capped (4 per tool result, 4 MB each, 4.5 MB per message),
 stored as `attachment`/`attachmentdata` documents addressed under the message
 that carries them, and materialized into the provider request by the one
-shared projection rule — newest-first within `NIF_ATTACH_BUDGET`, older
+shared projection rule — newest-first within the `core.attachBudget` setting
+(`NIF_ATTACH_BUDGET` is the migration fallback), older
 images replaced by a text marker naming the file. A malformed or oversized
 `images` array never fails a turn: the refusal is appended to the tool's own
 text (`[images from this result were not attached: …]`) so the model learns
@@ -1649,8 +1655,9 @@ separate replaceable component — [COMPACTION.md](COMPACTION.md)):
   than 90% of the window — core executes a bounded ladder: deterministic
   prune (tool results and past-turn reasoning) + the stale-read stub →
   configured compactor (one replay if it fails without a verdict) →
-  derivable-result stub (`NIF_STUB_DERIVABLE=0` disables it) → proportional
-  oldest-complete-turn trim → explicit `context-recovery-required`. A refusal
+  derivable-result stub (`core.stubDerivable`, or `NIF_STUB_DERIVABLE=0`,
+  disables it) → proportional oldest-complete-turn trim → explicit
+  `context-recovery-required`. A refusal
   admission did not foresee (a provider whose real ceiling is below its
   catalog window, or one that counts the completion budget) runs the same
   ladder against the numbers the refusal itself supplied, and asks for a
@@ -3269,6 +3276,12 @@ store record, written by its own tool. The optional `config` component adds
 discovery, validation and one editing API on top, so neither a human nor a model
 has to know which component owns which knob.
 
+Core and `heartbeat` own declared domains too. `config_patch core` sets
+`attachBudget`, `emptyReplyRetries` and `stubDerivable` (`next turn`
+application); `config_patch heartbeat` sets `enabled`, `tickMs` and `maxPerDay`
+(`immediate`). Each keeps its historical `NIF_*` spelling as the migration
+fallback, so a deployment that never patches the domain behaves as before.
+
 An owner publishes a *declaration* at startup (`config_declare`, hidden —
 infrastructure, not a model tool): a stable domain id, its store kind, the tool
 that answers `get`/`patch`/`reset`, a JSON Schema subset for the values, and
@@ -4046,8 +4059,11 @@ Use `heartbeat_set {id, session, prompt, intervalSec}` to schedule turns,
 `heartbeat_list` to inspect them and `heartbeat_remove` to remove a schedule.
 Mutating tools require approval. Busy conversations skip ticks, never queue.
 
-`NIF_HEARTBEAT=0` pauses execution; `NIF_HEARTBEAT_TICK_MS` defaults to 30000;
-`NIF_HEARTBEAT_MAX_PER_DAY` defaults to four turns per record per rolling day.
+`enabled`, `tickMs` and `maxPerDay` are the declared `heartbeat` domain
+(`config_patch heartbeat`), applied immediately. Their historical spellings are
+the migration fallback: `NIF_HEARTBEAT=0` pauses execution,
+`NIF_HEARTBEAT_TICK_MS` defaults to 30000, and `NIF_HEARTBEAT_MAX_PER_DAY`
+defaults to four turns per record per rolling day.
 The runner independently validates the record and records admission before
 inference. Scheduling reserves attempts before publishing, so a crash can lose
 a tick rather than duplicate work. Status reports attempts, not completion;

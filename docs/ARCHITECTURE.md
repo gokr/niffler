@@ -65,12 +65,15 @@ internal children (restart policy `never`), not agent capabilities.
 
 ### 4. Catalog authority — `core/catalog.nim`
 
-The live registry: `reg.publish`/`reg.depart` handling, global tool-name
-uniqueness enforcement, exposure projection (`x-harness.hidden` removes a
-tool from every LLM view; `x-harness.onDemand` keeps it out of the per-
-conversation direct set but discoverable via `discover`), schema
-normalization, `ev.catalog.updated` announcements. Routing always uses the
-full catalog — exposure shapes prompts, not dispatch rights.
+The live registry: `reg.publish`/`reg.admit`/`reg.depart` handling, global
+tool-name uniqueness enforcement, exposure projection (`x-harness.hidden`
+removes a tool from every LLM view; `x-harness.onDemand` keeps it out of the
+per-conversation direct set but discoverable via `discover`), schema
+normalization, `ev.catalog.updated` announcements. It also answers
+`reg.admit`, refusing a second `store` PID before that store subscribes, and
+records bounded timestamp/PID/root identity lines for arrivals, refusals and
+departures in the rotating core log without consulting the store. Routing
+always uses the full catalog — exposure shapes prompts, not dispatch rights.
 
 The borderline case — it is almost a component (a `reg.>` subscriber). It stays
 in core because it must (a) exist before any component registers — boot order —

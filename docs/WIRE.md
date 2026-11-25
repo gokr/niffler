@@ -459,9 +459,11 @@ when a model calls it, its normal tool result enters append-only history.
 
 The opt-in heartbeat component publishes `session {sessionId, content,
 notice:{kind:"heartbeat",id}}`. The runner requires an enabled heartbeat
-record with the same session and prompt, checks `NIF_HEARTBEAT` and the rolling
-24-hour `NIF_HEARTBEAT_MAX_PER_DAY` admission limit, and records a unique
-`heartbeatmark` before inference. Store failures decline admission. A busy
+record with the same session and prompt, checks the `heartbeat` domain's
+`enabled` value and the rolling 24-hour `maxPerDay` admission limit (the
+historical `NIF_HEARTBEAT`/`NIF_HEARTBEAT_MAX_PER_DAY` spellings remain the
+migration fallback), and records a unique `heartbeatmark` before inference.
+Store failures decline admission. A busy
 runner refuses; scheduled turns never queue. Admitted messages carry the
 heartbeat notice marker in durable history, not in provider-visible metadata.
 Prefix effect: append-only history, unchanged system prompt and tool schemas.
