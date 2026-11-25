@@ -46,7 +46,7 @@
       "cmp.dsh.note": "out of the box — every base-backed profile (tui · web · headless)",
       "cmp.oc.note": "captured from the v1.18.32 wire — v2's docs list a slightly different set (adds apply_patch · question · websearch)",
       "cmp.method.h": "How to read this",
-      "cmp.method.p": "≈ k tokens (chars/4) from the exact first-request bytes each harness sends into an empty workspace — captured from live wire requests, Oct 2026. User content excluded (Pi lists your installed skills in its prompt by default, Niffler adds the repo's AGENTS.md chain, Claude Code the CLAUDE.md) — all five captured the same way.",
+      "cmp.method.p": "≈ k tokens (chars/4) from the exact first-request bytes each harness sends into an empty workspace — captured from live wire requests, Oct 2026 (Niffler's row re-captured at 0.6.0, Nov 2026: ≈3.2k). User content excluded (Pi lists your installed skills in its prompt by default, Niffler adds the repo's AGENTS.md chain, Claude Code the CLAUDE.md) — all five captured the same way.",
 
       "feat.kicker": "Interesting features, relatively rare",
       "feat.h2": "Not one of a kind —<br><em>rarely all together.</em>",

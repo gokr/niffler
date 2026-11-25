@@ -108,11 +108,11 @@
       <div class="bench-frame">
       <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
       <table class="bench">
-        <caption>Benchmark full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026)</caption>
+        <caption>Benchmark full31 — 31 small coding tasks, one round each, first&#8209;party DeepSeek (Oct 2026; Niffler re&#8209;measured Nov 2026)</caption>
         <thead><tr><th class="bench-harness">Harness</th><th class="bench-n">Pass</th><th class="bench-n">Wall / task</th><th class="bench-n">Turns</th><th class="bench-n">Tool calls</th><th>Tokens / task (in / cache / out)</th><th class="sortcol">Cost / task</th><th>Cache hit</th></tr></thead>
         <tbody>
           <tr><td>Pi 1.1.0</td><td>31/31</td><td>13.4s</td><td>5.3</td><td>5.5</td><td>3.7k / 18.1k / 2.0k</td><td class="sortcol">$0.0037</td><td>83%</td></tr>
-          <tr class="us"><td>Niffler 0.4.0</td><td>31/31</td><td>15.4s</td><td>6.1</td><td>7.8</td><td>4.0k / 31.6k / 2.1k</td><td class="sortcol">$0.0039</td><td>89%</td></tr>
+          <tr class="us"><td>Niffler 0.6.0</td><td>31/31</td><td>14.4s</td><td>6.8</td><td>7.5</td><td>3.6k / 37.2k / 2.0k</td><td class="sortcol">$0.0037</td><td>91%</td></tr>
           <tr><td>Maki 0.6.0</td><td>31/31</td><td>12.1s</td><td>6.3</td><td>8.0</td><td>9.7k / 53.2k / 1.5k</td><td class="sortcol">$0.0050</td><td>85%</td></tr>
           <tr><td>DSH 0.2.1 (<code>sdk</code>, out of the box)</td><td>31/31</td><td>17.9s</td><td>6.1</td><td>7.1</td><td>8.3k / 45.6k / 2.7k</td><td class="sortcol">$0.0061</td><td>85%</td></tr>
           <tr><td>Opencode 1.18.35</td><td>31/31</td><td>23.3s</td><td>5.4</td><td>5.7</td><td>18.2k / 87.9k / 1.1k</td><td class="sortcol">$0.0073</td><td>83%</td></tr>
@@ -124,7 +124,10 @@
       <p class="bench-note">Full record and methodology: <code>bench/reports/</code> in the repository.
         Cache hit = cached read ÷ (cached read + uncached input) over the whole run.
         All lanes run one cell at a time (jobs&#8209;1), so wall times are uncontended.
-        Niffler = the average of two runs.</p>
+        Niffler = the average of two runs.
+        <strong>The Niffler row was re&#8209;measured on 2026&#8209;11&#8209;24 at 0.6.0</strong> (both runs 31/31,
+        14.5s and 14.4s per task); the other rows are the Oct 2026 campaign and are
+        not re&#8209;run, so read small differences as noise rather than a ranking.</p>
       </div>
 
       <div class="bench-frame" id="tools-table">
@@ -134,7 +137,7 @@
         <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Turns</th><th>Tool calls</th><th>Tokens / task (in / cache / out)</th><th class="sortcol">Cost / task</th><th>Cache hit</th></tr></thead>
         <tbody>
           <tr><td>Pi</td><td>31/31</td><td>24.4s</td><td>5.3</td><td>5.0</td><td>3.8k / 17.4k / 2.1k</td><td class="sortcol">$0.0083</td><td>82%</td></tr>
-          <tr class="us"><td>Niffler</td><td>31/31</td><td>29.5s</td><td>6.5</td><td>7.6</td><td>7.0k / 31.3k / 2.3k</td><td class="sortcol">$0.0134</td><td>82%</td></tr>
+          <tr class="us"><td>Niffler 0.4.0</td><td>31/31</td><td>29.5s</td><td>6.5</td><td>7.6</td><td>7.0k / 31.3k / 2.3k</td><td class="sortcol">$0.0134</td><td>82%</td></tr>
           <tr><td>Droid v0.251.0 (BYOK)</td><td>31/31</td><td>30.2s</td><td>1.9</td><td>8.3</td><td>3.4k / 65.6k / 2.4k</td><td class="sortcol">$0.0161</td><td>95%</td></tr>
           <tr><td>Claude Code 2.1.318</td><td>31/31</td><td>33.7s</td><td>14.1</td><td>7.0</td><td>0 / 45.0k <span class="bench-note">(+18.1k w)</span> / 1.2k</td><td class="sortcol">$0.0231</td><td>100%</td></tr>
         </tbody>
@@ -142,7 +145,8 @@
       </div>
       <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
       <p class="bench-note">A second gateway, so a second table: these rows are <strong>not</strong>
-        comparable with the first-party numbers above. Claude Code is one uncontended run
+        comparable with the first-party numbers above, and the Niffler row here is still the
+        0.4.0 measurement — the 0.6.0 re&#8209;measurement above used the first&#8209;party endpoint. Claude Code is one uncontended run
         (2.1.318, 5&nbsp;Nov&nbsp;2026; 2.1.286 measured the same suite at $0.0271/task and a
         10&nbsp;855-token first call), Pi/Niffler/Droid come from the 29&nbsp;Oct&nbsp;2026
         three&#8209;lane run; every cell in either set passed in round 1.
@@ -161,7 +165,7 @@
         <thead><tr><th class="bench-harness">Harness</th><th class="bench-count">Direct tools</th><th class="tools">Which</th><th class="bench-base">Base prompt</th><th class="sortcol bench-total">Base prompt + tools</th></tr></thead>
         <tbody>
           <tr><td class="bench-harness">Pi</td><td class="bench-count">4 (+3 optional)</td><td class="tools">read · bash · edit · write <span class="bench-note">(grep · find · ls off by default)</span></td><td class="bench-base">≈0.68k</td><td class="sortcol">≈1.4k</td></tr>
-          <tr class="us"><td class="bench-harness">Niffler</td><td class="bench-count">8</td><td class="tools">discover · invoke · bash · read · write · edit · replace_across · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td class="bench-base">≈0.28k</td><td class="sortcol">≈2.1k</td></tr>
+          <tr class="us"><td class="bench-harness">Niffler</td><td class="bench-count">8</td><td class="tools">discover · invoke · bash · read · write · edit · replace_across · grep <span class="bench-note">(whole component catalog behind discover/invoke)</span></td><td class="bench-base">≈0.28k</td><td class="sortcol">≈3.2k <span class="bench-note">(measured first request)</span></td></tr>
           <tr><td class="bench-harness">Maki</td><td class="bench-count">19</td><td class="tools">index · code_execution · task · bash · batch · read · write · edit · multiedit · edit_lines · grep · glob · list · webfetch · websearch · skill · todo_write · memory · view_image</td><td class="bench-base">—</td><td class="sortcol">≈7.4k</td></tr>
           <tr><td class="bench-harness">DSH (out of the box)</td><td class="bench-count">25</td><td class="tools">bash · create_goal · edit · exit_plan_mode · get_goal · glob · grep · interrupt_agent · job_kill · job_list · job_output · list_agents · read · read_image · run_code · send_message · skill · subagent · subagent_fork · todo_write · update_goal · web_fetch · web_search · workflow · write</td><td class="bench-base">≈6.5k</td><td class="sortcol">≈11.7k</td></tr>
           <tr><td class="bench-harness">OpenHands</td><td class="bench-count">3 (+3 system)</td><td class="tools">terminal · file_editor · task_tracker <span class="bench-note">(finish · think · switch_llm)</span></td><td class="bench-base">generated per request</td><td class="sortcol">≈12–16k</td></tr>
@@ -172,7 +176,8 @@
       </div>
       <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
       <p class="bench-note">≈ k tokens (chars/4) from the exact first&#8209;request bytes each harness sends into
-        an empty workspace — captured from live wire requests, Oct 2026. User content excluded (Pi lists
+        an empty workspace — captured from live wire requests, Oct 2026
+        (Niffler's row re&#8209;captured at 0.6.0, Nov 2026: ≈3.2k). User content excluded (Pi lists
         your installed skills in its prompt by default, Niffler adds the repo's AGENTS.md chain, Claude Code
         the CLAUDE.md) — all captured the same way. Maki's figure is the measured first request of a
         three&#8209;word prompt in an empty <em>git-rooted</em> workspace (system + all 19 tool schemas; split
