@@ -679,6 +679,10 @@ schema 携带 `x-harness.approval: "always"` 的工具——目前包括
 - 没有客户端应答的工具审批在 5 分钟后超时
   （`timeoutMs`，300 秒）并被拒绝（日志显示 `timed out after Ns —
   denying`）；`/limit` 继续询问有自己的较短窗口（120 秒）。
+- 被拒绝的受门控工具会在本回合余下时间内被记住：重复调用会立即以
+  `approval denied for tool '<name>' (already denied in this turn — ask the
+  human, or continue without it)` 拒绝，而不再等待另一个审批超时。该备忘会在
+  每个回合开始时以及客户端 `invoke` 之前清除（新的人类交互仍会被询问）。
 - `NIF_AUTO_APPROVE=1` 绕过该门（无头自动化）。
 - Core 自己的破坏性工具命名为 `spawn`、`kill`、`remove` 和
   `conversation_delete`；它们在 `handleCoreTool` 内部按名称受门控，而不是
@@ -806,7 +810,7 @@ true`，加上窗口——否则上下文仪表会一直显示
 此后的一切由 core 而非组件掌控：图像按字节嗅探出的 MIME 白名单校验（组件的声明只是提示，
 字节才是结论）、按上限裁剪（每个工具结果 4 张、每张 4 MB、每条消息 4.5 MB）、作为
 `attachment`/`attachmentdata` 文档存放在承载它们的消息之下，并由唯一一条共享的投影规则
-物化进 provider 请求 —— 在 `NIF_ATTACH_BUDGET` 内由新到旧，更早的图像替换为一行指明文件
+物化进 provider 请求 —— 在 `core.attachBudget` 设置内由新到旧（`NIF_ATTACH_BUDGET` 是迁移回退），更早的图像替换为一行指明文件
 的文本标记。格式错误或超限的 `images` 数组**绝不**让回合失败：拒绝原因会追加到工具自身的
 文本之后（`[images from this result were not attached: …]`），这样模型能知道原因；而读取到
 超限文件时是*如实报告*而非静默缩放 —— 静默缩放等于对"这看起来是什么样"给出错误答案。
@@ -853,7 +857,7 @@ Core 会监视对话使用了模型上下文窗口的多少，并以*简单直�
 - 每次聊天调用后，core 记录提示 token，并使用 `usage.total_tokens`（或提示 + 完成回退）作为当前最佳占用。提供方、模型、上下文、占用和覆盖也会镜像到对话头中，因此计量器在重启后无需加载整个记录即可存活。
 - Core 发出 `ev.session.<id>.status`，包含已解析的提供方/模型/上下文和当前 `usedTokens`；客户端直接渲染 `usedTokens / context`。当提供方报告缓存输入（`prompt_tokens_details.cached_tokens`）时，状态事件还会携带对话的累计缓存拆分作为 `cache {prompt, read, hitRate}`（提示和缓存 token 的总和，比率为百分比）；对话头保留相同的数字作为 `cachePrompt`、`cacheRead` 和 `cacheHitRate`。由于提示前缀被冻结，大多数提示 token 在第一次请求后应被缓存，因此低比率是一个值得注意的信号（Web UI 在每条消息上显示 `⚡ <cached>/<prompt> cached`，并在 `/info` 中显示累计拆分；TUI 在其头中显示 `cache NN%` 标记，并在 `/status` 中显示相同的拆分）。
 - 持久化消息携带永远不会到达 LLM 的审计元数据：每条消息上的 `createdAt`，所有地方的 `turnId`，以及 assistant、tool 和 error 记录上的 `startedAt` / `durationMs`（当 LLM 调用本身失败时会持久化一条 `error` 记录，重放会跳过 error 角色）。
-- 准入在**每一次**提供方请求之前运行，包括每个工具循环轮次。在存在报告的用量之前，它用保守的 chars/4 估算为整个请求（消息加上冻结的工具模式）定价。保留的余量是目录中模型声明的输出上限（`limit.output`，例如 DeepSeek 的 384000）——提供方在准入时会将请求的 `max_tokens` 计入其窗口，因此固定的 16K 保留量曾让一个 736,803 token 的提示溢出 1,048,576 的提供方限制，而仅提示本身就适合。`NIF_CTX_RESERVE` 覆盖推导出的保留量。Core 在到达有效线的 75% 处警告一次（`ev.session.<id>.context {reason: "warn:threshold"}`）；到达该线时——绝不晚于窗口的 90%——core 执行一个有界阶梯：确定性修剪（工具结果与过往轮次的 reasoning）加上过期读取 stub → 配置的压缩器（若无裁决而失败则重放一次）→ 可重新获取结果 stub（`NIF_STUB_DERIVABLE=0` 禁用它）→ 按比例的最旧完整轮次裁剪 → 显式 `context-recovery-required`。只有压缩器需要组件或模型；其余每一级都是确定性的且不会失败，这正是阶梯总能终止的保证。在传输线上，`llm` 组件还会将请求的输出限制为序列化提示（消息加上工具模式）所留下的余量，因此任一层中的估算漂移都无法将一个适合的提示推过提供方的限制。它绝不会在知情的情况下发送超窗口请求。
+- 准入在**每一次**提供方请求之前运行，包括每个工具循环轮次。在存在报告的用量之前，它用保守的 chars/4 估算为整个请求（消息加上冻结的工具模式）定价。保留的余量是目录中模型声明的输出上限（`limit.output`，例如 DeepSeek 的 384000）——提供方在准入时会将请求的 `max_tokens` 计入其窗口，因此固定的 16K 保留量曾让一个 736,803 token 的提示溢出 1,048,576 的提供方限制，而仅提示本身就适合。`NIF_CTX_RESERVE` 覆盖推导出的保留量。Core 在到达有效线的 75% 处警告一次（`ev.session.<id>.context {reason: "warn:threshold"}`）；到达该线时——绝不晚于窗口的 90%——core 执行一个有界阶梯：确定性修剪（工具结果与过往轮次的 reasoning）加上过期读取 stub → 配置的压缩器（若无裁决而失败则重放一次）→ 可重新获取结果 stub（`core.stubDerivable`，或 `NIF_STUB_DERIVABLE=0`，禁用它）→ 按比例的最旧完整轮次裁剪 → 显式 `context-recovery-required`。只有压缩器需要组件或模型；其余每一级都是确定性的且不会失败，这正是阶梯总能终止的保证。在传输线上，`llm` 组件还会将请求的输出限制为序列化提示（消息加上工具模式）所留下的余量，因此任一层中的估算漂移都无法将一个适合的提示推过提供方的限制。它绝不会在知情的情况下发送超窗口请求。
 - 触发器以**提供方的尺度而非估算的尺度**衡量：每个成功响应都会重新测量一个校准偏移（报告的 `prompt_tokens` 减去同一请求的本地估算），准入、警告和修剪将候选定价为估算 + 偏移。原始的 chars/4 代理可能比更密集的分词器滞后数万个 token——在一个 524K 窗口的对话中观察到，"90%" 线在约 99% 时静默触发，而 core 称为 86% 的请求在 400 处被拒绝。该偏移是模型作用域的（在模型更改时清除，从下一个响应重新学习），在恢复时从存储的用量播种，限制在 `[0, window]`，并且从不持久化——它会在第一个响应时重新测量。
 - 随附的 `compaction_propose` 是可替换的：设置 `NIF_COMPACTION_TOOL=<tool>` 以选择另一个 contract-v1 实现，或将其设置为空以在保留确定性守卫的同时禁用摘要。该值是一个**工具名称**，而不是组件名称：运行器在目录中解析它，并分派到注册它的任何组件，因此替换项可以位于任何组件中。空值或未注册的值会跳过自动阶梯中的该级，并使 `/compact` 回答 `compacted: false`，并带有 `reason: "no compaction component available (NIF_COMPACTION_TOOL=<value>)"`。`NIF_COMPACTION_TIMEOUT_MS`、`NIF_COMPACTION_MAX_LLM_CALLS` 和 `NIF_COMPACTION_MAX_SUMMARY_TOKENS` 限制每次尝试。该接缝是一个版本化契约：候选工具以 `{version: 1, sessionId, attemptId, trigger, snapshot: {ref, generation, canonicalHigh, digest}, budget: {…}}` 被调用，并回答 `{version: 1, status: "declined", attemptId, reason}`（带有三个稳定原因之一：`no-useful-cut`、`input-budget-exceeded`、`indivisible`），或回答 `{version: 1, status: "candidate", attemptId, baseGeneration, snapshotDigest, cutBefore, covered, checkpoint, provenance: {model, llmCalls}}`，其中 `checkpoint` 恰好携带 `objective`、`constraints`、`decisions`、`completedWork`、`currentBlocker`、`nextSteps` 和可选的 `files`。任何其他内容都会作为无效被拒绝并落到修剪——`provenance.llmCalls` 高于授予的 `NIF_COMPACTION_MAX_LLM_CALLS` 也是如此，并且一个发现请求的 `attemptId`、`digest` 或 `generation` 与其读取的快照不一致的组件会以 `stale-snapshot` 拒绝该调用。运行器写入一个临时的分页 `compaction_input` 快照，验证候选的 generation/digest/cut/schema/size，针对快照重新哈希被覆盖的节点，并自行测量严格缩减（渲染后的检查点的估算 token 必须低于被覆盖跨度的估算 token），然后以乐观的 `expectRev` 提交一个 `context_projection` 文档。快照页为 512000 字节，因此一条巨大的消息不会使总线消息过大；检查点是有界的（objective 和列表项 ≤ 4000 字符，每个列表 ≤ 32 项，≤ 64 个文件，编码后 ≤ 65536 字节），并由运行器拥有的 `checkpoint-v1` 模板渲染，因此由一个压缩器存储的检查点在另一个压缩器下会以相同方式重新加载。该组件从不写入对话或投影记录。
 - 成功的投影发出 `reason: "reset:compact"`；无模型修剪发出 `reset:prune`；有损回退发出 `reset:trim`。`reset:tools` 仍然保留给实际的粘性工具模式提升。这些是唯一有意的提示前缀重建，并使缓存未命中可归因。压缩级会报告**每一个**非重置退出，绝不静默：`compact:unavailable`（未配置或未注册压缩器）、`compact:failed`（分派错误/超时、上一个投影无法读取、live context/node 账本不一致，或投影提交失败）、`compact:declined`（带 `detail` = 稳定拒绝原因，或运行器的 `no permitted cut exists yet` / `no committable cut exists yet`）、`compact:invalid`（schema、界限、声称的调用预算、严格缩减或边界解析失败）和 `compact:stale`（上一个投影缺失或过期、被覆盖跨度在尝试期间发生变化，或投影世代在提交前变动）。它们每一个都携带人类可读的 `detail`；它们都不重建提示前缀。成功的 `reset:compact` 事件携带 `generation`、`covered`、`beforeTokens` 和 `afterTokens`。阈值警告（`warn:threshold`）携带 `trimAt`——以 token 计的有效阈值线——因此 UI 可以显示与 core 打印的相同百分比，而不是自行编造。
@@ -1509,6 +1513,8 @@ Niffler 保留一份完整的全局目录，同时向每个会话暴露一组小
 ### Declared configuration (the `config` component)
 拥有设置（settings）的组件继续拥有它：值保存在该组件自己的 store 记录中，并由它自己的工具写入。可选的 `config` 组件在其上增加发现、校验和一个统一的编辑 API，这样无论是人还是模型都不必知道哪个组件拥有哪个开关。
 
+Core 与 `heartbeat` 也拥有已声明的 domain。`config_patch core` 设置 `attachBudget`、`emptyReplyRetries` 和 `stubDerivable`（`next turn` 生效）；`config_patch heartbeat` 设置 `enabled`、`tickMs` 和 `maxPerDay`（`immediate`）。每个都保留其历史 `NIF_*` 拼写作为迁移回退，因此从不 patch 该 domain 的部署行为与以前相同。
+
 所有者会在启动时发布一份*声明*（`config_declare`，hidden —— 属于基础设施，不是模型工具）：一个稳定的 domain id、它使用的 store kind、负责应答 `get`/`patch`/`reset` 的工具、用于取值的 JSON Schema 子集，以及每个属性的 `x-config` 元数据（`title`、`description`、`secret`、`readOnly`、`humanOnly`、`application`）。声明是持久的，所以已停止的所有者仍然会出现在列表中。
 
 | 工具 | 作用 |
@@ -1989,8 +1995,11 @@ gh auth status                 # 确认是哪个账户、哪些 scope 在应答
 heartbeat 由 `make build` 构建，仅通过获批的 `spawn` 启用，不自动启动。
 用 `heartbeat_set {id, session, prompt, intervalSec}` 设置，`heartbeat_list`
 查看，`heartbeat_remove` 删除计划。修改需要批准；忙碌对话跳过触发，不排队。
-`NIF_HEARTBEAT=0` 暂停；轮询默认 30000 毫秒；`NIF_HEARTBEAT_MAX_PER_DAY`
-默认每条记录滚动 24 小时内四次。runner 独立验证记录并在推理前记录准入。
+`enabled`、`tickMs` 与 `maxPerDay` 是已声明的 `heartbeat` domain
+（`config_patch heartbeat`），立即生效。它们的历史拼写是迁移回退：
+`NIF_HEARTBEAT=0` 暂停；`NIF_HEARTBEAT_TICK_MS` 默认 30000 毫秒；
+`NIF_HEARTBEAT_MAX_PER_DAY` 默认每条记录滚动 24 小时内四次。
+runner 独立验证记录并在推理前记录准入。
 发布前预留尝试，崩溃可能漏掉一次但不会重复执行。状态只表示尝试，不表示完成；
 结果在对话记录中。heartbeat 不授予批准权限，也不维持 harness 存活。
 服务器常驻运行时不要设置 `NIF_AUTOSTART=1`。详见组件指南。

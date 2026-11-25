@@ -659,6 +659,10 @@ MCP-bridge 伺服器的每個工具也以相同方式把關，而諸如 `provide
 - 沒有用戶端回應的工具核准會在 5 分鐘（`timeoutMs`，300 秒）後逾時並被拒絕
   （記錄會顯示 `timed out after Ns — denying`）；`/limit` 的繼續詢問有其自己
   較短的視窗（120 秒）。
+- 被拒絕的受閘門工具會在該回合剩餘時間內被記住：重複呼叫會立即以
+  `approval denied for tool '<name>' (already denied in this turn — ask the
+  human, or continue without it)` 拒絕，而不再等待另一個核准逾時。此備忘會在
+  每個回合開始時以及用戶端 `invoke` 之前清除（新的人類互動仍會被詢問）。
 - `NIF_AUTO_APPROVE=1` 會繞過閘門（無頭自動化）。
 - core 自己的破壞性工具命名為 `spawn`、`kill`、`remove` 和
   `conversation_delete`；它們在 `handleCoreTool` 內按名稱把關，而非透過
@@ -772,7 +776,7 @@ mid-turn — retry when the turn finishes」），而非等待：回合永遠不
 此後的一切由 core 而非元件掌控：影像按位元組嗅探出的 MIME 白名單驗證（元件的宣告只是提示，
 位元組才是結論）、按上限裁剪（每個工具結果 4 張、每張 4 MB、每則訊息 4.5 MB）、作為
 `attachment`/`attachmentdata` 文件存放在承載它們的訊息之下，並由唯一一條共享的投影規則
-物化進 provider 請求 —— 在 `NIF_ATTACH_BUDGET` 內由新到舊，更早的影像替換為一行指明檔案
+物化進 provider 請求 —— 在 `core.attachBudget` 設定內由新到舊（`NIF_ATTACH_BUDGET` 是遷移回退），更早的影像替換為一行指明檔案
 的文字標記。格式錯誤或超限的 `images` 陣列**絕不**讓回合失敗：拒絕原因會附加到工具自身的
 文字之後（`[images from this result were not attached: …]`），這樣模型能知道原因；而讀取到
 超限檔案時是*如實回報*而非靜默縮放 —— 靜默縮放等於對「這看起來是什麼樣」給出錯誤答案。
@@ -824,7 +828,7 @@ Core 會監看一段會話使用了模型 context window 的多少，並以*極�
   當 provider 回報快取的輸入（`prompt_tokens_details.cached_tokens`）時，status 事件也會攜帶該會話的累計快取拆分為 `cache {prompt, read, hitRate}`（prompt 與快取 token 的加總，比率以百分比表示）；會話標頭以 `cachePrompt`、`cacheRead` 與 `cacheHitRate` 保留相同數字。由於 prompt 前綴已凍結，第一次請求後多數 prompt token 應已被快取，因此偏低的比率是值得留意的訊號（web UI 在每則訊息顯示 `⚡ <cached>/<prompt> cached`，並在 `/info` 顯示累計拆分；TUI 在其標頭顯示 `cache NN%` 標籤，並在 `/status` 顯示相同拆分）。
 - 已持續保存的訊息帶有永遠不會送達 LLM 的稽核中介資料：每則訊息上的 `createdAt`、各處的 `turnId`，以及 assistant、tool 與 error 記錄上的 `startedAt` / `durationMs`（當 LLM 呼叫本身失敗時會持續保存一筆 `error` 記錄，而重播會略過 error 角色）。
 - 准入會在**每一次** provider 請求前執行，包括每個工具迴圈回合。在已回報的使用量存在之前，它會以保守的 chars/4 估算為整份請求（訊息加上凍結的工具 schemas）定價。保留的餘裕是 catalog 中模型宣告的 output 上限（`limit.output`，例如 DeepSeek 的 384000）——provider 在准入時會將請求的 `max_tokens` 計入其 window，因此固定的 16K 保留量曾讓一個 736,803-token 的 prompt 溢出 1,048,576 的 provider 限制，而該 prompt 單獨是放得下的。`NIF_CTX_RESERVE` 會覆寫推導出的保留量。Core 會在到達有效線的 75% 時警告一次
-  （`ev.session.<id>.context {reason: "warn:threshold"}`）；到達該線時——絕不晚於 window 的 90%——core 會執行一個有界的階梯：確定性的工具結果剪除（加上過期讀取 stub）→ 已設定的 compactor（若無裁決而失敗則重放一次）→ 可重新取得結果 stub（`NIF_STUB_DERIVABLE=0` 可停用它）→ 按比例的最舊完整回合修剪 → 明確的 `context-recovery-required`。只有 compactor 需要元件或模型；其餘每一層都是確定性的且不會失敗，這正是階梯總能終止的保證。在傳輸線上，`llm` 元件另會將請求的 output 夾限至序列化 prompt（訊息加上工具 schemas）所留下的餘裕，因此任一層的估算漂移都無法將一個放得下的 prompt 推過 provider 的限制。它絕不會在知情下送出超出 window 的請求。
+  （`ev.session.<id>.context {reason: "warn:threshold"}`）；到達該線時——絕不晚於 window 的 90%——core 會執行一個有界的階梯：確定性的工具結果剪除（加上過期讀取 stub）→ 已設定的 compactor（若無裁決而失敗則重放一次）→ 可重新取得結果 stub（`core.stubDerivable`，或 `NIF_STUB_DERIVABLE=0`，可停用它）→ 按比例的最舊完整回合修剪 → 明確的 `context-recovery-required`。只有 compactor 需要元件或模型；其餘每一層都是確定性的且不會失敗，這正是階梯總能終止的保證。在傳輸線上，`llm` 元件另會將請求的 output 夾限至序列化 prompt（訊息加上工具 schemas）所留下的餘裕，因此任一層的估算漂移都無法將一個放得下的 prompt 推過 provider 的限制。它絕不會在知情下送出超出 window 的請求。
 - 觸發器以**provider 的尺度，而非估算的尺度**衡量：每一次成功的回應都會重新測量一個校準偏移（回報的 `prompt_tokens` 減去同一請求的本地估算），而准入、警告與修剪會以估算 + 偏移為候選定價。原始的 chars/4 代理可能落後較密集的 tokenizer 達數萬個 token——曾觀察到一個 524K-window 的會話中，「90%」線在約 99% 時無聲觸發，而一個 core 稱為 86% 的請求在 400 時被拒絕。該偏移以模型為範圍（模型變更時清除，從下一次回應重新學習），續接時從已儲存的使用量播種，夾限於 `[0, window]`，且永不持續保存——它會在第一次回應時重新測量。
 - 隨附的 `compaction_propose` 可替換：設定
   `NIF_COMPACTION_TOOL=<tool>` 以選用另一個 contract-v1 實作，或將其設為空以停用摘要，同時保留確定性守衛。該值是**工具名稱**，不是元件名稱：runner 會在 catalog 中解析它，並分派給註冊它的任一元件，因此替換品可位於任何元件中。空值或未註冊的值會略過自動階梯中的該階，並使 `/compact` 回答 `compacted:
@@ -1691,6 +1695,8 @@ Niffler 維護一份完整的全域目錄，同時對每個會話只暴露一組
 ### Declared configuration (the `config` component)
 擁有設定（settings）的元件繼續擁有它：值保存在該元件自己的 store 記錄中，並由它自己的工具寫入。可選的 `config` 元件在其上增加探索、驗證與一個統一的編輯 API，這樣無論是人或模型都不必知道哪個元件擁有哪個開關。
 
+Core 與 `heartbeat` 也擁有已宣告的 domain。`config_patch core` 設定 `attachBudget`、`emptyReplyRetries` 與 `stubDerivable`（`next turn` 生效）；`config_patch heartbeat` 設定 `enabled`、`tickMs` 與 `maxPerDay`（`immediate`）。每個都保留其歷史 `NIF_*` 拼寫作為遷移回退，因此從不 patch 該 domain 的部署行為與以前相同。
+
 擁有者會在啟動時發佈一份*宣告*（`config_declare`，hidden —— 屬於基礎設施，不是模型工具）：一個穩定的 domain id、它使用的 store kind、負責回應 `get`/`patch`/`reset` 的工具、用於取值的 JSON Schema 子集，以及每個屬性的 `x-config` 中介資料（`title`、`description`、`secret`、`readOnly`、`humanOnly`、`application`）。宣告是持久的，所以已停止的擁有者仍然會出現在清單中。
 
 | 工具 | 作用 |
@@ -2171,8 +2177,11 @@ gh auth status                 # 確認是哪個帳戶、哪些 scope 在應答
 heartbeat 由 `make build` 建置，僅透過獲准的 `spawn` 啟用，不自動啟動。
 用 `heartbeat_set {id, session, prompt, intervalSec}` 設定，`heartbeat_list`
 檢視，`heartbeat_remove` 刪除排程。修改需要核准；忙碌對話跳過觸發，不排隊。
-`NIF_HEARTBEAT=0` 暫停；輪詢預設 30000 毫秒；`NIF_HEARTBEAT_MAX_PER_DAY`
-預設每筆記錄滾動 24 小時內四次。runner 獨立驗證記錄並在推理前記錄准入。
+`enabled`、`tickMs` 與 `maxPerDay` 是已宣告的 `heartbeat` domain
+（`config_patch heartbeat`），立即生效。它們的歷史拼寫是遷移回退：
+`NIF_HEARTBEAT=0` 暫停；`NIF_HEARTBEAT_TICK_MS` 預設 30000 毫秒；
+`NIF_HEARTBEAT_MAX_PER_DAY` 預設每筆記錄滾動 24 小時內四次。
+runner 獨立驗證記錄並在推理前記錄准入。
 發布前預留嘗試，當機可能漏掉一次但不會重複執行。狀態只表示嘗試，不表示完成；
 結果在對話記錄中。heartbeat 不授予核准權限，也不維持 harness 存活。
 伺服器常駐執行時不要設定 `NIF_AUTOSTART=1`。詳見元件指南。

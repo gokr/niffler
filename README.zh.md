@@ -30,7 +30,7 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
 
 ## Quick start
 
-要求：Nim 2.2.12+ 和 Go。`make setup` 安装这些以及其他平台先决条件（Ubuntu/macOS）、Nimble 依赖和 ripgrep（总线契约测试会调用 `rg`；`grep` 组件本身在没有它时会降级为可操作的错误）。Node.js 20+ 和 npm 是可选的——它们用于 TypeScript 组件、`npx` 技能和基于 npm 的 MCP 服务器。Niffler 使用纯 Nim 的 [natsnim](https://github.com/gokr/natsnim) 客户端；无需安装 `libnats` 或 `cnats`，总线本身就是本仓库构建到 `var/bin` 的 `nats-server`——绝不使用外部安装。
+要求：Nim 2.4.2+ 和 Go。`make setup` 安装这些以及其他平台先决条件（Ubuntu/macOS）、Nimble 依赖和 ripgrep（总线契约测试会调用 `rg`；`grep` 组件本身在没有它时会降级为可操作的错误）。Node.js 20+ 和 npm 是可选的——它们用于 TypeScript 组件、`npx` 技能和基于 npm 的 MCP 服务器。Niffler 使用纯 Nim 的 [natsnim](https://github.com/gokr/natsnim) 客户端；无需安装 `libnats` 或 `cnats`，总线本身就是本仓库构建到 `var/bin` 的 `nats-server`——绝不使用外部安装。
 
 一行安装：`scripts/bootstrap.sh` 会找到或创建克隆、安装先决条件，然后运行 `make setup`、`make release` 和 `make install-tui`：
 `curl -fsSL https://raw.githubusercontent.com/gokr/niffler/main/scripts/bootstrap.sh | bash`。
