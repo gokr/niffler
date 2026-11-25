@@ -237,6 +237,15 @@ export class NifflerHarness {
       ...process.env,
       NIF_ROOT: this.root,
       NIF_NATS_URL: `nats://127.0.0.1:${this.natsPort}`,
+      // This root is disposable scratch the bench creates and deletes, which is
+      // the case the boot trust gate's escape exists for. Without it a FRESH
+      // niffler-root has no var/store.db and no var/logs, so the home counts as
+      // never-run: core starts only the bootstrap set, the rig's `required`
+      // manifest components never register, and every cell dies at readiness
+      // with "catalog components unavailable" before a single turn. It must be
+      // set on THIS env — the one that spawns core — not only in cliEnv(),
+      // which is the env for the cli client.
+      NIF_TRUST: "always",
       NIF_OPENAI_BASE_URL: this.baseUrl,
       NIF_OPENAI_API_KEY: this.apiKey,
       NIF_OPENAI_MODEL: this.model,
