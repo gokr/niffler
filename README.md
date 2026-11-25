@@ -70,7 +70,7 @@ See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 
 ## Quick start
 
-Requirements: Nim 2.2.12+ and Go. `make setup` installs those and the other
+Requirements: Nim 2.4.2+ and Go. `make setup` installs those and the other
 platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies and
 ripgrep (the bus-contract tests shell out to `rg`; the `grep` component itself
 degrades to an actionable error without it). Node.js 20+
