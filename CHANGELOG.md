@@ -270,7 +270,7 @@ OS-level sandboxing; see [Worktrees](docs/MANUAL.md#worktrees) and
   "already denied in this turn" message; the memo clears at every turn start and
   before a client `invoke`, which is still asked. A denial deliberately does NOT
   end the turn — it stays an ordinary tool error. Proven end to end by
-  `tests/t_approval_breaker.nim`: six denials complete in ~1.8 s where six
+  `tests/t_approval_breaker.nim`: six denials complete in 1.9 s (measured) where six
   timeouts cost 30 minutes.
 - **`agent_wait`, `agent_status`, `agent_stop`, `agent_notices` and
   `agent_list` no longer take a write lease on the workspace.** None of them
