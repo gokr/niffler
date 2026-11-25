@@ -6,6 +6,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The required Nim version is now 2.4.2**, the toolchain this release's gate
+  and CI exercised (2.2.12 was the last required). A contributor on 2.2.x now
+  gets a `nimble` error instead of a toolchain that builds but is no longer what
+  the gate runs.
+- **The website's benchmark comparison shows the measured 0.6.0 row.** Two
+  full31 first-party DeepSeek V4 Flash lanes (low effort, one round, `jobs 1`)
+  both passed 31/31 and average to 14.4 s per task, 6.8 turns, $0.0037 per task
+  and a 91% cache hit rate, replacing the 0.4.0 figures; the other harnesses'
+  rows remain the Oct 2026 campaign and the caption now says so. Reports:
+  `bench/reports/full31-direct-low-niffler-0.6.0{,-run2}-report.*`.
+
+### Fixed
+
+- **The bench rig can start a fresh harness again.** A never-run
+  `niffler-root` has no store and no logs, so the boot trust gate correctly
+  started only the bootstrap set and every cell died at readiness with
+  `catalog components unavailable`. The adapter now sets `NIF_TRUST=always` on
+  the env that spawns core, for the disposable root it creates and deletes.
+  The measured 0.6.0 full31 lanes are committed under `bench/reports/`.
+- **`t_autostart`'s bus-stop check no longer times the machine.** Core's own
+  teardown is ~0.65 s, but nats-server's shutdown drain stretches from ~0.2 s
+  idle to ~6 s under load, so a 5 s bound failed a core that had stopped
+  correctly. The bound is now 15 s and still fails if the bus never stops.
+
 ## [0.6.0] — 2026-11-24
 
 A conversation became harder to waste and harder to wedge. A denied approval
