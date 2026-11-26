@@ -1144,6 +1144,11 @@ included):
 - A tool approval that no client answers times out after 5 minutes
   (`timeoutMs`, 300 s) and is denied (the log says `timed out after Ns —
   denying`); a `/limit` keep-going question has its own shorter window (120 s).
+- A denial is a decision for the rest of the turn: a repeat call to the same
+  tool refuses at once with `approval denied for tool '<name>' (already denied
+  in this turn …)` instead of waiting out another full timeout. The memo clears
+  at every turn start and before a client `invoke`, which is a fresh human
+  interaction and is still asked.
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
 - `NIF_APPROVALS_DEFAULT=auto` is the milder alternative for a resident
   instance nobody watches: it sets the gate mode of conversations nobody has
@@ -3294,6 +3299,14 @@ constraint would report a validation that never happened. `scope` is
 lands. No value enters a frozen prompt prefix — a change is visible at the
 owner's next call. Contract: [research/CONFIG-CONTRACT.md](research/CONFIG-CONTRACT.md).
 
+Core is an owner like any component: `config_patch core` sets `attachBudget`,
+`emptyReplyRetries` and `stubDerivable` with `next turn` timing, and core
+remains the only writer of the `core-settings` document. `config_patch
+heartbeat` sets `enabled`, `tickMs` and `maxPerDay`, applied immediately. In
+both, the historical `NIF_*` spelling stays the fallback when no explicit value
+is stored, alongside the `memory` and `git.mutations` domains described
+elsewhere in this manual.
+
 A declaration must name a domain `application` timing — `immediate`,
 `next turn`, `next conversation` or `component restart`; there is no default.
 Per-property `x-config.application` overrides it. `config_get` reports the
@@ -4046,9 +4059,13 @@ Use `heartbeat_set {id, session, prompt, intervalSec}` to schedule turns,
 `heartbeat_list` to inspect them and `heartbeat_remove` to remove a schedule.
 Mutating tools require approval. Busy conversations skip ticks, never queue.
 
-`NIF_HEARTBEAT=0` pauses execution; `NIF_HEARTBEAT_TICK_MS` defaults to 30000;
-`NIF_HEARTBEAT_MAX_PER_DAY` defaults to four turns per record per rolling day.
-The runner independently validates the record and records admission before
+`config_patch heartbeat` sets the component's `enabled`, `tickMs` (default
+30000) and `maxPerDay` (default four turns per record per rolling day); the
+`NIF_HEARTBEAT*` spellings remain the fallback when no explicit value is
+stored, and `NIF_HEARTBEAT=0` still pauses. The runner independently re-checks
+`NIF_HEARTBEAT` and `NIF_HEARTBEAT_MAX_PER_DAY` before admitting a turn, so
+those env bounds apply regardless of the domain. The runner also validates the
+record and records admission before
 inference. Scheduling reserves attempts before publishing, so a crash can lose
 a tick rather than duplicate work. Status reports attempts, not completion;
 results are in the conversation transcript. Heartbeats never grant approvals

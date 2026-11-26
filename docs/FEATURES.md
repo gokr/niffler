@@ -568,7 +568,8 @@ See [MANUAL.md](MANUAL.md) "State and configuration", "Environment variables".
 - Environment-driven configuration: every harness variable carries the `NIF_`
   prefix, with `.env` as the local override file and a commented reference
   copy, plus documented precedence rules.
-- Settings that are not env: boot selection, store-backed registries, the
+- Settings that are not env: boot selection, store-backed registries, declared
+  config domains (`memory`, `git.mutations`, `core`, `heartbeat`), the
   conversation header, home/project files (skills, language-server registry,
   edit-undo store), browser display state, and `var/` derived state.
 - The full store kind inventory used by core and components (conversations,

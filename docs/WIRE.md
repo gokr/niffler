@@ -458,7 +458,9 @@ when a model calls it, its normal tool result enters append-only history.
 ## Scheduled turns (heartbeat)
 
 The opt-in heartbeat component publishes `session {sessionId, content,
-notice:{kind:"heartbeat",id}}`. The runner requires an enabled heartbeat
+notice:{kind:"heartbeat",id}}`. The component's own `enabled`, `tickMs` and
+`maxPerDay` are a declared `heartbeat` config domain (the `NIF_HEARTBEAT*`
+spellings stay the fallback). The runner requires an enabled heartbeat
 record with the same session and prompt, checks `NIF_HEARTBEAT` and the rolling
 24-hour `NIF_HEARTBEAT_MAX_PER_DAY` admission limit, and records a unique
 `heartbeatmark` before inference. Store failures decline admission. A busy
@@ -1559,7 +1561,11 @@ the request is rebroadcast on `ev.approval.request` with `fallback: true`
 so any attached interactive client can step in; direct (non-session) calls
 broadcast immediately. The gate verdict is published on
 `ev.approval.resolved` so other clients dismiss stale modals. Timeout →
-denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
+denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses. A denial is
+memoized per conversation and tool for the rest of the turn, so a repeat
+refuses immediately with `already denied in this turn` instead of waiting out
+another timeout; the memo clears at every turn start and before a client
+`invoke`, which is asked again.
 
 ## Conversation controls (`/approvals`, `/limit`, `/compact`)
 
