@@ -442,6 +442,43 @@ h2 em {
 .grid p { color: var(--ink-soft); font-size: .98rem; }
 .grid p em { color: var(--ink); font-style: normal; font-weight: 600; }
 .grid.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid article.span-all { grid-column: 1 / -1; }
+
+/* expandable detail — keeps the page punchy, the method one click away */
+details.more {
+  margin-top: 1rem;
+  max-width: 56rem;
+}
+details.more > summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  font-family: var(--mono);
+  font-size: .78rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px dotted var(--line);
+  padding-bottom: .15rem;
+}
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary::before {
+  content: "+";
+  font-weight: 700;
+  color: var(--mint-deep);
+}
+details.more[open] > summary::before { content: "−"; }
+details.more > summary:hover { color: var(--ink); }
+details.more .more-body { margin-top: .8rem; }
+details.more .more-body p {
+  font-size: .9rem;
+  color: var(--dim);
+  line-height: 1.6;
+  margin-bottom: .6rem;
+}
+details.more .more-body p:last-child { margin-bottom: 0; }
 
 /* features list */
 .feat-group { margin-top: 2.2rem; }

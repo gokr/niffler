@@ -51,10 +51,9 @@
       <p class="lede" data-i18n-html="hero.lede1">Niffler is built from small Unix-style processes — every
         capability is a component on one NATS wire — so the agent can write,
         compile and spawn <strong>its own tools mid-conversation</strong>.</p>
-      <p class="lede" data-i18n-html="hero.lede2">Niffler is as simple and efficient to drive as the leanest
-        coding agents — cache-stable prompts, a tiny toolset, measured low token
-        use. Sub-agents, background processes, a permission gate, MCP, LSP? In
-        the box as well.</p>
+      <p class="lede" data-i18n-html="hero.lede2">As cheap to drive as the leanest coding
+        agents — and sub-agents, background jobs, a permission gate, MCP and LSP
+        come in the box.</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="#install" data-i18n="nav.install">Install</a>
         <a class="btn" href="https://github.com/gokr/niffler">GitHub ↗</a>
@@ -67,7 +66,7 @@
 
       <figure class="hero-shot wide">
         <a href="img/niffler-tui.png" target="_blank" rel="noopener">
-          <img src="img/niffler-tui.png" alt="niffler-tui, the terminal chat client: a conversation with tool calls, an approval prompt and per-turn cache statistics" width="1198" height="686">
+          <img src="img/niffler-tui.png" alt="niffler-tui, the terminal chat client: a session showing a two-call tool batch, a comparison table of benchmark gains, and per-turn cache statistics in the status bar" width="1600" height="929">
         </a>
         <figcaption data-i18n="hero.shotCap">niffler-tui — one client of a shared, local instance. Cache hit rate reported on every turn.</figcaption>
       </figure>
@@ -79,15 +78,11 @@
         <p class="kicker"><span class="num">01</span> <span data-i18n-html="fast.kicker">Fast &amp; cache-effective</span></p>
         <h2 data-i18n-html="fast.h2">Strict cache regime,<br><em>token efficient.</em></h2>
       </header>
-      <p class="body" data-i18n-html="fast.body">The request prefix is tiny and stays byte-stable for the
-        conversation's lifetime: a very small base prompt and a deliberately
-        small frozen direct toolset, so provider caches stay hot turn after
-        turn. Everything else is progressive discovery — one
-        <code>discover</code>/<code>invoke</code> away, entering as history
-        instead of prompt bloat. Fewer tokens per turn, quicker round trips —
-        and the numbers are measured in <code>bench/</code> against Pi,
-        Opencode, DeepSeek Harness, CodeWhale, Droid and Claude Code, not
-        asserted.</p>
+      <p class="body" data-i18n-html="fast.body">A tiny base prompt and a deliberately small
+        frozen toolset stay byte-stable for the conversation's lifetime, so provider
+        caches stay hot turn after turn. Everything else is one
+        <code>discover</code>/<code>invoke</code> away — entering as history, not
+        prompt bloat.</p>
       <div class="cache-meter" role="img" aria-label="Illustration: of a 252k token turn, only 1.8k tokens are new — the rest hits the prompt cache. Hit rate 99.3%.">
         <div class="cache-bar"><span class="cache-hit" style="width:99.2%"></span><span class="cache-miss" style="width:0.8%"></span></div>
         <div class="cache-legend">
@@ -96,14 +91,26 @@
           <span class="legend-dim" data-i18n="fast.legend3">99.3% — printed in the UI, every turn</span>
         </div>
       </div>
-      <p class="bench-copy"><strong>What this measures.</strong> Numbers gathered with
-        <strong>DeepSeek&#8209;V4.1&#8209;Flash</strong> (<code>deepseek-v4-flash</code>) at
-        <strong>low thinking effort</strong>, called <strong>directly through DeepSeek's
-        first&#8209;party API</strong> — no gateway, no proxy; the same key and endpoint for every
-        harness. The tasks are <strong>deliberately simple, well&#8209;specified coding
-        exercises</strong>: this is <strong>not a capability benchmark</strong>. It measures the
-        three things that dominate real daily cost — <strong>tokens per task, wall&#8209;clock per
-        task, and price per task</strong> — for normal work.</p>
+      <p class="bench-copy"><strong>31 small coding tasks, one round each</strong>, run
+        directly against DeepSeek's first&#8209;party API at low thinking effort.
+        Same key, same endpoint, every harness — <code>jobs&#8209;1</code>, so wall
+        times are uncontended.</p>
+      <details class="more">
+        <summary data-i18n="cmp.more">How to read the numbers</summary>
+        <div class="more-body">
+          <p>The tasks are <strong>deliberately simple, well&#8209;specified coding
+            exercises</strong>: this is <strong>not a capability benchmark</strong>. It
+            measures the three things that dominate real daily cost —
+            <strong>tokens per task, wall&#8209;clock per task, and price per task</strong> —
+            for normal work. Cache hit = cached read ÷ (cached read + uncached input)
+            over the whole run. Full record and methodology:
+            <code>bench/reports/</code> in the repository.</p>
+          <p><strong>The Niffler row was re&#8209;measured on 2026&#8209;11&#8209;24 at 0.6.0</strong>
+            (both runs 31/31, 14.5s and 14.4s per task); the other rows are the Oct 2026
+            campaign and were not re&#8209;run, so read small differences as noise rather
+            than a ranking.</p>
+        </div>
+      </details>
 
       <div class="bench-frame">
       <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
@@ -121,19 +128,12 @@
       </table>
       </div>
       <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
-      <p class="bench-note">Full record and methodology: <code>bench/reports/</code> in the repository.
-        Cache hit = cached read ÷ (cached read + uncached input) over the whole run.
-        All lanes run one cell at a time (jobs&#8209;1), so wall times are uncontended.
-        Niffler = the average of two runs.
-        <strong>The Niffler row was re&#8209;measured on 2026&#8209;11&#8209;24 at 0.6.0</strong> (both runs 31/31,
-        14.5s and 14.4s per task); the other rows are the Oct 2026 campaign and are
-        not re&#8209;run, so read small differences as noise rather than a ranking.</p>
       </div>
 
       <div class="bench-frame" id="tools-table">
       <div class="table-scroll" tabindex="0" role="region" aria-label="Benchmark comparison" data-i18n-scroll>
       <table class="bench">
-        <caption>Benchmark full31 — the same 31 tasks through a hosted gateway (DeepSeek V4.1 Flash, low effort, Nov 2026)</caption>
+        <caption>Benchmark full31 — the same 31 tasks through a hosted gateway (Synthetic, DeepSeek&#8209;V4.1, low effort, Nov 2026)</caption>
         <thead><tr><th>Harness</th><th>Pass</th><th>Wall / task</th><th>Turns</th><th>Tool calls</th><th>Tokens / task (in / cache / out)</th><th class="sortcol">Cost / task</th><th>Cache hit</th></tr></thead>
         <tbody>
           <tr><td>Pi</td><td>31/31</td><td>24.4s</td><td>5.3</td><td>5.0</td><td>3.8k / 17.4k / 2.1k</td><td class="sortcol">$0.0083</td><td>82%</td></tr>
@@ -144,9 +144,12 @@
       </table>
       </div>
       <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
-      <p class="bench-note">A second gateway, so a second table: these rows are <strong>not</strong>
-        comparable with the first-party numbers above, and the Niffler row here is still the
-        0.4.0 measurement — the 0.6.0 re&#8209;measurement above used the first&#8209;party endpoint. Claude Code is one uncontended run
+      <details class="more"><summary data-i18n="cmp.more2">About this table</summary>
+        <div class="more-body"><p>A second gateway, so a second table: these rows are <strong>not</strong>
+        comparable with the first-party numbers above. The Niffler row here is still the
+        0.4.0 measurement from the 29&#8209;Oct&#8209;2026 run of this lane; the 0.6.0
+        re&#8209;measurement above used the first&#8209;party DeepSeek endpoint, and this
+        lane was not re&#8209;run for 0.6.0. Claude Code is one uncontended run
         (2.1.318, 5&nbsp;Nov&nbsp;2026; 2.1.286 measured the same suite at $0.0271/task and a
         10&nbsp;855-token first call), Pi/Niffler/Droid come from the 29&nbsp;Oct&nbsp;2026
         three&#8209;lane run; every cell in either set passed in round 1.
@@ -155,7 +158,8 @@
         the hit column reads 100% while the lane is the most expensive — writes bill at the prompt
         rate. Claude Code is also the busiest caller (14.1 messages per task, ~0.5 tool calls each,
         against Droid's 1.9 messages at ~4.4 calls), so it re-bills its prefix seven times as often:
-        prefix size sets the per-call price, round trips set how often you pay it.</p>
+        prefix size sets the per-call price, round trips set how often you pay it.</p></div>
+      </details>
       </div>
 
       <div class="bench-frame">
@@ -175,7 +179,8 @@
       </table>
       </div>
       <p class="scroll-hint" data-i18n="scroll.hint">Scroll sideways to explore →</p>
-      <p class="bench-note">≈ k tokens (chars/4) from the exact first&#8209;request bytes each harness sends into
+      <details class="more"><summary data-i18n="cmp.more3">How these were captured</summary>
+        <div class="more-body"><p>≈ k tokens (chars/4) from the exact first&#8209;request bytes each harness sends into
         an empty workspace — captured from live wire requests, Oct 2026
         (Niffler's row re&#8209;captured at 0.6.0, Nov 2026: ≈3.2k). User content excluded (Pi lists
         your installed skills in its prompt by default, Niffler adds the repo's AGENTS.md chain, Claude Code
@@ -188,7 +193,8 @@
         bench lane drives headless <code>claude -p</code>, whose <code>system/init</code> frame names a
         different set (<code>Task</code>, <code>Monitor</code>, <code>ToolSearch</code> in place of
         <code>Agent</code>, <code>DesignSync</code>, <code>PushNotification</code>), and whose measured
-        first call on these tasks is ≈9.2k tokens — the figure the gateway table above reports.</p>
+        first call on these tasks is ≈9.2k tokens — the figure the gateway table above reports.</p></div>
+      </details>
       </div>
     </section>
 
@@ -198,48 +204,33 @@
         <p class="kicker"><span class="num">02</span> <span data-i18n="feat.kicker">Interesting features, relatively rare</span></p>
         <h2 data-i18n-html="feat.h2">Not one of a kind —<br><em>rarely all together.</em></h2>
       </header>
-      <p class="body" data-i18n="feat.body">None of the following is exclusive to Niffler. But the lean
-        harnesses make you give most of it up, and the big ones hide it behind
-        their UI. Here it is all in one small box:</p>
+      <p class="body" data-i18n="feat.body">Nothing here is unique to Niffler. Having all of
+        it in one small box is.</p>
       <div class="grid">
         <article>
           <h3 data-i18n="f.sub.h">Sub-agents</h3>
-          <p data-i18n-html="f.sub.p">Delegate and walk away — a background child job runs, and when it
-            settles it <em>wakes your conversation</em> with the result. Steer,
-            continue or fork it later.</p>
+          <p data-i18n-html="f.sub.p">Delegate and walk away. It <em>wakes your
+            conversation</em> when it settles — and you can steer, continue or
+            fork it later.</p>
         </article>
         <article>
           <h3 data-i18n="f.fleet.h">Fleet — remote workers</h3>
-          <p data-i18n-html="f.fleet.p">Delegate a goal to a registered worker — an Incus
-            container, Lima VM or SSH host. In delegate mode it plans its own
-            steps under the ceiling its operator set for that machine: tools,
-            roots and round/call/token budgets, off until enabled. Containers
-            and VMs run the worker in a separate guest; a human inbox lists
-            settled work with its artifact. Continue delegated work in the
-            same worker conversation, inspect its receipts or cancel it;
-            durable admission stops a retry from blindly replaying the job.</p>
+          <p data-i18n-html="f.fleet.p">Hand a goal to a worker on another machine — an
+            Incus container, Lima VM or SSH host — under the budget ceiling its
+            operator set, with a human inbox for settled work.</p>
         </article>
         <article>
           <h3 data-i18n="f.worktree.h">Isolated Git worktrees</h3>
-          <p data-i18n-html="f.worktree.p">Give an agent its own checkout for risky or parallel work.
-            With git mutations enabled, <code>/worktree add NAME [--fork]</code>
-            starts a branch beside the primary — optionally with a peer
-            conversation that has its own permissions. Preview the merge with
-            <code>git_merge_preview</code> (computed by
-            <code>merge-tree</code>, no working tree touched) and use
-            <code>/worktree merge</code> to land it cleanly; the fork's origin
-            conversation then gets a durable notice. Removal guards foreign
-            trees, dirty work and unmerged changes.</p>
-          <p data-i18n-html="f.worktree.note">Worktrees are part of this release; see the <a href="https://github.com/gokr/niffler/blob/main/docs/MANUAL.md#worktrees">worktree manual</a>.</p>
+          <p data-i18n-html="f.worktree.p">Risky or parallel work gets its own checkout:
+            <code>/worktree add</code> makes a branch beside the primary, and
+            <code>/worktree merge</code> lands it without touching your working
+            tree until it is clean.</p>
         </article>
         <article>
           <h3 data-i18n="f.writes.h">Write arbitration</h3>
-          <p data-i18n-html="f.writes.p">Two conversations can share a checkout without silently
-            overwriting each other. Declared writes take bounded leases:
-            overlapping writes refuse with <code>E_WRITE_BUSY</code> and name
-            the holder, disjoint files stay parallel, and cancellation or
-            lease expiry recovers after a writer dies. Cooperative
-            coordination, not OS fencing.</p>
+          <p data-i18n-html="f.writes.p">Two conversations share a checkout without
+            overwriting each other: overlapping writes refuse and name the
+            holder, disjoint files stay parallel. Coordinated, not fenced.</p>
         </article>
         <article>
           <h3 data-i18n="f.bg.h">Background processes</h3>
@@ -248,44 +239,32 @@
         </article>
         <article>
           <h3 data-i18n="f.gate.h">Permission gate</h3>
-          <p data-i18n-html="f.gate.p">A tool can ask first. You answer <code>y/N</code> per call —
-            sub-agents included: their gated calls route to you, their budgets
-            are hard-wired. With no human reachable, the call is denied by
-            default; a resident instance can opt into a loud per-conversation
-            approval default for unattended work. Never silently allowed.</p>
+          <p data-i18n-html="f.gate.p">A tool can ask first, and sub-agents' gated calls
+            route to <em>you</em>. No human reachable means denied — never
+            silently allowed.</p>
         </article>
         <article>
           <h3 data-i18n="f.self.h">Self-extension</h3>
-          <p data-i18n-html="f.self.p">The agent writes a source file, compiles it, spawns it as a process
-            and calls the new tool — <em>mid-conversation</em>, in any language.
-            Community packages install the same way, always built from
-            source.</p>
+          <p data-i18n-html="f.self.p">It writes a source file, compiles it, spawns it and
+            calls the new tool — <em>mid-conversation</em>, in any language.</p>
         </article>
         <article>
           <h3 data-i18n="f.fab.h">Programmable tool calling</h3>
-          <p data-i18n-html="f.fab.p"><code>fabric</code> compiles a small guest program the agent
-            writes: typed wrappers over pinned tool schemas turn a dozen tool
-            calls into one native loop — effect-aware batching, budgets,
-            approvals by content digest.</p>
+          <p data-i18n-html="f.fab.p"><code>fabric</code> compiles a guest program: a dozen
+            tool calls become one native loop, with budgets and approvals intact.</p>
         </article>
         <article>
           <h3 data-i18n="f.proj.h">Compaction as a projection</h3>
-          <p data-i18n-html="f.proj.p">Context pressure walks a visible ladder — a byte-exact prune that also
-            drops tool results a later write made stale, then a checkpointed
-            projection compactor (a replaceable seam), then eliding results the
-            tool declares re-obtainable, then a proportional trim as a last
-            resort. Only the compactor needs a model or a component; every other
-            rung is deterministic and cannot fail. Nothing degrades silently, a
-            trim is durable, and everything dropped stays <em>recallable</em>.</p>
+          <p data-i18n-html="f.proj.p">Context pressure walks a visible ladder: prune, then a
+            replaceable compactor, then elision, then a last-resort trim. Nothing
+            degrades silently — and everything dropped stays <em>recallable</em>.</p>
         </article>
         <article>
           <h3 data-i18n="f.conv.h">One conversation = one process</h3>
-          <p data-i18n-html="f.conv.p">Each conversation gets its own session runner, so conversations run
-            truly in parallel and one dead runner loses only its in-flight turn.
-            An advisory peer (<code>expert</code>) can watch a session and
-            advise — turn-bound, never steering by itself.</p>
+          <p data-i18n-html="f.conv.p">Each conversation is its own process: they run truly in
+            parallel, and a dead runner loses only its in-flight turn.</p>
         </article>
-        <article>
+        <article class="span-all">
           <h3 data-i18n="f.lang.h">Any language</h3>
           <p data-i18n-html="f.lang.p">Components are plain processes: Nim, Go, TypeScript — or a shell
             script with no SDK at all. The language is a preference.</p>
@@ -299,9 +278,8 @@
         <p class="kicker"><span class="num">03</span> <span data-i18n="ed.kicker">Everything you take for granted</span></p>
         <h2 data-i18n-html="ed.h2">The table stakes,<br><em>all of them.</em></h2>
       </header>
-      <p class="body" data-i18n="ed.body">None of this is exotic — you expect it in a serious
-        harness. Some minimal ones make you give it up. Niffler ships all of
-        it:</p>
+      <p class="body" data-i18n="ed.body">Not exotic — but the lean harnesses make you give
+        most of it up. Niffler ships all of it.</p>
 
       <div class="grid grid-3">
         <article>
@@ -383,16 +361,11 @@
         <p class="kicker"><span class="num">04</span> <span data-i18n="cl.kicker">Clients, not containers</span></p>
         <h2 data-i18n-html="cl.h2">The harness<br><em>isn't a UI.</em></h2>
       </header>
-      <p class="body" data-i18n-html="cl.body">Niffler runs headless as a shared local service: the agent,
-        its tools, background jobs and history live in the <em>instance</em> —
-        not in a window. Clients are thin attachers over the bus; several can
-        share one running instance at once. A client boots the harness on
-        demand, an autostarted core turns itself off when the last client
-        leaves — and closing your terminal mid-task loses nothing: background
-        jobs keep running and wake the conversation when they settle.
-        Completion receipts are durable per conversation, so a client
-        reconnecting after a gap reconciles the finishes it missed — a turn
-        with no receipt reads as unknown, never as success.</p>
+      <p class="body" data-i18n-html="cl.body">The agent, its tools, jobs and history live in a
+        shared local <em>instance</em> — not in a window. Clients are thin
+        attachers over the bus, and several can share one instance. Close your
+        terminal mid-task and nothing is lost: jobs keep running, then wake the
+        conversation when they settle.</p>
       <ul class="features">
         <li><strong>niffler-tui</strong><span data-i18n="cl.tui.p">the terminal chat client — a plugin that boots the harness on demand</span></li>
         <li><strong>cli</strong><span data-i18n="cl.cli.p">the headless driver: call tools, install packages, run whole turns from a script or CI</span></li>
@@ -586,7 +559,7 @@ make install-tui       <span class="dim"># the terminal client (a plugin)</span>
 niffler-tui            <span class="dim"># boots the harness on demand</span></code></pre>
       </div>
       <ul class="reqs">
-        <li><span class="check">✓</span> nim 2.2.12+</li>
+        <li><span class="check">✓</span> nim 2.4.2+</li>
         <li><span class="check">✓</span> go</li>
         <li data-i18n-html="ins.node"><span class="check">✓</span> node / npm <span class="dim">— optional: npx skills, npm MCP servers, TypeScript components (the core, clients and the TUI are Nim/Go — the installer asks)</span></li>
         <li data-i18n-html="ins.trf"><span class="check">✓</span> trafilatura <span class="dim">— optional, richer HTML extraction</span></li>

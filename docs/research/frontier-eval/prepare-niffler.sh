@@ -15,7 +15,7 @@ if ! command -v go >/dev/null; then
 fi
 if ! command -v nim >/dev/null; then
   curl -fsSL https://nim-lang.org/choosenim/init.sh -o /work/choosenim.sh
-  sh /work/choosenim.sh -y 2.2.12
+  sh /work/choosenim.sh -y 2.4.2
 fi
 command -v uv >/dev/null || { curl -fsSL https://astral.sh/uv/install.sh -o /work/uv-install.sh; sh /work/uv-install.sh; }
 git clone https://github.com/gokr/niffler /work/harness

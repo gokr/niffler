@@ -30,7 +30,7 @@ a `config_patch` and ignoring it.
   cause. The gate now memoizes a denial for the rest of the turn, so a repeat
   refuses in milliseconds with "already denied in this turn"; the memo clears
   at every turn start and before a client `invoke`, which is still asked. A
-  denial deliberately does not end the turn. Six denials now complete in ~1.8 s
+  denial deliberately does not end the turn. Six denials now complete in 1.9 s (measured)
   where six timeouts cost 30 minutes (`tests/t_approval_breaker.nim`).
 - **A conversation whose workspace was deleted is recoverable.** Removing a
   merged branch's worktree while its conversation kept going used to wedge
