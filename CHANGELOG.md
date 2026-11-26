@@ -11,13 +11,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The required Nim version is now 2.4.2**, the toolchain this release's gate
   and CI exercised (2.2.12 was the last required). A contributor on 2.2.x now
   gets a `nimble` error instead of a toolchain that builds but is no longer what
-  the gate runs.
+  the gate runs. The install path matches: `make install-nim`,
+  `scripts/check-nim-toolchain.sh`, the bench container image and the eval VM
+  script all install and accept 2.4.2, so `make setup` no longer fetches a
+  compiler the project then rejects.
 - **The website's benchmark comparison shows the measured 0.6.0 row.** Two
   full31 first-party DeepSeek V4 Flash lanes (low effort, one round, `jobs 1`)
   both passed 31/31 and average to 14.4 s per task, 6.8 turns, $0.0037 per task
   and a 91% cache hit rate, replacing the 0.4.0 figures; the other harnesses'
   rows remain the Oct 2026 campaign and the caption now says so. Reports:
   `bench/reports/full31-direct-low-niffler-0.6.0{,-run2}-report.*`.
+- **The website's front page is shorter and its claims corrected.** Feature
+  cards are one- or two-sentence claims, benchmark methodology and caveats moved
+  into expandable sections, the install badge now reads Nim 2.4.2+, and the
+  gateway table is labelled the Synthetic lane (`syn-deepseek-v41`) with its
+  0.4.0 row attributed to the 29 Oct 2026 run. The hero screenshot now shows a
+  0.6-era session (1600 px, palettized, same URL). All copy is synced across
+  en/zh/zh-TW.
 
 ### Fixed
 
