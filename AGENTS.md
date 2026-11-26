@@ -191,7 +191,10 @@ working in every language.
   rule keeps refusing — accepted and ignored, the worst shape of failure. This
   is how the `agent.delegation` slice failed (`maxDepth` lives in
   `core/dispatch.nim`, `wakes` in `core/conversation.nim`); six other owner
-  domains passed the same check. Secrets, deployment paths, subscription sets
+  domains passed the same check. A core-enforced knob can instead be a domain
+  core owns itself (`owner: "core"`, `ownerTool: "core_config"`) — how
+  `NIF_ATTACH_BUDGET`, `NIF_EMPTY_REPLY_RETRIES` and `NIF_STUB_DERIVABLE`
+  left env. Secrets, deployment paths, subscription sets
   and test seams stay in env by category. Detail:
   docs/research/CONFIG-CONTRACT.md "The rule that decides whether a variable
   may be a domain".

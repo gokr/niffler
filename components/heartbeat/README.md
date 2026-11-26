@@ -15,10 +15,20 @@ attempts use the interval. `enabled:false` parks a record. `heartbeat_list`
 shows schedules; `heartbeat_remove` removes one, never its conversation.
 Creation/removal are approval-gated and tools are on demand.
 
-- `NIF_HEARTBEAT_TICK_MS`: polling interval, default 30000, minimum 100.
-- `NIF_HEARTBEAT_MAX_PER_DAY`: attempts per record in a rolling 24-hour
-  window, default 4; the runner independently limits admitted turns.
-- `NIF_HEARTBEAT=0`: pauses ticking; on the runner, refuses heartbeat turns.
+Settings are a declared `heartbeat` config domain (`enabled`, `tickMs`,
+`maxPerDay`), so `config_patch heartbeat` edits them when the `config`
+component is present. `tickMs` is the polling interval (default 30000, minimum
+100); `maxPerDay` is the attempts per record in a rolling 24-hour window
+(default 4); `enabled:false` pauses ticking. The component falls back to the
+historical spellings when no explicit value is stored:
+
+- `NIF_HEARTBEAT_TICK_MS` and `NIF_HEARTBEAT_MAX_PER_DAY` mirror `tickMs` and
+  `maxPerDay`.
+- `NIF_HEARTBEAT=0` pauses ticking; on the runner, refuses heartbeat turns.
+
+The runner independently re-checks `NIF_HEARTBEAT` and
+`NIF_HEARTBEAT_MAX_PER_DAY` before admitting a turn, so those env bounds apply
+even after a `config_patch`.
 
 Busy conversations are skipped, never queued. Events are best-effort hints;
 the runner's busy refusal is authoritative. Attempt reservations are stored
