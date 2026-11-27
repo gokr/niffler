@@ -336,7 +336,7 @@ Niffler 沒有單一設定檔。環境用於啟動決策，儲存文件與對話
 | `NIF_LSP_BIN_DIRS` | 在 PATH 之外搜尋伺服器二進位檔的額外目錄（以冒號分隔；開頭的 `~` 表示你的 home 目錄） | — |
 | `NIF_TRAFILATURA` | Trafilatura 執行檔路徑/名稱；`off` 停用外部擷取 | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK 結構化日誌發布閾值（`debug`、`info`、`warn`、`error`） | `info` |
-| `NIF_RECONNECT_GRACE_S` | Nim 或 Go SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`——絕不猜測眾所周知的連接埠）、在訂閱前驗證回應的 core 服務此 root、重新撥號（Nim 採指數退避）、重建每個訂閱並重新發佈 `reg.publish`；被拒絕的候選會在下一輪探索中重試，而不會被加入。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。TypeScript SDK 目前尚不重新接入 | `180` |
+| `NIF_RECONNECT_GRACE_S` | SDK 元件在匯流排不可達時容忍的秒數，超過後**重新接入**：重新解析 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`——絕不猜測眾所周知的連接埠）、在訂閱前驗證回應的 core 服務此 root、重新撥號（Nim 採指數退避）、重建每個訂閱並重新發佈 `reg.publish`；被拒絕的候選會在下一輪探索中重試，而不會被加入。刻意高於 NATS 用戶端自身的重連預算（約 2 分鐘），因此更短的中斷絕不觸發它；不是正數的值會保留預設值。三個 SDK 均已實作；TypeScript 以週期性 `flush()` 偵測連線健康並同樣重新解析 | `180` |
 | `NIF_NATS_DIAL_TIMEOUT` | Go SDK 元件首次 NATS 握手（以及重新接入）允許的秒數。透過 `ssh … incus exec … cli relay` 到達的中繼匯流排，在 INFO 到達前需付出行程啟動加上全新 TCP 連線的成本，nats.go 預設的 2 秒無法滿足；1–600 的值會被採用，其他值保留預設值 | `15` |
 | `NIF_LLM_MAX_RETRIES` | 對暫時性 LLM 失敗（429/5xx/超載/連線中斷）的額外嘗試次數，採指數退避；每次重試會宣告 `ev.session.<id>.retry`。驗證/配額/錯誤請求錯誤一律快速失敗 | `2` |
 | `NIF_LLM_MAX_STREAM_RETRIES` | 串流回應中途中斷時的額外嘗試次數——與一般情況分開編列預算，因為中斷的串流可能已經計費輸出 | `2` |
@@ -2697,9 +2697,9 @@ await comp.requestEnvelope(subject, envelope, timeoutMs?)
 每個 SDK 都讓 NATS 執行主體比對，並只分派綁定至傳遞該訊息的訂閱的處理常式。這避免了先前的交叉乘積，即一次呼叫可能透過 call、event 與 tap 路徑多次傳遞。Nim 保持無回呼且無執行緒；Go 使用其現有的互斥鎖，而 TypeScript 使用其 promise 鏈。關機時，Go 會先排空訂閱（至其有界的關閉寬限期），然後停止每個元件的傳遞迴圈並等待每個仍在執行的處理常式完成，以保留欠給呼叫方的回覆——已接受但從未開始的呼叫會被拒絕，而不是被靜默丟棄；而 TypeScript 會等待已排入佇列的處理常式，且不會使明確關閉自身元件的處理常式死鎖。
 
 #### Re-attaching after a bus outage
-NATS 用戶端會透明地重連至相同 URL，但匯流排在其重連預算之後仍不可達——或 harness 在新連接埠上重啟——過去會讓元件**存活卻失聰**：訂閱不再傳遞，未送出 `reg.depart`，目錄仍公告著無人能觸及的工具，恢復只能靠殺掉行程。Nim 與 Go SDK 現在會監視連線健康（每 2 秒一次 `Flush` 探測），一旦連線不健康持續 `NIF_RECONNECT_GRACE_S`（預設 180 秒，刻意高於用戶端自身的耐心），便**重新接入**：重新解析匯流排 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`，絕不猜測眾所周知的連接埠）、在訂閱前用 core 公告的 root 驗證每個候選、重新撥號（Nim 採指數退避；Go 在候選被拒絕時會在其健康 tick 上繼續重試探索）、重建每個訂閱（call、event 與 tap）並重新發佈 `reg.publish`——無需重啟行程。匯流排已消失的元件會以「無處可去」明確失敗，而不會遷移到回應眾所周知連接埠的任何 harness 上。
+NATS 用戶端會透明地重連至相同 URL，但匯流排在其重連預算之後仍不可達——或 harness 在新連接埠上重啟——過去會讓元件**存活卻失聰**：訂閱不再傳遞，未送出 `reg.depart`，目錄仍公告著無人能觸及的工具，恢復只能靠殺掉行程。Nim、Go 與 TypeScript SDK 現在會監視連線健康（每 2 秒一次 flush 探測；TypeScript 使用週期性 `flush()`），一旦連線不健康持續 `NIF_RECONNECT_GRACE_S`（預設 180 秒，刻意高於用戶端自身的耐心），便**重新接入**：重新解析匯流排 URL（`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url`，絕不猜測眾所周知的連接埠）、在訂閱前用 core 公告的 root 驗證每個候選、重新撥號（Nim 與 TypeScript 採指數退避；Go 在候選被拒絕時會在其健康 tick 上繼續重試探索）、重建每個訂閱（call、event 與 tap）並重新發佈 `reg.publish`——無需重啟行程。匯流排已消失的元件會以「無處可去」明確失敗，而不會遷移到回應眾所周知連接埠的任何 harness 上。
 
-延遲公告的元件（Go SDK 的 `DeferAnnounce`，例如 `mcp-bridge`）必須在全新連線上重新發佈自己的契約，因為它可能在不健康期間已經漂移；以 `onReattached`（Go 為 `OnReattached`）註冊它。一般元件無需鉤子——重新接入已重新公告它們凍結的契約。TypeScript SDK 目前尚不重新接入。
+延遲公告的元件（Go SDK 的 `DeferAnnounce`，例如 `mcp-bridge`）必須在全新連線上重新發佈自己的契約，因為它可能在不健康期間已經漂移；以 `onReattached`（Go 為 `OnReattached`，TypeScript 為 `onReattached`）註冊它。一般元件無需鉤子——重新接入已重新公告它們凍結的契約。
 
 ```nim
 proc onReattached*(c: Component, handler: ReattachedHandler): Component
@@ -2707,6 +2707,10 @@ proc onReattached*(c: Component, handler: ReattachedHandler): Component
 
 ```go
 func (c *Component) OnReattached(h func(*Component)) *Component
+```
+
+```ts
+onReattached(handler: (c: Component) => void | Promise<void>): this
 ```
 
 前述的重新接入只有在寬限期過後才會觸發。若 Go 用戶端必須在*任何*已恢復的連線上協調持久狀態——包括短暫的 NATS 重連（例如重新掃描 activity feed）——請註冊 `OnReconnected`：它會在元件鎖之外執行，初始 `Connect` 不會呼叫它，且重複的恢復提示無害。
