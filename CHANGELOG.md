@@ -21,6 +21,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and a 91% cache hit rate, replacing the 0.4.0 figures; the other harnesses'
   rows remain the Oct 2026 campaign and the caption now says so. Reports:
   `bench/reports/full31-direct-low-niffler-0.6.0{,-run2}-report.*`.
+- **The website's Synthetic-lane table now carries a re-measured 0.6.0 row.**
+  The Niffler row in the second (Synthetic `syn-deepseek-v41`) gateway table was
+  still the 0.4.0 measurement from 29 Oct 2026. It is now a 0.6.0 run of the same
+  lane: 31/31 at 27.1 s per task, 6.8 turns, 8.0 tool calls and $0.0145 per task
+  (83% cache hit), replacing 29.5 s and $0.0134. Six cells (t26–t31) invalidated
+  mid-run by a DNS outage (`lookup api.synthetic.new: no such host`) were re-run
+  on a healthy network before the set was merged, and the caption now says this
+  row alone was re-measured while the other rows remain the Oct campaign.
+  Report: `bench/reports/full31-syn-ds41-niffler-0.6.0-report.*`.
 - **The website's front page is shorter and its claims corrected.** Feature
   cards are one- or two-sentence claims, benchmark methodology and caveats moved
   into expandable sections, the install badge now reads Nim 2.4.2+, and the
