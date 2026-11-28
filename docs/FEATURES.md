@@ -477,6 +477,9 @@ See [MANUAL.md](MANUAL.md) "Approvals"; [WIRE.md](WIRE.md) "Approvals".
   terminal prompt; **deny** when no human is reachable, never a silent grant.
 - Timeouts that deny, a resolution notice that dismisses stale prompts, and a
   per-conversation auto mode that is logged loudly.
+- A denial is memoized for the rest of the turn, so a retry refuses at once
+  instead of waiting out another full timeout; the memo clears at each turn
+  start and before a client `invoke`.
 - Persisted per-tool "don't ask again" grants, keyed by tool and, for
   program-shaped calls, by content digest.
 - Program approvals by content: source digest, full source artifact, selected
@@ -571,6 +574,10 @@ See [MANUAL.md](MANUAL.md) "State and configuration", "Environment variables".
 - Settings that are not env: boot selection, store-backed registries, the
   conversation header, home/project files (skills, language-server registry,
   edit-undo store), browser display state, and `var/` derived state.
+- The optional `config` component: owners declare settings domains (the shipped
+  `core`, `heartbeat` and `memory` among them) and `config_patch`/`config_reset`
+  validate and forward to the owner with compare-and-set; where a historical
+  `NIF_*` spelling exists it remains the migration fallback.
 - The full store kind inventory used by core and components (conversations,
   messages, components, plugins, providers, toolset snapshots, slash table,
   subagent jobs/notices/lineage, programs, profiles, approvals, compaction

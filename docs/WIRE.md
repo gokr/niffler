@@ -1559,7 +1559,10 @@ the request is rebroadcast on `ev.approval.request` with `fallback: true`
 so any attached interactive client can step in; direct (non-session) calls
 broadcast immediately. The gate verdict is published on
 `ev.approval.resolved` so other clients dismiss stale modals. Timeout →
-denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
+denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses. A denial is
+memoized for the rest of the turn, so a repeat of the same tool refuses at once
+(`already denied in this turn`) instead of waiting out another timeout; the
+memo clears at every turn start and before a client `invoke`.
 
 ## Conversation controls (`/approvals`, `/limit`, `/compact`)
 
