@@ -1144,6 +1144,11 @@ included):
 - A tool approval that no client answers times out after 5 minutes
   (`timeoutMs`, 300 s) and is denied (the log says `timed out after Ns —
   denying`); a `/limit` keep-going question has its own shorter window (120 s).
+- A denied tool is not re-asked within the same turn: the gate memoizes the
+  denial, so a repeat refuses in milliseconds with `already denied in this
+  turn` instead of waiting out another full timeout. The memo clears at every
+  turn start and before a client `invoke` (a fresh human interaction is still
+  asked), and a denial does not end the turn.
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
 - `NIF_APPROVALS_DEFAULT=auto` is the milder alternative for a resident
   instance nobody watches: it sets the gate mode of conversations nobody has
@@ -3269,6 +3274,13 @@ store record, written by its own tool. The optional `config` component adds
 discovery, validation and one editing API on top, so neither a human nor a model
 has to know which component owns which knob.
 
+The `core` domain owns the turn and context limits core itself enforces:
+`attachBudget` (base64 characters of images kept materialized per request,
+default 5,000,000), `emptyReplyRetries` (default 2) and `stubDerivable`
+(default true), applied at the next turn. The historical
+`NIF_ATTACH_BUDGET`, `NIF_EMPTY_REPLY_RETRIES` and `NIF_STUB_DERIVABLE`
+spellings remain the migration fallback.
+
 An owner publishes a *declaration* at startup (`config_declare`, hidden —
 infrastructure, not a model tool): a stable domain id, its store kind, the tool
 that answers `get`/`patch`/`reset`, a JSON Schema subset for the values, and
@@ -4048,6 +4060,10 @@ Mutating tools require approval. Busy conversations skip ticks, never queue.
 
 `NIF_HEARTBEAT=0` pauses execution; `NIF_HEARTBEAT_TICK_MS` defaults to 30000;
 `NIF_HEARTBEAT_MAX_PER_DAY` defaults to four turns per record per rolling day.
+These three are the declared `heartbeat` settings domain — `config_patch
+heartbeat` sets `enabled`, `tickMs` and `maxPerDay`, applied immediately — with
+the `NIF_HEARTBEAT*` spellings kept as the migration fallback when the store has
+no explicit value.
 The runner independently validates the record and records admission before
 inference. Scheduling reserves attempts before publishing, so a crash can lose
 a tick rather than duplicate work. Status reports attempts, not completion;
